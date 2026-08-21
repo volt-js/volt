@@ -62,4 +62,5 @@ export {
   classes,
 } from './components/index.js';
 
+export { contractProperties } from './contract.js';
 export { FORCED_COLORS_QUERY, componentCss, stylesheet } from './stylesheet.js';

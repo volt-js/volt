@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   componentStyles,
+  contractProperties,
   tokenNames,
   type ComponentStyles,
   type Rule,
@@ -230,7 +231,11 @@ describe('every component', () => {
 
       for (const value of values) {
         for (const token of tokensIn(value)) {
-          expect(tokenNames, `${component.name}: ${value}`).toContain(token);
+          // Either something this package defines, or something a primitive
+          // writes and `contract.ts` names as such. A `var()` naming neither
+          // resolves to nothing and fails without saying so.
+          const known = tokenNames.has(token) || contractProperties.has(token);
+          expect(known, `${component.name}: ${value} names ${token}`).toBe(true);
         }
       }
     });
@@ -285,8 +290,9 @@ describe('the registry', () => {
     for (const name of keyframes) expect(name.startsWith('volt-')).toBe(true);
   });
 
-  it('holds the eight components styled so far', () => {
+  it('holds the nine components styled so far', () => {
     expect(componentStyles.map((component) => component.name)).toEqual([
+      'accordion',
       'button',
       'checkbox',
       'dialog',

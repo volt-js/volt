@@ -7,6 +7,7 @@
  */
 
 import type { ComponentStyles } from '../css.js';
+import { accordionStyles } from './accordion.js';
 import { buttonStyles } from './button.js';
 import { checkboxStyles } from './checkbox.js';
 import { dialogStyles } from './dialog.js';
@@ -17,6 +18,7 @@ import { tooltipStyles } from './tooltip.js';
 import { toastStyles } from './toast.js';
 
 export {
+  accordionStyles,
   buttonStyles,
   checkboxStyles,
   dialogStyles,
@@ -29,6 +31,7 @@ export {
 
 /** In the order they are emitted, which is alphabetical and means nothing. */
 export const componentStyles: readonly ComponentStyles[] = [
+  accordionStyles,
   buttonStyles,
   checkboxStyles,
   dialogStyles,
