@@ -54,11 +54,23 @@ const context: Context = {
   addWatchFile() {},
 };
 
+/**
+ * Whichever plugin of the last `build()` owns `configResolved`.
+ *
+ * Not the messages plugin: the root and the command moved to `volt:env` once
+ * the server-functions pass needed the root too — an endpoint id is derived
+ * from a module path relative to it, and one plugin has to be the answer for
+ * all of them.
+ */
+let resolveConfig: (config: { root: string; command: string }) => void = () => {};
+
 /** The plugins, with the messages one wired to the fixture catalogue. */
 function build(messages: Partial<VoltPluginOptions['messages']> = {}) {
   warned = [];
   const all = volt({ messages: { catalog: CATALOG, ...messages } } as VoltPluginOptions);
   const byName = (name: string) => all.find((p) => p.name === name)!;
+  const env = byName('volt:env');
+  resolveConfig = (config) => call(env, 'configResolved', config);
   return { messages: byName('volt:messages'), templates: byName('volt:templates') };
 }
 
@@ -68,7 +80,7 @@ const call = <T>(plugin: Plugin, hook: keyof Plugin, ...args: unknown[]): T =>
 
 /** Bring a plugin up the way Vite would, for the build or for the dev server. */
 async function start(plugin: Plugin, command: 'build' | 'serve' = 'build'): Promise<void> {
-  call(plugin, 'configResolved', { root: FIXTURES, command });
+  resolveConfig({ root: FIXTURES, command });
   await call<Promise<void>>(plugin, 'buildStart');
 }
 

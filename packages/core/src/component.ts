@@ -60,7 +60,15 @@ const PROPS = Symbol.for('volt.props');
 // Types
 // ---------------------------------------------------------------------------
 
-export type RenderFn = (ctx: unknown) => unknown;
+/**
+ * A compiled template.
+ *
+ * A client build's render returns the DOM it built; a server build's writes
+ * into the markup writer handed to it as `out` and returns nothing. One type,
+ * because the two are the same template compiled for the two sides and every
+ * call site here forwards whatever it was given.
+ */
+export type RenderFn = (ctx: unknown, out?: unknown) => unknown;
 
 export interface ComponentType<T = unknown> {
   new (): T;
@@ -509,6 +517,8 @@ function applyProps(
 interface InstantiateOptions {
   props?: Record<string, unknown> | null;
   slots?: SlotMap | null;
+  /** The markup writer, on a server. Undefined in a browser, which has none. */
+  out?: unknown;
 }
 
 function instantiate(
@@ -554,7 +564,7 @@ function instantiate(
     applyProps(instance, options.props ?? null, resolved);
 
     const render = getRenderFn(component, resolved);
-    const dom = render(instance);
+    const dom = render(instance, options.out);
 
     // Not queued at all on a server, rather than queued and then ignored: a
     // microtask fires at the first `await`, and the render awaits its data, so
@@ -707,6 +717,11 @@ export function createComponent(
   props: Record<string, unknown> | null,
   events: Record<string, unknown> | null,
   slots: SlotMap | null,
+  /**
+   * The markup writer, on a server: one object for the whole render, passed
+   * down so a child's template writes into the page its parent is writing.
+   */
+  out?: unknown,
 ): unknown {
   const component = resolveComponent(parentCtx, tag);
   if (component) {
@@ -724,7 +739,7 @@ export function createComponent(
           `declared on the child as a @Prop.`,
       );
     }
-    return instantiate(component, { props, slots });
+    return instantiate(component, { props, slots, out });
   }
 
   // Volt selectors are hyphenated too, so "has a hyphen" cannot distinguish a
@@ -814,6 +829,26 @@ export interface MountHandle {
   unmount(): void;
   /** The component instance, for tests and imperative access. */
   instance: unknown;
+}
+
+/**
+ * The root of a server render: instantiate `component` and let its template
+ * write into `out`.
+ *
+ * `mount` is the same question answered for a browser — build the DOM and put
+ * it in a host. There is no host here and nothing to insert, because the
+ * template writes its own bytes as it walks; what this adds over calling the
+ * render function directly is everything `mount` also does not skip: props,
+ * styles, the component's position for its ids, and the lifecycle gate.
+ *
+ * Called by `renderToStaticMarkup`, which owns the request scope this runs in.
+ */
+export function renderComponent(
+  component: ComponentType<unknown>,
+  out: unknown,
+  props: Record<string, unknown> | null = null,
+): void {
+  instantiate(component, { props, out });
 }
 
 /**

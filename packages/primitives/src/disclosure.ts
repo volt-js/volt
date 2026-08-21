@@ -39,7 +39,7 @@
  * of state and the keyboard the pattern asks for between the headers.
  */
 
-import { Signal, createRoot, effect, measureEffect, onCleanup } from '@voltdev/core';
+import { Signal, createRoot, measureEffect, onCleanup } from '@voltdev/core';
 import { createCollection } from './collection.js';
 import { createId } from './id.js';
 import { createPresence, type PresenceState } from './presence.js';

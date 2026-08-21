@@ -23,7 +23,6 @@ const ALTERNATIVES: { [K in keyof typeof DEFAULTS]: (typeof DEFAULTS)[K] } = {
   comments: true,
   runtime: '_v',
   ctx: '_self',
-  dev: true,
   runtimeModule: 'volt/runtime',
   groupRowBindings: true,
 };
@@ -107,7 +106,13 @@ describe('every option the compiler reads is covered', () => {
     // still hydrate each other's. `catalog` and `catalogFile` are excused on
     // exactly that second ground: a catalogue turns an unknown message key
     // into a build error, and a template that compiles compiles the same
-    // bytes with it or without it. Everything else the compiler consults can
+    // bytes with it or without it. `target` is excused for the opposite
+    // reason to all of them — not because it cannot change the emit, but
+    // because it names which half of one build this is. The server emit and
+    // the client emit of the same source differ by exactly this option, so
+    // hashing it would make every hydration find a mismatch and discard the
+    // markup it was given, which is the whole failure the hash exists to
+    // prevent. Everything else the compiler consults can
     // move bytes, so it belongs in the hash whether or not it does so today.
     //
     // Driven over the whole corpus rather than one list: an option read on one
@@ -115,7 +120,7 @@ describe('every option the compiler reads is covered', () => {
     // invisible to a single template, and invisible is exactly how it would
     // stay out of the hash while moving bytes.
     expect(optionsRead(CORPUS.map((entry) => entry.template))).toEqual(
-      [...Object.keys(DEFAULTS), 'filename', 'a11y', 'catalog', 'catalogFile'].sort(),
+      [...Object.keys(DEFAULTS), 'filename', 'a11y', 'catalog', 'catalogFile', 'target'].sort(),
     );
   });
 });
@@ -129,7 +134,7 @@ describe('the hash travels with the compile that produced it', () => {
     const sets: CompileOptions[] = [
       {},
       { runtime: '_v' },
-      { dev: true, whitespace: 'preserve' },
+      { whitespace: 'preserve' },
       { ...DEFAULTS, filename: 'src/page.html' },
     ];
     for (const options of sets) {

@@ -49,10 +49,32 @@ export interface PrintContext {
   ctx: string;
   /** Innermost-last stack of locally bound names. */
   scopes: Scope[];
+  /**
+   * Collect a back-reference for every identifier printed, or leave unset.
+   *
+   * The type-check emit needs to know which characters of its output came
+   * from which characters of the template, and the printer is the only place
+   * that knows: it is what turns `count` into `_ctx.count`, so by the time
+   * anyone sees the output the correspondence is gone. Each printed name is
+   * preceded by a `/*@volt:N*​/` comment naming its offset in the expression
+   * source, and `N` is pushed here in the same order — the array is what
+   * proves a comment found in the output is one the printer wrote, rather
+   * than text that happened to look like one inside a string literal.
+   *
+   * Unset for every other caller, and then not one character changes.
+   */
+  marks?: number[];
 }
 
 export function createPrintContext(ctx = '_ctx'): PrintContext {
   return { ctx, scopes: [] };
+}
+
+/** The comment that ties a printed name back to the template, if asked for. */
+function mark(ctx: PrintContext, node: { start: number }): string {
+  if (!ctx.marks) return '';
+  ctx.marks.push(node.start);
+  return `/*@volt:${node.start}*/`;
 }
 
 export function withScope<T>(
@@ -156,25 +178,37 @@ export function printExpression(node: ExprNode, ctx: PrintContext, minPrecedence
 function printRaw(node: ExprNode, ctx: PrintContext): string {
   switch (node.type) {
     case 'Identifier': {
+      const at = mark(ctx, node);
       const binding = lookupBinding(ctx, node.name);
-      if (binding === 'accessor') return `${node.name}()`;
-      if (binding === 'value') return node.name;
-      if (RUNTIME_LOCALS.has(node.name)) return node.name;
-      if (TEMPLATE_GLOBALS.has(node.name)) return node.name;
-      return `${ctx.ctx}.${node.name}`;
+      if (binding === 'accessor') return `${at}${node.name}()`;
+      if (binding === 'value') return `${at}${node.name}`;
+      if (RUNTIME_LOCALS.has(node.name)) return `${at}${node.name}`;
+      if (TEMPLATE_GLOBALS.has(node.name)) return `${at}${node.name}`;
+      return `${ctx.ctx}.${at}${node.name}`;
     }
 
     case 'Literal':
       return node.raw;
 
     case 'TemplateLiteral': {
-      let out = '`';
-      for (let i = 0; i < node.quasis.length; i++) {
-        out += escapeTemplateText(node.quasis[i] ?? '');
-        const expr = node.expressions[i];
-        if (expr) out += '${' + printExpression(expr, ctx) + '}';
+      // A template literal's holes were re-parsed from extracted substrings,
+      // so their identifiers are located against those substrings and not
+      // against this expression. Marking them would point a diagnostic at a
+      // column chosen by arithmetic on the wrong string, which is worse than
+      // falling back to the expression itself.
+      const marks = ctx.marks;
+      ctx.marks = undefined;
+      try {
+        let out = '`';
+        for (let i = 0; i < node.quasis.length; i++) {
+          out += escapeTemplateText(node.quasis[i] ?? '');
+          const expr = node.expressions[i];
+          if (expr) out += '${' + printExpression(expr, ctx) + '}';
+        }
+        return out + '`';
+      } finally {
+        ctx.marks = marks;
       }
-      return out + '`';
     }
 
     case 'Member': {
@@ -182,8 +216,8 @@ function printRaw(node: ExprNode, ctx: PrintContext): string {
       if (node.computed) {
         return `${object}${node.optional ? '?.' : ''}[${printExpression(node.property, ctx)}]`;
       }
-      const name = (node.property as { name: string }).name;
-      return `${object}${node.optional ? '?.' : '.'}${name}`;
+      const property = node.property as { name: string; start: number };
+      return `${object}${node.optional ? '?.' : '.'}${mark(ctx, property)}${property.name}`;
     }
 
     case 'Call': {

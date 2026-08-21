@@ -222,3 +222,92 @@ export function readIdent(code: string, start: number): string {
   while (i < code.length && isIdentChar(code[i])) i++;
   return code.slice(start, i);
 }
+
+export interface DecoratorSite {
+  at: number;
+  name: string;
+}
+
+/**
+ * Every decorator in the file.
+ *
+ * Outside a string or a comment, `@` is only ever the start of one, so this
+ * needs no notion of context beyond skipping tokens correctly. Shared, because
+ * two passes now have to agree about which `@` is code: the decorator
+ * lowering, and the server-function pass that runs before it.
+ */
+export function findDecorators(code: string): DecoratorSite[] {
+  const sites: DecoratorSite[] = [];
+  walk(code, (index) => {
+    if (code[index] !== '@') return 0;
+    const name = readIdent(code, index + 1);
+    if (!name) return 0;
+    sites.push({ at: index, name });
+    return 1 + name.length;
+  });
+  return sites;
+}
+
+/**
+ * Every place `word` appears as a standalone identifier in code.
+ *
+ * A member access is excluded — `foo.class` is a property, not the keyword —
+ * which is the only ambiguity that matters for the words this is asked about.
+ */
+export function findKeyword(code: string, word: string): number[] {
+  const found: number[] = [];
+  walk(code, (index) => {
+    if (!isIdentStart(code[index])) return 0;
+    const ident = readIdent(code, index);
+    if (ident === word && !isMemberAccess(code, index)) found.push(index);
+    // Always step the whole identifier, so `classy` cannot be re-read from `l`.
+    return ident.length;
+  });
+  return found;
+}
+
+function isIdentStart(ch: string | undefined): boolean {
+  return ch !== undefined && /[A-Za-z_$]/.test(ch);
+}
+
+function isMemberAccess(code: string, at: number): boolean {
+  let i = at - 1;
+  while (i >= 0 && /\s/.test(code[i]!)) i--;
+  return code[i] === '.';
+}
+
+/**
+ * Walk `code` a token at a time, skipping strings, comments and regexes.
+ *
+ * `visit` returns how far to advance from `index`; zero means "not mine, carry
+ * on one character".
+ */
+function walk(code: string, visit: (index: number) => number): void {
+  let i = 0;
+  while (i < code.length) {
+    const ch = code[i]!;
+
+    if (ch === '"' || ch === "'") {
+      i = skipQuoted(code, i, ch);
+      continue;
+    }
+    if (ch === '`') {
+      i = skipTemplateLiteral(code, i);
+      continue;
+    }
+    if (ch === '/') {
+      const next = skipTrivia(code, i);
+      if (next !== i) {
+        i = next;
+        continue;
+      }
+      if (isRegexStart(code, i)) {
+        i = skipRegex(code, i);
+        continue;
+      }
+    }
+
+    const step = visit(i);
+    i += step > 0 ? step : 1;
+  }
+}

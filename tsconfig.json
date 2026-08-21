@@ -11,6 +11,9 @@
     { "path": "./packages/grid" },
     { "path": "./packages/editor" },
     { "path": "./packages/testing" },
-    { "path": "./packages/router" }
+    { "path": "./packages/router" },
+    { "path": "./packages/server" },
+    { "path": "./packages/cli" },
+    { "path": "./packages/create-volt" }
   ]
 }

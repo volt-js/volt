@@ -30,6 +30,7 @@
  */
 
 import {
+  findDecorators,
   isIdentChar,
   matchAngle,
   matchDelimiter,
@@ -47,11 +48,6 @@ export class DecoratorError extends Error {
     super(message);
     this.name = 'DecoratorError';
   }
-}
-
-interface DecoratorSite {
-  at: number;
-  name: string;
 }
 
 interface PropSite {
@@ -159,52 +155,6 @@ function renderProps(props: PropSite[]): string {
 // ---------------------------------------------------------------------------
 // Scanning
 // ---------------------------------------------------------------------------
-
-/**
- * Every decorator in the file.
- *
- * Outside a string or a comment, `@` is only ever the start of one, so this
- * needs no notion of context beyond skipping tokens correctly.
- */
-function findDecorators(code: string): DecoratorSite[] {
-  const sites: DecoratorSite[] = [];
-  let i = 0;
-
-  while (i < code.length) {
-    const ch = code[i]!;
-
-    if (ch === '"' || ch === "'") {
-      i = skipQuoted(code, i, ch);
-      continue;
-    }
-    if (ch === '`') {
-      i = skipTemplateLiteral(code, i);
-      continue;
-    }
-    if (ch === '/') {
-      const next = skipTrivia(code, i);
-      if (next !== i) {
-        i = next;
-        continue;
-      }
-      if (isRegexStart(code, i)) {
-        i = skipRegex(code, i);
-        continue;
-      }
-    }
-    if (ch === '@') {
-      const name = readIdent(code, i + 1);
-      if (name) {
-        sites.push({ at: i, name });
-        i += 1 + name.length;
-        continue;
-      }
-    }
-    i++;
-  }
-
-  return sites;
-}
 
 /** Read `@Component(...) [export] class Name ... { ... }` starting at `at`. */
 function parseComponent(code: string, at: number): ComponentSite | null {

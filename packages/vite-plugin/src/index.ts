@@ -41,6 +41,7 @@ import {
 import type { A11ySeverity, MessageCatalog } from '@voltdev/compiler';
 import type { Plugin } from 'vite';
 import { DecoratorError, planLowering } from './decorators.js';
+import { planServerFunctions, ServerFunctionError } from './server-functions.js';
 import { planSignalLowering } from './signals.js';
 import { isIdentChar, matchDelimiter, skipQuoted, skipTemplateLiteral } from './scan.js';
 
@@ -81,6 +82,15 @@ export interface VoltPluginOptions {
    * is switching all of them off. `off` skips the pass.
    */
   a11y?: A11ySeverity;
+  /**
+   * Module the two halves of a `@Server()` method import from.
+   *
+   * The client half reaches `<serverModule>/client`, which is a separate entry
+   * for a reason: importing the handler or the registry from a page would put
+   * the server's share of the feature in the browser, next to a body that was
+   * stripped precisely so it would not be there.
+   */
+  serverModule?: string;
   /**
    * Compile an application's own messages instead of loading them.
    *
@@ -138,15 +148,59 @@ const DEFAULT_MESSAGES_ID = 'virtual:volt-messages';
 const DEFAULT_INCLUDE = /\.m?ts$/;
 const DEFAULT_EXCLUDE = /[\\/]node_modules[\\/]/;
 const RUNTIME_NAMESPACE = '__volt_rt';
+
+/**
+ * Which side of the render an environment is, which is the only place that
+ * knows.
+ *
+ * Vite's own default for an environment that does not say, so `vite dev`'s SSR
+ * environment and a build's server environment answer the same. It decides
+ * three things together, and they have to agree: `__VOLT_SERVER__`, which half
+ * of a `@Server()` method is emitted, and which emit a template gets.
+ */
+function sideOf(environment: { config?: { consumer?: string } } | undefined): 'client' | 'server' {
+  return environment?.config?.consumer === 'server' ? 'server' : 'client';
+}
+
+/**
+ * The module generated code imports from, per side.
+ *
+ * The same two names the compiler defaults to, and it has to be: this plugin
+ * writes the import while the compiler decides the hash, so a disagreement
+ * here is an import of a module that has none of the helpers being called.
+ */
+function defaultRuntime(side: 'client' | 'server'): string {
+  return side === 'server' ? '@voltdev/core/server' : '@voltdev/core/runtime';
+}
+
+/** Two spaces, so a generated render function reads like the file around it. */
+function indentBody(body: string): string {
+  return body
+    .split('\n')
+    .map((line) => (line ? `  ${line}` : line))
+    .join('\n');
+}
 const DEFINE_LOCAL = '__volt_define';
 
 export function volt(options: VoltPluginOptions = {}): Plugin[] {
   const include = options.include ?? DEFAULT_INCLUDE;
   const exclude = options.exclude ?? DEFAULT_EXCLUDE;
-  const runtimeModule = options.runtimeModule ?? '@voltdev/core/runtime';
+  /**
+   * Where generated code reaches its helpers, when a project has not said.
+   *
+   * Resolved here for the import this plugin writes, and *not* passed on to
+   * the compiler, which defaults it the same way per target. That matters:
+   * `runtimeModule` is covered by `__VOLT_BUILD__`, so pinning it to one
+   * side's spelling would give the two builds different hashes and a client
+   * would discard every page the server printed. An option nobody set hashes
+   * the same on both sides however differently it resolves.
+   */
+  const runtimeFor = (side: 'client' | 'server'): string =>
+    options.runtimeModule ?? defaultRuntime(side);
   const precompile = options.precompileTemplates ?? true;
   const groupRowBindings = options.groupRowBindings ?? false;
   const lowerSignals = options.lowerSignals ?? true;
+  const serverModule = options.serverModule ?? '@voltdev/server';
 
   const shouldProcess = (id: string): boolean => {
     const clean = id.split('?')[0] ?? id;
@@ -196,7 +250,8 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
 
       try {
         return await compileTemplates(code, id, {
-          runtimeModule,
+          target: sideOf(this.environment),
+          runtimeModule: options.runtimeModule,
           debug: options.debug ?? false,
           groupRowBindings,
           a11y: options.a11y,
@@ -248,6 +303,54 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
     },
   };
 
+  /**
+   * `@Server()` — the two halves of a server function.
+   *
+   * Ahead of the decorator lowering, which must never see one: that pass falls
+   * back to esbuild for anything it does not recognise, and a `@Server()` left
+   * for esbuild is a server body evaluated in a browser. Where it declines,
+   * this one fails the build.
+   */
+  const serverPlugin: Plugin = {
+    name: 'volt:server-functions',
+    enforce: 'pre',
+    transform(code, id) {
+      if (!shouldProcess(id)) return null;
+      // The module specifier is half of the gate because the pass has one
+      // refusal that fires when `@Server` is *absent*: a file that imported the
+      // decorator under another name has no other mark on it, and letting it
+      // past here is letting an unchecked server body into the browser.
+      if (!code.includes('@Server') && !code.includes(serverModule)) return null;
+
+      // Which half to emit is the environment's answer, never the file's — the
+      // same decision, and the same default, as `__VOLT_SERVER__` above.
+      const side = sideOf(this.environment);
+
+      let plan;
+      try {
+        plan = planServerFunctions(code, { side, id, root, module: serverModule });
+      } catch (err) {
+        if (err instanceof ServerFunctionError) this.error(`${err.message}\n  in ${id}`);
+        throw err;
+      }
+      if (plan.kind === 'none') return null;
+
+      const s = new MagicString(code);
+      for (const { start, end } of plan.removals) s.remove(start, end);
+      for (const { start, end, text } of plan.overwrites) s.overwrite(start, end, text);
+      for (const { at, text } of plan.insertions) s.appendRight(at, text);
+      s.prepend(plan.prelude);
+
+      if (options.debug) {
+        for (const endpoint of plan.endpoints) {
+          console.info(`[volt] ${side}: ${endpoint.name} -> ${endpoint.id}`);
+        }
+      }
+
+      return { code: s.toString(), map: s.generateMap({ hires: true, source: id }) };
+    },
+  };
+
   const decoratorPlugin: Plugin = {
     name: 'volt:decorators',
     enforce: 'pre',
@@ -272,7 +375,8 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
         for (const { start, end } of plan.removals) s.remove(start, end);
         for (const { at, text } of plan.insertions) s.appendRight(at, text);
         s.prepend(
-          `import { defineComponent as ${DEFINE_LOCAL} } from ${JSON.stringify(runtimeModule)};\n`,
+          `import { defineComponent as ${DEFINE_LOCAL} } from ` +
+            `${JSON.stringify(runtimeFor(sideOf(this.environment)))};\n`,
         );
         // Only decorators were removed, so what is left is ordinary
         // TypeScript that Vite's own transformer handles.
@@ -301,6 +405,15 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
 
   const envPlugin: Plugin = {
     name: 'volt:env',
+    // Where and what kind of build, for every pass in this file. It lives here
+    // rather than beside the one that used to own it because the server
+    // functions pass needs the root as well: an endpoint id is derived from a
+    // module path relative to it, and a path relative to the wrong directory
+    // is an id the other build does not agree with.
+    configResolved(config) {
+      root = config.root;
+      isBuild = config.command === 'build';
+    },
     config(_config, env) {
       return {
         define: {
@@ -350,11 +463,6 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
    */
   const messagePlugin: Plugin = {
     name: 'volt:messages',
-
-    configResolved(config) {
-      root = config.root;
-      isBuild = config.command === 'build';
-    },
 
     async buildStart() {
       if (!messages) return;
@@ -422,7 +530,7 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
     },
   };
 
-  return [envPlugin, messagePlugin, templatePlugin, signalPlugin, decoratorPlugin];
+  return [envPlugin, messagePlugin, templatePlugin, signalPlugin, serverPlugin, decoratorPlugin];
 }
 
 interface LoadedCatalog {
@@ -504,7 +612,10 @@ interface StyleSite {
 
 /** Everything the transform needs from the plugin that is running it. */
 interface TemplateBuild {
-  runtimeModule: string;
+  /** Which emit these templates get; see `sideOf`. */
+  target: 'client' | 'server';
+  /** Only when a project overrode it; see `runtimeFor`. */
+  runtimeModule: string | undefined;
   debug: boolean;
   groupRowBindings: boolean;
   a11y: A11ySeverity | undefined;
@@ -531,7 +642,7 @@ async function compileTemplates(
   id: string,
   build: TemplateBuild,
 ): Promise<{ code: string; map: null } | null> {
-  const { runtimeModule, debug, groupRowBindings, a11y, catalog, catalogFile, watch, warn, use } =
+  const { target, runtimeModule, debug, groupRowBindings, a11y, catalog, catalogFile, watch, warn, use } =
     build;
   const templates = findTemplateSites(code);
   const styles = findStyleSites(code);
@@ -568,6 +679,7 @@ async function compileTemplates(
       filename: file,
       runtime: RUNTIME_NAMESPACE,
       runtimeModule,
+      target,
       groupRowBindings,
       a11y,
       catalog,
@@ -593,7 +705,12 @@ async function compileTemplates(
 
     const renderName = `__volt_render_${index++}`;
     preamble.push(...result.hoisted);
-    preamble.push(`function ${renderName}(_ctx) {\n  return ${result.renderExpression};\n}`);
+    // Params and body rather than one expression: a server emit is statements
+    // writing into the writer it takes as its second parameter, and there is
+    // nothing to return.
+    preamble.push(
+      `function ${renderName}(${result.renderParams}) {\n${indentBody(result.renderBody)}\n}`,
+    );
     edits.push({ start: site.start, end: site.end, text: `render: ${renderName}` });
   }
 
@@ -657,7 +774,7 @@ async function compileTemplates(
 
   const header =
     preamble.length > 0
-      ? `import * as ${RUNTIME_NAMESPACE} from ${JSON.stringify(runtimeModule)};\n` +
+      ? `import * as ${RUNTIME_NAMESPACE} from ${JSON.stringify(runtimeModule ?? defaultRuntime(target))};\n` +
         preamble.join('\n') +
         '\n'
       : '';

@@ -247,7 +247,7 @@ export interface ResourceProps {
   readonly [key: string]: string | boolean | undefined;
 }
 
-export interface Resource<T, S = undefined> {
+export interface Resource<T> {
   status(): ResourceStatus;
   /** The last data that landed. Survives a later failure — see `mutate` to clear it. */
   data(): T | undefined;
@@ -342,7 +342,7 @@ function isUpdater<T>(next: T | undefined | ResourceUpdater<T>): next is Resourc
 export function createResource<T, S = undefined>(
   fetcher: ResourceFetcher<T, S>,
   options: ResourceOptions<T, S> = {},
-): Resource<T, S> {
+): Resource<T> {
   const data = options.data ?? new Signal.State<T | undefined>(options.initialData);
   const status =
     options.status ??

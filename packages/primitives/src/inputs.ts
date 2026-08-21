@@ -59,7 +59,6 @@ import {
   getNumberFormat,
   resolveDirection,
   useLocale,
-  type Locale,
   type MessageKey,
 } from './i18n.js';
 import { createId } from './id.js';

@@ -1,0 +1,19 @@
+<main class="app">
+  <h1>__PROJECT_NAME__</h1>
+
+  <p class="lead">
+    Edit <code>src/app.html</code> or <code>src/app.ts</code> and the page
+    updates without losing the count.
+  </p>
+
+  <div class="counter">
+    <button type="button" aria-label="Subtract one" :click="add(-1)">−</button>
+    <output>{ count.get() }</output>
+    <button type="button" aria-label="Add one" :click="add(1)">+</button>
+  </div>
+
+  <p class="derived" :if="count.get() !== 0">Twice that is { doubled.get() }.</p>
+  <p class="derived" :else>Nothing counted yet.</p>
+
+  <button class="reset" type="button" :if="count.get() !== 0" :click="reset()">Reset</button>
+</main>

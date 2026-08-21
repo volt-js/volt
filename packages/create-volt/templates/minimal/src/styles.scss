@@ -1,0 +1,21 @@
+:root {
+  color-scheme: light dark;
+
+  --page: light-dark(#ffffff, #0f1216);
+  --ink: light-dark(#12161c, #e7ecf3);
+  --muted: light-dark(#5b6672, #9aa7b4);
+  --line: light-dark(#dfe4ea, #262c34);
+  --accent: light-dark(#0b64d0, #6aa9ff);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 3rem 1.5rem;
+  background: var(--page);
+  color: var(--ink);
+  font: 16px/1.6 system-ui, -apple-system, 'Segoe UI', sans-serif;
+}

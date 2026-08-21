@@ -27,7 +27,6 @@ export interface BuildOptions {
   comments?: boolean;
   runtime?: string;
   ctx?: string;
-  dev?: boolean;
   runtimeModule?: string;
   groupRowBindings?: boolean;
 }
@@ -46,7 +45,6 @@ export const DEFAULTS: Required<BuildOptions> = {
   comments: false,
   runtime: '_rt',
   ctx: '_ctx',
-  dev: false,
   runtimeModule: '@voltdev/core/runtime',
   groupRowBindings: false,
 };

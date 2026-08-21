@@ -25,6 +25,9 @@ export default defineConfig({
       entry: {
         index: r('src/index.ts'),
         runtime: r('src/runtime.ts'),
+        // The other half of `runtime`: what a server build's templates are
+        // generated against. Its own entry so a browser never resolves it.
+        server: r('src/server.ts'),
         jit: r('src/jit.ts'),
         signals: r('src/signals.ts'),
         // An entry so the bundle keeps it as its own chunk: the component

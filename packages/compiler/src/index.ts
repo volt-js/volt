@@ -48,6 +48,15 @@ export type {
   RootNode,
 };
 
+export { generateTypeCheckBlock } from './typecheck.js';
+export type {
+  NameMark,
+  TemplateSpan,
+  TypeCheckBlock,
+  TypeCheckOptions,
+  TypeCheckRule,
+} from './typecheck.js';
+
 export { formatDiagnostic } from './a11y.js';
 export type { A11ySeverity, Diagnostic } from './a11y.js';
 

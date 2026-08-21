@@ -156,12 +156,19 @@ Pass `debug: true` to the Vite plugin to log this per file.
 ```ts
 const result = compile(source);
 
-result.body;             // for `new Function('_rt', body)`
-result.code;             // a standalone ES module exporting `render`
-result.hoisted;          // module-level declarations, for build-time embedding
-result.renderExpression; // the DOM-building expression
+result.body;         // for `new Function('_rt', body)`
+result.code;         // a standalone ES module exporting `render`
+result.hoisted;      // module-level declarations, for build-time embedding
+result.renderParams; // the parameters the render function takes
+result.renderBody;   // its body
+result.target;       // 'client' or 'server'
 ```
 
-The Vite plugin uses `hoisted` + `renderExpression` to inline the render
-function into the module that declared the component, so hoisted templates
-end up at module scope and tree-shaking still works.
+The Vite plugin uses `hoisted` plus `renderParams` and `renderBody` to inline
+the render function into the module that declared the component, so hoisted
+templates end up at module scope and tree-shaking still works.
+
+The parameters and the body are separate rather than one expression because
+the server emit needs them apart: it writes bytes through a segment tree
+rather than building nodes, so it composes a different function around the
+same body.

@@ -309,7 +309,7 @@ function createEntry<T>(
 
   const peek = <V>(signal: Signal.State<V>): V => untrack(() => signal.get());
 
-  let resource!: Resource<T, undefined>;
+  let resource!: Resource<T>;
   let disposeScope!: () => void;
 
   // Rooted at nothing rather than at whichever component asked first: the

@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    // Type checking only. `tsc --build` emits, and composite projects cannot
+    // opt out of that — so it emits to a throwaway directory. Pointing it at
+    // `dist` would overwrite the bundled, tree-shaken output Vite puts there,
+    // silently replacing what gets published with raw per-file tsc output.
+    "outDir": ".tsc",
+    "tsBuildInfoFile": ".tsc/.tsbuildinfo"
+  },
+  "include": ["src/**/*.ts"]
+}

@@ -82,6 +82,8 @@ importers:
         specifier: workspace:*
         version: link:../reactivity
 
+  packages/create-volt: {}
+
   packages/editor:
     dependencies:
       '@voltdev/core':
@@ -100,7 +102,34 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/query:
+    dependencies:
+      '@voltdev/core':
+        specifier: workspace:*
+        version: link:../core
+      '@voltdev/primitives':
+        specifier: workspace:*
+        version: link:../primitives
+
   packages/reactivity: {}
+
+  packages/router:
+    dependencies:
+      '@voltdev/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/server: {}
+
+  packages/testing:
+    dependencies:
+      '@voltdev/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@voltdev/primitives':
+        specifier: workspace:*
+        version: link:../primitives
 
   packages/ui:
     dependencies:

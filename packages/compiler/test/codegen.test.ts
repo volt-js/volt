@@ -14,10 +14,10 @@ describe('generated code shape', () => {
 
       return function render(_ctx) {
         return (() => {
-        const _el1 = _tmpl0();
-        _rt.bindText(_el1, () => (_rt.toDisplayString(_ctx.count.get())));
-        return _el1;
-      })();
+          const _el1 = _tmpl0();
+          _rt.bindText(_el1, () => (_rt.toDisplayString(_ctx.count.get())));
+          return _el1;
+        })();
       };"
     `);
   });

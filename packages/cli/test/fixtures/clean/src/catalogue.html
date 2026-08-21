@@ -1,0 +1,14 @@
+<section>
+  <h1>{ heading }</h1>
+  <p :if="open.get()">{ books.get().length } books</p>
+  <p :else>Nothing yet</p>
+
+  <input :input="search($event)" :keydown="press($event)">
+
+  <ul :class="{ empty: books.get().length === 0 }">
+    <li :for="(book, index) in books.get()" :key="book.id">
+      <button :click="select(book.id)">{ index }. { book.title }</button>
+      <span :text="book.authors.join(', ')"></span>
+    </li>
+  </ul>
+</section>

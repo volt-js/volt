@@ -1,0 +1,11 @@
+<article class="user">
+  <p :if="isLoading()" role="status">Loading…</p>
+  <p class="error" :else-if="error()" role="alert">No such user.</p>
+
+  <div :else>
+    <h2>{ user()?.name }</h2>
+    <p class="role">{ user()?.role }</p>
+  </div>
+
+  <a href="/users">Back to users</a>
+</article>

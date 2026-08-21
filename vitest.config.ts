@@ -63,9 +63,13 @@ export default defineConfig({
       '@voltdev/primitives': resolve(root, 'packages/primitives/src/index.ts'),
       '@voltdev/query': resolve(root, 'packages/query/src/index.ts'),
       '@voltdev/testing': resolve(root, 'packages/testing/src/index.ts'),
+      // The CLI reads this one. Aliased to the source like the rest, so a test
+      // never quietly checks a `dist` built before the change under test.
+      '@voltdev/vite-plugin/components': resolve(root, 'packages/vite-plugin/src/components.ts'),
       '@voltdev/router': resolve(root, 'packages/router/src/index.ts'),
       // Longest first — '@voltdev/core' would otherwise shadow its subpaths.
       '@voltdev/core/runtime': resolve(root, 'packages/core/src/runtime.ts'),
+      '@voltdev/core/server': resolve(root, 'packages/core/src/server.ts'),
       '@voltdev/core/jit': resolve(root, 'packages/core/src/jit.ts'),
       '@voltdev/core/signals': resolve(root, 'packages/core/src/signals.ts'),
       '@voltdev/core/devtools': resolve(root, 'packages/core/src/devtools.ts'),

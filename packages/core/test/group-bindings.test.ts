@@ -54,8 +54,8 @@ function rows(n: number): Row[] {
 
 describe('grouped row bindings', () => {
   it('emits one effect for the row instead of one per binding', () => {
-    const plain = compile(LIST, { groupRowBindings: false }).renderExpression;
-    const grouped = compile(LIST, { groupRowBindings: true }).renderExpression;
+    const plain = compile(LIST, { groupRowBindings: false }).renderBody;
+    const grouped = compile(LIST, { groupRowBindings: true }).renderBody;
 
     expect(plain).not.toContain('_rt.group(');
     expect(grouped).toContain('_rt.group(');

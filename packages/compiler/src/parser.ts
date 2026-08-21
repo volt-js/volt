@@ -58,7 +58,7 @@ export class CompilerError extends Error {
 export interface ParserOptions {
   /** `condense` (default) trims insignificant whitespace the way Vue does. */
   whitespace?: 'condense' | 'preserve';
-  /** Drop comment nodes from output. Defaults to true when not in dev. */
+  /** Keep comment nodes in the output. Off by default, so they are dropped. */
   comments?: boolean;
   filename?: string;
 }
@@ -267,10 +267,12 @@ class Parser {
     const end = this.findInterpolationEnd();
     if (end === -1) this.error('Unclosed interpolation — missing `}`');
 
-    const exp = this.advance(end - this.pos).trim();
+    const rawLoc = this.loc();
+    const raw = this.advance(end - this.pos);
+    const exp = raw.trim();
     this.advance(CLOSE_DELIM.length);
     if (!exp) this.error('Empty interpolation `{}`');
-    return { type: 'interpolation', exp, loc: this.finishLoc(start) };
+    return { type: 'interpolation', exp, loc: this.finishLoc(start), expLoc: trimmedLoc(rawLoc, raw) };
   }
 
   /**
@@ -471,37 +473,43 @@ class Parser {
     const rawName = this.advance(count);
 
     let value: string | null = null;
+    let valueLoc: SourceLocation | null = null;
     this.skipWhitespace();
     if (this.startsWith('=')) {
       this.advance(1);
       this.skipWhitespace();
-      value = this.parseAttributeValue(rawName);
+      const parsed = this.parseAttributeValue(rawName);
+      value = parsed.value;
+      valueLoc = parsed.loc;
     }
 
     if (!rawName.startsWith(':')) {
       return { type: 'attribute', name: rawName, value, loc: this.finishLoc(start) };
     }
 
-    return this.resolveDirective(rawName, value, this.finishLoc(start));
+    return this.resolveDirective(rawName, value, valueLoc, this.finishLoc(start));
   }
 
-  private parseAttributeValue(attrName: string): string {
+  /** The value's text, and where it starts — inside the quotes, not on them. */
+  private parseAttributeValue(attrName: string): { value: string; loc: SourceLocation } {
     const quote = this.source[this.pos];
     if (quote === '"' || quote === "'") {
       this.advance(1);
+      const loc = this.loc();
       const end = this.source.indexOf(quote, this.pos);
       if (end === -1) this.error(`Unclosed quote in value of \`${attrName}\``);
       const value = this.advance(end - this.pos);
       this.advance(1);
-      return value;
+      return { value, loc: this.finishLoc(loc) };
     }
     // Unquoted value: read to the next whitespace or tag terminator.
+    const loc = this.loc();
     let count = 0;
     while (this.pos + count < this.source.length && !/[\s>]/.test(this.source[this.pos + count]!)) {
       count++;
     }
     if (count === 0) this.error(`Missing value for \`${attrName}\``);
-    return this.advance(count);
+    return { value: this.advance(count), loc: this.finishLoc(loc) };
   }
 
   /**
@@ -516,7 +524,8 @@ class Parser {
    */
   private resolveDirective(
     rawName: string,
-    exp: string | null,
+    value: string | null,
+    valueLoc: SourceLocation | null,
     loc: SourceLocation,
   ): DirectiveNode {
     const withoutColon = rawName.slice(1);
@@ -526,14 +535,18 @@ class Parser {
 
     if (!base) this.error('Empty directive name — expected something after `:`');
 
+    const exp = value && value.trim() ? value.trim() : null;
+    const expLoc = exp !== null && valueLoc ? trimmedLoc(valueLoc, value!) : null;
+
     const make = (kind: DirectiveKind, name: string): DirectiveNode => ({
       type: 'directive',
       kind,
       name,
       rawName,
       modifiers,
-      exp: exp && exp.trim() ? exp.trim() : null,
+      exp,
       loc,
+      expLoc,
     });
 
     if (STRUCTURAL_DIRECTIVES.has(base)) {
@@ -616,4 +629,28 @@ class Parser {
     }
     return result;
   }
+}
+
+/**
+ * Narrow a raw value's location to the trimmed expression inside it.
+ *
+ * `:if=" open "` and `{ open }` both carry padding the expression does not,
+ * and pointing a diagnostic at the padding puts the caret on whitespace. Line
+ * counting mirrors `advance` so a value wrapped onto the next line reports the
+ * line the expression is actually on.
+ */
+function trimmedLoc(loc: SourceLocation, raw: string): SourceLocation {
+  let { line, column } = loc;
+  let lead = 0;
+  while (lead < raw.length && /\s/.test(raw[lead]!)) {
+    if (raw[lead] === '\n') {
+      line++;
+      column = 1;
+    } else {
+      column++;
+    }
+    lead++;
+  }
+  const start = loc.start + lead;
+  return { start, end: start + raw.trim().length, line, column };
 }

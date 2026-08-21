@@ -103,7 +103,7 @@ import { createCollection, ITEM_ATTRIBUTE } from './collection.js';
 import { createDismiss, dismissStackSize, type DismissReason } from './dismiss.js';
 import { VISUALLY_HIDDEN_INPUT_STYLE } from './form-controls.js';
 import { createFormField, type FormField, type FormFieldOptions } from './form-field.js';
-import { useLocale, type Locale, type MessageValues } from './i18n.js';
+import { useLocale, type MessageValues } from './i18n.js';
 import { createId } from './id.js';
 import { createPresence, type PresenceState } from './presence.js';
 
@@ -1423,7 +1423,7 @@ export interface ComboboxOptions<T> extends ListboxSharedOptions {
 
 export interface Combobox<T = unknown> extends ListboxCommon {
   /** The resource behind `search`, or null when there is none. */
-  readonly search: Resource<readonly T[], string> | null;
+  readonly search: Resource<readonly T[]> | null;
 
   /**
    * What is in the textbox: the question being asked, or the name of the value

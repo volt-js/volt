@@ -44,6 +44,7 @@ import {
   MarkupBuilder,
   rootArity,
   type TemplateBlock,
+  type TemplateHole,
 } from './markup.js';
 import { CompilerError } from './parser.js';
 import { parseExpression, parseForExpression } from './expression/parser.js';
@@ -69,7 +70,6 @@ export interface CodegenOptions {
   runtime?: string;
   ctx?: string;
   filename?: string;
-  dev?: boolean;
   /** Module specifier for the runtime import in `module` mode. */
   runtimeModule?: string;
   /**
@@ -101,6 +101,19 @@ export interface CodegenOptions {
   catalog?: MessageCatalog;
   /** Where that catalogue came from, so the error says what to edit. */
   catalogFile?: string;
+  /**
+   * Which side of the render this build is for.
+   *
+   * `client` clones the static markup and patches the clone; `server` writes
+   * the same static bytes into a markup writer with the values printed
+   * between them. Both walk one `Block`, so the static bytes are the same
+   * string either way — see `markup.ts`.
+   *
+   * Per build rather than per instantiation: a browser that never
+   * server-renders must not carry a second emit of every template, and a
+   * server has no use for the first.
+   */
+  target?: 'client' | 'server';
 }
 
 export interface CodegenResult {
@@ -114,8 +127,20 @@ export interface CodegenResult {
    * separately so they can be lifted to the top of the host module.
    */
   hoisted: string[];
-  /** The expression that builds the DOM, given `_ctx` and `_rt` in scope. */
-  renderExpression: string;
+  /** Which emit this is; see `CodegenOptions.target`. */
+  target: 'client' | 'server';
+  /**
+   * The render function's parameter list — `_ctx` for a client build, and
+   * `_ctx, _o` for a server one, whose second parameter is the writer the
+   * markup goes into.
+   */
+  renderParams: string;
+  /**
+   * The render function's body, given `_rt` in scope: one `return` of the
+   * expression that builds the DOM on a client, and the statements that write
+   * the markup on a server.
+   */
+  renderBody: string;
   /** Hoisted static markup strings, in emission order. */
   templates: string[];
   /**
@@ -215,10 +240,41 @@ interface PendingEffect {
   (resolve: Resolver): string[];
 }
 
+/**
+ * Where a server statement goes, when it is not filling a hole.
+ *
+ * `:portal` writes bytes somewhere else entirely, so it reserves no slot and
+ * punches no hole — but it still has to run where it was written, or two
+ * portals into the same container come out in the wrong order. Recording it
+ * against the number of holes seen so far puts it back in walk order without
+ * giving it a position in the markup it does not occupy.
+ */
+interface DetachedServerCode {
+  /** Holes recorded when this was pushed; it runs just before that hole. */
+  before: number;
+  lines: string[];
+}
+
 /** One contiguous static DOM subtree with holes punched for dynamic parts. */
 class Block {
   readonly markup = new MarkupBuilder();
   effects: PendingEffect[] = [];
+  /** Server statements filling each hole, aligned with `markup.holes`. */
+  readonly serverHoles: string[][] = [];
+  /**
+   * Byte ranges of the chunk *before* each hole that the server prints itself
+   * rather than copying.
+   *
+   * Only ever the folded `class` or `style` attribute of an element that also
+   * has a dynamic one. The client sets those on the clone, where `classList`
+   * merges; a server has one attribute to write and has to write both halves
+   * of it at once, and a second `class="..."` in the same tag is discarded by
+   * every parser. The bytes are still the ones the shared builder produced —
+   * this records which of them the merge takes over, so nothing is printed
+   * twice and nothing is printed by a second serializer.
+   */
+  readonly serverOmit: ([number, number][] | null)[] = [];
+  readonly serverDetached: DetachedServerCode[] = [];
   /** Per-depth child bookkeeping so paths account for merged text nodes. */
   private stack: { index: number; lastWasText: boolean }[] = [
     { index: 0, lastWasText: false },
@@ -256,6 +312,22 @@ class Block {
 
   pathTo(childIndex: number): number[] {
     return [...this.path, childIndex];
+  }
+
+  /** Record a hole, with the server code that fills it. */
+  hole(
+    record: TemplateHole,
+    serverCode: string[] = [],
+    omit: [number, number][] | null = null,
+  ): void {
+    this.markup.hole(record);
+    this.serverHoles.push(serverCode);
+    this.serverOmit.push(omit);
+  }
+
+  /** Record server code that writes nothing here; see `DetachedServerCode`. */
+  detach(lines: string[]): void {
+    this.serverDetached.push({ before: this.markup.holes.length, lines });
   }
 }
 
@@ -298,9 +370,12 @@ class Generator {
    */
   private groupNextBlock = false;
   private readonly ctxName: string;
-  private readonly dev: boolean;
   private readonly filename: string;
   private readonly runtimeModule: string;
+  /** See `CodegenOptions.target`. */
+  private readonly server: boolean;
+  /** The markup writer a server emit writes into, named in generated code. */
+  private readonly out = '_o';
 
   private templates: string[] = [];
   private templateIds = new Map<string, string>();
@@ -333,22 +408,30 @@ class Generator {
   constructor(options: CodegenOptions) {
     this.rt = options.runtime ?? '_rt';
     this.ctxName = options.ctx ?? '_ctx';
-    this.dev = options.dev ?? false;
     this.filename = options.filename ?? 'template';
-    this.runtimeModule = options.runtimeModule ?? '@voltdev/core/runtime';
+    this.server = (options.target ?? 'client') === 'server';
+    // Defaulted per target rather than fixed, so that neither side has to be
+    // told which module it wants and `__VOLT_BUILD__` stays comparable: the
+    // hash covers the option, and an option nobody set is the same on both
+    // sides however differently it resolves.
+    this.runtimeModule =
+      options.runtimeModule ?? (this.server ? '@voltdev/core/server' : '@voltdev/core/runtime');
     this.groupRowBindings = options.groupRowBindings ?? false;
   }
 
   /** Everything but the accessibility warnings, which `generate` adds. */
   run(root: RootNode): Omit<CodegenResult, 'warnings'> {
     const ctx = createPrintContext(this.ctxName);
-    const expression = this.genChildrenExpression(root.children, ctx);
+    const generated = this.genChildrenExpression(root.children, ctx);
+
+    const params = this.server ? `${this.ctxName}, ${this.out}` : this.ctxName;
+    const renderBody = this.server ? generated : `return ${generated};`;
 
     const lines: string[] = [];
     for (const h of this.hoisted) lines.push(h);
     lines.push('');
-    lines.push(`return function render(${this.ctxName}) {`);
-    lines.push(`  return ${expression};`);
+    lines.push(`return function render(${params}) {`);
+    lines.push(indent(renderBody, 2));
     lines.push('};');
 
     const body = lines.join('\n');
@@ -358,8 +441,8 @@ class Generator {
       '',
       ...this.hoisted,
       '',
-      `export function render(${this.ctxName}) {`,
-      `  return ${expression};`,
+      `export function render(${params}) {`,
+      indent(renderBody, 2),
       '}',
       '',
       'export default render;',
@@ -369,7 +452,9 @@ class Generator {
       body,
       code: moduleLines.join('\n'),
       hoisted: this.hoisted,
-      renderExpression: expression,
+      target: this.server ? 'server' : 'client',
+      renderParams: params,
+      renderBody,
       templates: this.templates,
       blocks: this.blocks,
       delegatedEventNames: [...this.delegatedEventNames].sort(),
@@ -446,6 +531,11 @@ class Generator {
     return `(${params}) => (${expression})`;
   }
 
+  /** A server body as a nullary arrow, since statements are not an expression. */
+  private arrowBlock(statements: string): string {
+    return `() => {\n${indent(statements, 2)}\n}`;
+  }
+
   /** Hoist static markup, reusing an existing template when identical. */
   private hoistTemplate(html: string, isSvg: boolean, rootCount: number): string {
     const key = `${isSvg ? 'svg' : 'html'}:${rootCount}:${html}`;
@@ -458,9 +548,14 @@ class Generator {
     this.templateIds.set(key, id);
     this.templates.push(html);
     this.stats.templates++;
-    const args = [JSON.stringify(html)];
-    if (isSvg || rootCount > 1) args.push(String(rootCount), String(isSvg));
-    this.hoisted.push(`const ${id} = ${this.rt}.template(${args.join(', ')});`);
+    // The bookkeeping runs on both sides so that two builds of one template
+    // record the same blocks; only the cloner is client-only, because a server
+    // writes the bytes rather than parsing them into something to copy.
+    if (!this.server) {
+      const args = [JSON.stringify(html)];
+      if (isSvg || rootCount > 1) args.push(String(rootCount), String(isSvg));
+      this.hoisted.push(`const ${id} = ${this.rt}.template(${args.join(', ')});`);
+    }
     return id;
   }
 
@@ -504,6 +599,9 @@ class Generator {
     if (meaningful.length === 1) {
       const only = meaningful[0]!;
       if (only.type === 'interpolation') {
+        if (this.server) {
+          return opaque(`${this.out}.child(${this.genInterpolationValue(only.exp, ctx, only)});`);
+        }
         return opaque(this.genInterpolationAccessor(only.exp, ctx, only));
       }
       if (only.type === 'slot-outlet') {
@@ -514,7 +612,8 @@ class Generator {
         // whatever it is — component, template or plain element — this
         // position yields nothing.
         if (findDirective(only, 'portal') && !findDirective(only, 'if')) {
-          return opaque(`(${this.genPortal(only, ctx).replace(/;$/, '')}, null)`);
+          const portal = this.genPortal(only, ctx);
+          return opaque(this.server ? portal : `(${portal.replace(/;$/, '')}, null)`);
         }
         if (findDirective(only, 'if')) return opaque(this.genConditionalChain([only], ctx));
         if (findDirective(only, 'for')) return opaque(this.genFor(only, ctx));
@@ -529,7 +628,7 @@ class Generator {
     const html = clientMarkup(block.markup);
     // Every dynamic child punches a `<!>` marker, so a block with children
     // always produces markup; empty input was handled above.
-    if (!html) return opaque('null');
+    if (!html) return opaque(this.server ? '' : 'null');
 
     const isSvg = block.isSvg;
     const rootCount = block.rootCount;
@@ -542,6 +641,10 @@ class Generator {
       isSvg,
     };
     this.blocks.push(template);
+
+    if (this.server) {
+      return { expression: this.emitServerBlock(block), rootCount: rootArity(template) };
+    }
 
     const rootVar = this.nextId('el');
     const resolved = new Map<string, string>();
@@ -582,6 +685,38 @@ class Generator {
       expression: `(() => {\n${indent(statements.join('\n'), 2)}\n})()`,
       rootCount: rootArity(template),
     };
+  }
+
+  /**
+   * Walk one block's chunks and holes, writing bytes and values alternately.
+   *
+   * This is the whole of the server's markup path. There is no clone, so no
+   * path to resolve, no marker to elide and no effect to create: a chunk is
+   * printed, the hole after it writes its value, and the next chunk follows.
+   * The chunks are the same strings `clientMarkup` joins, which is what makes
+   * the static bytes identical without either emitter knowing about the other.
+   */
+  private emitServerBlock(block: Block): string {
+    const { chunks, holes } = block.markup;
+    const lines: string[] = [];
+    let detached = 0;
+
+    const runDetached = (before: number): void => {
+      while (detached < block.serverDetached.length && block.serverDetached[detached]!.before <= before) {
+        lines.push(...block.serverDetached[detached]!.lines);
+        detached++;
+      }
+    };
+
+    for (let i = 0; i <= holes.length; i++) {
+      const text = i < holes.length ? omitRanges(chunks[i] ?? "", block.serverOmit[i] ?? null) : (chunks[i] ?? "");
+      if (text) lines.push(`${this.out}.raw(${JSON.stringify(text)});`);
+      runDetached(i);
+      if (i < holes.length) lines.push(...block.serverHoles[i]!);
+    }
+    runDetached(holes.length + 1);
+
+    return lines.join('\n');
   }
 
   /**
@@ -687,6 +822,10 @@ class Generator {
    */
   private emitDetachedChild(block: Block, statement: string): void {
     this.stats.effects++;
+    if (this.server) {
+      block.detach([statement]);
+      return;
+    }
     block.effects.push(() => [statement]);
   }
 
@@ -695,8 +834,14 @@ class Generator {
     const index = block.addChild(false);
     const path = block.pathTo(index);
     const parentPath = block.currentPath();
-    block.markup.hole({ kind: 'child', path });
     this.stats.effects++;
+    if (this.server) {
+      // The marker is a client-side anchor; the server has the position in
+      // its hand already, because it is standing on it.
+      block.hole({ kind: 'child', path }, accessor ? [accessor] : []);
+      return;
+    }
+    block.hole({ kind: 'child', path });
     block.effects.push((resolve) => {
       const marker = resolve(path);
       const parent = parentPath.length === 0 ? null : resolve(parentPath);
@@ -723,7 +868,6 @@ class Generator {
       }
 
       case 'interpolation': {
-        const accessor = this.genInterpolationAccessor(node.exp, ctx, node);
         const parsed = this.parse(node.exp, node.loc);
         // A constant interpolation is just text — bake it into the markup.
         if (isStaticExpression(parsed)) {
@@ -736,8 +880,15 @@ class Generator {
         const index = block.addChild(false);
         const path = block.pathTo(index);
         const parentPath = block.currentPath();
-        block.markup.hole({ kind: 'child', path });
         this.stats.effects++;
+        if (this.server) {
+          block.hole({ kind: 'child', path }, [
+            `${this.out}.child(${printExpression(parsed, ctx, 1)});`,
+          ]);
+          return;
+        }
+        const accessor = this.genInterpolationAccessor(node.exp, ctx, node);
+        block.hole({ kind: 'child', path });
         block.effects.push((resolve) => {
           const marker = resolve(path);
           const parent = parentPath.length === 0 ? `${marker}.parentNode` : resolve(parentPath);
@@ -835,23 +986,53 @@ class Generator {
       dynamic.push(dir);
     }
 
+    // A folded `class` or `style` beside a dynamic one is written once, by the
+    // merge, because a tag carries one of each and a parser keeps the first.
+    const merged = this.server
+      ? new Set(
+          dynamic.flatMap((d) =>
+            d.kind === 'class'
+              ? ['class']
+              : d.kind === 'style'
+                ? ['style']
+                : d.kind === 'spread'
+                  ? ['class', 'style']
+                  : [],
+          ),
+        )
+      : null;
+    const chunkStart = block.markup.chunks[block.markup.chunks.length - 1]!.length;
+    const omit: [number, number][] = [];
+    const folded = new Map<string, string>();
+
     // Emit the open tag with all folded attributes baked in.
     let open = `<${tag}`;
     for (const [name, value] of staticAttrs) {
+      const at = open.length;
       open += value === true ? ` ${name}` : ` ${name}="${escapeHtmlAttr(value)}"`;
+      if (merged?.has(name) && typeof value === 'string') {
+        omit.push([chunkStart + at, chunkStart + open.length]);
+        folded.set(name, value);
+      }
     }
     block.markup.push(open);
     // A server prints these between the folded attributes and the `>`; the
     // client sets them on the clone, so the hole is zero-width. Listeners and
     // `:ref` attach behaviour and print nothing, so they open no hole.
     if (dynamic.some((d) => ATTRIBUTE_POSITION[d.kind])) {
-      block.markup.hole({ kind: 'attribute', path: selfPath, tag });
+      block.hole(
+        { kind: 'attribute', path: selfPath, tag },
+        this.server ? this.genServerAttributes(node, dynamic, folded, ctx) : [],
+        omit.length ? omit : null,
+      );
     }
     block.markup.push('>');
 
     if (dynamic.length) {
-      for (const dir of dynamic) {
-        this.emitDirective(dir, node, selfPath, block, ctx);
+      if (!this.server) {
+        for (const dir of dynamic) {
+          this.emitDirective(dir, node, selfPath, block, ctx);
+        }
       }
     } else {
       this.stats.staticNodes++;
@@ -859,13 +1040,14 @@ class Generator {
 
     const isVoid = VOID_TAGS.has(tag.toLowerCase());
     if (!isVoid) {
-      const hasTextDirective = node.directives.some(
-        (d) => d.kind === 'text' || d.kind === 'html',
-      );
-      if (hasTextDirective) {
+      const contentDir = node.directives.find((d) => d.kind === 'text' || d.kind === 'html');
+      if (contentDir) {
         // The binding owns everything between the tags, so the children the
         // author wrote are never emitted at all.
-        block.markup.hole({ kind: 'content', path: selfPath, tag });
+        block.hole(
+          { kind: 'content', path: selfPath, tag },
+          this.server ? [this.genServerContent(contentDir, tag, ctx)] : [],
+        );
       } else if (
         !this.tryTextOnlyChildren(node, block, selfPath, ctx) &&
         !this.trySingleDynamicChild(node, block, selfPath, ctx)
@@ -876,6 +1058,115 @@ class Generator {
       }
       block.markup.push(`</${tag}>`);
     }
+  }
+
+  /**
+   * What a server writes between the last folded attribute and the `>`.
+   *
+   * The only genuinely server-specific serialization there is: everything
+   * static came out of the shared chunk, and everything structural is a hole
+   * of its own. `class` and `style` are the two attributes an element can
+   * carry once and be given twice, so both halves are composed here into the
+   * one value the tag has room for; every other binding writes its own
+   * attribute under the name it was authored with, which is already the
+   * attribute spelling — the compiler is what maps an attribute to a property
+   * on the client, so reversing it is a matter of not doing that.
+   */
+  private genServerAttributes(
+    node: ElementNode,
+    dynamic: DirectiveNode[],
+    folded: Map<string, string>,
+    ctx: PrintContext,
+  ): string[] {
+    const lines: string[] = [];
+    // Empty rather than `""`, so a row that only ever toggles one class emits
+    // the conditional alone: no concatenation, and nothing allocated when the
+    // condition is false.
+    const staticClass = folded.get('class') ?? '';
+    const classParts: string[] = staticClass ? [JSON.stringify(staticClass)] : [];
+    let styleExpr = JSON.stringify(folded.get('style') ?? '');
+    let hasClass = false;
+    let hasStyle = false;
+    let spread: string | null = null;
+
+    for (const dir of dynamic) {
+      switch (dir.kind) {
+        case 'class': {
+          hasClass = true;
+          const toggles = this.genClassToggles(dir.exp!, ctx, dir.loc);
+          if (toggles) {
+            // The same analysis the client compiles to `classList.toggle`,
+            // which here is a conditional yielding a literal: no object is
+            // allocated for a row that only ever adds one class.
+            for (const [name, expression] of toggles) {
+              classParts.push(`(${expression} ? ${JSON.stringify(' ' + name)} : '')`);
+            }
+          } else {
+            classParts.push(`' ' + ${this.rt}.classText(${this.genValue(dir.exp!, ctx, dir.loc)})`);
+          }
+          break;
+        }
+        case 'style': {
+          hasStyle = true;
+          styleExpr = `${this.rt}.styleText(${styleExpr}, ${this.genValue(dir.exp!, ctx, dir.loc)})`;
+          break;
+        }
+        case 'attr': {
+          lines.push(
+            `${this.out}.attr(${JSON.stringify(dir.name)}, ${this.genValue(dir.exp!, ctx, dir.loc)});`,
+          );
+          break;
+        }
+        case 'prop': {
+          const value = this.genValue(dir.exp!, ctx, dir.loc);
+          const method = BOOLEAN_ATTRIBUTES.has(dir.name) ? 'boolAttr' : 'attr';
+          lines.push(`${this.out}.${method}(${JSON.stringify(dir.name)}, ${value});`);
+          break;
+        }
+        case 'model': {
+          const staticValue = node.attrs.find((a) => a.name === 'value')?.value ?? null;
+          lines.push(
+            `${this.out}.model(${JSON.stringify(modelKind(node))}, ` +
+              `${JSON.stringify(node.tag.toLowerCase())}, ` +
+              `${this.genValue(dir.exp!, ctx, dir.loc)}, ${JSON.stringify(staticValue)});`,
+          );
+          break;
+        }
+        case 'spread': {
+          hasClass = true;
+          hasStyle = true;
+          spread = this.genValue(dir.exp!, ctx, dir.loc);
+          break;
+        }
+        default:
+          // A listener and a `:ref` attach behaviour to a node a server has
+          // not got. The same bytes with or without them.
+          break;
+      }
+    }
+
+    const classExpr = classParts.length ? classParts.join(' + ') : "''";
+    if (spread !== null) {
+      // One call, because a spread can carry `class` and `style` too and they
+      // have to reach the same attribute the directives above composed.
+      lines.push(`${this.out}.spread(${spread}, ${classExpr}, ${styleExpr});`);
+      return lines;
+    }
+    if (hasClass) lines.push(`${this.out}.classAttr(${classExpr});`);
+    if (hasStyle) lines.push(`${this.out}.styleAttr(${styleExpr});`);
+    return lines;
+  }
+
+  /** What a server writes between the tags when a binding owns all of it. */
+  private genServerContent(dir: DirectiveNode, tag: string, ctx: PrintContext): string {
+    const value = this.genValue(dir.exp!, ctx, dir.loc);
+    if (dir.kind === 'html') return `${this.out}.html(${value});`;
+    // `<script>` and `<style>` hold raw text: an entity there is not decoded,
+    // so escaping would be written through to the page as `&amp;`.
+    if (RAW_TEXT_TAGS.has(tag.toLowerCase())) {
+      return `${this.out}.rawText(${JSON.stringify(tag.toLowerCase())}, ${value});`;
+    }
+    return `${this.out}.text(${value});`;
   }
 
   /**
@@ -912,8 +1203,12 @@ class Generator {
     if (!isDynamic) return false;
 
     const accessor = this.genChildrenExpression([only], ctx);
-    block.markup.hole({ kind: 'content', path: selfPath, tag: node.tag });
     this.stats.effects++;
+    if (this.server) {
+      block.hole({ kind: 'content', path: selfPath, tag: node.tag }, [accessor]);
+      return true;
+    }
+    block.hole({ kind: 'content', path: selfPath, tag: node.tag });
     block.effects.push((resolve) => [
       `${this.rt}.insert(${resolve(selfPath)}, ${accessor});`,
     ]);
@@ -974,8 +1269,16 @@ class Generator {
     // A lone dynamic part needs no concatenation.
     const expression = parts.length === 1 ? parts[0]! : parts.join(' + ');
 
-    block.markup.hole({ kind: 'content', path: selfPath, tag: node.tag });
     this.stats.effects++;
+    if (this.server) {
+      block.hole({ kind: 'content', path: selfPath, tag: node.tag }, [
+        RAW_TEXT_TAGS.has(node.tag.toLowerCase())
+          ? `${this.out}.rawText(${JSON.stringify(node.tag.toLowerCase())}, ${expression});`
+          : `${this.out}.text(${expression});`,
+      ]);
+      return true;
+    }
+    block.hole({ kind: 'content', path: selfPath, tag: node.tag });
     block.effects.push((resolve) => [
       `${this.rt}.bindText(${resolve(selfPath)}, ${this.thunk(expression)});`,
     ]);
@@ -1025,7 +1328,8 @@ class Generator {
       case 'class': {
         const toggles = this.genClassToggles(dir.exp!, ctx, dir.loc);
         if (toggles) {
-          for (const [name, accessor] of toggles) {
+          for (const [name, expression] of toggles) {
+            const accessor = this.thunk(expression);
             push((el) => [
               `${this.rt}.bindClassToggle(${el}, ${JSON.stringify(name)}, ${accessor});`,
             ]);
@@ -1221,6 +1525,10 @@ class Generator {
    * Returns null for any shape where the set of class names is not known
    * here: a string, an array, a spread, or a computed key. Those keep the
    * general binding, which stays correct for everything.
+   *
+   * The expressions come back unwrapped, because the two emitters want
+   * different things around them: a client binding re-runs and so takes an
+   * accessor, and a server reads each one once.
    */
   private genClassToggles(
     exp: string,
@@ -1249,7 +1557,7 @@ class Generator {
       // cannot toggle as one token.
       if (name === '' || /\s/.test(name)) return null;
 
-      toggles.push([name, this.thunk(printExpression(prop.value, ctx, 1))]);
+      toggles.push([name, printExpression(prop.value, ctx, 1)]);
     }
 
     // Two properties writing the same class would race, and which one wins
@@ -1271,6 +1579,42 @@ class Generator {
       return JSON.stringify(evaluateStatic(parsed));
     }
     return this.thunk(printExpression(parsed, ctx, 1));
+  }
+
+  /**
+   * The same value, read once instead of wrapped in a thunk.
+   *
+   * A client binding is handed an accessor because it re-runs; a server reads
+   * every value exactly once, on the single pass that writes the bytes, so a
+   * closure per binding would be allocation with nothing to show for it.
+   */
+  private genValue(
+    exp: string,
+    ctx: PrintContext,
+    loc: { line: number; column: number },
+  ): string {
+    const parsed = this.parse(exp, loc);
+    if (isStaticExpression(parsed)) return JSON.stringify(evaluateStatic(parsed));
+    return printExpression(parsed, ctx, 1);
+  }
+
+  /** As `genValue`, but a constant folds to what it displays as. */
+  private genInterpolationValue(
+    exp: string,
+    ctx: PrintContext,
+    node: { loc: { line: number; column: number } },
+  ): string {
+    let parsed: ExprNode;
+    try {
+      parsed = this.parse(exp, node.loc);
+    } catch (err) {
+      this.error((err as Error).message, node);
+    }
+    if (isStaticExpression(parsed)) {
+      this.stats.foldedBindings++;
+      return JSON.stringify(toDisplayString(evaluateStatic(parsed)));
+    }
+    return printExpression(parsed, ctx, 1);
   }
 
   /**
@@ -1298,16 +1642,45 @@ class Generator {
 
     // Default to the document body, which is what an overlay almost always
     // wants and saves every call site writing it out.
-    const target = dir.exp ? this.genAccessor(dir.exp, ctx, dir.loc) : 'null';
+    const target = this.server
+      ? dir.exp
+        ? this.genValue(dir.exp, ctx, dir.loc)
+        : 'null'
+      : dir.exp
+        ? this.genAccessor(dir.exp, ctx, dir.loc)
+        : 'null';
     const body = this.inConditional(() =>
       stripped.isTemplate
         ? this.genChildrenExpression(stripped.children, ctx)
         : this.genChildrenExpression([stripped], ctx),
     );
+    if (this.server) {
+      // The writer is one object for the whole render, so the body needs no
+      // parameter: `portal` moves where that writer is pointing for the span
+      // of the call and puts it back afterwards.
+      return `${this.rt}.portal(${this.out}, ${target}, () => {\n${indent(body, 2)}\n});`;
+    }
     return `${this.rt}.portal(${target}, ${this.thunk(body)});`;
   }
 
   private genConditionalChain(chain: ElementNode[], ctx: PrintContext): string {
+    if (this.server) {
+      // Plain control flow, because only the winning arm is ever written and
+      // nothing has to be rebuilt when the condition changes. `branch` exists
+      // to dispose the previous arm's effects; a server has no previous arm.
+      const parts: string[] = [];
+      for (const node of chain) {
+        const body = indent(this.genBranchBody(node, ctx), 2);
+        if (findDirective(node, 'else')) {
+          parts.push(`else {\n${body}\n}`);
+          continue;
+        }
+        const dir = findDirective(node, 'if') ?? findDirective(node, 'else-if')!;
+        const condition = printExpression(this.parse(dir.exp!, dir.loc), ctx, 1);
+        parts.push(`${parts.length ? 'else ' : ''}if (${condition}) {\n${body}\n}`);
+      }
+      return parts.join(' ');
+    }
     const entries = chain.map((node) => {
       const body = this.thunk(this.genBranchBody(node, ctx));
       if (findDirective(node, 'else')) return `[null, ${body}]`;
@@ -1332,7 +1705,8 @@ class Generator {
     // exists at all, and the portal decides where its content lands. The
     // branch itself contributes nothing to the tree it was declared in.
     if (findDirective(stripped, 'portal')) {
-      return `(${this.genPortal(stripped, ctx).replace(/;$/, '')}, null)`;
+      const portal = this.genPortal(stripped, ctx);
+      return this.server ? portal : `(${portal.replace(/;$/, '')}, null)`;
     }
     if (stripped.isTemplate) {
       return this.genChildrenExpression(stripped.children, ctx);
@@ -1382,7 +1756,8 @@ class Generator {
       );
     }
 
-    const listAccessor = this.thunk(printExpression(parsed.source, ctx, 1));
+    const listExpression = printExpression(parsed.source, ctx, 1);
+    const listAccessor = this.thunk(listExpression);
     const stripped = stripDirectives(node, ['for', 'key']);
     const indexParam = parsed.index ?? this.nextId('idx');
 
@@ -1400,6 +1775,40 @@ class Generator {
       this.rowRootCounts[rowSlot] = row.rootCount;
       return row.expression;
     };
+
+    if (this.server) {
+      // A loop, not a reconciler. Rows are written once and never revisited,
+      // so there is no key to compute, no row to keep and no signal to update:
+      // what a row costs on a server is the bytes it prints.
+      const listVar = this.nextId('list');
+      const i = this.nextId('i');
+      const declarations: string[] = [];
+      let body: string;
+
+      if (parsed.item.type === 'IdentifierPattern') {
+        const itemName = parsed.item.name;
+        declarations.push(`const ${itemName} = ${listVar}[${i}];`);
+        body = withScope(ctx, [itemName, indexParam], genBody);
+      } else {
+        const itemVar = this.nextId('item');
+        declarations.push(`const ${itemVar} = ${listVar}[${i}];`);
+        const names: string[] = [];
+        this.genPatternValues(parsed.item, itemVar, declarations, names);
+        body = withScope(ctx, [...names, indexParam], genBody);
+      }
+      // Only when the loop named one: an index nobody can write cannot be read.
+      if (parsed.index) declarations.push(`const ${parsed.index} = ${i};`);
+
+      const inner = indent([...declarations, body].join('\n'), 2);
+      return (
+        `{\n` +
+        `  const ${listVar} = ${this.rt}.items(${listExpression});\n` +
+        `  for (let ${i} = 0; ${i} < ${listVar}.length; ${i}++) {\n` +
+        `${indent(inner, 2)}\n` +
+        `  }\n` +
+        `}`
+      );
+    }
 
     let rowFn: string;
 
@@ -1436,6 +1845,82 @@ class Generator {
     });
 
     return `${this.rt}.each(${listAccessor}, ${rowFn}, ${keyFn})`;
+  }
+
+  /**
+   * The same names bound to values rather than to accessors.
+   *
+   * A client row keeps its bindings reactive across an item being replaced in
+   * place, which is what the accessors are for. A server row is written once
+   * from one item, so a closure per bound name would be allocation with
+   * nothing to observe it.
+   */
+  private genPatternValues(
+    pattern: PatternNode,
+    source: string,
+    out: string[],
+    names: string[],
+  ): void {
+    switch (pattern.type) {
+      case 'IdentifierPattern': {
+        out.push(`const ${pattern.name} = ${source};`);
+        names.push(pattern.name);
+        return;
+      }
+
+      case 'ObjectPattern': {
+        for (const prop of pattern.properties) {
+          const access = isSafeIdentifier(prop.key)
+            ? `(${source})?.${prop.key}`
+            : `(${source})?.[${JSON.stringify(prop.key)}]`;
+          this.genPatternValues(prop.value, access, out, names);
+        }
+        if (pattern.rest) {
+          const keys = JSON.stringify(pattern.properties.map((p) => p.key));
+          out.push(`const ${pattern.rest} = ${this.rt}.omit(${source}, ${keys});`);
+          names.push(pattern.rest);
+        }
+        return;
+      }
+
+      case 'ArrayPattern': {
+        for (let i = 0; i < pattern.elements.length; i++) {
+          const element = pattern.elements[i];
+          if (!element) continue;
+          if (element.type === 'RestPattern') {
+            const target = element.argument;
+            if (target.type !== 'IdentifierPattern') {
+              throw new CompilerError('`...rest` in `:for` must bind a plain name', {
+                line: 0,
+                column: 0,
+              });
+            }
+            out.push(`const ${target.name} = (${source})?.slice(${i}) ?? [];`);
+            names.push(target.name);
+            continue;
+          }
+          this.genPatternValues(element, `(${source})?.[${i}]`, out, names);
+        }
+        return;
+      }
+
+      case 'AssignmentPattern': {
+        const ctxForDefault = createPrintContext(this.ctxName);
+        const fallback = printExpression(pattern.right, ctxForDefault, 1);
+        this.genPatternValues(
+          pattern.left,
+          `${this.rt}.withDefault(${source}, () => ${fallback})`,
+          out,
+          names,
+        );
+        return;
+      }
+
+      case 'RestPattern': {
+        this.genPatternValues(pattern.argument, source, out, names);
+        return;
+      }
+    }
   }
 
   /** Emit `const name = () => <path>` accessors for a destructuring pattern. */
@@ -1508,12 +1993,15 @@ class Generator {
   }
 
   private genSlotOutlet(node: SlotOutletNode, ctx: PrintContext): string {
-    const fallback = node.children.length
-      ? this.thunk(this.genChildrenExpression(node.children, ctx))
-      : 'null';
+    const body = node.children.length ? this.genChildrenExpression(node.children, ctx) : null;
+    const fallback =
+      body === null ? 'null' : this.server ? this.arrowBlock(body) : this.thunk(body);
 
     const props = this.genSlotProps(node.directives, node.attrs, ctx);
-    return `${this.rt}.slot(${this.ctxName}, ${JSON.stringify(node.name)}, ${props}, ${fallback})`;
+    const call = `${this.rt}.slot(${this.ctxName}, ${JSON.stringify(node.name)}, ${props}, ${fallback})`;
+    // The slot's content writes into the one writer this render has, which
+    // both sides of the call already close over, so nothing is returned.
+    return this.server ? `${call};` : call;
   }
 
   private genSlotProps(
@@ -1634,7 +2122,12 @@ class Generator {
     const propsExpr = props.length ? `{ ${props.join(', ')} }` : 'null';
     const eventsExpr = events.length ? `{ ${events.join(', ')} }` : 'null';
 
-    return `${this.rt}.createComponent(${this.ctxName}, ${JSON.stringify(node.tag)}, ${propsExpr}, ${eventsExpr}, ${slots})`;
+    const call =
+      `${this.rt}.createComponent(${this.ctxName}, ${JSON.stringify(node.tag)}, ` +
+      `${propsExpr}, ${eventsExpr}, ${slots}` +
+      (this.server ? `, ${this.out}` : '') +
+      ')';
+    return this.server ? `${call};` : call;
   }
 
   private genSlots(node: ElementNode, ctx: PrintContext): string {
@@ -1660,16 +2153,18 @@ class Generator {
     const meaningfulDefault = defaultChildren.filter(
       (c) => c.type !== 'comment' && !(c.type === 'text' && !c.content.trim()),
     );
+    const content = (nodes: TemplateChildNode[]): string => {
+      const generated = this.genChildrenExpression(nodes, ctx);
+      return this.server ? this.arrowBlock(generated) : `() => ${generated}`;
+    };
     if (meaningfulDefault.length) {
-      entries.push(`default: () => ${this.genChildrenExpression(defaultChildren, ctx)}`);
+      entries.push(`default: ${content(defaultChildren)}`);
     }
     for (const [name, children] of named) {
       const nodes = children.flatMap((c) =>
         c.type === 'element' && c.isTemplate ? c.children : [c],
       );
-      entries.push(
-        `${JSON.stringify(name)}: () => ${this.genChildrenExpression(nodes, ctx)}`,
-      );
+      entries.push(`${JSON.stringify(name)}: ${content(nodes)}`);
     }
 
     return entries.length ? `{ ${entries.join(', ')} }` : 'null';
@@ -1711,14 +2206,32 @@ const ATTRIBUTE_POSITION: Record<DirectiveKind, boolean> = {
   portal: false,
 };
 
-function findDirective(node: ElementNode, kind: string): DirectiveNode | undefined {
-  return node.directives.find((d) => d.kind === kind);
+/**
+ * The chunk as the server prints it: everything but the ranges the merge
+ * writes itself. See `Block.serverOmit`.
+ */
+function omitRanges(chunk: string, ranges: [number, number][] | null): string {
+  if (!ranges || ranges.length === 0) return chunk;
+  let out = '';
+  let at = 0;
+  for (const [start, end] of ranges) {
+    out += chunk.slice(at, start);
+    at = end;
+  }
+  return out + chunk.slice(at);
 }
 
-function hasStructural(node: ElementNode): boolean {
-  return node.directives.some(
-    (d) => d.kind === 'if' || d.kind === 'else-if' || d.kind === 'else' || d.kind === 'for',
-  );
+/**
+ * Elements whose content is raw text rather than markup.
+ *
+ * `<textarea>` and `<title>` are deliberately absent: they are *escapable*
+ * raw text, where an entity is still decoded, so a value written into one is
+ * escaped like any other text.
+ */
+const RAW_TEXT_TAGS = new Set(['script', 'style']);
+
+function findDirective(node: ElementNode, kind: string): DirectiveNode | undefined {
+  return node.directives.find((d) => d.kind === kind);
 }
 
 function stripDirectives(node: ElementNode, kinds: string[]): ElementNode {

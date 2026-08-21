@@ -1,0 +1,13 @@
+<section class="users">
+  <h2>Users</h2>
+
+  <p :if="isLoading()" role="status">Loading users…</p>
+  <p class="error" :else-if="error()" role="alert">Could not load users.</p>
+
+  <ul :else>
+    <li :for="user in users()" :key="user.id">
+      <a :href="href(user)">{ user.name }</a>
+      <span class="role">{ user.role }</span>
+    </li>
+  </ul>
+</section>

@@ -1,0 +1,72 @@
+.app {
+  max-width: 34rem;
+  margin: 0 auto;
+  display: grid;
+  gap: 1.25rem;
+  justify-items: start;
+
+  h1 {
+    margin: 0;
+    font-size: 1.75rem;
+    letter-spacing: -0.02em;
+  }
+
+  .lead {
+    margin: 0;
+    color: var(--muted);
+  }
+
+  code {
+    padding: 0.1em 0.35em;
+    border-radius: 4px;
+    background: var(--line);
+    font-size: 0.9em;
+  }
+
+  .counter {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  button {
+    min-width: 2.5rem;
+    padding: 0.5rem 0.9rem;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+
+    &:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+  }
+
+  output {
+    min-width: 3rem;
+    text-align: center;
+    font-size: 1.5rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .derived {
+    margin: 0;
+    color: var(--muted);
+  }
+
+  .reset {
+    min-width: 0;
+    padding: 0.25rem 0;
+    border: 0;
+    color: var(--muted);
+    text-decoration: underline;
+  }
+}

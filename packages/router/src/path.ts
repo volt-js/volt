@@ -30,12 +30,6 @@ export type Params = Readonly<Record<string, string>>;
 // Types derived from the pattern string
 // ---------------------------------------------------------------------------
 
-type TrimSlashes<S extends string> = S extends `/${infer Rest}`
-  ? TrimSlashes<Rest>
-  : S extends `${infer Rest}/`
-    ? TrimSlashes<Rest>
-    : S;
-
 type SegmentParam<S extends string> = S extends `:${infer Name}?`
   ? Name
   : S extends `:${infer Name}`

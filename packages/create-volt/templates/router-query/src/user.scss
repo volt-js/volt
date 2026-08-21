@@ -1,0 +1,19 @@
+.user {
+  display: grid;
+  gap: 0.75rem;
+  justify-items: start;
+
+  h2 {
+    margin: 0;
+    font-size: 1.3rem;
+  }
+
+  .role {
+    margin: 0;
+    color: var(--muted);
+  }
+
+  a {
+    color: var(--accent);
+  }
+}

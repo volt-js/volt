@@ -1,0 +1,58 @@
+{
+  "name": "@voltdev/cli",
+  "version": "0.1.0-alpha.1",
+  "description": "Volt's command line — type-check the expressions in your templates.",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "volt": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "vite build && tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@voltdev/compiler": "workspace:*",
+    "@voltdev/vite-plugin": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0"
+  },
+  "peerDependencies": {
+    "typescript": "^7.0.0"
+  },
+  "keywords": [
+    "cli",
+    "typescript",
+    "volt"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/volt-js/volt.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://voltjs.dev",
+  "bugs": {
+    "url": "https://github.com/volt-js/volt/issues"
+  },
+  "author": "Hardik Viradiya",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

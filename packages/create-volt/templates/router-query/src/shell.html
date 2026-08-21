@@ -1,0 +1,15 @@
+<div class="shell">
+  <header>
+    <h1>__PROJECT_NAME__</h1>
+    <nav aria-label="Main">
+      <a href="/" :aria-current="current('/')">Home</a>
+      <a href="/users" :aria-current="current('/users')">Users</a>
+    </nav>
+  </header>
+
+  <!-- Ordinary anchors above: real hrefs the browser and a crawler understand,
+       with the plain left-click intercepted by the router. -->
+  <p class="pending" :if="navigating()" role="status">Loading…</p>
+
+  <main data-volt-outlet></main>
+</div>

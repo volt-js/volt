@@ -22,6 +22,17 @@ export type ExprNode =
 export interface IdentifierNode {
   type: 'Identifier';
   name: string;
+  /**
+   * Where the name is written, as an offset into the expression source.
+   *
+   * Only identifiers carry one, and deliberately: an identifier is what a
+   * type error is reported on — an unknown property, a name that does not
+   * resolve — so this is the granularity a diagnostic needs to point back to
+   * a column in the template. Wider nodes are located by the expression they
+   * belong to.
+   */
+  start: number;
+  end: number;
 }
 
 export interface LiteralNode {

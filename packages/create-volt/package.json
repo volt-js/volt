@@ -1,0 +1,50 @@
+{
+  "name": "@voltdev/create-volt",
+  "version": "0.1.0-alpha.1",
+  "description": "Scaffold a Volt project — the Vite plugin configured, a component, a stylesheet and a test that passes.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "create-volt": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "templates",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "vite build && tsc -p tsconfig.build.json"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0"
+  },
+  "keywords": [
+    "volt",
+    "scaffold",
+    "create",
+    "starter"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/volt-js/volt.git",
+    "directory": "packages/create-volt"
+  },
+  "homepage": "https://voltjs.dev",
+  "bugs": {
+    "url": "https://github.com/volt-js/volt/issues"
+  },
+  "author": "Hardik Viradiya",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

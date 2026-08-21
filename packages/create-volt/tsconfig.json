@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    // Type checking only. `tsc --build` emits, and composite projects cannot
+    // opt out of that — so it emits to a throwaway directory. Pointing it at
+    // `dist` would overwrite the bundled output Vite puts there.
+    "outDir": ".tsc",
+    "tsBuildInfoFile": ".tsc/.tsbuildinfo",
+    // Named rather than left to the automatic scan. This package depends on
+    // nothing, and every sibling that reaches `node:` builtins only resolves
+    // them because something in its dependency graph — Vite — drags
+    // `@types/node` in behind it. With no dependencies there is nothing to
+    // drag, and the scan finds no types at all.
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"]
+}

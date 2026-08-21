@@ -308,7 +308,7 @@ class ExprParser {
         node = {
           type: 'Member',
           object: node,
-          property: { type: 'Identifier', name: t.value },
+          property: { type: 'Identifier', name: t.value, start: t.start, end: t.end },
           computed: false,
           optional: false,
         };
@@ -329,7 +329,7 @@ class ExprParser {
           node = {
             type: 'Member',
             object: node,
-            property: { type: 'Identifier', name: t.value },
+            property: { type: 'Identifier', name: t.value, start: t.start, end: t.end },
             computed: false,
             optional: true,
           };
@@ -395,7 +395,7 @@ class ExprParser {
       }
       case 'ident': {
         this.index++;
-        return { type: 'Identifier', name: t.value };
+        return { type: 'Identifier', name: t.value, start: t.start, end: t.end };
       }
       case 'keyword': {
         if (t.value === 'true' || t.value === 'false') {
@@ -447,7 +447,7 @@ class ExprParser {
       node = {
         type: 'Member',
         object: node,
-        property: { type: 'Identifier', name: t.value },
+        property: { type: 'Identifier', name: t.value, start: t.start, end: t.end },
         computed: false,
         optional: false,
       };
@@ -498,7 +498,7 @@ class ExprParser {
         if (t.type === 'str') key = { type: 'Literal', raw: t.value, value: t.parsed as string };
         else if (t.type === 'num') key = { type: 'Literal', raw: t.value, value: Number(t.value) };
         else if (t.type === 'ident' || t.type === 'keyword')
-          key = { type: 'Identifier', name: t.value };
+          key = { type: 'Identifier', name: t.value, start: t.start, end: t.end };
         else this.fail('Expected a property name');
       }
 

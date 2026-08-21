@@ -13,6 +13,12 @@
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
     "noImplicitReturns": true,
+
+    // A module-private symbol nothing calls is the shape of a check that was
+    // written, documented, and never wired to anything -- which has happened
+    // here. The compiler can see it, so let it.
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "exactOptionalPropertyTypes": false,
 
     "declaration": true,

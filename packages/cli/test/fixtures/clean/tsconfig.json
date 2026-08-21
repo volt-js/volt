@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmit": true,
+    "experimentalDecorators": false,
+    "useDefineForClassFields": true,
+    "types": []
+  },
+  "include": ["src/**/*.ts", "../volt.d.ts"]
+}

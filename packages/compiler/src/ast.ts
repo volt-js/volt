@@ -44,6 +44,14 @@ export interface DirectiveNode {
   /** Raw expression source, or null for valueless directives like `:else`. */
   exp: string | null;
   loc: SourceLocation;
+  /**
+   * Where `exp` itself is written, which is not where the directive starts.
+   *
+   * A diagnostic about the expression has to point at the expression: `loc`
+   * lands on the `:` of `:click`, which is the wrong column to underline and
+   * the wrong line entirely once a value is wrapped onto the next one.
+   */
+  expLoc: SourceLocation | null;
 }
 
 export interface TextNode {
@@ -56,6 +64,8 @@ export interface InterpolationNode {
   type: 'interpolation';
   exp: string;
   loc: SourceLocation;
+  /** Where `exp` begins, past the `{` and any whitespace after it. */
+  expLoc: SourceLocation;
 }
 
 export interface CommentNode {

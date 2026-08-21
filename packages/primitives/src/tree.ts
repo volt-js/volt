@@ -1251,12 +1251,6 @@ export function createTree<T = unknown>(options: TreeOptions<T>): Tree<T> {
     pendingFocusId = row.id;
   };
 
-  const focusIndex = (index: number): void => {
-    const list = untrack(rows);
-    if (list.length === 0) return;
-    focusRow(list[Math.min(Math.max(index, 0), list.length - 1)] ?? null);
-  };
-
   const activeRow = (): TreeRow<T> | null => {
     const id = activeState.get();
     return id === null ? null : rowOf(id);

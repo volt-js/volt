@@ -928,7 +928,8 @@ export function bindClass(el: Element, accessor: MaybeAccessor<unknown>): void {
   });
 }
 
-function normalizeClass(value: unknown): string[] {
+/** Exported because a server composes the same string it would end up with. */
+export function normalizeClass(value: unknown): string[] {
   if (!value) return [];
   if (typeof value === 'string') return value.split(/\s+/).filter(Boolean);
   if (Array.isArray(value)) return value.flatMap(normalizeClass);
@@ -955,7 +956,8 @@ export function bindStyle(el: HTMLElement, accessor: MaybeAccessor<unknown>): vo
   });
 }
 
-function normalizeStyle(value: unknown): Record<string, string> {
+/** Exported for the same reason as `normalizeClass`. */
+export function normalizeStyle(value: unknown): Record<string, string> {
   if (!value) return {};
   if (typeof value === 'string') {
     const out: Record<string, string> = {};

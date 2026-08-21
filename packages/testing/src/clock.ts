@@ -110,7 +110,12 @@ export function installClock(options: ClockOptions = {}): FakeClock {
   };
 
   const start = options.now ?? real.dateNow();
-  const performanceStart = real.performanceNow.call(performance);
+  // Rounded, so that differences are exact. `performance.now()` returns a
+  // float with fractional bits; adding a whole number of milliseconds to it
+  // and subtracting the origin again loses precision, and an advance of 250
+  // reads back as 249.99999999999994. A whole-number origin keeps integer
+  // advances exact, and the absolute value is arbitrary anyway.
+  const performanceStart = Math.round(real.performanceNow.call(performance));
   let current = start;
 
   const timers = new Map<number, Timer>();
