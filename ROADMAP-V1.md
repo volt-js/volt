@@ -19,7 +19,9 @@ Solid's number, not native's.
 
 - [x] Fix quadratic list teardown (`Watcher.unwatch`, scope detach)
 - [x] Effect fast path — skip value/equality bookkeeping nothing reads
-- [ ] `select row`: close the remaining per-effect gap
+- [ ] `select row`: close the remaining per-effect gap. The one-effect-per-row
+      codegen is written and tested, but `groupRowBindings` defaults to false in
+      both the compiler and the plugin, so no shipped build gets it.
 - [ ] `create`: 1.15–1.19x, the next largest gap after select
 
 ### Bundle size
@@ -32,9 +34,10 @@ package.
 - [ ] Component + DOM runtime — 41% of the bundle, not yet examined
 - [ ] Generated template code — 21% of the bundle for one small component,
       the most promising untouched lead
-- [ ] `Signal` is a TypeScript `namespace`, so it compiles to a runtime object
-      and nothing reachable from it can tree-shake. Lowering `Signal.State` to
-      a direct import at build time would let unused `subtle` members drop.
+- [x] `Signal` is a TypeScript `namespace`, so it compiles to a runtime object
+      and nothing reachable from it can tree-shake. Lowered to direct imports at
+      build time, on by default, with the namespace in a module of its own so it
+      drops; verified against a real built bundle rather than emitted text.
 
 The reactive core is *not* where the remaining size is. Two attempts at
 leaning it found nothing: removing a per-write allocation made writes slower
@@ -54,8 +57,9 @@ leaning it found nothing: removing a per-write allocation made writes slower
       until the element reports its exit animation finished. Keeping this out
       of the core is the better outcome — CSS stays the source of truth for
       duration, and a library that never animates pays nothing.
-- [ ] **SSR** — not needed for v1, but it constrains API shape, so decide
-      before the primitives harden.
+- [x] **SSR** — decided, and built as far as markup: a server codegen target,
+      a markup writer, and request-scoped isolation. Hydration is not built at
+      all; the SSR section below says what that leaves.
 - [ ] **Error boundaries** — no equivalent feature today, and specified below
       rather than left as a name.
 
@@ -177,12 +181,15 @@ Per component, and enforced by tests rather than asserted in a README:
 
 The six that force every shared behaviour into existence, in order:
 
-- [ ] **Dialog** — presence, focus scope, dismissal
-- [ ] **Dropdown Menu** — collection, roving focus, anchoring, typeahead
-- [ ] **Combobox** — all of the above, plus form field and virtualization
-- [ ] **Tooltip** — anchoring under pointer *and* keyboard, delay grouping
-- [ ] **Tabs** — roving focus, automatic vs manual activation
-- [ ] **Accordion** — presence with height animation
+- [x] **Dialog** — presence, focus scope, dismissal
+- [ ] **Dropdown Menu** — collection, roving focus and typeahead are built;
+      anchoring is not, and the menu positions nothing
+- [ ] **Combobox** — built and tested, but held back from export along with
+      inputs and slider-upload until a review passes clean, and it does not
+      virtualize
+- [x] **Tooltip** — anchoring under pointer *and* keyboard, delay grouping
+- [x] **Tabs** — roving focus, automatic vs manual activation
+- [x] **Accordion** — presence with height animation
 
 After those, the remaining components are grouped by the behaviour they reuse
 and built in batches rather than one at a time.
@@ -331,7 +338,11 @@ Committed, and it constrains work already underway — a primitive that touches
 the DOM while being constructed cannot be rendered on a server, so every
 primitive is written to defer DOM access into an effect or guard it.
 
-`@voltdev/server` — `renderToString` and `renderToStream`.
+`@voltdev/server` is the server-functions package, not a renderer — it exports
+`Server`, `guard` and `createHandler`. The renderer is `@voltdev/core/server`,
+and it exports `renderToStaticMarkup` alone; `renderToString` and
+`renderToStream` come after hydration, because what they add is identity and
+ordering and both are defined against these bytes.
 
 Hydration should suit this architecture unusually well. Codegen already
 resolves every dynamic node by a `firstChild`/`nextSibling` path computed at
@@ -351,10 +362,12 @@ serialising it. Build order and what each stage has to prove are there.
 
 ### What is built
 
-Stage two of that order: the reactivity lanes and request isolation. There is
-no emitter, so nothing renders to a string yet — what exists is what the
-emitter will drive, documented at
-[docs/reference/server.md](docs/reference/server.md).
+Stage three of that order. The reactivity lanes and request isolation are in
+place, and so is the emitter: a server codegen target writes through
+`MarkupWriter` in `@voltdev/core/server`, which `renderToStaticMarkup` drives.
+What is absent is hydration of every kind — no markers, no ids, no state
+payload. [docs/reference/server.md](docs/reference/server.md) still describes
+the stage before this one and needs rewriting.
 
 - [x] A fourth scheduler lane. `dataEffect` is drained after render and before
       measure, and `createResource` triggers from it. Deferred like user work,
@@ -386,7 +399,11 @@ emitter will drive, documented at
       produce what the same two renders produce serially, and a resource
       declared as a class field fetches exactly once on a server and not at
       all in a client-only build. Measured on the rendered tree and the
-      collected styles rather than on emitted bytes, there being no emitter.
+      collected styles rather than on emitted bytes. Those files compile at
+      decorator-evaluation time, which is before the server flag is set, so
+      they exercise the client emitter with the flag flipped at render time —
+      their isolation and lifecycle claims hold, but they are not evidence
+      about bytes. The bytes are covered by `core/test/static-markup.test.ts`.
 
 Not yet, and the reason:
 
@@ -403,7 +420,7 @@ Not yet, and the reason:
 - [ ] Async boundaries, so streaming can flush a shell before data arrives
 - [ ] Out-of-order streaming: emit a placeholder, fill it when the data lands,
       rather than holding the response until the slowest query returns
-- [ ] `renderToStaticMarkup` for output with no hydration at all — an email, an
+- [x] `renderToStaticMarkup` for output with no hydration at all — an email, an
       RSS page, a PDF source
 - [ ] SSG: enumerate routes, prerender, write files; revalidation as a cache
       policy over the same renderer
@@ -432,8 +449,12 @@ that a handful of primitives know about, or in the graph that every signal
 already goes through.
 
 - [ ] Decide this before streaming SSR and server functions harden around the
-      current shape. Both are being built now, and both will encode whichever
-      answer is in place when they land.
+      current shape. **Half of that deadline has passed.** Server functions
+      landed without the decision — though they turned out not to touch the
+      graph at all, importing nothing from reactivity, so they encode nothing
+      either way. What did harden around the lane is server rendering, which
+      settles a request through it. Streaming is still ahead of the decision,
+      and is the half that would be expensive to reverse.
 - [ ] The criteria, in order: whether a promise-aware graph can keep the
       glitch-freedom the TC39 proposal specifies, since Volt's reactivity is
       the proposal rather than an interpretation of it and that is not a
@@ -472,6 +493,17 @@ nothing is being added to a project that was not there.
       demonstrated rather than described.
 
 ## Server functions
+
+**Built**, in `@voltdev/server` with the call-site transform in
+`@voltdev/vite-plugin`: the decorator, the guard requirement enforced at build
+time, the wire format, the registry, and a handler that is a plain
+`(Request) => Promise<Response>`. This section had no checklist at all while
+that was landing, which is why none of it is ticked below. What is *not* built,
+and matters most: arguments are not validated. The handler checks that `args`
+is an array and nothing further — no arity, no types — so a method typed
+`create(text: string)` runs with `text === undefined` if a caller sends
+`{"args":[]}`. "The types are the schema" is true of the editor and false of
+the endpoint. Form integration and a build-derived serializer are also absent.
 
 A method that runs on the server and is called from the client as though it
 were local. Next.js spells this `'use server'`; Volt spells it as a decorator,
@@ -611,8 +643,11 @@ the way the server-function stub is a different emit from decorator lowering.
 
 - A property that does not exist on the component, or on anything reachable
   from it — the case in the example
-- A prop passed to a child component with the wrong type, or a required prop
-  omitted, checked against that child's `@Prop` declarations
+- **Not built.** A prop passed to a child component with the wrong type, or a
+  required prop omitted, checked against that child's `@Prop` declarations. A
+  child element's bindings are checked against the *parent's* context and never
+  against the child's own props, so nothing in this class is caught today.
+  `@Prop` is enforced at runtime only.
 - `$event` typed by the event name, so `:input="handle($event.target.value)"`
   knows `target` is an `EventTarget` and makes you narrow it
 - A `:for` item's type inferred from the collection, and used inside the row
@@ -626,7 +661,8 @@ the way the server-function stub is a different emit from decorator lowering.
   error nobody can act on.
 - The check is a separate pass. Vite's transform cannot report it, since oxc
   strips types and never type-checks. It belongs in a `volt check` command and
-  in CI, alongside `tsc`.
+  in CI, alongside `tsc`. The command exists; CI does not run it, so the check
+  reaches whoever thinks to run it by hand and nobody else.
 - An editor wants it live, which means a language server. That is a second,
   larger piece of work, and the CLI has to exist first.
 - Some expressions are legitimately dynamic and will need an escape hatch, or
@@ -664,7 +700,7 @@ That is the part worth attacking:
       key map entirely, falling back to the full algorithm at the first
       mismatch. Turns an edit in a large table into one pass of comparisons
       with no allocation.
-- [ ] Reuse the keys, rows and nodes buffers across reconciles rather than
+- [x] Reuse the keys, rows and nodes buffers across reconciles rather than
       allocating three arrays per update.
 
 **What is not possible, and why that is acceptable.** Detecting "row 573
@@ -809,8 +845,11 @@ deliverable.
 - File-based and configuration-based routes, with types generated for params
 - Nested routes and layouts that persist across navigation, since re-mounting
   a layout on every navigation is what makes an SPA feel worse than an MPA
-- Lazy route components, which is what the compiler's `deferrable` analysis and
-  `preload()` were built for — preload on hover, load on navigate
+- Lazy route components — preload on hover, load on navigate. Built, but *not*
+  on the compiler's `deferrable` analysis or core's `preload()`, which is what
+  this bullet used to claim: the router rejects both and rolls its own loader.
+  That mis-attribution is what left `deferrable` computed on every compile and
+  read by nothing.
 - Per-route rendering mode, feeding the hybrid plan above
 - Data loading tied to the route so a navigation can fetch and render together
   rather than mounting, then discovering it needs data
