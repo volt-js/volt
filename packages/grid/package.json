@@ -22,7 +22,8 @@
     "build": "vite build && tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@voltdev/core": "workspace:*"
+    "@voltdev/core": "workspace:*",
+    "@voltdev/primitives": "workspace:*"
   },
   "keywords": [
     "volt",

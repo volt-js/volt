@@ -12,4 +12,19 @@
  * one value writes one text node and nothing around it re-renders.
  */
 
+export {
+  createGrid,
+  GRID_CELL_ATTRIBUTE,
+  GRID_RESIZER_ATTRIBUTE,
+  HEADER_ROW,
+  type Grid,
+  type GridCell,
+  type GridColumn,
+  type GridColumnView,
+  type GridOptions,
+  type GridProps,
+  type GridPropValue,
+  type GridRow,
+} from './grid.js';
+
 export const VERSION = '0.1.0';

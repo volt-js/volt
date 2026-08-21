@@ -26,6 +26,16 @@ export {
 
 export { createId, resetIds } from './ids.js';
 
+/**
+ * A boundary is content, like `:if` is: it decides what is on screen. It lives
+ * in the DOM runtime with the rest of the control flow, and is re-exported
+ * here because an application writes it by hand rather than through a compiled
+ * template.
+ */
+export { errorBoundary } from './dom.js';
+
+export type { BoundaryOptions } from './dom.js';
+
 export type {
   ComponentConfig,
   ComponentType,
@@ -51,6 +61,9 @@ export {
   resetFlushMetrics,
   createRoot,
   onCleanup,
+  onError,
+  raiseError,
+  setErrorReporter,
   createContext,
   useContext,
   provideContext,
@@ -70,6 +83,9 @@ export type {
   Dispose,
   CleanupFn,
   EffectFn,
+  ErrorHandler,
+  ErrorReport,
+  ErrorReporter,
   FlushMetrics,
   ReadableSignal,
   RequestScope,

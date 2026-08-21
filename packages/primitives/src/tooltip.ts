@@ -39,11 +39,20 @@
  * focus would do it deliberately. The pointer may still travel onto the
  * content — that is only so a long description can be read without the tooltip
  * vanishing halfway.
+ *
+ * Positioning is `createAnchor`, the same CSS anchor positioning the popover
+ * and the menu use: above the trigger by default, flipped below it by the
+ * browser when there is no room. This used to stop at naming the anchor and
+ * leave the `position-area` to the consumer's stylesheet, which meant a
+ * tooltip that was correct about everything except where it appeared, and a
+ * fourth spelling of a thing this package should only know one way of doing.
+ * Nothing measures a rectangle and nothing listens for scroll.
  */
 
 import { Signal, effect, onCleanup } from '@voltdev/core';
 import { createPresence, type PresenceState } from './presence.js';
 import { createDismiss } from './dismiss.js';
+import { createAnchor, type AnchorPlacement } from './anchoring.js';
 import { createId } from './id.js';
 
 const { untrack } = Signal.subtle;
@@ -124,6 +133,16 @@ export interface TooltipOptions {
    */
   label?: string;
 
+  /**
+   * Which side of the trigger to sit on. Default `top`, which is the one side
+   * a pointer resting on the trigger cannot cover.
+   */
+  placement?: AnchorPlacement;
+  /** The gap between trigger and tooltip. A number is pixels. */
+  offset?: number | string;
+  /** Let the browser flip to the opposite side when it would overflow. Default true. */
+  flip?: boolean;
+
   /** Escape closes it. Default true. */
   closeOnEscape?: boolean;
 
@@ -131,28 +150,28 @@ export interface TooltipOptions {
 }
 
 /**
- * Props are written as object types rather than interfaces so they satisfy
- * `Record<string, unknown>`, which is what `:spread` takes.
+ * A bag of attributes to spread; `style` is an object of CSS declarations.
+ *
+ * Written as an object type rather than an interface so it satisfies
+ * `Record<string, unknown>`, which is what `:spread` takes — and with an index
+ * signature rather than the exact key lists these two carried before, because
+ * the positioning half of both bags now comes from `createAnchor` and is
+ * spread in whole. A key list declared in this file and filled from another is
+ * a key list that goes stale without anything failing to compile.
  */
-export type TooltipTriggerProps = {
-  readonly 'aria-describedby': string | undefined;
-  readonly 'aria-label': string | undefined;
-  readonly style: Readonly<Record<string, string>>;
-  readonly onPointerEnter: (event: PointerEvent) => void;
-  readonly onPointerLeave: (event: PointerEvent) => void;
-  readonly onPointerDown: () => void;
-  readonly onFocus: (event: FocusEvent) => void;
-  readonly onBlur: () => void;
+export type TooltipProps = {
+  readonly [key: string]:
+    | string
+    | undefined
+    | Readonly<Record<string, string>>
+    | ((event: PointerEvent) => void)
+    | ((event: FocusEvent) => void)
+    | (() => void);
 };
 
-export type TooltipContentProps = {
-  readonly id: string;
-  readonly role: 'tooltip';
-  readonly 'data-state': PresenceState;
-  readonly style: Readonly<Record<string, string>>;
-  readonly onPointerEnter: () => void;
-  readonly onPointerLeave: (event: PointerEvent) => void;
-};
+/** The two bags have the same shape, and the method names say which is which. */
+export type TooltipTriggerProps = TooltipProps;
+export type TooltipContentProps = TooltipProps;
 
 export interface Tooltip {
   /** Whether the tooltip is logically open. */
@@ -163,6 +182,12 @@ export interface Tooltip {
   state(): PresenceState;
   /** The anchor name tying content to trigger, for CSS that needs to name it. */
   anchorName(): string;
+  /**
+   * The side the tooltip was asked to sit on, for an arrow or a transform
+   * origin. Not necessarily the side it is on: when the engine takes one of
+   * the fallbacks it does not report which, and there is no API to ask.
+   */
+  placement(): AnchorPlacement;
 
   /** Open now, ignoring the open delay. */
   open(): void;
@@ -180,10 +205,12 @@ export function createTooltip(options: TooltipOptions): Tooltip {
   const skipDelay = options.skipDelay ?? DEFAULT_SKIP_DELAY;
 
   const contentId = createId('tooltip-content');
-  // An anchor name is a CSS custom ident, so it carries the `--` prefix; the
-  // generated suffix is what keeps two tooltips on one page from anchoring to
-  // each other.
-  const anchor = `--${createId('volt-tooltip')}`;
+  const anchor = createAnchor({
+    anchor: () => options.trigger?.(),
+    defaultPlacement: options.placement ?? 'top',
+    offset: options.offset,
+    flip: options.flip,
+  });
 
   const presence = createPresence(
     () => state.get(),
@@ -353,7 +380,8 @@ export function createTooltip(options: TooltipOptions): Tooltip {
     isOpen: () => state.get(),
     isPresent: () => presence.isPresent(),
     state: () => presence.state(),
-    anchorName: () => anchor,
+    anchorName: () => anchor.name(),
+    placement: () => anchor.placement(),
 
     open: () => setOpen(true),
     close: () => setOpen(false),
@@ -364,7 +392,9 @@ export function createTooltip(options: TooltipOptions): Tooltip {
       // early is a dangling one for as long as the animation lasts.
       'aria-describedby': presence.isPresent() ? contentId : undefined,
       'aria-label': options.label,
-      style: { 'anchor-name': anchor },
+      // The name the content positions against, and nothing else: being
+      // pointed at by a tooltip changes nothing about what the trigger is.
+      ...anchor.anchorProps(),
       onPointerEnter: onTriggerPointerEnter,
       onPointerLeave: onTriggerPointerLeave,
       onPointerDown: onTriggerPointerDown,
@@ -376,15 +406,12 @@ export function createTooltip(options: TooltipOptions): Tooltip {
       id: contentId,
       role: 'tooltip',
       'data-state': presence.state(),
-      // Only the link between the two elements is written here, because only
-      // this end knows the generated name. Which side it sits on, how far off,
-      // and what it falls back to when it would leave the viewport are
-      // `position-area` and `position-try` in the consumer's stylesheet —
-      // there is nothing to measure in JavaScript and nothing to reposition on
-      // scroll. The tradeoff is the browser support floor: engines without
-      // anchor positioning need a polyfill, which this leaves room for by
-      // naming the anchor in a way one can read.
-      style: { 'position-anchor': anchor },
+      // Which side it sits on, how far off, and what to try instead when that
+      // side would leave the viewport — all of it declared, none of it
+      // measured, and nothing to reposition on scroll. `data-anchored` carries
+      // the browser's answer into CSS for the engines that cannot do it, which
+      // is what this leaves room for instead of a polyfill.
+      ...anchor.floatingProps(),
       onPointerEnter: onContentPointerEnter,
       onPointerLeave: onContentPointerLeave,
     }),

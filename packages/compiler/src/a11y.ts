@@ -189,6 +189,14 @@ interface Context {
    * is in `missingId`.
    */
   idsUnknowable: boolean;
+  /** Every id a `<label for>` in this template claims. */
+  labelTargets: Set<string>;
+  /**
+   * A `<label>` here carries a `for` this file never writes, so the control it
+   * names is a runtime fact and no control carrying an id can be called
+   * unnamed.
+   */
+  labelTargetsUnknowable: boolean;
   filename: string | undefined;
 }
 
@@ -199,6 +207,22 @@ interface Flattened {
   holder: string;
 }
 
+/** What encloses an element, where being enclosed changes what it proves. */
+interface Ancestry {
+  /** The nearest ancestor whose role flattens its contents, if any. */
+  flattened: Flattened | null;
+  /** Inside a `<label>`, which names whatever control it wraps. */
+  labelled: boolean;
+  /**
+   * Inside a component's tag, so this markup is projected into a template this
+   * file cannot see — where a `<label>` may already be waiting for it.
+   */
+  projected: boolean;
+}
+
+/** Enclosed by nothing: the root of the template, and where a portal lands. */
+const UNENCLOSED: Ancestry = { flattened: null, labelled: false, projected: false };
+
 export function checkAccessibility(root: RootNode, options: A11yOptions = {}): Diagnostic[] {
   if (options.a11y === 'off') return [];
 
@@ -207,11 +231,13 @@ export function checkAccessibility(root: RootNode, options: A11yOptions = {}): D
     severity: options.a11y ?? 'error',
     ids: new Set(),
     idsUnknowable: false,
+    labelTargets: new Set(),
+    labelTargetsUnknowable: false,
     filename: options.filename,
   };
-  collectIds(root.children, ctx);
+  collectReferences(root.children, ctx);
   try {
-    walk(root.children, null, ctx);
+    walk(root.children, UNENCLOSED, ctx);
   } catch (e) {
     // Both severities come out of one pass, so an error ending it would take
     // every warning found before it — and those are about other elements.
@@ -222,32 +248,39 @@ export function checkAccessibility(root: RootNode, options: A11yOptions = {}): D
 }
 
 /**
- * Every id in the template, gathered before any of it is checked.
+ * Every id in the template, and every id a `<label for>` claims, gathered
+ * before any of it is checked.
  *
  * A `for` or an `aria-labelledby` may name an element written further down, or
  * one sitting on a component's tag, so the set has to be complete before the
- * first reference to it is judged.
+ * first reference to it is judged. A control is judged against the labels on
+ * both sides of it, which is the same problem pointed the other way.
  */
-function collectIds(nodes: TemplateChildNode[], ctx: Context): void {
+function collectReferences(nodes: TemplateChildNode[], ctx: Context): void {
   for (const node of nodes) {
     if (node.type !== 'element' && node.type !== 'slot-outlet') continue;
+    const isLabel = node.type === 'element' && node.tag.toLowerCase() === 'label';
     for (const a of node.attrs) {
-      if (a.name.toLowerCase() === 'id' && a.value) ctx.ids.add(a.value);
+      const name = a.name.toLowerCase();
+      if (name === 'id' && a.value) ctx.ids.add(a.value);
+      if (isLabel && name === 'for' && a.value?.trim()) ctx.labelTargets.add(a.value.trim());
     }
     for (const d of node.directives) {
-      const bindsId = (d.kind === 'prop' || d.kind === 'attr') && d.name.toLowerCase() === 'id';
-      if (bindsId || d.kind === 'spread') ctx.idsUnknowable = true;
+      const binds = (name: string) =>
+        (d.kind === 'prop' || d.kind === 'attr') && d.name.toLowerCase() === name;
+      if (binds('id') || d.kind === 'spread') ctx.idsUnknowable = true;
+      if (isLabel && (binds('for') || d.kind === 'spread')) ctx.labelTargetsUnknowable = true;
     }
-    collectIds(node.children, ctx);
+    collectReferences(node.children, ctx);
   }
 }
 
-function walk(nodes: TemplateChildNode[], flattened: Flattened | null, ctx: Context): void {
+function walk(nodes: TemplateChildNode[], within: Ancestry, ctx: Context): void {
   for (const node of nodes) {
     // Projected content is someone else's markup, but a slot's fallback
     // renders right here and keeps this context.
     if (node.type === 'slot-outlet') {
-      walk(node.children, flattened, ctx);
+      walk(node.children, within, ctx);
       continue;
     }
     if (node.type !== 'element') continue;
@@ -255,7 +288,7 @@ function walk(nodes: TemplateChildNode[], flattened: Flattened | null, ctx: Cont
     // A portalled element lands in a container this template knows nothing
     // about, so nothing above it here is above it there.
     if (node.directives.some((d) => d.kind === 'portal')) {
-      walk(node.children, null, ctx);
+      walk(node.children, UNENCLOSED, ctx);
       continue;
     }
 
@@ -265,23 +298,36 @@ function walk(nodes: TemplateChildNode[], flattened: Flattened | null, ctx: Cont
     // prop rather than an attribute, and whether it reaches the DOM at all is
     // that component's decision, so nothing here can call one wrong.
     if (node.isComponent || node.isTemplate) {
-      walk(node.children, flattened, ctx);
+      // Children of a component tag are projected into its slot, so what
+      // encloses them at the far end is markup this file has never seen.
+      walk(node.children, node.isComponent ? { ...within, projected: true } : within, ctx);
       continue;
     }
 
-    check(node, flattened, ctx);
-    walk(node.children, flattensContent(node) ?? flattened, ctx);
+    check(node, within, ctx);
+    walk(node.children, descend(node, within), ctx);
   }
 }
 
-function check(node: ElementNode, flattened: Flattened | null, ctx: Context): void {
+/** What the children of an element are enclosed by, given what encloses it. */
+function descend(node: ElementNode, within: Ancestry): Ancestry {
+  return {
+    flattened: flattensContent(node) ?? within.flattened,
+    labelled: within.labelled || node.tag.toLowerCase() === 'label',
+    projected: within.projected,
+  };
+}
+
+function check(node: ElementNode, within: Ancestry, ctx: Context): void {
   const tag = node.tag.toLowerCase();
+  const flattened = within.flattened;
   if (flattened) rule(() => checkFlattened(node, tag, flattened, ctx));
   rule(() => checkAria(node, ctx));
   rule(() => checkRole(node, tag, ctx));
   rule(() => checkTabindex(node, ctx));
   rule(() => checkImageAlt(node, tag, ctx));
   rule(() => checkLabelFor(node, tag, ctx));
+  rule(() => checkControlName(node, tag, within, ctx));
   rule(() => checkListener(node, tag, ctx));
 }
 
@@ -575,6 +621,82 @@ function checkLabelFor(node: ElementNode, tag: string, ctx: Context): void {
 }
 
 // ---------------------------------------------------------------------------
+// A control nothing names
+// ---------------------------------------------------------------------------
+
+/**
+ * Controls whose name cannot come from what is written inside them.
+ *
+ * `<button>` and `<a>` are deliberately absent: their contents are their name,
+ * so a rule about the routes below would report every correct one of them.
+ */
+const NAMED_FROM_OUTSIDE = new Set(['input', 'select', 'textarea']);
+
+/**
+ * Input types that arrive already named, whatever labels the page has.
+ *
+ * A button-like input is named by its `value` and falls back to the browser's
+ * own word for it, `hidden` renders nothing at all, and `image` is named by
+ * `alt` — which is the `<img>` rule's question rather than this one's.
+ */
+const SELF_NAMING_INPUTS = new Set(['submit', 'reset', 'button', 'image', 'hidden']);
+
+/**
+ * A form control with no accessible name by any of the four routes to one.
+ *
+ * A control with no name is announced as its type and nothing else, so what to
+ * type into it has to be inferred from whatever was read out before it, and
+ * voice control has no words to reach it by. The routes are a `<label>` around
+ * it, a `<label for>` pointing at its id, `aria-label`, and `aria-labelledby`;
+ * `title` names it too, badly enough that nothing here recommends it and
+ * plainly enough that it is not reported.
+ *
+ * This is the rule with the most ways to be wrong about a correct control, so
+ * every one of them ends the check rather than being guessed at: a `:spread`
+ * may be carrying any of the four, a computed `id` may be the one a label
+ * points at, a computed `type` may be one of the self-naming ones, and markup
+ * written inside a component's tag is projected into a template this file
+ * cannot see, where the `<label>` around it may be waiting. What is left is a
+ * control this template alone shows to be unreachable by all four routes.
+ */
+function checkControlName(
+  node: ElementNode,
+  tag: string,
+  within: Ancestry,
+  ctx: Context,
+): void {
+  if (!NAMED_FROM_OUTSIDE.has(tag)) return;
+  if (within.labelled || within.projected) return;
+  if (node.directives.some((d) => d.kind === 'spread')) return;
+  if (has(node, 'aria-label') || has(node, 'aria-labelledby') || has(node, 'title')) return;
+  if (attrOf(node, 'aria-hidden')?.value === 'true') return;
+
+  if (tag === 'input') {
+    if (bound(node, 'type')) return;
+    const type = (attrOf(node, 'type')?.value ?? 'text').trim().toLowerCase();
+    if (SELF_NAMING_INPUTS.has(type)) return;
+  }
+
+  // Carrying no id at all settles it: `for` resolves exactly or not at all, so
+  // no label anywhere reaches a control that has nothing to be pointed at.
+  if (bound(node, 'id')) return;
+  const id = attrOf(node, 'id')?.value?.trim();
+  if (id && (ctx.labelTargets.has(id) || ctx.labelTargetsUnknowable)) return;
+
+  warn(
+    `\`<${tag}>\` has no accessible name.\n` +
+      '  A control nothing names is announced as its type alone, so what belongs in it\n' +
+      '  is left to be guessed from whatever was read out before it, and voice control\n' +
+      '  has no words to reach it by.\n' +
+      '  Wrap it in a `<label>`, point a `<label for>` at its `id`, or name it with\n' +
+      '  `aria-label`. A `placeholder` is not a name — it is gone the moment somebody\n' +
+      '  types.',
+    node,
+    ctx,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Listeners
 // ---------------------------------------------------------------------------
 
@@ -671,7 +793,11 @@ function attrOf(node: ElementNode, name: string): AttributeNode | undefined {
 
 /** Written out or bound — either way the element has it when it renders. */
 function has(node: ElementNode, name: string): boolean {
-  if (node.attrs.some((a) => a.name.toLowerCase() === name)) return true;
+  return node.attrs.some((a) => a.name.toLowerCase() === name) || bound(node, name);
+}
+
+/** Bound rather than written, so what it ends up being is a runtime fact. */
+function bound(node: ElementNode, name: string): boolean {
   return node.directives.some(
     (d) => (d.kind === 'prop' || d.kind === 'attr') && d.name.toLowerCase() === name,
   );

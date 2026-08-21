@@ -24,12 +24,16 @@
  */
 
 import {
+  attachOwner,
   createRoot,
+  createScope,
   currentRequest,
   flushSync,
   getScope,
+  isSignal,
   isWritableSignal,
   onCleanup,
+  raiseError,
   renderEffect,
   requestState,
   runWithScope,
@@ -37,7 +41,7 @@ import {
   type Scope,
 } from '@voltdev/reactivity';
 // See `dom.ts` for why the framework's own modules take the lowered spelling.
-import { State as StateSignal } from '@voltdev/reactivity/signals';
+import { State as StateSignal, untrack } from '@voltdev/reactivity/signals';
 
 import {
   attachComponent,
@@ -540,48 +544,88 @@ function instantiate(
   // the tree — including the ids its field initializers ask for, which is why
   // the frame opens before construction rather than around the render.
   const previousPosition = enterPosition();
-  // Open before construction for the same reason: a field initializer's
-  // effects belong to the class that declares them, not to its parent.
+  // A scope per instance, opened before construction for the same reason: a
+  // field initializer's effects belong to the class that declares them, not to
+  // its parent. It is also what an error has to travel through — a component
+  // that declares itself a boundary catches its own subtree and no wider, and
+  // a report can name the component an effect five levels down belongs to,
+  // because the walk up from that effect passes through this scope.
+  const scope = createScope();
   const handle = __VOLT_DEV__
     ? enterComponent(
         component.name,
         resolved.config.selector,
         resolved.propsByAlias.values(),
-        getScope(),
+        scope,
       )
     : null;
   try {
-    const instance = new component() as Record<string, unknown> & LifecycleHooks;
-    SLOTS.set(instance, options.slots ?? null);
+    return runWithScope(scope, () => {
+      const instance = new component() as Record<string, unknown> & LifecycleHooks;
+      SLOTS.set(instance, options.slots ?? null);
+      attachOwner(scope, {
+        component: instance,
+        props: () => currentProps(instance, resolved),
+      });
 
-    if (__VOLT_DEV__ && handle) {
-      attachComponent(handle, instance);
-      // The scope that owns the instance is the one that disposes it, so the
-      // tools hear that it is gone from the same place the runtime does.
-      if (getScope()) onCleanup(() => removeComponent(handle));
-    }
+      if (__VOLT_DEV__ && handle) {
+        attachComponent(handle, instance);
+        // The scope that owns the instance is the one that disposes it, so the
+        // tools hear that it is gone from the same place the runtime does.
+        onCleanup(() => removeComponent(handle));
+      }
 
-    applyProps(instance, options.props ?? null, resolved);
+      applyProps(instance, options.props ?? null, resolved);
 
-    const render = getRenderFn(component, resolved);
-    const dom = render(instance, options.out);
+      const render = getRenderFn(component, resolved);
+      const dom = render(instance, options.out);
 
-    // Not queued at all on a server, rather than queued and then ignored: a
-    // microtask fires at the first `await`, and the render awaits its data, so
-    // declining to wait for this one would not stop it running.
-    if (!__VOLT_SERVER__ && instance.onMount) {
-      // Deferred so the node is in the document by the time this runs.
-      queueMicrotask(() => instance.onMount!());
-    }
+      // Not queued at all on a server, rather than queued and then ignored: a
+      // microtask fires at the first `await`, and the render awaits its data,
+      // so declining to wait for this one would not stop it running.
+      if (!__VOLT_SERVER__ && instance.onMount) {
+        // Deferred so the node is in the document by the time this runs — and
+        // caught, because by then the call that created it has returned and
+        // there is nothing left on the stack that could answer for it. The
+        // scope is captured rather than read, for the same reason.
+        queueMicrotask(() => {
+          try {
+            instance.onMount!();
+          } catch (err) {
+            raiseError(err, scope);
+          }
+        });
+      }
 
-    const ref = options.props?.['__ref'];
-    if (typeof ref === 'function') (ref as (value: unknown) => void)(instance);
+      const ref = options.props?.['__ref'];
+      if (typeof ref === 'function') (ref as (value: unknown) => void)(instance);
 
-    return dom;
+      return dom;
+    });
   } finally {
     if (__VOLT_DEV__ && handle) exitComponent(handle);
     exitPosition(previousPosition);
   }
+}
+
+/**
+ * A component's props as it currently holds them, signals unwrapped.
+ *
+ * Asked for by an error report and nowhere else, which is why it is a function
+ * on the owner rather than a snapshot taken at construction: reading every
+ * prop of every component that ever mounts, to describe the few that fail,
+ * would be the wrong trade entirely.
+ */
+function currentProps(
+  instance: Record<string, unknown>,
+  resolved: ResolvedConfig,
+): Record<string, unknown> {
+  const props: Record<string, unknown> = {};
+  for (const def of resolved.propsByAlias.values()) {
+    const value = instance[def.property];
+    props[def.alias] = isSignal(value) ? untrack(() => (value as { get(): unknown }).get()) : value;
+  }
+  return props;
 }
 
 // ---------------------------------------------------------------------------

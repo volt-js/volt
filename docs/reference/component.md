@@ -137,6 +137,40 @@ export class Greeting {}
 Importing this entry pulls the compiler into the bundle. Production
 components use `templateUrl`, which needs none of it at runtime.
 
+## Error boundaries
+
+`errorBoundary(children, options?)` wraps a piece of the tree. Anything thrown
+below it — while it is being built, or by one of its effects long afterwards —
+arrives at the boundary instead of the console.
+
+```ts
+import { errorBoundary } from '@voltdev/core';
+import { insert } from '@voltdev/core/runtime';
+
+insert(
+  host,
+  errorBoundary(() => createComponent(ctx, 'v-report', props, null, null), {
+    fallback: (error, retry) => renderProblem(error, retry),
+    onError: (error) => {
+      if (!(error instanceof ReportFailed)) throw error; // to the boundary above
+    },
+  }),
+);
+```
+
+The boundary decides one of three things. `onError` throwing sends the error
+to the next boundary up. A `fallback` replaces the subtree: everything below is
+disposed first, so its cleanups run and its listeners detach, and the fallback
+is built in a fresh scope. With neither, the error is swallowed.
+
+`retry` builds the subtree again from its inputs, which is only correct because
+a component is constructed once and holds no render state — the second attempt
+is a new instance, not a resumed one.
+
+A component can be its own boundary by calling
+[`onError`](./reactivity.md#errors) in its constructor. It catches its own
+subtree and nothing wider, because a component owns a scope.
+
 ## Runtime helpers
 
 `createComponent` and `slot` are called by compiled templates. You should not

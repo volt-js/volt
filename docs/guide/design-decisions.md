@@ -333,12 +333,14 @@ build error.
 
 Volt takes the principle and stops short of the mechanism.
 
-**Taken.** An error inside an effect is currently caught and handed to
-`console.error`, which means a throwing binding leaves the interface half
+**Taken.** An error inside an effect used to be caught and handed to
+`console.error`, which meant a throwing binding left the interface half
 updated with a message nobody reads in production. That is swallowing, and it
-is the thing Effect is right about. Errors get a channel: they travel to the
-nearest boundary, the boundary decides, and an application can observe every
-one with the scope that produced it attached.
+is the thing Effect is right about. Errors have a channel now: they travel up
+the scope chain to the nearest boundary, that boundary decides whether to
+swallow, replace the subtree or send the error further up, and an application
+can observe every one — with the component, its props and the scope that
+produced it attached — through `setErrorReporter`.
 
 **Declined: the third type parameter.** Requirements-as-a-type is dependency
 injection with a compiler behind it, and Volt has already declined dependency

@@ -7,11 +7,21 @@
  * for the cases that need it, though wanting it is usually a sign that
  * `createDialog` was the component you were reaching for.
  *
- * Positioning is CSS anchor positioning, written inline: the trigger gets an
- * `anchor-name`, the content a `position-anchor` and a `position-area`. No
- * measuring, no scroll or resize listeners, no Floating UI — the browser keeps
- * the two together, and flips the popover to the opposite side when it would
- * overflow. Where anchor positioning is missing the content says so with
+ * Positioning is `createAnchor`, which is CSS anchor positioning and nothing
+ * else: the trigger gets an `anchor-name`, the content a `position-anchor`, a
+ * `position-area` and the fallbacks to try when the side it asked for would
+ * overflow. No measuring, no scroll or resize listeners, no Floating UI — the
+ * browser keeps the two together.
+ *
+ * It was written out inline here once, and the position areas were spelled in
+ * logical keywords. That was a defect rather than a preference: the browser
+ * resolves `span-x-end` and its friends against the *positioned* element's
+ * containing block, which for a portalled popover is <body>, so a trigger
+ * inside an RTL region of an otherwise LTR page aligned to the wrong edge.
+ * The shared implementation reads the direction off the trigger and emits
+ * physical keywords, which is what the migration fixed.
+ *
+ * Where anchor positioning is missing the content says so with
  * `data-anchored="false"` and your CSS can place it however you like; that
  * browser gets no collision handling, which is the price of not shipping a
  * layout engine to every browser that does not need one.
@@ -33,9 +43,14 @@
  *     <button :spread="popover.closeProps()">✕</button>
  *   </div>
  *
- * and in CSS:
+ * The positioning scheme is written inline, because a `position-area` on a
+ * statically positioned element does nothing at all. The gap is yours, either
+ * in CSS:
  *
- *   [data-state='open'] { position: absolute; margin: 4px; }
+ *   [data-state='open'] { margin: 4px; }
+ *
+ * or as `offset: 4`, which puts the margin on whichever side faces the trigger
+ * and moves it when the browser takes a fallback.
  *
  * The trigger's props carry its own click and keydown handlers, so there is no
  * `:click` to remember and no way to ship a trigger the mouse can open and the
@@ -46,26 +61,21 @@ import { Signal, effect, onCleanup } from '@voltdev/core';
 import { createPresence, type PresenceState } from './presence.js';
 import { createDismiss, type DismissReason } from './dismiss.js';
 import { createFocusScope, focusableWithin } from './focus-scope.js';
+import { createAnchor, type AnchorPlacement } from './anchoring.js';
 import { createId } from './id.js';
 
 // The proposal's own name for reading without subscribing; Volt adds no second
 // spelling for it.
 const { untrack } = Signal.subtle;
 
-/** Which side of the trigger the popover sits on, and how it lines up. */
-export type PopoverPlacement =
-  | 'top'
-  | 'top-start'
-  | 'top-end'
-  | 'right'
-  | 'right-start'
-  | 'right-end'
-  | 'bottom'
-  | 'bottom-start'
-  | 'bottom-end'
-  | 'left'
-  | 'left-start'
-  | 'left-end';
+/**
+ * Which side of the trigger the popover sits on, and how it lines up.
+ *
+ * The anchoring primitive's own type under a name that reads in place. Spelled
+ * out again here once, which meant two lists to keep in step and no compiler
+ * anywhere to notice when they drifted.
+ */
+export type PopoverPlacement = AnchorPlacement;
 
 /**
  * Every string this component can put in front of a user.
@@ -108,6 +118,14 @@ export interface PopoverOptions {
 
   /** Which side of the trigger to sit on. Default `bottom`. */
   placement?: PopoverPlacement;
+  /**
+   * The gap between trigger and popover. A number is pixels.
+   *
+   * Written as a margin on the side that faces the trigger, so it follows the
+   * popover across a flip. A gap written in your own CSS does not: it stays on
+   * the side you put it on, and ends up between the popover and nothing.
+   */
+  offset?: number | string;
   /**
    * Let the browser move the popover to the opposite side when it would
    * overflow. Default true. Costs nothing where anchor positioning is absent,
@@ -164,7 +182,7 @@ export interface Popover {
   placement(): PopoverPlacement;
   /**
    * The anchor's name, for CSS that wants to position something else against
-   * the same trigger — `top: anchor(--volt-popover-1 bottom)`.
+   * the same trigger — `top: anchor(--volt-anchor-1 bottom)`.
    */
   anchorName(): string;
 
@@ -184,17 +202,17 @@ export interface Popover {
 export function createPopover(options: PopoverOptions): Popover {
   const state = options.open ?? new Signal.State(options.defaultOpen ?? false);
   const modal = options.modal === true;
-  const placement = options.placement ?? 'bottom';
   const labels = options.labels ?? {};
 
   const contentId = createId('popover-content');
   const titleId = createId('popover-title');
   const descriptionId = createId('popover-description');
-  // `--volt-popover-1` is both a unique id and a valid dashed-ident, so the id
-  // counter names the anchor too. Two popovers sharing an anchor name would
-  // position against each other's triggers, which is the kind of bug that only
-  // shows up on the one page that renders two.
-  const anchor = createId('--volt-popover');
+  const anchor = createAnchor({
+    anchor: () => options.trigger?.(),
+    defaultPlacement: options.placement ?? 'bottom',
+    offset: options.offset,
+    flip: options.flip,
+  });
 
   // Whether a title or description was actually rendered. Read from the DOM
   // rather than declared, so the consumer cannot forget to say so and get a
@@ -316,8 +334,8 @@ export function createPopover(options: PopoverOptions): Popover {
     isOpen: () => state.get(),
     isPresent: () => presence.isPresent(),
     state: () => presence.state(),
-    placement: () => placement,
-    anchorName: () => anchor,
+    placement: () => anchor.placement(),
+    anchorName: () => anchor.name(),
 
     open: () => setOpen(true),
     close: () => setOpen(false),
@@ -341,12 +359,14 @@ export function createPopover(options: PopoverOptions): Popover {
         props.tabindex = '0';
       }
 
-      if (supportsAnchoring()) props.style = { 'anchor-name': anchor };
+      // Assigned rather than read off a known key, because anchoring hands
+      // back an empty bag where the browser cannot do it — and writing
+      // `style: undefined` is not the same as writing no style at all.
+      Object.assign(props, anchor.anchorProps());
       return props;
     },
 
     contentProps: () => {
-      const anchored = supportsAnchoring();
       const props: Record<string, PopoverProps[string]> = {
         id: contentId,
         role: 'dialog',
@@ -360,24 +380,17 @@ export function createPopover(options: PopoverOptions): Popover {
         'aria-label': !hasTitle.get() && labels.content ? labels.content : undefined,
         'aria-describedby': hasDescription.get() ? descriptionId : undefined,
         'data-state': presence.state(),
-        'data-placement': placement,
-        // Advisory, for CSS that wants to place the popover itself where the
-        // browser cannot do it: `[data-anchored='false'] { … }`.
-        'data-anchored': String(anchored),
         // The content itself must be able to hold focus, or a popover with
         // nothing focusable inside has nowhere to put it.
         tabindex: '-1',
         onkeydown: onContentKeyDown,
       };
 
-      if (anchored) {
-        props.style = {
-          'position-anchor': anchor,
-          'position-area': POSITION_AREAS[placement],
-          ...(options.flip === false ? {} : { 'position-try-fallbacks': fallbacksFor(placement) }),
-        };
-      }
-
+      // Where it goes, what to try instead when that would overflow, and
+      // `data-placement` and `data-anchored` — the second of which is advisory,
+      // for CSS that has to place the popover itself on a browser that cannot:
+      // `[data-anchored='false'] { … }`.
+      Object.assign(props, anchor.floatingProps());
       return props;
     },
 
@@ -394,70 +407,22 @@ export function createPopover(options: PopoverOptions): Popover {
       onclick: onCloseClick,
     }),
 
+    // Deliberately not `anchor.arrowProps()`. That places the arrow in the
+    // trigger's own position-area grid, which is right for an arrow that is a
+    // sibling of the content; this one is a child of it, drawn against the
+    // content's own edge from `data-placement`, and an inline `position-area`
+    // would lift it out of that box. All it takes from anchoring is the name,
+    // so that CSS which does want to reach the trigger can.
     arrowProps: () => {
       const props: Record<string, PopoverProps[string]> = {
-        'data-placement': placement,
+        'data-placement': anchor.placement(),
         // An arrow is a drawing of the relationship the ARIA already states.
         'aria-hidden': 'true',
       };
-      if (supportsAnchoring()) props.style = { 'position-anchor': anchor };
+      if (anchor.isSupported()) props.style = { 'position-anchor': anchor.name() };
       return props;
     },
   };
-}
-
-/**
- * `position-area` for each placement.
- *
- * The span keywords read as though they were inverted, and are not:
- * `span-x-end` puts the popover in the anchor's centre column *and* everything
- * after it, so its leading edge lines up with the anchor's leading edge —
- * which is what `-start` asks for. `x-start`/`x-end` are relative to writing
- * direction, so `bottom-start` mirrors under `dir="rtl"` on its own; the
- * side itself stays physical, because `top` means top in every language.
- */
-const POSITION_AREAS: Record<PopoverPlacement, string> = {
-  top: 'top center',
-  'top-start': 'top span-x-end',
-  'top-end': 'top span-x-start',
-  bottom: 'bottom center',
-  'bottom-start': 'bottom span-x-end',
-  'bottom-end': 'bottom span-x-start',
-  left: 'left center',
-  'left-start': 'left span-y-end',
-  'left-end': 'left span-y-start',
-  right: 'right center',
-  'right-start': 'right span-y-end',
-  'right-end': 'right span-y-start',
-};
-
-/**
- * Try the opposite side first.
- *
- * A popover that would run off the bottom of the window belongs above its
- * trigger, not beside it, so the flip on the placement's own axis is offered
- * before the one across it.
- */
-function fallbacksFor(placement: PopoverPlacement): string {
-  const horizontal = placement.startsWith('left') || placement.startsWith('right');
-  return horizontal ? 'flip-inline, flip-block' : 'flip-block, flip-inline';
-}
-
-/**
- * Whether the browser can position one element against another in CSS.
- *
- * Asked rather than assumed, so `data-anchored` can tell the consumer's CSS
- * which world it is in. There is deliberately no script fallback: keeping a
- * popover glued to its trigger from JavaScript means measuring on every scroll
- * and resize frame, and the browsers without anchor positioning are the ones
- * least able to afford it.
- */
-function supportsAnchoring(): boolean {
-  // `CSS` is a browser global with no equivalent on a server. Rendered there
-  // the declarations are inert anyway, so claim support and let the browser
-  // that receives the markup be the one to decide.
-  if (typeof CSS === 'undefined' || typeof CSS.supports !== 'function') return true;
-  return CSS.supports('anchor-name', '--volt');
 }
 
 /**

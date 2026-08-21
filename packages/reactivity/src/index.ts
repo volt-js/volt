@@ -39,8 +39,10 @@ export {
   resetFlushMetrics,
   createRoot,
   onCleanup,
+  onError,
   getScope,
   runWithScope,
+  createScope,
   disposeScope,
   createContext,
   useContext,
@@ -48,6 +50,17 @@ export {
 } from './effect.js';
 
 export type { Scope, Context, Dispose, CleanupFn, EffectFn, FlushMetrics } from './effect.js';
+
+// --- Where a thrown error goes ---------------------------------------------
+
+/**
+ * `attachOwner` is not an application API: it is how the component layer tells
+ * the channel which component a scope belongs to, so that a report can name
+ * one. It is exported because the two live in different packages.
+ */
+export { raiseError, setErrorReporter, attachOwner } from './errors.js';
+
+export type { ErrorHandler, ErrorReport, ErrorReporter, ScopeOwner } from './errors.js';
 
 // --- What a server keeps apart, one request from the next -----------------
 

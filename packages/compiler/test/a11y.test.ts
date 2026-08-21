@@ -135,8 +135,12 @@ describe('an <img> that says nothing about itself', () => {
 
 describe('a <label> pointing at nothing', () => {
   it('reports a for that names no element in the template', () => {
+    // Two findings about two elements, which is what a `for` resolving nowhere
+    // costs: the label names nothing, and the control it was meant for is left
+    // with no name of its own.
     expect(warnings(`<label for="email">Email</label><input id="name">`)).toEqual([
       expect.stringContaining('`<label for>` points at `email`, which no element'),
+      expect.stringContaining('`<input>` has no accessible name'),
     ]);
   });
 
@@ -183,6 +187,90 @@ describe('a <label> pointing at nothing', () => {
 
   it('says nothing about a miss no near one explains, once a spread may carry an id', () => {
     expect(warnings(`<label for="email">Email</label><img :spread="p()">`)).toEqual([]);
+  });
+});
+
+describe('a form control nothing names', () => {
+  it('reports an input with no name by any route', () => {
+    expect(warnings(`<form><input :model="email"></form>`)).toEqual([
+      expect.stringContaining('`<input>` has no accessible name'),
+    ]);
+  });
+
+  it('reports a select and a textarea the same way', () => {
+    expect(warnings(`<select :model="n"><option>a</option></select>`)).toEqual([
+      expect.stringContaining('`<select>` has no accessible name'),
+    ]);
+    expect(warnings(`<textarea :model="body"></textarea>`)).toEqual([
+      expect.stringContaining('`<textarea>` has no accessible name'),
+    ]);
+  });
+
+  it('warns rather than refusing, since a name can arrive from outside', () => {
+    expect(() => compile(`<input :model="email">`)).not.toThrow();
+  });
+
+  it('names all the routes worth taking, and rules the placeholder out', () => {
+    const message = warnings(`<input placeholder="Email">`)[0]!;
+    expect(message).toContain('Wrap it in a `<label>`');
+    expect(message).toContain('point a `<label for>` at its `id`');
+    expect(message).toContain('`aria-label`');
+    expect(message).toContain('A `placeholder` is not a name');
+  });
+
+  for (const [route, template] of [
+    ['a wrapping label', `<label>Email <input :model="email"></label>`],
+    ['a label further up', `<label>Email <span class="field"><input :model="e"></span></label>`],
+    ['a label pointing at it', `<label for="email">Email</label><input id="email">`],
+    ['a label written after it', `<input id="email"><label for="email">Email</label>`],
+    ['aria-label', `<input aria-label="Email">`],
+    ['a bound aria-label', `<input :aria-label="t('email')">`],
+    ['aria-labelledby', `<span id="l">Email</span><input aria-labelledby="l">`],
+    ['title', `<input title="Email">`],
+  ] as const) {
+    it(`accepts a control named by ${route}`, () => {
+      expect(warnings(template)).toEqual([]);
+    });
+  }
+
+  for (const [why, template] of [
+    ['a spread may be carrying the name', `<input :spread="props()">`],
+    ['the id is computed, so a label may resolve to it', `<input :attr-id="fieldId.get()">`],
+    ['a label computes its for, so it may point here', `<label :attr-for="f()">E</label><input id="email">`],
+    ['a label spreads, so its for is unknowable', `<label :spread="p()">E</label><input id="email">`],
+    ['the type is computed and may be one that names itself', `<input :attr-type="kind()">`],
+    ['a parent supplies the name around it', `<v-field><input :model="email"></v-field>`],
+    ['it is hidden from the accessibility tree', `<input aria-hidden="true">`],
+  ] as const) {
+    it(`says nothing when ${why}`, () => {
+      expect(warnings(template)).toEqual([]);
+    });
+  }
+
+  for (const type of ['hidden', 'submit', 'reset', 'button', 'image'] as const) {
+    it(`leaves type="${type}" alone, which is named by something else`, () => {
+      expect(warnings(`<input type="${type}" value="Send">`)).toEqual([]);
+    });
+  }
+
+  it('still reports a text input beside a self-naming one', () => {
+    // The exemption is per input rather than per form, which is the way a
+    // search box next to its submit button is usually written.
+    expect(warnings(`<form><input :model="q"><input type="submit" value="Go"></form>`)).toEqual([
+      expect.stringContaining('`<input>` has no accessible name'),
+    ]);
+  });
+
+  it('does not let a wrapping label follow a control through a portal', () => {
+    // The portal moves the control out of the label at runtime, so the label
+    // it was written inside is not the label it renders inside.
+    expect(
+      warnings(`<label>Email <div :portal="host()"><input :model="e"></div></label>`),
+    ).toEqual([expect.stringContaining('`<input>` has no accessible name')]);
+  });
+
+  it('leaves a button alone, which its own contents name', () => {
+    expect(warnings(`<button>Send</button>`)).toEqual([]);
   });
 });
 

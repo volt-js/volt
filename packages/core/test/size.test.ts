@@ -66,7 +66,13 @@ const BUDGETS: Record<string, number> = {
   // `settleRequest`'s loop and the sentence it throws: unbounded, a tree that
   // asks for one more fetch every time the last answer lands is a request that
   // never answers and a message nobody gets.
-  'packages/reactivity/dist/index.js': 3_450,
+  // Raised again from 3450, by 313 B measured by bundling the package with and
+  // without it, for the error channel: the boundary registry, the walk up the
+  // scope chain, and the report the global hook is handed. What it replaces
+  // was a single `console.error`, and the difference it buys is between a
+  // message nobody reads in production and a report naming the component that
+  // failed.
+  'packages/reactivity/dist/index.js': 3_750,
   // The rest of that seam: `wake` and `write` are called from the propagation
   // code, which ships as its own chunk. 60 B of this is the seam, by the same
   // measurement, and the chunk is budgeted at all because bytes moved out of
@@ -85,7 +91,13 @@ const BUDGETS: Record<string, number> = {
   // where they have to be minted: an id is now a component's position in the
   // tree rather than a number from a counter, and only the component runtime
   // knows the position.
-  'packages/core/dist/index.js': 550,
+  //
+  // Raised again from 550 by the error channel's three public names —
+  // `errorBoundary`, `onError` and `setErrorReporter`. This entry is a
+  // re-export barrel, so what it weighs is names rather than code; the channel
+  // itself is measured against the reactivity budget above. 21 B for somewhere
+  // for a thrown error to go is the cheapest line in this table.
+  'packages/core/dist/index.js': 600,
   // The tools themselves. A production build drops the whole file — that is
   // asserted on bundled bytes in `devtools.test.ts` — so this is a ceiling on
   // what a development build carries, and it is here so that growing it is a

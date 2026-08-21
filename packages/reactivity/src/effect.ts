@@ -30,6 +30,7 @@
  */
 
 import { devListener, type EffectPhase } from './dev.js';
+import { declareBoundary, raiseError, type ErrorHandler } from './errors.js';
 import {
   ComputedSignal,
   WatcherNode,
@@ -72,7 +73,15 @@ export interface Scope {
 
 let currentScope: Scope | null = null;
 
-function createScope(parent: Scope | null): Scope {
+/**
+ * A scope under the current one, torn down with it.
+ *
+ * `createRoot` is the other way to get a scope, and it untracks: what it makes
+ * is a root, deliberately independent of whatever is building. This does not,
+ * because the component layer needs a scope of its own around work whose
+ * signal reads still belong to the effect that is building the tree.
+ */
+export function createScope(parent: Scope | null = currentScope): Scope {
   const scope: Scope = {
     parent,
     children: null,
@@ -125,7 +134,7 @@ function clearScope(scope: Scope): void {
       try {
         cleanups[i]!();
       } catch (err) {
-        reportError(err);
+        raiseError(err, scope);
       }
     }
     cleanups.length = 0;
@@ -179,6 +188,32 @@ export function onCleanup(fn: CleanupFn): CleanupFn {
   }
   (currentScope.cleanups ??= []).push(fn);
   return fn;
+}
+
+/**
+ * Make the current scope a boundary: errors thrown anywhere below it arrive
+ * here instead of at the console.
+ *
+ * The handler is given the error and the scope that produced it, and decides
+ * what happens next. Returning swallows the error. Throwing sends it — or a
+ * different one — on to the boundary above, so a boundary that only knows how
+ * to deal with one kind of failure can let the rest past. Replacing the failed
+ * subtree with something that renders is what `errorBoundary` in
+ * `@voltdev/core` does with this, and it is a separate thing because nothing
+ * down here knows what DOM is.
+ *
+ * An error raised while a handler is running goes to the boundary above rather
+ * than back to the one that is mid-recovery, which is what stops a fallback
+ * that throws from replacing itself for ever.
+ */
+export function onError(handler: ErrorHandler): void {
+  if (currentScope === null) {
+    if (__VOLT_DEV__ && typeof console !== 'undefined') {
+      console.warn('[volt] onError called outside a reactive scope — nothing will reach it.');
+    }
+    return;
+  }
+  declareBoundary(currentScope, handler);
 }
 
 // ---------------------------------------------------------------------------
@@ -691,9 +726,11 @@ function runEffectComputed(node: ComputedSignal<unknown>): void {
   try {
     node.get();
   } catch (err) {
-    // Which write woke this effect is the first thing anyone debugging it
-    // asks, and it is known here and nowhere downstream of here.
-    reportError(err, __VOLT_DEV__ ? devListener?.explain(node) : null);
+    // An effect is its own scope, and the scope is where the error has to
+    // start from: a boundary is found by walking up from here. Which write
+    // woke this effect is the first thing anyone debugging it asks, and it is
+    // known here and nowhere downstream of here.
+    raiseError(err, node as unknown as Scope, __VOLT_DEV__ ? devListener?.explain(node) : null);
   } finally {
     if (__VOLT_DEV__) devListener?.runEnded(node);
   }
@@ -726,12 +763,6 @@ export function batch<T>(fn: () => T): T {
   } finally {
     batchDepth--;
     if (batchDepth === 0) schedule();
-  }
-}
-
-function reportError(err: unknown, cause?: string | null): void {
-  if (typeof console !== 'undefined') {
-    console.error('[volt] Uncaught error in effect' + (cause ? ' — ' + cause : '') + ':', err);
   }
 }
 
@@ -786,7 +817,7 @@ function createEffect(fn: EffectFn, watcher: WatcherNode, immediate: boolean): D
       try {
         previous();
       } catch (err) {
-        reportError(err);
+        raiseError(err, scope);
       }
     }
     const result = runInScope(scope, fn);
@@ -817,7 +848,7 @@ function createEffect(fn: EffectFn, watcher: WatcherNode, immediate: boolean): D
       try {
         computed.get();
       } catch (err) {
-        reportError(err, __VOLT_DEV__ ? devListener?.explain(computed) : null);
+        raiseError(err, scope, __VOLT_DEV__ ? devListener?.explain(computed) : null);
       } finally {
         if (__VOLT_DEV__) {
           devListener?.runEnded(computed);
@@ -847,7 +878,7 @@ function createEffect(fn: EffectFn, watcher: WatcherNode, immediate: boolean): D
       try {
         cleanup();
       } catch (err) {
-        reportError(err);
+        raiseError(err, scope);
       }
       cleanup = null;
     }

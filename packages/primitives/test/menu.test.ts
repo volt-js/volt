@@ -6,11 +6,18 @@
  * what a screen reader is told about each item, and which keys must be
  * prevented — the ones that would otherwise scroll the page or fire a second
  * activation on their way back up.
+ *
+ * Positioning is asserted as the CSS contract it is: the keywords emitted, and
+ * which of them mirror under RTL. happy-dom implements neither layout nor
+ * anchor positioning, so there is no geometry here to measure — and a menu
+ * that quietly started measuring rectangles on scroll would have broken its
+ * promise while every visual test still passed, so the absence of that is a
+ * fact these tests state rather than assume.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { compileTemplate } from '@voltdev/core/jit';
-import { Component, Signal, flushSync, mount } from '@voltdev/core';
-import { createMenu } from '../src/menu.ts';
+import { Component, Signal, defineComponent, flushSync, mount } from '@voltdev/core';
+import { createMenu, type MenuOptions } from '../src/menu.ts';
 
 let host: HTMLElement;
 let mounted: { unmount(): void }[] = [];
@@ -29,7 +36,16 @@ afterEach(() => {
   for (const handle of mounted) handle.unmount();
   mounted = [];
   flushSync();
+  vi.unstubAllGlobals();
 });
+
+/** Unmount early, without afterEach then unmounting the same handle twice. */
+function dispose(handle: { unmount(): void }): void {
+  const index = mounted.indexOf(handle);
+  if (index !== -1) mounted.splice(index, 1);
+  handle.unmount();
+  flushSync();
+}
 
 /**
  * A dropdown menu with the awkward cases in it: a disabled item between two
@@ -582,6 +598,202 @@ describe('dismissal', () => {
   });
 });
 
+describe('anchoring', () => {
+  let seq = 0;
+
+  /**
+   * A dropdown mounted with positioning options, one component per mount so
+   * that several placements can be compared inside a single test.
+   *
+   * The content is portalled, as it nearly always is in practice, and that is
+   * not incidental: it is what puts the menu in a containing block that knows
+   * nothing about the writing direction of the region its trigger sits in.
+   */
+  function mountMenu(options: Partial<MenuOptions> = {}, container: HTMLElement = host) {
+    seq += 1;
+    const id = seq;
+
+    class Anchored {
+      trigger = new Signal.State<Element | null>(null);
+      content = new Signal.State<Element | null>(null);
+      menu = createMenu({
+        trigger: () => this.trigger.get(),
+        content: () => this.content.get(),
+        ...options,
+      });
+    }
+
+    defineComponent(Anchored, {
+      selector: `v-anchored-${id}`,
+      render: compileTemplate(`
+        <div>
+          <button class="t${id}" :ref="trigger" :spread="menu.triggerProps()"
+                  :click="menu.toggle()">Actions</button>
+          <div :if="menu.isPresent()" :portal :ref="content" class="m${id}"
+               :spread="menu.contentProps()">
+            <button :spread="menu.itemProps({ value: 'save' })">Save</button>
+          </div>
+        </div>
+      `),
+    });
+
+    const handle = track(mount(Anchored, container));
+    flushSync();
+
+    return {
+      handle,
+      menu: (handle.instance as Anchored).menu,
+      trigger: () => document.querySelector<HTMLElement>(`.t${id}`)!,
+      content: () => document.querySelector<HTMLElement>(`.m${id}`)!,
+    };
+  }
+
+  /** Mount, open by pointer, and hand back the two positioned elements. */
+  function opened(options: Partial<MenuOptions> = {}, container: HTMLElement = host) {
+    const mounted = mountMenu(options, container);
+    clickOn(mounted.trigger());
+    return mounted;
+  }
+
+  function rtlRegion(): HTMLElement {
+    const el = document.createElement('div');
+    el.setAttribute('dir', 'rtl');
+    document.body.append(el);
+    return el;
+  }
+
+  function area(el: HTMLElement): string {
+    return el.style.getPropertyValue('position-area');
+  }
+
+  /** A style value read as a number, so `0` and `0px` are the same answer. */
+  function px(el: HTMLElement, property: string): number {
+    return Number.parseFloat(el.style.getPropertyValue(property));
+  }
+
+  it('names the trigger and points the content at that name', () => {
+    const { menu, trigger, content } = opened();
+
+    const name = menu.anchorName();
+    expect(name.startsWith('--volt-anchor-')).toBe(true);
+    expect(trigger().style.getPropertyValue('anchor-name')).toBe(name);
+    expect(content().style.getPropertyValue('position-anchor')).toBe(name);
+    // Without a positioning scheme `position-area` does nothing at all, which
+    // is the quietest way to ship a menu that never moves.
+    expect(content().style.getPropertyValue('position')).toBe('absolute');
+    expect(content().getAttribute('data-anchored')).toBe('true');
+  });
+
+  it('drops from the trigger by default, aligned to its leading edge', () => {
+    const { menu, content } = opened();
+
+    expect(menu.placement()).toBe('bottom-start');
+    expect(content().getAttribute('data-placement')).toBe('bottom-start');
+    // The span keyword reads as though it were inverted and is not: spanning
+    // rightwards from the trigger's centre column is what lines the menu's
+    // left edge up with the trigger's.
+    expect(area(content())).toBe('bottom span-right');
+  });
+
+  it('gives every menu on the page its own anchor name', () => {
+    // A second container, because mounting into one that is already occupied
+    // replaces what is there.
+    const elsewhere = document.createElement('div');
+    document.body.append(elsewhere);
+
+    const first = opened();
+    const second = opened({}, elsewhere);
+
+    // Two menus sharing a name would position against each other's triggers,
+    // which only shows up on the one page that renders both.
+    expect(first.menu.anchorName()).not.toBe(second.menu.anchorName());
+    expect(first.trigger().style.getPropertyValue('anchor-name')).toBe(first.menu.anchorName());
+    expect(second.trigger().style.getPropertyValue('anchor-name')).toBe(second.menu.anchorName());
+  });
+
+  it('translates each placement into a position area', () => {
+    for (const [placement, expected] of [
+      ['bottom', 'bottom center'],
+      ['bottom-end', 'bottom span-left'],
+      ['top-start', 'top span-right'],
+      // Beside the trigger, which is where a submenu goes. Alignment there
+      // runs down the block axis, so it spans towards the bottom.
+      ['right-start', 'right span-bottom'],
+      ['left', 'left center'],
+    ] as [MenuOptions['placement'], string][]) {
+      const { handle, content } = opened({ placement });
+      expect(area(content())).toBe(expected);
+      expect(content().getAttribute('data-placement')).toBe(placement);
+      dispose(handle);
+    }
+  });
+
+  it('offers the opposite side first, then the other alignment', () => {
+    const dropdown = opened();
+    // A menu that would run off the bottom of the window belongs above its
+    // trigger, not shunted sideways under it; the corner case, literally, is
+    // overflowing on both axes at once and comes last.
+    expect(dropdown.content().style.getPropertyValue('position-try-fallbacks')).toBe(
+      'flip-block, flip-inline, flip-block flip-inline',
+    );
+    dispose(dropdown.handle);
+
+    const submenu = opened({ placement: 'right-start' });
+    // A submenu at the right edge of the window flips to the left of the item
+    // that opened it, and the engine decides that at the moment it overflows —
+    // there is no measurement here to get wrong.
+    expect(submenu.content().style.getPropertyValue('position-try-fallbacks')).toBe(
+      'flip-inline, flip-block, flip-inline flip-block',
+    );
+  });
+
+  it('stops offering the opposite side when told not to flip', () => {
+    const { content } = opened({ flip: false });
+    // The other alignment is still worth trying: it is the same side, which is
+    // what `flip: false` was asking to keep.
+    expect(content().style.getPropertyValue('position-try-fallbacks')).toBe('flip-inline');
+  });
+
+  it('writes a gap as margins on all four sides', () => {
+    const { content } = opened({ offset: 8 });
+
+    // A margin rather than an inset, because it survives a flip: the fallbacks
+    // swap the margins along with everything else, and nothing here is
+    // watching to recompute an inset.
+    expect(px(content(), 'margin-top')).toBe(8);
+    expect(px(content(), 'margin-bottom')).toBe(0);
+    expect(px(content(), 'margin-left')).toBe(0);
+    expect(px(content(), 'margin-right')).toBe(0);
+    // Exposed so an arrow, or a hover bridge across the gap, can be drawn
+    // exactly as tall as the gap it fills.
+    expect(content().style.getPropertyValue('--volt-anchor-offset')).toBe('8px');
+  });
+
+  it('mirrors the alignment under rtl, resolved against the trigger', () => {
+    const { content } = opened({}, rtlRegion());
+
+    // The page is left-to-right and the menu is portalled into it, so a
+    // logical span keyword left for the browser to resolve would be resolved
+    // against <body> and align to the wrong edge of the trigger.
+    expect(document.documentElement.getAttribute('dir')).toBeNull();
+    expect(content().parentElement).toBe(document.body);
+    expect(area(content())).toBe('bottom span-left');
+  });
+
+  it('says so where the browser cannot anchor, instead of measuring in script', () => {
+    vi.stubGlobal('CSS', { supports: () => false });
+
+    const { trigger, content } = opened();
+
+    // The consumer's CSS can place it from `[data-anchored='false']`; what it
+    // will not get is a scroll handler measuring rectangles on every frame.
+    expect(content().getAttribute('data-anchored')).toBe('false');
+    expect(content().style.getPropertyValue('position-anchor')).toBe('');
+    expect(content().style.getPropertyValue('position-area')).toBe('');
+    expect(trigger().style.getPropertyValue('anchor-name')).toBe('');
+  });
+});
+
 describe('as a context menu', () => {
   @Component({
     selector: 'v-context',
@@ -692,6 +904,22 @@ describe('as a context menu', () => {
 
     escape();
     expect(focused()).toBe(behind);
+  });
+
+  it('is not anchored, having no element to anchor to', () => {
+    const { menu, area, content } = contextSetup();
+    rightClick(area(), 120, 80);
+
+    // `position()` is the whole of what this menu knows about where it goes.
+    // Naming an anchor nothing carries would leave `position-area` inert and
+    // an inline `position: absolute` would fight the `fixed` a consumer needs
+    // to use those viewport coordinates.
+    expect(menu.position()).toEqual({ x: 120, y: 80 });
+    expect(content()!.hasAttribute('data-anchored')).toBe(false);
+    expect(content()!.hasAttribute('data-placement')).toBe(false);
+    const style = (content() as HTMLElement).style;
+    expect(style.getPropertyValue('position-anchor')).toBe('');
+    expect(style.getPropertyValue('position')).toBe('');
   });
 
   it('keeps the position while the exit plays out', () => {

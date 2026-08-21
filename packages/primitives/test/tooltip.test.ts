@@ -40,6 +40,7 @@ afterEach(() => {
   mounted = [];
   flushSync();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 @Component({
@@ -428,6 +429,85 @@ describe('anchor positioning', () => {
     const second = setup();
     // Two tooltips sharing a name would anchor to each other.
     expect(first.tip.anchorName()).not.toBe(second.tip.anchorName());
+  });
+
+  it('sits above the trigger by default', () => {
+    const { tip, trigger, content } = setup();
+    enter(trigger());
+    advance(700);
+
+    // Above, because it is the one side a pointer resting on the trigger
+    // cannot cover.
+    expect(tip.placement()).toBe('top');
+    const el = content() as HTMLElement;
+    expect(el.getAttribute('data-placement')).toBe('top');
+    expect(el.style.getPropertyValue('position-area')).toBe('top center');
+    expect(el.getAttribute('data-anchored')).toBe('true');
+    // A `position-area` on a statically positioned element is inert, and a
+    // tooltip that silently never moves is the most common way to get this
+    // wrong.
+    expect(el.style.getPropertyValue('position')).toBe('absolute');
+  });
+
+  it('offers the opposite side first when it would overflow', () => {
+    const { trigger, content } = setup({ placement: 'top' });
+    enter(trigger());
+    advance(700);
+
+    // A tooltip near the top of the window belongs below its trigger, not
+    // shunted sideways over it.
+    expect((content() as HTMLElement).style.getPropertyValue('position-try-fallbacks')).toBe(
+      'flip-block, top span-right, top span-left',
+    );
+  });
+
+  it('writes a gap as margins on all four sides', () => {
+    const { trigger, content } = setup({ offset: 6 });
+    enter(trigger());
+    advance(700);
+
+    // A margin rather than an inset, because it survives a flip: the fallbacks
+    // swap the margins along with everything else.
+    const style = (content() as HTMLElement).style;
+    expect(Number.parseFloat(style.getPropertyValue('margin-bottom'))).toBe(6);
+    expect(Number.parseFloat(style.getPropertyValue('margin-top'))).toBe(0);
+    expect(Number.parseFloat(style.getPropertyValue('margin-left'))).toBe(0);
+    expect(Number.parseFloat(style.getPropertyValue('margin-right'))).toBe(0);
+  });
+
+  it('mirrors the alignment under rtl, resolved against the trigger', () => {
+    // An RTL region of an otherwise left-to-right page — a quoted message, a
+    // comment field — which is the common case, not the exotic one.
+    host.setAttribute('dir', 'rtl');
+
+    const { trigger, content } = setup({ placement: 'top-start' });
+    enter(trigger());
+    advance(700);
+
+    // The tooltip is portalled into an LTR body, so a logical `span-x-end`
+    // left for the browser to resolve would be resolved against <body> and
+    // align to the wrong edge of the trigger.
+    expect(document.documentElement.getAttribute('dir')).toBeNull();
+    expect((content() as HTMLElement).parentElement).toBe(document.body);
+    expect((content() as HTMLElement).style.getPropertyValue('position-area')).toBe(
+      'top span-left',
+    );
+  });
+
+  it('says so where the browser cannot anchor, instead of measuring in script', () => {
+    vi.stubGlobal('CSS', { supports: () => false });
+
+    const { trigger, content } = setup();
+    enter(trigger());
+    advance(700);
+
+    // The consumer's CSS can place it from `[data-anchored='false']`; what it
+    // will not get is a scroll handler measuring rectangles on every frame.
+    const el = content() as HTMLElement;
+    expect(el.getAttribute('data-anchored')).toBe('false');
+    expect(el.style.getPropertyValue('position-anchor')).toBe('');
+    expect(el.style.getPropertyValue('position-area')).toBe('');
+    expect((trigger() as HTMLElement).style.getPropertyValue('anchor-name')).toBe('');
   });
 });
 

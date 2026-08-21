@@ -4,6 +4,7 @@
   <form class="add" :submit.prevent="add()">
     <input
       class="input"
+      aria-label="What needs doing?"
       placeholder="What needs doing?"
       :model.trim="draft"
       :keydown.escape="draft.set('')"

@@ -39,6 +39,7 @@ import {
 } from './dom-info.js';
 import { validateContentModel } from './content-model.js';
 import { checkAccessibility, type A11ySeverity, type Diagnostic } from './a11y.js';
+import { checkUnknownElements } from './unknown-element.js';
 import {
   clientMarkup,
   MarkupBuilder,
@@ -179,20 +180,6 @@ export interface CodegenResult {
   rowRootCounts: (number | null)[];
   /** What the compiler removed or folded before runtime ever sees it. */
   stats: CompileStats;
-  /**
-   * Component tags this template can never render on first paint.
-   *
-   * A tag qualifies when every one of its occurrences sits inside a `:if`
-   * chain or a `:portal` — so reaching it always depends on a condition, and
-   * the initial render cannot include it unless that condition starts true.
-   * The build uses this to decide what to split into its own chunk without
-   * anyone having to declare it.
-   *
-   * `:for` deliberately does not qualify. A list is very often non-empty on
-   * first render, and being wrong there costs a round trip on the critical
-   * path — whereas being wrong about a dialog costs nothing.
-   */
-  deferrable: string[];
   /**
    * Literal message keys this template asks for, via `t('key')`.
    *
@@ -335,7 +322,17 @@ export function generate(root: RootNode, options: CodegenOptions = {}): CodegenR
   // Before any path is computed, because every path below a node the HTML
   // parser relocates is resolved against a tree that will not exist.
   validateContentModel(root, options.filename);
-  const warnings = checkAccessibility(root, options);
+  // Two passes warn, and only the second of them can also refuse. Holding the
+  // first pass's findings out here is what keeps them on a refusal, for the
+  // reason the accessibility pass carries its own: they are about other
+  // elements, and one bad element must not hide every softer finding beside it.
+  const warnings = checkUnknownElements(root, options);
+  try {
+    warnings.push(...checkAccessibility(root, options));
+  } catch (e) {
+    if (e instanceof CompilerError) e.warnings = [...warnings, ...e.warnings];
+    throw e;
+  }
   const result = new Generator(options).run(root);
 
   // Both read up front so the option-coverage gate in `build-hash.test.ts`
@@ -385,10 +382,6 @@ class Generator {
   private hoisted: string[] = [];
   private uid = 0;
 
-  /** Depth of `:if` / `:portal` nesting, for the deferrable-tag analysis. */
-  private conditionalDepth = 0;
-  /** Every component tag seen, mapped to whether it was ever unconditional. */
-  private componentTags = new Map<string, boolean>();
   /** Every literal `t('key')` this template makes, with where it was made. */
   private messageSites: MessageSite[] = [];
   /** Expression texts already collected, keyed by where they were written. */
@@ -462,9 +455,6 @@ class Generator {
       stats: this.stats,
       messageKeys: [...new Set(this.messageSites.map((site) => site.key))].sort(),
       messageSites: this.messageSites,
-      deferrable: [...this.componentTags]
-        .filter(([, unconditional]) => !unconditional)
-        .map(([tag]) => tag),
     };
   }
 
@@ -1649,11 +1639,9 @@ class Generator {
       : dir.exp
         ? this.genAccessor(dir.exp, ctx, dir.loc)
         : 'null';
-    const body = this.inConditional(() =>
-      stripped.isTemplate
-        ? this.genChildrenExpression(stripped.children, ctx)
-        : this.genChildrenExpression([stripped], ctx),
-    );
+    const body = stripped.isTemplate
+      ? this.genChildrenExpression(stripped.children, ctx)
+      : this.genChildrenExpression([stripped], ctx);
     if (this.server) {
       // The writer is one object for the whole render, so the body needs no
       // parameter: `portal` moves where that writer is pointing for the span
@@ -1693,10 +1681,6 @@ class Generator {
 
   /** Render one branch of a conditional without re-triggering its own `:if`. */
   private genBranchBody(node: ElementNode, ctx: PrintContext): string {
-    return this.inConditional(() => this.genBranchBodyInner(node, ctx));
-  }
-
-  private genBranchBodyInner(node: ElementNode, ctx: PrintContext): string {
     const stripped = stripDirectives(node, ['if', 'else-if', 'else']);
     if (findDirective(stripped, 'for')) {
       return this.genFor(stripped, ctx);
@@ -2028,26 +2012,7 @@ class Generator {
   // Components
   // -------------------------------------------------------------------------
 
-  /** Note a component tag, and whether this occurrence is reachable directly. */
-  private noteComponentTag(tag: string): void {
-    const unconditional = this.conditionalDepth === 0;
-    // Once seen unconditionally it stays that way: one direct occurrence is
-    // enough to put the component on the first-paint path.
-    this.componentTags.set(tag, (this.componentTags.get(tag) ?? false) || unconditional);
-  }
-
-  /** Generate `body` as sitting behind a condition, for the analysis. */
-  private inConditional<T>(body: () => T): T {
-    this.conditionalDepth++;
-    try {
-      return body();
-    } finally {
-      this.conditionalDepth--;
-    }
-  }
-
   private genComponent(node: ElementNode, ctx: PrintContext): string {
-    this.noteComponentTag(node.tag);
     const props: string[] = [];
     const events: string[] = [];
 

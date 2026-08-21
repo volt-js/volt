@@ -574,7 +574,9 @@ describe('anchor positioning', () => {
     flushSync();
 
     const name = popover.anchorName();
-    expect(name.startsWith('--volt-popover-')).toBe(true);
+    // Named by the shared anchoring primitive rather than by the popover, so
+    // the prefix is its. One generator, one guarantee that two names differ.
+    expect(name.startsWith('--volt-anchor-')).toBe(true);
     expect(trigger().style.getPropertyValue('anchor-name')).toBe(name);
 
     const el = content()!;
@@ -603,14 +605,19 @@ describe('anchor positioning', () => {
   });
 
   it('translates each placement into a position area', () => {
+    // Physical keywords, not logical ones. `span-x-end` and its friends are
+    // resolved by the browser against the positioned element's containing
+    // block, which for a portalled popover is <body> — so the direction they
+    // mirror on is the portal's, not the trigger's. These are resolved here
+    // instead, off the trigger, which is what the RTL case below turns on.
     const cases: [PopoverOptions['placement'], string][] = [
       ['top', 'top center'],
       // Aligned to the anchor's leading edge, which is what the popover
       // spanning towards the end achieves.
-      ['top-start', 'top span-x-end'],
-      ['top-end', 'top span-x-start'],
-      ['left-start', 'left span-y-end'],
-      ['left-end', 'left span-y-start'],
+      ['top-start', 'top span-right'],
+      ['top-end', 'top span-left'],
+      ['left-start', 'left span-bottom'],
+      ['left-end', 'left span-top'],
       ['right', 'right center'],
     ];
 
@@ -625,12 +632,15 @@ describe('anchor positioning', () => {
     }
   });
 
-  it('offers the opposite side first when it would overflow', () => {
+  it('offers the opposite side first, then the other alignment', () => {
     const vertical = mountPopover({ placement: 'bottom' });
     vertical.trigger().click();
     flushSync();
+    // A centred placement has no other alignment to flip to, and centred is
+    // exactly the one that overflows sideways on a narrow window, so the two
+    // aligned variants are written out.
     expect(vertical.content()!.style.getPropertyValue('position-try-fallbacks')).toBe(
-      'flip-block, flip-inline',
+      'flip-block, bottom span-right, bottom span-left',
     );
     escape();
     flushSync();
@@ -638,16 +648,68 @@ describe('anchor positioning', () => {
     const horizontal = mountPopover({ placement: 'right-start' });
     horizontal.trigger().click();
     flushSync();
+    // The opposite side first, then the other alignment, then the corner case
+    // — literally the corner: overflowing on both axes at once.
     expect(horizontal.content()!.style.getPropertyValue('position-try-fallbacks')).toBe(
-      'flip-inline, flip-block',
+      'flip-inline, flip-block, flip-inline flip-block',
     );
   });
 
-  it('does not offer to flip when told not to', () => {
+  it('stops offering the opposite side when told not to flip', () => {
     const { trigger, content } = mountPopover({ flip: false });
     trigger().click();
     flushSync();
-    expect(content()!.style.getPropertyValue('position-try-fallbacks')).toBe('');
+    // `flip` is about the opposite side, and the opposite side is gone. The
+    // other alignment of the side asked for is not a flip and is still worth
+    // trying — it is the side `flip: false` asked to keep.
+    expect(content()!.style.getPropertyValue('position-try-fallbacks')).toBe(
+      'bottom span-right, bottom span-left',
+    );
+  });
+
+  it('writes a positioning scheme, because position-area alone does nothing', () => {
+    const { trigger, content } = mountPopover();
+    trigger().click();
+    flushSync();
+
+    // A `position-area` on a statically positioned element is inert, and a
+    // popover that silently never moves is the most common way to get this
+    // wrong. The cost is that the inline value beats the consumer's stylesheet.
+    expect(content()!.style.getPropertyValue('position')).toBe('absolute');
+  });
+
+  it('writes a gap as margins on all four sides', () => {
+    const { trigger, content } = mountPopover({ placement: 'bottom', offset: 4 });
+    trigger().click();
+    flushSync();
+
+    // A margin rather than an inset, because it survives a flip: the fallbacks
+    // swap the margins along with everything else, and nothing here is
+    // watching to recompute an inset.
+    const style = content()!.style;
+    expect(Number.parseFloat(style.getPropertyValue('margin-top'))).toBe(4);
+    expect(Number.parseFloat(style.getPropertyValue('margin-bottom'))).toBe(0);
+    expect(Number.parseFloat(style.getPropertyValue('margin-left'))).toBe(0);
+    expect(Number.parseFloat(style.getPropertyValue('margin-right'))).toBe(0);
+  });
+
+  it('mirrors the alignment under rtl, resolved against the trigger', () => {
+    const rtl = document.createElement('div');
+    rtl.setAttribute('dir', 'rtl');
+    document.body.append(rtl);
+
+    const { trigger, content } = mountPopover({ placement: 'bottom-start' }, TEMPLATE, rtl);
+    trigger().click();
+    flushSync();
+
+    // The page is left-to-right and the popover is portalled into it, so a
+    // logical `span-x-end` left for the browser to resolve would be resolved
+    // against <body> and align to the wrong edge of the trigger. This is the
+    // defect that moving onto the shared anchoring fixed.
+    expect(document.documentElement.getAttribute('dir')).toBeNull();
+    expect(content()!.parentElement).toBe(document.body);
+    expect(content()!.style.getPropertyValue('position-area')).toBe('bottom span-left');
+    expect(content()!.getAttribute('data-placement')).toBe('bottom-start');
   });
 
   it('says so where the browser cannot anchor, instead of guessing in script', () => {

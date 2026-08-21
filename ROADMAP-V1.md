@@ -182,8 +182,10 @@ Per component, and enforced by tests rather than asserted in a README:
 The six that force every shared behaviour into existence, in order:
 
 - [x] **Dialog** — presence, focus scope, dismissal
-- [ ] **Dropdown Menu** — collection, roving focus and typeahead are built;
-      anchoring is not, and the menu positions nothing
+- [x] **Dropdown Menu** — collection, roving focus, typeahead, and anchoring
+      through the same CSS anchor positioning the popover and the tooltip use.
+      No submenu yet: a submenu's placement is a `placement` option away, its
+      keyboard is not
 - [ ] **Combobox** — built and tested, but held back from export along with
       inputs and slider-upload until a review passes clean, and it does not
       virtualize
@@ -202,6 +204,24 @@ timeline and decisions.
 ### Data grid — the AG Grid bar
 
 The single largest thing on this roadmap. Its own package, `@voltdev/grid`.
+
+**Foundation built, and it is a foundation rather than a grid.** `createGrid`
+is a headless primitive: row and column virtualization on the shared
+`createVirtualizer` rather than a private copy, per-column widths and pointer
+and keyboard resize, `role="grid"` with the `aria-rowcount`/`aria-colcount`/
+`aria-rowindex`/`aria-colindex` a virtualized grid needs precisely because the
+rendered rows are not the whole set, and cell-level keyboard movement as
+arithmetic over a cursor — `createRovingFocus` does not fit here, because the
+cell `Ctrl+End` names is not in the document to move focus to. A cell owns its
+own binding, which is the claim the section rests on: setting one cell's signal
+runs one accessor and updates one text node, asserted rather than asserted-to.
+
+Everything in the bullets below beyond rendering, columns and interaction is
+untouched: no sorting, no filtering, no grouping or aggregation or pivoting, no
+tree data or master/detail, no editing of any kind, no selection beyond a
+single active cell, no pinning, no variable row height, no RTL, no drag and
+drop, no export, no state save/restore, and no data source but the client-side
+one.
 
 **Decided: started in parallel**, rather than after the six behaviour-forming
 components. The cost to watch is that the grid needs virtualization,
@@ -328,9 +348,9 @@ A page that is mostly prose already ships almost no runtime work for it, and
 the island boundary is a fact the compiler knows rather than an annotation.
 
 What is missing for real partial hydration is not marking the boundary but
-declining to ship the JavaScript behind it — which is the same analysis as
-`deferrable` in the compiler, applied to a different question: not "can this
-appear later" but "can this ever change".
+declining to ship the JavaScript behind it — the same shape of reachability
+analysis, asked of a different question: not "can this appear later" but "can
+this ever change".
 
 ## Server-side rendering
 
@@ -734,19 +754,19 @@ easier. There is no re-render to fall back on, so a mid-flush failure leaves
 specific nodes stale with nothing to repair them. That is the reason this
 cannot be a `try`/`catch` bolted on later.
 
-- [ ] An error channel replacing `reportError`: a thrown error travels to the
+- [x] An error channel replacing `reportError`: a thrown error travels to the
       nearest boundary in the scope chain rather than to the console. Scopes
       already form the tree this needs — a boundary is a scope that declares
       itself one.
-- [ ] `onError` per boundary, receiving the error and the scope that produced
+- [x] `onError` per boundary, receiving the error and the scope that produced
       it, and deciding: swallow, replace the subtree with a fallback, or
       rethrow to the boundary above.
-- [ ] Recovery semantics, stated rather than discovered. When a boundary
+- [x] Recovery semantics, stated rather than discovered. When a boundary
       replaces a subtree, everything below it is disposed first — cleanups
       run, listeners detach — and the fallback mounts into a fresh scope.
       Retrying re-runs the subtree from its inputs, which is only correct
       because a component is constructed once and holds no render state.
-- [ ] A global hook, so an application can wire every component error to its
+- [x] A global hook, so an application can wire every component error to its
       own reporting with the component, its props and its scope attached.
       This is the same information the devtools "why did this update" panel
       needs, so it is designed once and read twice — a production error report
@@ -781,9 +801,13 @@ What it can decide from the template alone, with no type information:
 - [x] `<img>` with no `alt`. An empty `alt=""` is correct for decoration and
       must stay allowed — the error is silence, not emptiness.
 - [x] `<label>` whose `for` names nothing in the same template.
-- [ ] A form control with no accessible name by any of the four routes. Held
-      back because one of the four routes is a name a parent component passes
-      in, which no single template can see.
+- [x] A form control with no accessible name by any of the four routes. The
+      route no single template can see — a name a parent passes in — is what
+      the rule goes quiet on rather than what holds it back: a `:spread`, a
+      computed `id`, and markup written inside a component's tag are each a way
+      for the name to arrive from a file this one cannot read, and each of them
+      ends the check. What is reported is a control this template on its own
+      shows to be out of reach of all four routes.
 - [x] `aria-*` attributes that are misspelled, take an enumerated value that
       is not in the enum, or reference an id no template defines.
 - [x] `role` on an element whose implicit role it silently overrides —
@@ -848,10 +872,10 @@ deliverable.
 - Nested routes and layouts that persist across navigation, since re-mounting
   a layout on every navigation is what makes an SPA feel worse than an MPA
 - Lazy route components — preload on hover, load on navigate. Built, but *not*
-  on the compiler's `deferrable` analysis or core's `preload()`, which is what
-  this bullet used to claim: the router rejects both and rolls its own loader.
-  That mis-attribution is what left `deferrable` computed on every compile and
-  read by nothing.
+  on any compiler analysis or core's `preload()`, which is what this bullet
+  used to claim: the router rejects both and rolls its own loader. That
+  mis-attribution is what left `deferrable` computed on every compile and read
+  by nothing, until it was removed.
 - Per-route rendering mode, feeding the hybrid plan above
 - Data loading tied to the route so a navigation can fetch and render together
   rather than mounting, then discovering it needs data
@@ -994,9 +1018,11 @@ project points it at a catalogue. The runtime catalogue is untouched.
 
 Not yet, and the reason:
 
-- [ ] **Messages follow the code split.** `deferrable` and `messageSites` are
-      both on the compile result, so the analysis is there; nothing yet turns
-      the pair into per-chunk catalogues.
+- [ ] **Messages follow the code split.** `messageSites` is on the compile
+      result, so which template asks for which key is known. What is missing is
+      the other half — which chunk a template ended up in, which only the
+      bundle graph knows — and a writer that turns the pair into per-chunk
+      catalogues.
 - [ ] A key must be a plain identifier. Nested and dotted catalogues are
       refused with a suggestion rather than silently renamed, because an
       export is a function name and there is no second way to spell one.

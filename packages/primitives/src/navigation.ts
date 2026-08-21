@@ -34,9 +34,16 @@ const { untrack } = Signal.subtle;
 /**
  * A value in a spread object. Handlers are included because the keyboard map
  * is part of what these own, and a consumer who has to remember to wire it up
- * is a consumer who will ship a menubar the arrow keys do nothing in.
+ * is a consumer who will ship a menubar the arrow keys do nothing in. So is a
+ * style object, which is how the breadcrumb's overflow menu carries the anchor
+ * positioning it gets from `createMenu`.
  */
-export type NavigationPropValue = string | boolean | undefined | ((event: Event) => void);
+export type NavigationPropValue =
+  | string
+  | boolean
+  | undefined
+  | Readonly<Record<string, string>>
+  | ((event: Event) => void);
 
 /**
  * One props type for all four components. They are one file's worth of

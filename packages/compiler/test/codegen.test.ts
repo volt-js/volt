@@ -7,6 +7,11 @@ function gen(template: string): string {
   return compile(template).body;
 }
 
+/** The messages this template warns with, in source order. */
+function warnings(template: string): string[] {
+  return compile(template).warnings.map((w) => w.message);
+}
+
 describe('generated code shape', () => {
   it('emits a hoisted template and navigates to the marker', () => {
     expect(gen(`<span>{ count.get() }</span>`)).toMatchInlineSnapshot(`
@@ -223,55 +228,85 @@ describe('how wide one `:for` row is', () => {
   });
 });
 
-describe('components that cannot render on first paint', () => {
-  const deferrable = (template: string) => compile(template).deferrable.sort();
+describe('a tag one character away from a real element', () => {
+  for (const [written, meant] of [
+    ['dvi', 'div'], ['spam', 'span'], ['buton', 'button'], ['sectoin', 'section'],
+    ['inupt', 'input'], ['iamge', 'image'], ['sgv', 'svg'],
+  ] as const) {
+    it(`reports <${written}> and names <${meant}>`, () => {
+      expect(warnings(`<div><${written}></${written}></div>`)).toEqual([
+        expect.stringContaining(`\`<${written}>\` is not an element — did you mean \`<${meant}>\`?`),
+      ]);
+    });
+  }
 
-  it('finds a component reachable only behind a condition', () => {
-    expect(deferrable(`<div><v-chart :if="open.get()"></v-chart></div>`)).toEqual(['v-chart']);
+  it('warns rather than refusing, since the markup emitted is what was written', () => {
+    expect(() => gen(`<dvi></dvi>`)).not.toThrow();
   });
 
-  it('finds one reachable only through a portal', () => {
-    expect(deferrable(`<div><v-dialog :portal></v-dialog></div>`)).toEqual(['v-dialog']);
+  it('offers the hyphen as the way to say a tag is deliberate', () => {
+    expect(warnings(`<dvi></dvi>`)[0]).toContain('give it a hyphen if the tag really is a custom');
   });
 
-  it('leaves out a component rendered directly', () => {
-    expect(deferrable(`<div><v-header></v-header></div>`)).toEqual([]);
+  it('points at the line the tag is written on', () => {
+    const found = compile(`<div>\n  <p>ok</p>\n  <dvi></dvi>\n</div>`).warnings;
+    expect(found).toHaveLength(1);
+    expect(found[0]!.loc.line).toBe(3);
   });
 
-  it('leaves out one used both ways', () => {
-    // A single direct occurrence puts it on the first-paint path, so splitting
-    // it would add a round trip to the critical path.
-    expect(
-      deferrable(`<div><v-icon></v-icon><v-icon :if="x.get()"></v-icon></div>`),
-    ).toEqual([]);
+  for (const markup of [
+    '<div></div>', '<span></span>', '<section></section>', '<template></template>',
+    '<slot></slot>', '<br>', '<wbr>',
+  ]) {
+    it(`leaves ${markup} alone`, () => {
+      expect(warnings(`<div>${markup}</div>`)).toEqual([]);
+    });
+  }
+
+  it('leaves SVG alone, camelCase and all', () => {
+    expect(warnings(`<svg><clipPath><circle></circle></clipPath><text>x</text></svg>`))
+      .toEqual([]);
   });
 
-  it('sees through nesting to the component inside', () => {
-    expect(
-      deferrable(`<div><section :if="open.get()"><v-chart></v-chart></section></div>`),
-    ).toEqual(['v-chart']);
+  it('still finds a near miss inside an svg', () => {
+    expect(warnings(`<svg><crcle></crcle></svg>`)[0]).toContain('did you mean `<circle>`');
   });
 
-  it('counts an else branch as conditional too', () => {
-    expect(
-      deferrable(`<div><b :if="x.get()">a</b><v-fallback :else></v-fallback></div>`),
-    ).toEqual(['v-fallback']);
+  it('leaves components and custom elements alone', () => {
+    // `isComponentTag` claims both, so neither is ever measured against the
+    // tables — which is what keeps a design system's own tag names out of this.
+    expect(warnings(`<div><VChart></VChart><v-chart></v-chart><my-el></my-el></div>`))
+      .toEqual([]);
   });
 
-  it('does not treat a list as deferrable', () => {
-    // A list is very often non-empty on first render. Being wrong about a
-    // dialog costs nothing; being wrong here costs a round trip.
-    expect(
-      deferrable(`<ul><v-row :for="r in rows.get()" :key="r.id"></v-row></ul>`),
-    ).toEqual([]);
+  for (const tag of ['d', 'q', 'mi']) {
+    it(`says nothing about <${tag}>, too short for a near miss to mean anything`, () => {
+      // Every one- and two-letter tag is one edit from several real ones, so a
+      // near miss among them names an element nobody had in mind.
+      expect(warnings(`<div><${tag}></${tag}></div>`)).toEqual([]);
+    });
+  }
+
+  it('starts looking at three characters', () => {
+    // The length that counts is the tag as written, not the one suggested.
+    expect(warnings(`<div><ol2></ol2></div>`)[0]).toContain('did you mean `<ol>`');
   });
 
-  it('reports several independent ones', () => {
-    expect(
-      deferrable(
-        `<div><v-a :if="x.get()"></v-a><v-b :portal></v-b><v-c></v-c></div>`,
-      ),
-    ).toEqual(['v-a', 'v-b']);
+  it('says nothing about a tag no near miss explains', () => {
+    // An invented tag is deliberate often enough, and is visible the first time
+    // the page is opened. A typo is the one that survives review.
+    expect(warnings(`<div><flexbox></flexbox></div>`)).toEqual([]);
+  });
+
+  it('says nothing inside <math>, which Volt does not render at all', () => {
+    // Every tag in there is unknown here, and `mi` is one edit from `<i>` —
+    // so the suggestion would be about an element the author never meant.
+    expect(warnings(`<math><mi>x</mi><mrow><msqrt></msqrt></mrow></math>`)).toEqual([]);
+  });
+
+  it('finds one however deeply it is nested', () => {
+    expect(warnings(`<div><ul><li><secton></secton></li></ul></div>`)[0])
+      .toContain('did you mean `<section>`');
   });
 });
 

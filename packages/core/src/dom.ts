@@ -10,12 +10,15 @@ import {
   Signal,
   batch,
   createRoot,
+  createScope,
   effect,
   getScope,
   isSignal,
   isWritableSignal,
   onCleanup,
+  onError,
   renderEffect,
+  runWithScope,
   type Scope,
 } from '@voltdev/reactivity';
 // The lowered spelling of the namespace, which is the whole point of it: the
@@ -330,6 +333,111 @@ export function branch(branches: BranchEntry[]): Accessor<unknown> {
   buildEffect(() => {
     const index = active.get();
     result.set(index === -1 ? null : untrack(() => branches[index]![1]()));
+  });
+
+  return () => result.get();
+}
+
+export interface BoundaryOptions {
+  /**
+   * What to show once the subtree has failed, given the error and a way to
+   * build the subtree again from its inputs. Without one the boundary
+   * swallows: nothing is replaced, and whatever the failed run had already
+   * written stays on screen.
+   */
+  fallback?: (error: unknown, retry: () => void) => unknown;
+  /**
+   * Told about the error and the scope that produced it, before anything is
+   * replaced. Throwing from here sends the error on to the boundary above,
+   * which is how a boundary declines a failure it does not know what to do
+   * with.
+   */
+  onError?: (error: unknown, scope: Scope) => void;
+}
+
+/**
+ * A boundary around a piece of the tree: anything thrown below it arrives
+ * here instead of at the console.
+ *
+ * The recovery is the same one `:if` performs when it switches branches, and
+ * deliberately so — replacing the subtree disposes it first, so its cleanups
+ * run and its listeners detach, and the fallback is built in the fresh scope
+ * the next run opens. `retry` does the same thing in the other direction: the
+ * subtree is built again from its inputs, which is only correct because a
+ * component is constructed once and holds no render state.
+ */
+export function errorBoundary(
+  children: () => unknown,
+  options: BoundaryOptions = {},
+): Accessor<unknown> {
+  // A scope of its own, above the effect that builds the subtree and outside
+  // everything that effect disposes. Declaring the boundary on whatever scope
+  // happened to be current would put two boundaries in one template on the
+  // same scope, where the second would silently replace the first.
+  const owner = createScope();
+  const result = new StateSignal<unknown>(null);
+  // What is showing is a plain variable rather than part of the signal,
+  // because the handler reads it from inside the catch of an effect that is
+  // mid-run: a tracked read there would make that effect depend on it.
+  let showing = false;
+  let caught: unknown = null;
+  let building = false;
+  let generation = 0;
+  const attempt = new StateSignal(0);
+
+  const retry = () => {
+    showing = false;
+    caught = null;
+    attempt.set(++generation);
+  };
+
+  runWithScope(owner, () => {
+    onError((error, scope) => {
+      // A failure with the fallback already up is either the fallback's own or
+      // came from something that outlived the subtree. Replacing the fallback
+      // with itself would loop, so it goes to the boundary above instead.
+      if (showing) throw error;
+      options.onError?.(error, scope);
+      if (!options.fallback) return;
+      showing = true;
+      caught = error;
+      // A failure while the subtree is being built is seen by the run that is
+      // still on the stack, which swaps before it returns. Waking the effect
+      // from inside its own run would achieve nothing anyway: a run ends by
+      // marking itself clean, which would discard the very notification this
+      // write is trying to send.
+      if (!building) attempt.set(++generation);
+    });
+
+    // A render effect, not a computed, for the reason `branch` is one: what it
+    // builds creates effects, and re-running it disposes the previous scope
+    // along with them — cleanups run and listeners detach before anything
+    // replaces them.
+    buildEffect(() => {
+      // Read before anything can throw, so that the run which fails still
+      // depends on it and a later failure can wake this effect.
+      attempt.get();
+      const parent = getScope();
+      let content: unknown = null;
+
+      building = true;
+      try {
+        if (!showing) {
+          // Each attempt is a root of its own under this effect, so the one
+          // that fails can be torn down without waiting for the next run.
+          const built = createRoot((dispose) => ({ dispose, content: children() }), parent);
+          content = built.content;
+          if (showing) built.dispose();
+        }
+        // Read again: `children()` may have failed while it was building, and
+        // the handler will have run before this point.
+        if (showing) content = createRoot(() => options.fallback!(caught, retry), parent);
+      } finally {
+        building = false;
+      }
+
+      result.set(content);
+    });
   });
 
   return () => result.get();

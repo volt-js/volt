@@ -180,10 +180,48 @@ Updates coalesce onto a microtask by default.
 | `onCleanup(fn)` | Register a cleanup on the current scope |
 | `getScope()` | The current scope, or `null` |
 | `runWithScope(scope, fn)` | Run `fn` with `scope` current |
+| `createScope(parent?)` | A scope under the current one, disposed with it |
 | `disposeScope(scope)` | Dispose a scope and everything it owns |
 
 Disposing a scope disposes its child scopes, stops its effects, and runs
 cleanups newest-first.
+
+## Errors
+
+| Function | Description |
+|---|---|
+| `onError(handler)` | Make the current scope a boundary |
+| `raiseError(error, scope)` | Put an error into the channel from outside an effect |
+| `setErrorReporter(fn \| null)` | Hear about every error, handled or not |
+
+An error thrown inside an effect travels up the scope chain to the nearest
+scope that called `onError`. The handler is given the error and the scope that
+produced it, and decides what happens next:
+
+```ts
+createRoot(() => {
+  onError((error, scope) => {
+    if (!(error instanceof NotFound)) throw error; // to the boundary above
+    void scope;
+    // returning here swallows it
+  });
+});
+```
+
+With no boundary anywhere above, the error reaches `console.error`. Replacing
+a failed subtree with something that renders is
+[`errorBoundary`](./component.md#error-boundaries), which is built on this.
+
+`setErrorReporter` is the application-wide hook. It is called for every error
+the channel carries, including ones a boundary swallowed, and takes over from
+the console:
+
+```ts
+setErrorReporter(({ error, component, props, scope, handled }) => {
+  telemetry.send({ error, component: component?.constructor.name, props, handled });
+  void scope;
+});
+```
 
 ## Context
 

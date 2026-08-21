@@ -7,9 +7,25 @@
  * pointer and so needs a label of its own.
  *
  * This is headless: it owns state, keyboard and ARIA, and returns prop objects
- * to spread onto whatever markup the consumer writes. Nothing here renders,
- * and nothing here positions anything — `position()` reports where a context
- * menu was asked for, and the consumer decides what that means in pixels.
+ * to spread onto whatever markup the consumer writes. Nothing here renders.
+ *
+ * A dropdown menu is positioned by `createAnchor`, which is CSS anchor
+ * positioning and nothing else: the trigger is given an `anchor-name`, the
+ * content a `position-anchor`, a `position-area` and the fallbacks to try when
+ * the placement asked for would leave the viewport. Nothing measures a
+ * rectangle and nothing listens for scroll, which is the same bargain the
+ * popover and the tooltip make. It is taken from the shared implementation
+ * rather than written out inline a third time, because that one also resolves
+ * the writing direction against the trigger: a portalled menu's containing
+ * block is <body>, which knows nothing about the direction of the region its
+ * trigger sits in, so a logical span keyword left for the browser to resolve
+ * aligns to the wrong edge of an RTL toolbar on an LTR page. A submenu wants
+ * `placement: 'right-start'` and gets flipped to the left of its parent by the
+ * engine, at the moment it would overflow, for no script at all.
+ *
+ * A context menu is not anchored, because there is no element to anchor it to:
+ * `position()` reports where it was asked for, and the consumer decides what
+ * that means in pixels.
  *
  *   class Actions {
  *     trigger = new Signal.State<Element | null>(null);
@@ -73,6 +89,7 @@ import { createDismiss, type DismissReason } from './dismiss.js';
 import { createFocusScope } from './focus-scope.js';
 import { createCollection, ITEM_ATTRIBUTE } from './collection.js';
 import { createRovingFocus, type Orientation } from './roving-focus.js';
+import { createAnchor, type AnchorPlacement } from './anchoring.js';
 import { createId } from './id.js';
 
 /**
@@ -132,6 +149,18 @@ export interface MenuOptions {
   open?: Signal.State<boolean>;
   defaultOpen?: boolean;
 
+  /**
+   * Which side of the trigger the menu sits on. Default `bottom-start`, which
+   * lines the menu's leading edge up with the trigger's — leading, not left,
+   * because the alignment mirrors under `dir="rtl"`. A submenu wants
+   * `right-start`. Ignored by a context menu, which has no trigger.
+   */
+  placement?: AnchorPlacement;
+  /** The gap between trigger and menu. A number is pixels. */
+  offset?: number | string;
+  /** Let the browser flip to the opposite side when it would overflow. Default true. */
+  flip?: boolean;
+
   /** Which arrows move. Default vertical. */
   orientation?: Orientation;
   /** Arrow keys wrap past the ends. Default true. */
@@ -155,8 +184,9 @@ export interface MenuOptions {
   onSelect?: (item: HTMLElement, value: string | undefined) => void;
 }
 
+/** A bag of attributes to spread; `style` is an object of CSS declarations. */
 export interface MenuProps {
-  readonly [key: string]: string | boolean | undefined;
+  readonly [key: string]: string | boolean | undefined | Readonly<Record<string, string>>;
 }
 
 export interface Menu {
@@ -174,6 +204,19 @@ export interface Menu {
   position(): MenuPosition | null;
   /** The item that currently holds focus, for styling the highlight. */
   activeItem(): HTMLElement | null;
+  /**
+   * The trigger's `anchor-name`, for CSS that has to position something else
+   * against the same element — a menu sized to the control it drops from,
+   * `width: anchor-size(--volt-anchor-1 width)`. A context menu still has a
+   * name, and nothing carries it.
+   */
+  anchorName(): string;
+  /**
+   * The side the menu was asked to sit on, for an entry animation's transform
+   * origin. Not necessarily the side it is on: when the engine takes one of
+   * the fallbacks it does not report which, and there is no API to ask.
+   */
+  placement(): AnchorPlacement;
 
   open(focus?: MenuOpenFocus): void;
   close(): void;
@@ -220,6 +263,19 @@ export function createMenu(options: MenuOptions): Menu {
     () => options.content(),
   );
   const collection = createCollection(() => options.content());
+
+  // Keyed off whether a trigger was supplied at all rather than off what it
+  // currently returns, so the content is laid out the same way on the frame it
+  // appears as on every frame after it. It is also the same line the rest of
+  // the file draws between the two menus: a dropdown hangs off a trigger, a
+  // context menu has nothing to hang off.
+  const anchored = options.trigger !== undefined;
+  const anchor = createAnchor({
+    anchor: () => options.trigger?.(),
+    defaultPlacement: options.placement ?? 'bottom-start',
+    offset: options.offset,
+    flip: options.flip,
+  });
 
   const setOpen = (next: boolean) => {
     if (state.get() === next) return;
@@ -323,6 +379,8 @@ export function createMenu(options: MenuOptions): Menu {
     state: () => presence.state(),
     position: () => pointer.get(),
     activeItem: () => active.get(),
+    anchorName: () => anchor.name(),
+    placement: () => anchor.placement(),
 
     open: (focus) => openMenu(focus),
     close: () => setOpen(false),
@@ -403,27 +461,43 @@ export function createMenu(options: MenuOptions): Menu {
       roving.focus(item);
     },
 
-    triggerProps: () => ({
-      id: triggerId,
-      'aria-haspopup': 'menu',
-      'aria-expanded': String(state.get()),
-      'aria-controls': state.get() ? contentId : undefined,
-      'data-state': presence.state(),
-    }),
+    triggerProps: () => {
+      const props: Record<string, MenuProps[string]> = {
+        id: triggerId,
+        'aria-haspopup': 'menu',
+        'aria-expanded': String(state.get()),
+        'aria-controls': state.get() ? contentId : undefined,
+        'data-state': presence.state(),
+      };
+      // Assigned rather than read off a known key, because anchoring hands
+      // back an empty bag where the browser cannot do it — and writing
+      // `style: undefined` is not the same as writing no style at all.
+      if (anchored) Object.assign(props, anchor.anchorProps());
+      return props;
+    },
 
-    contentProps: () => ({
-      id: contentId,
-      role: 'menu',
-      // Vertical is ARIA's own default for a menu, so it is only worth saying
-      // when it is not true.
-      'aria-orientation': orientation === 'horizontal' ? 'horizontal' : undefined,
-      'aria-labelledby': triggerNamesMenu.get() ? triggerId : undefined,
-      'aria-label': triggerNamesMenu.get() ? undefined : label,
-      'data-state': presence.state(),
-      // Focusable so the menu can hold focus itself when it opens with no item
-      // highlighted, and so focus has somewhere to go that is not the page.
-      tabindex: '-1',
-    }),
+    contentProps: () => {
+      const props: Record<string, MenuProps[string]> = {
+        id: contentId,
+        role: 'menu',
+        // Vertical is ARIA's own default for a menu, so it is only worth
+        // saying when it is not true.
+        'aria-orientation': orientation === 'horizontal' ? 'horizontal' : undefined,
+        'aria-labelledby': triggerNamesMenu.get() ? triggerId : undefined,
+        'aria-label': triggerNamesMenu.get() ? undefined : label,
+        'data-state': presence.state(),
+        // Focusable so the menu can hold focus itself when it opens with no
+        // item highlighted, and so focus has somewhere to go that is not the
+        // page.
+        tabindex: '-1',
+      };
+      // Where it goes, what to try instead when that would overflow, and
+      // `data-anchored` for the CSS that has to place it by hand on an engine
+      // which cannot. A context menu gets none of it, so an inline
+      // `position: absolute` never fights the `fixed` its own coordinates want.
+      if (anchored) Object.assign(props, anchor.floatingProps());
+      return props;
+    },
 
     itemProps: (item = {}) => {
       const role = item.role ?? 'menuitem';
