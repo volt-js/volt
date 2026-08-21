@@ -1,10 +1,10 @@
 # Server rendering
 
-Volt renders to markup with `renderToStaticMarkup`, and to nothing else yet:
-there is no hydration of any kind, so no markers, no ids and no state payload.
-`renderToString` and `renderToStream` come after hydration rather than before
-it, because what they add is identity and ordering and both are defined against
-these bytes.
+Volt renders to markup with `renderToStaticMarkup`, and to nothing else yet.
+The markup carries hydration's delimiters and nothing more: no ids and no state
+payload. `renderToString` and `renderToStream` come after hydration rather than
+before it, because what they add is identity and ordering and both are defined
+against these bytes.
 
 Underneath it are two things the primitives already depend on: the lane a
 server flushes, and the scope that keeps one request's state out of the next
@@ -45,6 +45,36 @@ on the `<option>`, and by the time the value is known the writer has passed the
 place those options are written. Marking it needs a hole to come back to, which
 is what the segment tree grows when hydration and streaming need one. This is a
 gap rather than a decision.
+
+## Hydration
+
+Every dynamic child is written between `<!--[-->` and `<!--]-->`. The client's
+template has a single comment marker in that position and the server has however
+many nodes the value came to, so the delimiters are what let a hydration walk
+step over a hole instead of counting siblings through it — and what tell the
+block filling that hole which nodes it owns.
+
+Nothing else marks anything. Attributes and an element's own content are written
+where they stand and are found by the same build-time path a client build
+resolves, so they cost no bytes at all.
+
+A page is claimed by compiling the client's templates with `target: 'hydrate'`
+and starting the walk at the container the server's markup was parsed into:
+
+```ts
+import { hydrate } from '@voltdev/core/runtime';
+
+hydrate(document.getElementById('app')!, () => render(ctx));
+```
+
+Blocks are claimed rather than cloned, so the nodes on the page after hydration
+are the nodes the server printed. What is compared is one name per block — the
+tag the markup should have started with. Bindings write rather than compare, so
+a *value* cannot mismatch; a structural disagreement is undetectable by
+construction, which leaves that name as the only evidence a block is standing
+where it thinks it is. When it disagrees, the block clones, the wrongly-claimed
+nodes are removed by the hole that owns them, and `onHydrationMismatch` is told.
+The damage stops at the hole.
 
 ## The build flag
 

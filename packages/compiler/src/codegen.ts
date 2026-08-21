@@ -657,6 +657,14 @@ class Generator {
     }
 
     const rootVar = this.nextId('el');
+    // A block that can widen at its root is one whose top-level width is a
+    // number of markup *slots* rather than of nodes, and counting nodes off a
+    // number that means something else takes the wrong ones — quietly, since
+    // every binding below then lands somewhere plausible and wrong. Those
+    // clone, exactly as a client build does, and the hole above them removes
+    // what the server wrote; everything the block contains still claims,
+    // because `hClose` and `hInsert` read a cloned marker as no claim at all.
+    const claims = this.hydrate && rootArity(template) !== null;
     const resolved = new Map<string, string>();
     // Seeding depends on what the block's first line hands back. Cloning, a
     // single root *is* the clone, which is path [0], and several roots come
@@ -664,7 +672,7 @@ class Generator {
     // is no fragment — the roots are already siblings in the page — so the
     // first of them is named and every other steps from it, which is the same
     // walk `resolvePath` does everywhere else and is hole-aware for free.
-    if (this.hydrate && rootCount > 1) resolved.set('0', `${rootVar}[0]`);
+    if (claims && rootCount > 1) resolved.set('0', `${rootVar}[0]`);
     else resolved.set(rootCount > 1 ? '' : '0', rootVar);
 
     const navigation: string[] = [];
@@ -674,18 +682,38 @@ class Generator {
     // per hole rather than one per node: everything after it steps from the
     // close marker with a plain `.nextSibling`, exactly as a client emit
     // steps from the marker itself.
+    const named = new Map<string, { open: string; close: string }>();
     const hole: HoleResolver = this.hydrate
       ? (path) => {
+          const key = path.join(',');
+          const already = named.get(key);
+          if (already) return already;
           const open = resolve(path);
           const close = this.nextId('el');
           navigation.push(`const ${close} = ${this.rt}.hClose(${open});`);
-          resolved.set(path.join(','), close);
-          return { open, close };
+          // Named under the hole's own path, so that a later sibling steps
+          // from the far end of the hole rather than from the marker opening
+          // it — which is a step across however many nodes the server wrote.
+          resolved.set(key, close);
+          const ends = { open, close };
+          named.set(key, ends);
+          return ends;
         }
       : (path) => {
           const marker = resolve(path);
           return { open: marker, close: marker };
         };
+
+    // Every hole first, in document order, before any binding asks for a node.
+    // `resolvePath` steps from the nearest sibling it has a name for, so this
+    // is what guarantees there is one on the near side of every hole: without
+    // it a binding after a hole nobody had reason to name yet would count
+    // children from the parent and walk straight through it.
+    if (this.hydrate) {
+      for (const record of block.markup.holes) {
+        if (record.kind === 'child') hole(record.path);
+      }
+    }
 
     const effectLines: string[] = [];
     for (const effect of block.effects) {
@@ -693,7 +721,8 @@ class Generator {
     }
 
     const statements: string[] = [];
-    statements.push(`const ${rootVar} = ${this.rootExpression(tmplId, html, rootCount, template)};`);
+    const root = claims ? this.claimExpression(tmplId, html, rootCount) : `${tmplId}()`;
+    statements.push(`const ${rootVar} = ${root};`);
     statements.push(...navigation);
     // One line cannot be shared with anything, and `group` would only add a
     // call for it to unwrap again.
@@ -703,7 +732,7 @@ class Generator {
       statements.push(...effectLines);
     }
 
-    if (rootCount > 1 && !this.hydrate) {
+    if (rootCount > 1 && !claims) {
       // Capture top-level nodes before insertion moves them out of the fragment.
       const nodesVar = this.nextId('nodes');
       statements.push(`const ${nodesVar} = ${this.rt}.childNodes(${rootVar});`);
@@ -727,22 +756,12 @@ class Generator {
    * The cloner is hoisted either way, because a claim that finds the wrong
    * thing falls back to it — which is tier four of the failure design, and the
    * only tier this stage builds. What the claim is told is the name of the
-   * node the server should have written first and how many top-level nodes it
-   * should have written in all; `rootArity` is null when the block can widen
-   * at its root, and a width nobody can predict is a width nothing can safely
-   * count off, so those blocks clone and let the hole above them reconcile.
+   * node the server should have written first, and how many top-level nodes it
+   * should have written in all.
    */
-  private rootExpression(
-    tmplId: string,
-    html: string,
-    rootCount: number,
-    template: TemplateBlock,
-  ): string {
-    if (!this.hydrate) return `${tmplId}()`;
+  private claimExpression(tmplId: string, html: string, rootCount: number): string {
     const args = [tmplId, JSON.stringify(firstNodeName(html))];
-    const fixed = rootArity(template) !== null;
-    if (rootCount > 1 || !fixed) args.push(String(rootCount));
-    if (!fixed) args.push('false');
+    if (rootCount > 1) args.push(String(rootCount));
     return `${this.rt}.hClaim(${args.join(', ')})`;
   }
 
@@ -808,12 +827,20 @@ class Generator {
     let base: string;
     let steps: string;
 
-    // Prefer stepping from the previous sibling when it already has a name.
-    const siblingKey = [...parentPath, last - 1].join(',');
-    const sibling = last > 0 ? resolved.get(siblingKey) : undefined;
+    // Prefer stepping from the nearest preceding sibling that already has a
+    // name. A client emit only ever looks at the one immediately before,
+    // because counting children from the parent is equivalent there; a
+    // hydrating one cannot count, since a hole between here and the parent is
+    // an unknown number of nodes wide — and every hole is named before any of
+    // this runs, so the nearest name is always on the near side of one.
+    let previous = last - 1;
+    if (this.hydrate) {
+      while (previous > 0 && !resolved.has([...parentPath, previous].join(','))) previous--;
+    }
+    const sibling = last > 0 ? resolved.get([...parentPath, previous].join(',')) : undefined;
     if (sibling) {
       base = sibling;
-      steps = '.nextSibling';
+      steps = '.nextSibling'.repeat(last - previous);
     } else {
       const parent = this.resolvePath(parentPath, resolved, out);
       base = parent;

@@ -305,6 +305,219 @@ function reconcileArrays(parent: Node, a: Node[], b: Node[], marker: Node | null
 }
 
 // ---------------------------------------------------------------------------
+// Hydration
+// ---------------------------------------------------------------------------
+
+/** `<!--[-->` and `<!--]-->`, which is what a server writes for a `<!>`. */
+const HOLE_OPEN = '[';
+const HOLE_CLOSE = ']';
+
+function isDelimiter(node: Node, data: string): boolean {
+  return node.nodeType === 8 && (node as Comment).data === data;
+}
+
+/** One hole's nodes, and how much of them a block has taken. */
+interface Claim {
+  /** The element the range lives in; only a mismatch report reads it. */
+  parent: Node;
+  /** The server's nodes for this hole, in document order. */
+  nodes: Node[];
+  index: number;
+  /**
+   * Set once a claim in this range has found the wrong thing.
+   *
+   * After that the range is abandoned rather than offered to whatever comes
+   * next: once one block is standing in the wrong place so is every block that
+   * would count from it, and a list of a thousand rows would otherwise report
+   * a thousand times about one disagreement.
+   */
+  stalled: boolean;
+}
+
+/**
+ * Where a claim is up to, or null when nothing is being claimed.
+ *
+ * One cursor rather than a stack, saved and restored around each `hInsert`,
+ * because a hole's nodes are claimed inside that call and nowhere else. It is
+ * module state for the same reason `collecting` is: the block that claims is
+ * an expression several frames below the call that knows which nodes it owns,
+ * and threading a parameter through `branch`, `each` and `createComponent`
+ * would put a hydration argument on every one of them forever.
+ *
+ * Null once a page is hydrated, which is what makes the same emit serve a
+ * branch that turns true an hour later: `hClaim` clones, and `hClose` and
+ * `hInsert` degrade to the marker and the insert a client build would have
+ * emitted.
+ */
+let claiming: Claim | null = null;
+
+/** What was found where the compiler said something else would be. */
+export interface HydrationMismatch {
+  /** The element the claim was being made in. */
+  parent: Node;
+  /** `nodeName` the compiler recorded for the block's first node. */
+  expected: string;
+  /** What was actually there, or null where the server wrote nothing at all. */
+  found: Node | null;
+}
+
+let reportMismatch: ((mismatch: HydrationMismatch) => void) | null = null;
+
+/**
+ * Be told when hydration found something other than what it printed.
+ *
+ * There is nothing to recover here — the claim has already fallen back to
+ * cloning and the wrongly-placed nodes are already on their way out — so this
+ * is a report rather than a hook. It exists because the damage is otherwise
+ * invisible: the page ends up correct, having thrown away the server's work
+ * for that hole, and the only symptom is that server rendering quietly stopped
+ * being worth anything there.
+ *
+ * Returns a function putting back whatever was registered before, so a test or
+ * a devtools panel can listen for a while without owning the channel.
+ */
+export function onHydrationMismatch(
+  report: (mismatch: HydrationMismatch) => void,
+): () => void {
+  const previous = reportMismatch;
+  reportMismatch = report;
+  return () => {
+    reportMismatch = previous;
+  };
+}
+
+/**
+ * Take the block's roots from the page, or clone them when they are not there.
+ *
+ * `first` is the `nodeName` the compiler recorded for the markup's first node
+ * and `rootCount` how many top-level nodes it produces — a number the compiler
+ * only passes when it is a count of nodes rather than of markup slots, so a
+ * block that can widen at its root never reaches here at all.
+ *
+ * The name is the only thing compared, and one comparison is all there is to
+ * make: bindings write rather than compare, so a value cannot mismatch, and a
+ * structural difference is undetectable by construction. What this buys is not
+ * detection but containment — the damage stops at this block, and somebody is
+ * told.
+ */
+export function hClaim(create: () => Node, first: string, rootCount = 1): Node | Node[] {
+  const claim = claiming;
+  if (claim !== null && !claim.stalled) {
+    const start = claim.nodes[claim.index] ?? null;
+    if (
+      start !== null &&
+      claim.index + rootCount <= claim.nodes.length &&
+      start.nodeName.toUpperCase() === first
+    ) {
+      const claimed = claim.nodes.slice(claim.index, claim.index + rootCount);
+      claim.index += rootCount;
+      return rootCount === 1 ? claimed[0]! : claimed;
+    }
+    reportMismatch?.({ parent: claim.parent, expected: first, found: start });
+    claim.stalled = true;
+  }
+  const built = create();
+  return rootCount === 1 ? built : childNodes(built);
+}
+
+/**
+ * The far end of a hole: the `<!--]-->` closing what `open` opened.
+ *
+ * Given anything else — the `<!>` a clone carries, because this block was
+ * cloned or because the page was never server-rendered — it is the marker
+ * itself, which is exactly what a client build steps from. That is what keeps
+ * one emit serving both, and it is why the depth count below is over the
+ * delimiters rather than over a nesting the caller has to track: a hole whose
+ * content is a fragment can hold further holes as its own siblings.
+ */
+export function hClose(open: Node): Node {
+  if (!isDelimiter(open, HOLE_OPEN)) return open;
+  let depth = 1;
+  let node = open.nextSibling;
+  while (node !== null) {
+    if (isDelimiter(node, HOLE_OPEN)) depth++;
+    else if (isDelimiter(node, HOLE_CLOSE) && --depth === 0) return node;
+    node = node.nextSibling;
+  }
+  // Unreachable against markup this compiler printed; falling back to the open
+  // marker makes a truncated response render rather than throw.
+  return open;
+}
+
+/**
+ * Fill a hole with the server's nodes already in it.
+ *
+ * Three things happen here that `insert` does not do, and each of them is a
+ * bug without the others. The claimed range is handed to the block being built
+ * so it can take those nodes instead of making new ones. `current` is seeded
+ * with the same range, so the first run compares against what is on screen
+ * rather than against nothing — without it the markerless path clears the
+ * parent outright and the server's rows are gone before the client's arrive.
+ * And the block is built from a thunk, because `insert(p, branch([...]), m)`
+ * runs `branch` while it is evaluating its arguments, which is before any of
+ * this could have been set up.
+ *
+ * `open` and `close` are null for a hole with no marker, where the binding
+ * owns everything between an element's tags and the claimed range is simply
+ * its children. They are the same node for a cloned `<!>`, where nothing was
+ * claimed and this is `insert` with one extra call.
+ */
+export function hInsert(
+  parent: Node,
+  open: Node | null,
+  close: Node | null,
+  build: () => unknown,
+): void {
+  const claimed = open !== null && open === close ? [] : claimedRange(parent, open, close);
+  // A single node is seeded as itself rather than as a list of one, so that a
+  // block returning exactly the node it claimed short-circuits on identity and
+  // touches no DOM at all.
+  let current: Current =
+    claimed.length === 0 ? null : claimed.length === 1 ? claimed[0]! : claimed;
+
+  const previous = claiming;
+  claiming = claimed.length === 0 ? null : { parent, nodes: claimed, index: 0, stalled: false };
+  let accessor: unknown;
+  try {
+    accessor = build();
+  } finally {
+    claiming = previous;
+  }
+
+  if (typeof accessor !== 'function') {
+    insertExpression(parent, accessor, close, current);
+    return;
+  }
+  buildEffect(() => {
+    current = insertExpression(parent, (accessor as Accessor<unknown>)(), close, current);
+  });
+}
+
+/** The server's nodes between two delimiters, or all of a parent's children. */
+function claimedRange(parent: Node, open: Node | null, close: Node | null): Node[] {
+  const nodes: Node[] = [];
+  let node = open === null ? parent.firstChild : open.nextSibling;
+  while (node !== null && node !== close) {
+    nodes.push(node);
+    node = node.nextSibling;
+  }
+  return nodes;
+}
+
+/**
+ * Attach a compiled render to markup a server already printed.
+ *
+ * The same shape as the hole above it, because that is what the root of a page
+ * is: a container whose children are the block's, with no marker in front of
+ * them. Everything that makes hydration different from mounting is in
+ * `hInsert` — the claim, the seeded range, the thunk — so this is the entry
+ * that names it rather than a second implementation of it.
+ */
+export function hydrate(host: Node, build: () => unknown): void {
+  hInsert(host, null, null, build);
+}
+
+// ---------------------------------------------------------------------------
 // Control flow
 // ---------------------------------------------------------------------------
 

@@ -428,7 +428,22 @@ the stage before this one and needs rewriting.
 Not yet, and the reason:
 
 - [ ] `renderToString`, then `renderToStream` for streaming
-- [ ] A hydration codegen mode reusing the existing path resolution
+- [x] A hydration codegen mode reusing the existing path resolution. The server
+      writes `<!--[-->` and `<!--]-->` where the client template punches a child
+      marker, and the hydrate emit resolves each hole once — `hClose` per hole,
+      a plain `.nextSibling` for everything that is not one. `hInsert` seeds
+      `current` with the range it claimed, which the design record calls
+      non-negotiable: without it the markerless path wipes what the server
+      wrote. Mismatch handling is tier four only — compare the node name, stall,
+      clone, report — and tiers one to three are still open below.
+      **Not yet reachable from a build.** `@voltdev/vite-plugin` chooses
+      `client` or `server` from the environment and has no notion of a client
+      build that is hydrating one, so an application cannot ask for this emit
+      yet. Also open: per-row delimiters for variable-arity `:for` rows, which
+      clone rather than claim; `bindHtml` skipping its first write; `:model`
+      inverting on its first hydration run, since bfcache and autofill restore
+      values before hydration; and portals, which the server hands back
+      separately while the client appends fresh.
 - [ ] Serialize initial signal state, and adopt it on the client
 - [ ] **Effects a browser is the point of must not run on the server** —
       measure and user work, which today is enforced by the flush stopping

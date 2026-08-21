@@ -161,7 +161,7 @@ result.code;         // a standalone ES module exporting `render`
 result.hoisted;      // module-level declarations, for build-time embedding
 result.renderParams; // the parameters the render function takes
 result.renderBody;   // its body
-result.target;       // 'client' or 'server'
+result.target;       // 'client', 'server' or 'hydrate'
 ```
 
 The Vite plugin uses `hoisted` plus `renderParams` and `renderBody` to inline

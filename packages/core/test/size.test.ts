@@ -86,7 +86,18 @@ const BUDGETS: Record<string, number> = {
   // Raised from 750 when lazy/preload moved to the runtime entry, which is
   // where generated code reaches them now that splitting is the build's
   // decision rather than something an application writes.
-  'packages/core/dist/runtime.js': 800,
+  //
+  // Raised again from 800 by the hydration walk — `hClaim`, `hClose`,
+  // `hInsert`, `hydrate` and `onHydrationMismatch` — which is 85 B measured by
+  // building the package with and without them. What it buys is a page the
+  // server printed being adopted rather than rebuilt: the claim, the range a
+  // hole owns seeded as what is already on screen, and one name comparison per
+  // block so a disagreement costs that block instead of the document. An
+  // application that never server-renders pays it only until its bundler
+  // shakes them out, since nothing in a client emit calls any of them — which
+  // is the whole reason hydration is a third compile target and not a flag
+  // read at every instantiation.
+  'packages/core/dist/runtime.js': 850,
   // Raised from 400 when ids moved here from @voltdev/primitives, which is
   // where they have to be minted: an id is now a component's position in the
   // tree rather than a number from a counter, and only the component runtime

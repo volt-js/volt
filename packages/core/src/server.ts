@@ -10,9 +10,10 @@
  * serialize, which is why a ten-thousand-row page is a string builder's
  * problem rather than a tree's.
  *
- * What this stage deliberately has not got: hydration markers, ids, and a
- * state payload. Hydration's correctness is defined against the markup this
- * file produces, so it is written after this, not beside it.
+ * What this stage deliberately has not got: ids and a state payload. The
+ * markers are here — `openHole`/`closeHole` delimit every dynamic child, so a
+ * hydration walk can step over a hole whose width only this side knows — but
+ * nothing yet identifies a component or carries a value across the wire.
  *
  * Reached from `renderToStaticMarkup` below, and from generated code — the
  * compiler defaults a server build's runtime module to `@voltdev/core/server`,
@@ -146,6 +147,29 @@ export class MarkupWriter {
       return;
     }
     this.parts.push(chunk);
+  }
+
+  /**
+   * The two comments delimiting a dynamic child, where the client has `<!>`.
+   *
+   * The marker the client clones is one node; what is written here is however
+   * many nodes the value came to. Hydration walks the tree by counting
+   * siblings, so it needs somewhere to step *to* — and it needs to know which
+   * of the nodes it is standing among belong to the hole, since those are the
+   * ones a later update replaces and the ones the block filling the hole
+   * claims for itself.
+   *
+   * Pushed straight rather than through `raw`, because these are the writer's
+   * own bytes rather than the compiler's chunk, and because the held content
+   * `raw` exists to place belongs behind an element's `>` rather than behind
+   * a delimiter.
+   */
+  openHole(): void {
+    this.parts.push('<!--[-->');
+  }
+
+  closeHole(): void {
+    this.parts.push('<!--]-->');
   }
 
   /**
