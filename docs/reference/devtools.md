@@ -180,3 +180,41 @@ the closure and the DOM it captured.
 `tools.reset()` clears the logs and zeroes the counters. It leaves the
 component tree alone, which describes what is on screen rather than what has
 happened.
+
+## Stepping back
+
+Signal history is off even inside a session, and asked for by depth:
+
+```ts
+tools.startRecording({ history: 200 });
+// … interact with the application …
+const { writes, at } = tools.history(); // oldest first; `at` is where you are
+tools.travelTo(at - 1); // one step back
+tools.travelTo(-1); // before the first write kept
+```
+
+Off by default for two reasons rather than one. It turns every write into a
+record, where otherwise a write that wakes nothing never becomes an object at
+all. And it holds `previous` — so values the page has moved on from stay
+reachable, which is exactly what stepping back needs and exactly what a long
+session should not accumulate unasked.
+
+`travelTo` restores **state**, which is not the same as restoring the page.
+Effects re-run, because that is what a signal changing means here. Stepping
+back past a write that sent a request sends no second request; stepping back
+past one that filtered a list filters it again. That asymmetry is a property of
+stepping through a reactive graph rather than replaying a log, and a panel
+should say so rather than imply a page can be rewound whole.
+
+Two consequences worth knowing:
+
+- **A write after stepping back abandons what was ahead.** The page has taken a
+  different turn, and offering a "forward" would lead somewhere the current
+  state never came from.
+- **Stepping shows more effect runs than the session performed.** Writes
+  coalesce into one flush while an application runs; each step is flushed on
+  its own, so a pair of writes the page ran as one run replays as two.
+
+`travelTo` returns `false` for a position that is not in the history, and
+restoring is not itself recorded — otherwise undoing a step would become a step
+to undo.

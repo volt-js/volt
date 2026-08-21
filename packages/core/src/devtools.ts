@@ -172,6 +172,16 @@ export interface RecordOptions {
    * costs on the write path rather than on the read.
    */
   stacks?: boolean;
+  /**
+   * Keep this many writes so a session can step back through them.
+   *
+   * Off by default, and for two reasons rather than one. It turns every write
+   * into a record, where otherwise a write that wakes nothing never becomes
+   * an object at all. And it holds `previous` — so the values a page has
+   * moved on from stay reachable, which is exactly what stepping back needs
+   * and exactly what a long session should not accumulate unasked.
+   */
+  history?: number;
 }
 
 export interface Devtools {
@@ -208,6 +218,27 @@ export interface Devtools {
    * write that woke it in its message.
    */
   subscribe(listener: (update: UpdateRecord) => void): () => void;
+
+  /**
+   * The writes kept, oldest first, when a session asked for history.
+   *
+   * `at` is where the page currently stands in them: the index of the last
+   * write that has been applied, and `history().length - 1` when the page is
+   * where it would be if nothing had travelled.
+   */
+  history(): { writes: readonly Write[]; at: number };
+  /**
+   * Put every signal back the way it stood after write `index`, or before the
+   * first one at `-1`. Returns false if there is no such position.
+   *
+   * This restores *state*, which is not the same as restoring the page.
+   * Effects re-run, because that is what a signal changing means here — so a
+   * step back through a write that sent a request sends no second request,
+   * while a step back through one that filtered a list filters it again. That
+   * asymmetry is a property of stepping through a reactive graph rather than a
+   * replay log, and a panel should say so rather than imply otherwise.
+   */
+  travelTo(index: number): boolean;
 
   effectStats(): EffectStat[];
   flushes(): FlushRecord[];
@@ -322,6 +353,16 @@ let writeSeq = 0;
 let updateSeq = 0;
 let recording = false;
 let captureStacks = false;
+
+/**
+ * The writes kept for stepping, oldest first, and where the page stands in
+ * them. `travelling` suppresses recording while a step is being applied, so
+ * putting a signal back does not itself become a write to step through.
+ */
+let historyLimit = 0;
+let history: Write[] = [];
+let historyAt = -1;
+let travelling = false;
 let limit = DEFAULT_LIMIT;
 
 let flushStart = 0;
@@ -661,6 +702,15 @@ const listener: DevListener = {
     pendingPrevious = previous;
     pendingValue = value;
     pending = null;
+
+    if (historyLimit === 0 || travelling) return;
+    // A write made after stepping back abandons what was ahead: the page has
+    // taken a different turn, and keeping the old branch would offer a
+    // "forward" that leads somewhere this state never came from.
+    if (historyAt < history.length - 1) history.length = historyAt + 1;
+    history.push(materialise());
+    if (history.length > historyLimit) history.shift();
+    historyAt = history.length - 1;
   },
 
   wake(effect) {
@@ -801,10 +851,16 @@ const api: Devtools = {
   startRecording(options) {
     limit = options?.limit ?? DEFAULT_LIMIT;
     captureStacks = options?.stacks ?? false;
+    historyLimit = options?.history ?? 0;
+    if (historyLimit === 0) {
+      history = [];
+      historyAt = -1;
+    }
     recording = true;
   },
   stopRecording() {
     recording = false;
+    historyLimit = 0;
     runStack = [];
     // Replaced rather than emptied — there is no walking a WeakMap — so that
     // the next session cannot open with causes left over from this one.
@@ -814,6 +870,38 @@ const api: Devtools = {
     return recording;
   },
   updates: () => [...updateLog],
+  history: () => ({ writes: [...history], at: historyAt }),
+
+  travelTo(index) {
+    if (index < -1 || index >= history.length) return false;
+    if (index === historyAt) return true;
+
+    // Suppressed rather than filtered afterwards: a restore reaches the same
+    // listener as any other write, and recording it would append the
+    // undoing of a step to the very list being stepped through.
+    travelling = true;
+    try {
+      if (index < historyAt) {
+        // Backwards, newest first, so a signal written twice ends on the
+        // value it held before the earlier of the two.
+        for (let i = historyAt; i > index; i--) {
+          const write = history[i]!;
+          (write.signal as StateSignal<unknown>).set(write.previous);
+        }
+      } else {
+        for (let i = historyAt + 1; i <= index; i++) {
+          const write = history[i]!;
+          (write.signal as StateSignal<unknown>).set(write.value);
+        }
+      }
+    } finally {
+      travelling = false;
+    }
+
+    historyAt = index;
+    return true;
+  },
+
   describeUpdate,
   subscribe(listenerFn) {
     subscribers.push(listenerFn);
@@ -848,6 +936,8 @@ const api: Devtools = {
     flushLog = [];
     runStack = [];
     wakeLog = [];
+    history = [];
+    historyAt = -1;
     causes = new WeakMap();
     updateSeq = 0;
     for (const record of effects.values()) {

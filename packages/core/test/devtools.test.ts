@@ -1084,3 +1084,163 @@ describe('production build', () => {
     30_000,
   );
 });
+
+describe('stepping back through what was written', () => {
+  beforeEach(() => {
+    tools.reset();
+    tools.stopRecording();
+  });
+
+  afterEach(() => {
+    tools.stopRecording();
+    tools.reset();
+  });
+
+  it('keeps nothing unless a session asks for it, since holding `previous` holds the past', () => {
+    const count = new Signal.State(0);
+    tools.startRecording();
+    count.set(1);
+    count.set(2);
+    flushSync();
+
+    expect(tools.history().writes).toHaveLength(0);
+    expect(tools.history().at).toBe(-1);
+  });
+
+  it('keeps every write when asked, including the ones that woke nothing', () => {
+    // Nothing reads `quiet`, so no effect ever runs for it. It is still a
+    // write, and a session stepping back has to put it back.
+    const quiet = new Signal.State('a');
+    tools.startRecording({ history: 10 });
+    quiet.set('b');
+    quiet.set('c');
+    flushSync();
+
+    const { writes, at } = tools.history();
+    expect(writes.map((write) => write.value)).toEqual(['b', 'c']);
+    expect(at).toBe(1);
+  });
+
+  it('puts a signal back, and forward again', () => {
+    const count = new Signal.State(0);
+    const seen: number[] = [];
+    effect(() => seen.push(count.get()));
+    flushSync();
+
+    tools.startRecording({ history: 10 });
+    count.set(1);
+    count.set(2);
+    flushSync();
+    expect(count.get()).toBe(2);
+
+    expect(tools.travelTo(0)).toBe(true);
+    flushSync();
+    expect(count.get()).toBe(1);
+
+    expect(tools.travelTo(-1)).toBe(true);
+    flushSync();
+    expect(count.get()).toBe(0);
+
+    expect(tools.travelTo(1)).toBe(true);
+    flushSync();
+    expect(count.get()).toBe(2);
+
+    // Not one run per write. The two writes before the first flush coalesced
+    // into a single run, as they are meant to, so the live session saw 0 then
+    // 2 — while stepping visits 1 on the way past because each step is
+    // flushed on its own. A panel showing effect runs will therefore show
+    // more of them going backwards than the page ever performed forwards.
+    expect(seen).toEqual([0, 2, 1, 0, 2]);
+  });
+
+  it('unwinds two writes to one signal in the order they were made', () => {
+    const name = new Signal.State('first');
+    tools.startRecording({ history: 10 });
+    name.set('second');
+    name.set('third');
+    flushSync();
+
+    tools.travelTo(-1);
+    flushSync();
+    expect(name.get()).toBe('first');
+  });
+
+  it('restores several signals at once, oldest position first', () => {
+    const a = new Signal.State(1);
+    const b = new Signal.State('x');
+    tools.startRecording({ history: 10 });
+    a.set(2);
+    b.set('y');
+    a.set(3);
+    flushSync();
+
+    tools.travelTo(0);
+    flushSync();
+    expect(a.get()).toBe(2);
+    expect(b.get()).toBe('x');
+  });
+
+  it('does not record its own restoring, which would step through itself', () => {
+    const count = new Signal.State(0);
+    tools.startRecording({ history: 10 });
+    count.set(1);
+    flushSync();
+
+    tools.travelTo(-1);
+    flushSync();
+    expect(tools.history().writes).toHaveLength(1);
+    expect(tools.history().at).toBe(-1);
+  });
+
+  it('abandons what was ahead once the page takes a different turn', () => {
+    const count = new Signal.State(0);
+    tools.startRecording({ history: 10 });
+    count.set(1);
+    count.set(2);
+    flushSync();
+
+    tools.travelTo(0);
+    flushSync();
+    // A write from here is a new branch: offering "forward" to 2 afterwards
+    // would lead somewhere this state never came from.
+    count.set(99);
+    flushSync();
+
+    const { writes, at } = tools.history();
+    expect(writes.map((write) => write.value)).toEqual([1, 99]);
+    expect(at).toBe(1);
+  });
+
+  it('drops the oldest rather than growing without bound', () => {
+    const count = new Signal.State(0);
+    tools.startRecording({ history: 3 });
+    for (let i = 1; i <= 5; i++) count.set(i);
+    flushSync();
+
+    expect(tools.history().writes.map((write) => write.value)).toEqual([3, 4, 5]);
+    expect(tools.history().at).toBe(2);
+  });
+
+  it('refuses a position that is not in the history', () => {
+    const count = new Signal.State(0);
+    tools.startRecording({ history: 10 });
+    count.set(1);
+    flushSync();
+
+    expect(tools.travelTo(5)).toBe(false);
+    expect(tools.travelTo(-2)).toBe(false);
+    expect(count.get()).toBe(1);
+  });
+
+  it('stops keeping history when the session ends', () => {
+    const count = new Signal.State(0);
+    tools.startRecording({ history: 10 });
+    count.set(1);
+    flushSync();
+    tools.stopRecording();
+    count.set(2);
+    flushSync();
+
+    expect(tools.history().writes).toHaveLength(1);
+  });
+});

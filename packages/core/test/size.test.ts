@@ -102,7 +102,14 @@ const BUDGETS: Record<string, number> = {
   // asserted on bundled bytes in `devtools.test.ts` — so this is a ceiling on
   // what a development build carries, and it is here so that growing it is a
   // decision rather than a side effect.
-  'packages/core/dist/devtools.js': 2_850,
+  //
+  // Raised from 2850 by write history and `travelTo`, which is 124 B and the
+  // decision this comment asks for: stepping back through what was written is
+  // the one thing in here a panel cannot reconstruct from the outside, since
+  // the value a signal held before is gone the moment it is overwritten.
+  // Nothing is kept unless a session asks for it, so the cost to a
+  // development build that never opens the panel is the code alone.
+  'packages/core/dist/devtools.js': 2_975,
 };
 
 describe('bundle budgets', () => {

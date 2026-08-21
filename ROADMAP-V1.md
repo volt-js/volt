@@ -1143,7 +1143,12 @@ need one.
       above, not this one.
 - [x] **Performance** — effect run counts and durations, flush timings, and
       which bindings are re-running most
-- [ ] **Time travel** — signal history, step back and forth
+- [x] **Time travel** — signal history, step back and forth. Off even inside a
+      session and asked for by depth, because keeping `previous` keeps the past
+      reachable. It restores state rather than the page: effects re-run, so a
+      step back past a request does not send a second one and a step back past a
+      filter filters again — which is what stepping through a graph is, as
+      against replaying a log.
 - [ ] Highlight the DOM a binding owns, on hover
 
 ## Chat
