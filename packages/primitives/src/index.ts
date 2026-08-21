@@ -64,6 +64,7 @@ export * from './async.js';
 
 export * from './virtualizer.js';
 export * from './anchoring.js';
+export * from './announcer.js';
 export * from './form-field.js';
 export * from './drag-drop.js';
 export * from './i18n.js';

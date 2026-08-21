@@ -13,7 +13,8 @@
  * the way it does in a browser — through a `ResizeObserver` that reports
  * exactly what a test hands it, after mount.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetAnnouncer } from '@voltdev/primitives';
 import { compileTemplate } from '@voltdev/core/jit';
 import { Component, Signal, flushSync, mount } from '@voltdev/core';
 import {
@@ -706,6 +707,36 @@ describe('the keyboard', () => {
     press(harness.root, 'ArrowLeft', { altKey: true });
     press(harness.root, 'ArrowLeft', { altKey: true });
     expect(harness.g.columns()[0]!.width).toBe(COLUMN_WIDTH - 16);
+  });
+
+  it('says the new width out loud, since nothing else reports a keyboard resize', async () => {
+    // The handle is `aria-hidden`, the header text does not change, and focus
+    // does not move: without an announcement the gesture is silent, and
+    // silence reads as the key not having worked.
+    const harness = setup();
+    press(harness.root, 'ArrowUp');
+    press(harness.root, 'ArrowRight', { altKey: true });
+
+    await vi.waitFor(() => {
+      const region = document.querySelector("[data-volt-announcer='polite']");
+      expect(region?.textContent ?? '').toContain(`${COLUMN_WIDTH + 16} pixels`);
+    });
+    resetAnnouncer();
+  });
+
+  it('says nothing when the resize changed nothing, so a clamp is not a false report', async () => {
+    // 100 down by 16s reaches the default floor of 40; from there the key
+    // still fires and the width no longer moves. Announcing a width that did
+    // not change would tell a keyboard user the column is still shrinking.
+    const harness = setup();
+    press(harness.root, 'ArrowUp');
+    for (let i = 0; i < 6; i++) press(harness.root, 'ArrowLeft', { altKey: true });
+    expect(harness.g.columns()[0]!.width).toBe(40);
+
+    resetAnnouncer();
+    press(harness.root, 'ArrowLeft', { altKey: true });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(document.querySelector("[data-volt-announcer='polite']")).toBe(null);
   });
 
   it('leaves Alt alone anywhere but the header, where there is nothing to resize', () => {

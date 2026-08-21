@@ -111,7 +111,7 @@
  */
 
 import { Signal, effect, onCleanup } from '@voltdev/core';
-import { createVirtualizer, type VirtualOverscan } from '@voltdev/primitives';
+import { announce, createVirtualizer, type VirtualOverscan } from '@voltdev/primitives';
 
 // The proposal's own name for reading without subscribing; Volt adds no second
 // spelling for it.
@@ -263,6 +263,15 @@ export interface GridOptions<T> {
 
   /** Called with the clamped width a resize settled on. */
   onColumnResize?: (id: string, width: number) => void;
+  /**
+   * The sentence announced when a column is resized from the keyboard.
+   *
+   * A default is given rather than left to the consumer, because the failure
+   * mode of not having one is silence rather than a visible gap. It is not
+   * localized here: this package takes its strings from the caller, and a
+   * width is one of the few that a caller can compose without a catalogue.
+   */
+  resizeAnnouncement?: (column: GridColumn<T>, width: number) => string;
   /** How much one Alt+Arrow press resizes by, in px. Default 16. */
   resizeStep?: number;
 }
@@ -316,6 +325,10 @@ export interface Grid<T> {
 export function createGrid<T>(options: GridOptions<T>): Grid<T> {
   const rowHeight = options.rowHeight ?? DEFAULT_ROW_HEIGHT;
   const resizeStep = options.resizeStep ?? DEFAULT_RESIZE_STEP;
+  const resizeAnnouncement =
+    options.resizeAnnouncement ??
+    ((column: GridColumn<T>, width: number): string =>
+      `${column.header}, ${Math.round(width)} pixels`);
 
   const columnList = (): readonly GridColumn<T>[] => options.columns();
   const rowList = (): readonly T[] => options.rows();
@@ -606,13 +619,13 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
   const indexOfColumn = (id: string): number =>
     untrack(() => columnList().findIndex((column) => column.id === id));
 
-  const resizeColumn = (id: string, width: number): void => {
+  const resizeColumn = (id: string, width: number): number | null => {
     const index = indexOfColumn(id);
     const column = untrack(() => columnList()[index]);
-    if (!column || column.resizable === false) return;
+    if (!column || column.resizable === false) return null;
 
     const next = clampWidth(column, width);
-    if (next === widthOf(index)) return;
+    if (next === widthOf(index)) return null;
 
     const map = new Map(untrack(() => widths.get()));
     map.set(id, next);
@@ -621,6 +634,7 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     // widths would change and every offset after this column would not.
     columnAxis.remeasure();
     options.onColumnResize?.(id, next);
+    return next;
   };
 
   /** Ends the drag in flight, if there is one, however it ends. */
@@ -711,7 +725,13 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
       const column = untrack(() => columnList()[cursor.column]);
       if (!column) return false;
       const step = event.key === 'ArrowRight' ? resizeStep : -resizeStep;
-      resizeColumn(column.id, widthOf(cursor.column) + step);
+      const settled = resizeColumn(column.id, widthOf(cursor.column) + step);
+      // A pointer user watches the column move. Resizing from the keyboard
+      // changes nothing a screen reader would otherwise report: the handle is
+      // `aria-hidden`, the header's text is unchanged, and focus has not
+      // moved. Without this the gesture is silent, and silence here reads as
+      // the key not having worked.
+      if (settled !== null) announce(resizeAnnouncement(column, settled));
       event.preventDefault();
       return true;
     }
