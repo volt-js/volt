@@ -48,6 +48,18 @@ class Todos {
     this.counter += 1;
     return this.counter;
   }
+
+  async rename(id: string, title: string): Promise<string> {
+    return `${id}:${title}`;
+  }
+
+  async search(term: string, limit = 20): Promise<string> {
+    return `${term}/${limit}`;
+  }
+
+  async tag(...names: string[]): Promise<number> {
+    return names.length;
+  }
 }
 
 const CREATE = 'endpoint_create';
@@ -56,6 +68,9 @@ const BOOM = 'endpoint_boom';
 const REFUSE = 'endpoint_refuse';
 const LEAK = 'endpoint_leak';
 const BUMP = 'endpoint_bump';
+const RENAME = 'endpoint_rename';
+const SEARCH = 'endpoint_search';
+const TAG = 'endpoint_tag';
 
 registerServerFunction(Todos, 'create', CREATE, 'test/handler.ts#Todos.create');
 registerServerFunction(Todos, 'whoami', WHOAMI, 'test/handler.ts#Todos.whoami');
@@ -63,6 +78,9 @@ registerServerFunction(Todos, 'boom', BOOM, 'test/handler.ts#Todos.boom');
 registerServerFunction(Todos, 'refuse', REFUSE, 'test/handler.ts#Todos.refuse');
 registerServerFunction(Todos, 'leak', LEAK, 'test/handler.ts#Todos.leak');
 registerServerFunction(Todos, 'bump', BUMP, 'test/handler.ts#Todos.bump');
+registerServerFunction(Todos, 'rename', RENAME, 'test/handler.ts#Todos.rename');
+registerServerFunction(Todos, 'search', SEARCH, 'test/handler.ts#Todos.search');
+registerServerFunction(Todos, 'tag', TAG, 'test/handler.ts#Todos.tag');
 
 let errors: { error: unknown; endpoint: string; name: string }[] = [];
 const handle = createHandler({
@@ -355,5 +373,56 @@ describe('what it does not do', () => {
     // The whole deployment story: it runs wherever `fetch` does.
     expect(handle).toBeTypeOf('function');
     expect(vi.isMockFunction(handle)).toBe(false);
+  });
+});
+
+describe('arguments the caller did not send', () => {
+  // `args` being an array was the whole check until now, so a method declared
+  // `create(text: string)` ran with `text` undefined for anyone who posted an
+  // empty list. A method that then wrote what it was given, or looked
+  // something up by it, did so on a value TypeScript said could not exist.
+  it('refuses a call that omits a required argument', async () => {
+    const response = await handle(call(CREATE, []));
+    expect(response.status).toBe(400);
+    expect((await body(response)).error?.message).toMatch(/takes 1 argument/);
+  });
+
+  it('refuses a call that is short by one of several', async () => {
+    const response = await handle(call(RENAME, ['todo_1']));
+    expect(response.status).toBe(400);
+    expect((await body(response)).error?.message).toMatch(/takes 2 arguments.*carried 1/);
+  });
+
+  it('names the endpoint in the refusal, since a client sent the wrong shape', async () => {
+    const message = (await body(await handle(call(RENAME, [])))).error?.message;
+    expect(message).toContain('Todos.rename');
+  });
+
+  it('does not report it to `onError`, which is for failures of ours', async () => {
+    await handle(call(CREATE, []));
+    expect(errors).toHaveLength(0);
+  });
+
+  it('still runs a method whose remaining parameters have defaults', async () => {
+    const response = await handle(call(SEARCH, ['volt']));
+    expect(response.status).toBe(200);
+    expect((await body(response)).value).toBe('volt/20');
+  });
+
+  it('still runs a method that takes only a rest parameter, with nothing at all', async () => {
+    const response = await handle(call(TAG, []));
+    expect(response.status).toBe(200);
+    expect((await body(response)).value).toBe(0);
+  });
+
+  it('accepts more arguments than declared, which is a client built against a newer signature', async () => {
+    const response = await handle(call(CREATE, ['x', 'unexpected']));
+    expect(response.status).toBe(200);
+  });
+
+  it('accepts exactly the declared count', async () => {
+    const response = await handle(call(RENAME, ['todo_1', 'new title']));
+    expect(response.status).toBe(200);
+    expect((await body(response)).value).toBe('todo_1:new title');
   });
 });

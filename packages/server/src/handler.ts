@@ -194,6 +194,30 @@ async function invoke(
     // is a namespace; it is not a place to keep a session.
     const instance = new (fn.target as new () => Record<string, unknown>)();
     const method = instance[fn.method] as (...rest: unknown[]) => Promise<unknown>;
+
+    // The wire format carries values, not a signature, and nothing upstream
+    // has checked that the caller sent the arguments this method takes. A
+    // method written `create(text: string)` would otherwise run with `text`
+    // undefined for a request that simply omitted it, and fail somewhere
+    // inside itself -- or worse, not fail, and act on the undefined. The
+    // refusal belongs at the edge, where it can still be a 400.
+    //
+    // `length` counts the parameters before the first default or rest one,
+    // which is exactly the set that has no other source than the call. Extra
+    // arguments are not refused: a client built against a newer signature
+    // sending one more is harmless, and a rest parameter is invisible here.
+    //
+    // This is an arity check and nothing more. Types are still unchecked at
+    // runtime -- deriving a validator from the declared types is a build-time
+    // job and is open in the roadmap.
+    if (args.length < method.length) {
+      return fail(
+        400,
+        `${fn.name} takes ${method.length} argument${method.length === 1 ? '' : 's'}, ` +
+          `and the request carried ${args.length}`,
+      );
+    }
+
     // `withRequest` covers the synchronous prologue only, which is the entire
     // window in which `guard` may read the request. See `guard.ts`.
     const result = await withRequest(request, () => method.apply(instance, args));

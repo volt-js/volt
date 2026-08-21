@@ -30,6 +30,13 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # The template type-checker, run the way an application runs it: through
+      # the published `volt` bin, against a real project. Without this step the
+      # checker only ever runs for whoever thinks to run it by hand, which is
+      # the same as not having it.
+      - name: Check templates
+        run: pnpm --filter @voltdev/example-counter run check
+
       - name: Test
         run: pnpm test
 

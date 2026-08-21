@@ -498,12 +498,14 @@ nothing is being added to a project that was not there.
 `@voltdev/vite-plugin`: the decorator, the guard requirement enforced at build
 time, the wire format, the registry, and a handler that is a plain
 `(Request) => Promise<Response>`. This section had no checklist at all while
-that was landing, which is why none of it is ticked below. What is *not* built,
-and matters most: arguments are not validated. The handler checks that `args`
-is an array and nothing further — no arity, no types — so a method typed
-`create(text: string)` runs with `text === undefined` if a caller sends
-`{"args":[]}`. "The types are the schema" is true of the editor and false of
-the endpoint. Form integration and a build-derived serializer are also absent.
+that was landing, which is why none of it is ticked below. Arity is now
+checked at the edge: a method declared `create(text: string)` refuses a request
+that carried no arguments rather than running with `text === undefined`.
+Parameters with defaults and rest parameters are handled, and extra arguments
+are still accepted. What remains absent is *type* validation — "the types are
+the schema" is true of the editor and false of the endpoint until a validator
+is derived from the declared types at build time. Form integration and a
+build-derived serializer are also absent.
 
 A method that runs on the server and is called from the client as though it
 were local. Next.js spells this `'use server'`; Volt spells it as a decorator,
@@ -661,8 +663,8 @@ the way the server-function stub is a different emit from decorator lowering.
   error nobody can act on.
 - The check is a separate pass. Vite's transform cannot report it, since oxc
   strips types and never type-checks. It belongs in a `volt check` command and
-  in CI, alongside `tsc`. The command exists; CI does not run it, so the check
-  reaches whoever thinks to run it by hand and nobody else.
+  in CI, alongside `tsc`. Both now: the command exists, and CI runs it through
+  the published `volt` bin against the example project on every push.
 - An editor wants it live, which means a language server. That is a second,
   larger piece of work, and the CLI has to exist first.
 - Some expressions are legitimately dynamic and will need an escape hatch, or
