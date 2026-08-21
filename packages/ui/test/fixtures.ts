@@ -83,6 +83,23 @@ const toast = (attributes: Record<string, string>): Fixture => ({
   ],
 });
 
+const menuItem = (attributes: Record<string, string> = {}, focus = false): Fixture => ({
+  classes: ['volt-menu-item'],
+  attributes: { tabindex: '-1', ...attributes },
+  focus,
+});
+
+const menu = (state: string, anchored = 'true'): Fixture => ({
+  classes: ['volt-menu-content'],
+  attributes: { role: 'menu', 'data-state': state, 'data-anchored': anchored },
+  children: [menuItem(), { classes: ['volt-menu-separator'] }, menuItem()],
+});
+
+const tooltip = (state: string, anchored = 'true'): Fixture => ({
+  classes: ['volt-tooltip-content'],
+  attributes: { 'data-state': state, 'data-anchored': anchored },
+});
+
 const region = (focus = false): Fixture => ({
   classes: ['volt-toast-region'],
   attributes: { tabindex: '-1' },
@@ -159,6 +176,22 @@ export const fixtures: Readonly<Record<string, ComponentFixtures>> = {
       { classes: ['volt-tabs-panel'], attributes: { tabindex: '0' } },
       { classes: ['volt-tabs-panel'], attributes: { tabindex: '0' }, focus: true },
     ],
+  },
+
+  menu: {
+    states: [
+      { state: 'presence', off: menu('closed'), on: menu('open') },
+      // Disabled has to survive the palette: the muted colour it is drawn in
+      // is one of the first things a forced palette takes away.
+      { state: 'disabled', off: menuItem(), on: menuItem({ 'data-disabled': '' }) },
+      { state: 'focus', off: menuItem(), on: menuItem({}, true) },
+    ],
+    extra: [menu('open', 'false')],
+  },
+
+  tooltip: {
+    states: [{ state: 'presence', off: tooltip('closed'), on: tooltip('open') }],
+    extra: [tooltip('open', 'false')],
   },
 
   toast: {

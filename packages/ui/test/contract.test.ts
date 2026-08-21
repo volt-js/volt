@@ -285,14 +285,16 @@ describe('the registry', () => {
     for (const name of keyframes) expect(name.startsWith('volt-')).toBe(true);
   });
 
-  it('holds the six components this pass styled', () => {
+  it('holds the eight components styled so far', () => {
     expect(componentStyles.map((component) => component.name)).toEqual([
       'button',
       'checkbox',
       'dialog',
+      'menu',
       'popover',
       'tabs',
       'toast',
+      'tooltip',
     ]);
   });
 });

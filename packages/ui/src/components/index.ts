@@ -10,20 +10,33 @@ import type { ComponentStyles } from '../css.js';
 import { buttonStyles } from './button.js';
 import { checkboxStyles } from './checkbox.js';
 import { dialogStyles } from './dialog.js';
+import { menuStyles } from './menu.js';
 import { popoverStyles } from './popover.js';
 import { tabsStyles } from './tabs.js';
+import { tooltipStyles } from './tooltip.js';
 import { toastStyles } from './toast.js';
 
-export { buttonStyles, checkboxStyles, dialogStyles, popoverStyles, tabsStyles, toastStyles };
+export {
+  buttonStyles,
+  checkboxStyles,
+  dialogStyles,
+  menuStyles,
+  popoverStyles,
+  tabsStyles,
+  toastStyles,
+  tooltipStyles,
+};
 
 /** In the order they are emitted, which is alphabetical and means nothing. */
 export const componentStyles: readonly ComponentStyles[] = [
   buttonStyles,
   checkboxStyles,
   dialogStyles,
+  menuStyles,
   popoverStyles,
   tabsStyles,
   toastStyles,
+  tooltipStyles,
 ];
 
 /**
