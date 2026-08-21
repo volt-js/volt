@@ -286,7 +286,7 @@ export class MarkupWriter {
    * is known the writer has already passed the place the options will be
    * written. Marking it needs a hole to come back to, which is what the
    * segment tree grows when hydration and streaming need one — see
-   * `docs/reference/server-rendering.md`.
+   * `docs/reference/server.md`.
    */
   model(kind: string, tag: string, value: unknown, staticValue: string | null): void {
     const resolved = isSignal(value) ? value.get() : value;

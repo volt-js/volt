@@ -1,11 +1,50 @@
 # Server rendering
 
-There is no `renderToString` yet. What exists is the layer underneath it: the
-lane a server flushes, and the scope that keeps one request's state out of the
-next one's page. Both are shipped API — `@voltdev/reactivity` re-exported
-through `@voltdev/core` — because the primitives already depend on them, and a
-resource that fetches on a server has to be reachable before the emitter that
-writes the bytes is.
+Volt renders to markup with `renderToStaticMarkup`, and to nothing else yet:
+there is no hydration of any kind, so no markers, no ids and no state payload.
+`renderToString` and `renderToStream` come after hydration rather than before
+it, because what they add is identity and ordering and both are defined against
+these bytes.
+
+Underneath it are two things the primitives already depend on: the lane a
+server flushes, and the scope that keeps one request's state out of the next
+one's page. Both are `@voltdev/reactivity`, re-exported through
+`@voltdev/core`.
+
+## Rendering
+
+```ts
+import { renderToStaticMarkup } from '@voltdev/core/server';
+
+const { html, portals, styles } = await renderToStaticMarkup(App, {
+  props: { title: 'Volt' },
+});
+```
+
+| Field | Description |
+|---|---|
+| `html` | The component's own markup |
+| `portals` | What `:portal` wrote, which belongs where this render does not reach |
+| `styles` | The styles this request's components declared, by selector |
+
+The render is one synchronous walk inside a request scope, and the request is
+settled before it returns — so a resource that fetched is waited for. What it
+does not do is put late data into bytes already written: a value is serialized
+once, where it stood when the walk passed it. Rendering data that arrives after
+the walk is what async boundaries are for, and they arrive with streaming.
+
+It needs a server build. Templates are compiled for one side or the other, and
+a client build emits render functions that clone markup rather than write it,
+so calling this under `__VOLT_SERVER__ === false` throws rather than producing
+something subtly wrong.
+
+### What it does not write
+
+A `<select>` bound with `:model` emits no selection. The selected state lives
+on the `<option>`, and by the time the value is known the writer has passed the
+place those options are written. Marking it needs a hole to come back to, which
+is what the segment tree grows when hydration and streaming need one. This is a
+gap rather than a decision.
 
 ## The build flag
 
