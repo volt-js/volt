@@ -22,6 +22,7 @@ import { Window } from 'happy-dom';
 import {
   componentStyles,
   keyframesToCss,
+  reducedMotionTokens,
   rulesToCss,
   tokensCss,
   wrap,
@@ -51,7 +52,16 @@ export interface StyledDocument {
 
 /** The same rules the package ships, minus the layers happy-dom cannot read. */
 export function unlayeredCss(): string {
-  const blocks = [tokensCss()];
+  const blocks = [
+    tokensCss(),
+    // Emitted by `stylesheet.ts` beside the tokens, and included here for the
+    // same reason the forced-colours block is: it is the whole of how the
+    // preference is honoured, so a document without it cannot show that it is.
+    wrap(
+      '@media (prefers-reduced-motion: reduce)',
+      rulesToCss([{ selector: ':root', declarations: reducedMotionTokens }], '  '),
+    ),
+  ];
 
   for (const component of componentStyles) {
     if (component.keyframes.length > 0) blocks.push(keyframesToCss(component.keyframes));
@@ -64,10 +74,17 @@ export function unlayeredCss(): string {
   return blocks.join('\n\n');
 }
 
-export function styledDocument(options: { forcedColors?: boolean } = {}): StyledDocument {
+export function styledDocument(
+  options: { forcedColors?: boolean; reducedMotion?: boolean } = {},
+): StyledDocument {
   const window = new Window({
     url: 'http://localhost/',
-    settings: { device: { forcedColors: options.forcedColors ? 'active' : 'none' } },
+    settings: {
+      device: {
+        forcedColors: options.forcedColors ? 'active' : 'none',
+        prefersReducedMotion: options.reducedMotion ? 'reduce' : 'no-preference',
+      },
+    },
   });
   const document = window.document;
 

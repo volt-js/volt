@@ -110,11 +110,13 @@ export interface CodegenOptions {
    * between them. Both walk one `Block`, so the static bytes are the same
    * string either way — see `markup.ts`.
    *
-   * Per build rather than per instantiation: a browser that never
-   * server-renders must not carry a second emit of every template, and a
-   * server has no use for the first.
+   * `hydrate` is the client emit again, for a page the server already
+   * printed: it claims the nodes that are there instead of cloning new ones.
+   * Its own target rather than a flag read per instantiation, because a
+   * browser that never server-renders must not carry a second emit of every
+   * template, and a server has no use for either of the other two.
    */
-  target?: 'client' | 'server';
+  target?: 'client' | 'server' | 'hydrate';
 }
 
 export interface CodegenResult {
@@ -129,7 +131,7 @@ export interface CodegenResult {
    */
   hoisted: string[];
   /** Which emit this is; see `CodegenOptions.target`. */
-  target: 'client' | 'server';
+  target: 'client' | 'server' | 'hydrate';
   /**
    * The render function's parameter list — `_ctx` for a client build, and
    * `_ctx, _o` for a server one, whose second parameter is the writer the
@@ -223,8 +225,22 @@ interface Resolver {
   (path: number[]): string;
 }
 
+/**
+ * Both ends of a child hole: the node the client's `<!>` marker is, and the
+ * node whatever fills the hole sits in front of.
+ *
+ * They are the same node in a client emit, which is why nothing needed this
+ * before. A hydrating emit finds a server hole *n* nodes wide, so the two ends
+ * differ — and every sibling after the hole has to step from the far one,
+ * which is why this is resolved where navigation is emitted rather than left
+ * to the effect that fills the hole.
+ */
+interface HoleResolver {
+  (path: number[]): { open: string; close: string };
+}
+
 interface PendingEffect {
-  (resolve: Resolver): string[];
+  (resolve: Resolver, hole: HoleResolver): string[];
 }
 
 /**
@@ -371,6 +387,8 @@ class Generator {
   private readonly runtimeModule: string;
   /** See `CodegenOptions.target`. */
   private readonly server: boolean;
+  /** See `CodegenOptions.target`. A client emit, against markup already there. */
+  private readonly hydrate: boolean;
   /** The markup writer a server emit writes into, named in generated code. */
   private readonly out = '_o';
 
@@ -402,7 +420,9 @@ class Generator {
     this.rt = options.runtime ?? '_rt';
     this.ctxName = options.ctx ?? '_ctx';
     this.filename = options.filename ?? 'template';
-    this.server = (options.target ?? 'client') === 'server';
+    const target = options.target ?? 'client';
+    this.server = target === 'server';
+    this.hydrate = target === 'hydrate';
     // Defaulted per target rather than fixed, so that neither side has to be
     // told which module it wants and `__VOLT_BUILD__` stays comparable: the
     // hash covers the option, and an option nobody set is the same on both
@@ -445,7 +465,7 @@ class Generator {
       body,
       code: moduleLines.join('\n'),
       hoisted: this.hoisted,
-      target: this.server ? 'server' : 'client',
+      target: this.server ? 'server' : this.hydrate ? 'hydrate' : 'client',
       renderParams: params,
       renderBody,
       templates: this.templates,
@@ -638,21 +658,42 @@ class Generator {
 
     const rootVar = this.nextId('el');
     const resolved = new Map<string, string>();
-    // Seeding depends on what `template()` hands back. With a single root the
-    // clone *is* that root element, which is path [0]. With several roots the
-    // clone is the fragment containing them, which is path [].
-    resolved.set(rootCount > 1 ? '' : '0', rootVar);
+    // Seeding depends on what the block's first line hands back. Cloning, a
+    // single root *is* the clone, which is path [0], and several roots come
+    // wrapped in the fragment holding them, which is path []. Claiming, there
+    // is no fragment — the roots are already siblings in the page — so the
+    // first of them is named and every other steps from it, which is the same
+    // walk `resolvePath` does everywhere else and is hole-aware for free.
+    if (this.hydrate && rootCount > 1) resolved.set('0', `${rootVar}[0]`);
+    else resolved.set(rootCount > 1 ? '' : '0', rootVar);
 
     const navigation: string[] = [];
     const resolve: Resolver = (path) => this.resolvePath(path, resolved, navigation);
 
+    // Naming the far end of a hole *here* is what keeps the walk to one call
+    // per hole rather than one per node: everything after it steps from the
+    // close marker with a plain `.nextSibling`, exactly as a client emit
+    // steps from the marker itself.
+    const hole: HoleResolver = this.hydrate
+      ? (path) => {
+          const open = resolve(path);
+          const close = this.nextId('el');
+          navigation.push(`const ${close} = ${this.rt}.hClose(${open});`);
+          resolved.set(path.join(','), close);
+          return { open, close };
+        }
+      : (path) => {
+          const marker = resolve(path);
+          return { open: marker, close: marker };
+        };
+
     const effectLines: string[] = [];
     for (const effect of block.effects) {
-      for (const line of effect(resolve)) effectLines.push(line);
+      for (const line of effect(resolve, hole)) effectLines.push(line);
     }
 
     const statements: string[] = [];
-    statements.push(`const ${rootVar} = ${tmplId}();`);
+    statements.push(`const ${rootVar} = ${this.rootExpression(tmplId, html, rootCount, template)};`);
     statements.push(...navigation);
     // One line cannot be shared with anything, and `group` would only add a
     // call for it to unwrap again.
@@ -662,12 +703,15 @@ class Generator {
       statements.push(...effectLines);
     }
 
-    if (rootCount > 1) {
+    if (rootCount > 1 && !this.hydrate) {
       // Capture top-level nodes before insertion moves them out of the fragment.
       const nodesVar = this.nextId('nodes');
       statements.push(`const ${nodesVar} = ${this.rt}.childNodes(${rootVar});`);
       statements.push(`return ${nodesVar};`);
     } else {
+      // `hClaim` hands back the list itself when there are several roots,
+      // because claimed roots are siblings in the page rather than children of
+      // a fragment there is anything to snapshot.
       statements.push(`return ${rootVar};`);
     }
 
@@ -675,6 +719,31 @@ class Generator {
       expression: `(() => {\n${indent(statements.join('\n'), 2)}\n})()`,
       rootCount: rootArity(template),
     };
+  }
+
+  /**
+   * The line a block starts with: a clone, or a claim over what is already there.
+   *
+   * The cloner is hoisted either way, because a claim that finds the wrong
+   * thing falls back to it — which is tier four of the failure design, and the
+   * only tier this stage builds. What the claim is told is the name of the
+   * node the server should have written first and how many top-level nodes it
+   * should have written in all; `rootArity` is null when the block can widen
+   * at its root, and a width nobody can predict is a width nothing can safely
+   * count off, so those blocks clone and let the hole above them reconcile.
+   */
+  private rootExpression(
+    tmplId: string,
+    html: string,
+    rootCount: number,
+    template: TemplateBlock,
+  ): string {
+    if (!this.hydrate) return `${tmplId}()`;
+    const args = [tmplId, JSON.stringify(firstNodeName(html))];
+    const fixed = rootArity(template) !== null;
+    if (rootCount > 1 || !fixed) args.push(String(rootCount));
+    if (!fixed) args.push('false');
+    return `${this.rt}.hClaim(${args.join(', ')})`;
   }
 
   /**
@@ -702,7 +771,18 @@ class Generator {
       const text = i < holes.length ? omitRanges(chunks[i] ?? "", block.serverOmit[i] ?? null) : (chunks[i] ?? "");
       if (text) lines.push(`${this.out}.raw(${JSON.stringify(text)});`);
       runDetached(i);
-      if (i < holes.length) lines.push(...block.serverHoles[i]!);
+      if (i < holes.length) {
+        // A child hole is the one kind that occupies bytes on both sides, and
+        // the only one whose width the client cannot know: the marker it
+        // clones is one node and whatever is written here is *n*. Delimiting
+        // it is what lets a hydration walk step over it — and putting the
+        // delimiters here rather than at each hole's own emit site is what
+        // makes that true of every construct that punches one.
+        const child = holes[i]!.kind === 'child';
+        if (child) lines.push(`${this.out}.openHole();`);
+        lines.push(...block.serverHoles[i]!);
+        if (child) lines.push(`${this.out}.closeHole();`);
+      }
     }
     runDetached(holes.length + 1);
 
@@ -832,13 +912,26 @@ class Generator {
       return;
     }
     block.hole({ kind: 'child', path });
-    block.effects.push((resolve) => {
-      const marker = resolve(path);
-      const parent = parentPath.length === 0 ? null : resolve(parentPath);
-      return [
-        `${this.rt}.insert(${parent ?? `${marker}.parentNode`}, ${accessor}, ${marker});`,
-      ];
+    block.effects.push((resolve, hole) => {
+      const { open, close } = hole(path);
+      const parent = parentPath.length === 0 ? `${close}.parentNode` : resolve(parentPath);
+      return [this.insertLine(parent, open, close, accessor)];
     });
+  }
+
+  /**
+   * Fill one hole, either into a clone or over what the server left there.
+   *
+   * The accessor is passed as a thunk when hydrating, and that is the whole
+   * reason this is a method rather than a template literal: `_rt.insert(p,
+   * _rt.branch([...]), m)` evaluates `branch` while it is assembling the
+   * arguments, and `branch` builds its winning body synchronously. So by the
+   * time `insert` ran, the nested block would already have claimed nodes —
+   * from nothing, because only `hInsert` knows which nodes this hole owns.
+   */
+  private insertLine(parent: string, open: string, close: string, accessor: string): string {
+    if (!this.hydrate) return `${this.rt}.insert(${parent}, ${accessor}, ${close});`;
+    return `${this.rt}.hInsert(${parent}, ${open}, ${close}, ${this.thunk(accessor)});`;
   }
 
   private buildNode(node: TemplateChildNode, block: Block, ctx: PrintContext): void {
@@ -879,10 +972,10 @@ class Generator {
         }
         const accessor = this.genInterpolationAccessor(node.exp, ctx, node);
         block.hole({ kind: 'child', path });
-        block.effects.push((resolve) => {
-          const marker = resolve(path);
-          const parent = parentPath.length === 0 ? `${marker}.parentNode` : resolve(parentPath);
-          return [`${this.rt}.insert(${parent}, ${accessor}, ${marker});`];
+        block.effects.push((resolve, hole) => {
+          const { open, close } = hole(path);
+          const parent = parentPath.length === 0 ? `${close}.parentNode` : resolve(parentPath);
+          return [this.insertLine(parent, open, close, accessor)];
         });
         return;
       }
@@ -1200,7 +1293,14 @@ class Generator {
     }
     block.hole({ kind: 'content', path: selfPath, tag: node.tag });
     block.effects.push((resolve) => [
-      `${this.rt}.insert(${resolve(selfPath)}, ${accessor});`,
+      // No marker, so no delimiters either: the binding owns everything
+      // between the tags, and the claimed range is simply the element's
+      // children. This is the case D1 called non-negotiable — `replaceContent`
+      // with no marker clears the parent outright, so a `<ul>` wrapping one
+      // `:for` loses every server-rendered row unless the range is seeded.
+      this.hydrate
+        ? `${this.rt}.hInsert(${resolve(selfPath)}, null, null, ${this.thunk(accessor)});`
+        : `${this.rt}.insert(${resolve(selfPath)}, ${accessor});`,
     ]);
     return true;
   }
@@ -2194,6 +2294,27 @@ function omitRanges(chunk: string, ranges: [number, number][] | null): string {
  * escaped like any other text.
  */
 const RAW_TEXT_TAGS = new Set(['script', 'style']);
+
+/**
+ * The `nodeName` of the first node this block's markup produces.
+ *
+ * The one comparison hydration makes, and it is deliberately the cheapest one
+ * available: bindings write rather than compare, so a value can never
+ * mismatch, and a structural difference is undetectable by construction —
+ * which leaves the shape of the first node as the only evidence a block is
+ * standing where it thinks it is.
+ *
+ * Upper-cased on both sides because the same tag answers differently in the
+ * two parse contexts: `<circle>` claimed inside a live `<svg>` is an SVG
+ * element and names itself in lower case, while the cloner parses a row block
+ * as HTML and gets `CIRCLE`. That difference is a parse context, not a
+ * mismatch, and reporting it would make the check cry wolf on every SVG list.
+ */
+function firstNodeName(html: string): string {
+  const tag = /^<([a-zA-Z][^\s/>]*)/.exec(html);
+  if (tag) return tag[1]!.toUpperCase();
+  return html.startsWith('<!') ? '#COMMENT' : '#TEXT';
+}
 
 function findDirective(node: ElementNode, kind: string): DirectiveNode | undefined {
   return node.directives.find((d) => d.kind === kind);
