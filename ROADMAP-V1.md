@@ -298,9 +298,34 @@ then the interface — which is much the smallest part.
 - Keyboard grid navigation per APG, screen-reader announcements
 - Masked text entry alongside the calendar
 
-Dates need a library decision. **`Temporal`** is the modern answer and fits the
-no-legacy stance — real timezone and calendar support, no `Date` foot-guns, no
-`date-fns`/`luxon` dependency.
+**Built**, apart from timezone handling and presets. `createCalendar` is the
+month grid — one tab stop, APG keyboard, range and multi-month, min/max and
+disabled dates, announcements through the shared announcer.
+`createDateField` and `createTimePicker` are the masked entry: one tab stop
+across the segments, each a `spinbutton` carrying the range its arrows move,
+a value that stays null until every part is there rather than reporting a
+half-typed date, and a hidden input so a plain form post carries an ISO string
+rather than whatever the locale printed. `createDatePicker` composes the field
+and the grid over one value signal, so neither half can drift from the other.
+
+Everything a reader sees comes from `Intl` — first day of week, month and
+weekday names, segment order, the hour cycle, the numbering system. None of it
+is a constant and none of it is a prop with an English default.
+
+**The library decision went against `Temporal`, for now.** It is the right
+answer and it is not on the platform: V8 ships it only behind
+`--harmony-temporal`, and that build still crashes on a non-ISO calendar. So
+dates are plain `{ year, month, day }` records — which is exactly the readable
+surface of a `Temporal.PlainDate`, so `Temporal.PlainDate.from(value)` is the
+whole interop — over about sixty lines of proleptic Gregorian arithmetic with
+no `Date` object anywhere near it, since `Date`'s month overflow, local-midnight
+drift and mutable setters are the foot-guns this had to avoid. When `Temporal`
+lands, `toEpochDay`/`fromEpochDay` and the six functions over them are the only
+things that change.
+
+Still open: timezone handling, presets, and a calendar system other than
+Gregorian — `ar-SA` resolves to `islamic-umalqura`, and a Hijri formatter over
+a Gregorian grid produces a heading and cells that disagree.
 
 ### Splitter
 
@@ -1171,6 +1196,12 @@ need one.
 A first-class component, not an afterthought. Most libraries have nothing like
 it, and building one out of a list and a textarea misses everything that makes
 it hard.
+
+**Partly built.** `createChat` covers the message list, the scroll behaviour,
+streaming and the composer; everything below that those four do not name is
+untouched. In particular there is no markdown, no syntax highlighting, no
+per-message actions, no slash commands or mentions, no attachments, and no
+typing indicator or retry.
 
 - **Message list** — virtualized with variable heights, grouping of
   consecutive messages from one author, timestamps, avatars
