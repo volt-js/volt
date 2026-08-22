@@ -286,6 +286,28 @@ re-rendering anything around it.
 
 ### Rich text editor
 
+**The model, the schema, positions and the change layer are built** — the first
+of the four stages the order below names. Documents are immutable; a change is
+a `Step` that turns one into another, knows how to invert itself against the
+document it applied to, and yields a `StepMap` saying where the positions it
+moved went. `Mapping` composes those and records which of its maps undo each
+other, so a position carried across a change and its own undo comes back
+unchanged rather than collapsing to an edge.
+
+**The collaboration question the section below calls decisive is answered: yes,
+later, without replacing the model.** A rebase is a step rewritten through
+someone else's maps, and `Step.map` is that operation; what is missing is a
+rebase function, a transport and an authority to order changes, none of which
+is a change to the document model. That is recorded in `step.ts` rather than
+here, so it sits beside the code that has to keep it true.
+
+Refused rather than half-done, and stated in the source: a replacement whose
+ends resolve into different parents, which needs slices with open ends the
+model does not build yet. Not built at all: input handling, `beforeinput`,
+IME composition, clipboard, the undo *stack* — inversion is here, the history
+that would use it is not — and the whole view layer. Nothing yet listens to a
+keyboard.
+
 Robustness here means schema-constrained documents, collaborative editing,
 input-method support for non-Latin scripts, undo grouping, paste sanitisation,
 and tables *inside* content. That is a specialist engine, not a component.
