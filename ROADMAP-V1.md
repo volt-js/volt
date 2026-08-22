@@ -920,17 +920,27 @@ suppress, so nothing is fighting for the subtree in the first place. What is
 missing is a declared boundary, so the framework knows the region is not its
 to touch and the author knows what they are responsible for.
 
-- [ ] A primitive that owns a subtree: the framework renders the host element
-      and nothing inside it, and hands the author a scope tied to the
-      component's lifetime.
-- [ ] Fine-grained synchronization *into* the island. This is the part worth
-      having: a signal changing should reach one object in the scene, not
-      trigger a redraw. The dependency graph already knows which signal
-      changed; the island declares how to apply it.
-- [ ] Teardown that cannot be forgotten — the island's cleanup is the scope's
-      cleanup.
-- [ ] Server rendering emits the host element and no children, since the
-      island's content does not exist until a client draws it.
+- [x] A primitive that owns a subtree: `createIsland` in `@voltdev/primitives`.
+      The framework renders the host element and nothing inside it, and the
+      author gets a scope tied to the component's lifetime. `setup` is handed
+      the host once it is *in the document*, not merely present — an element
+      with no box gives a canvas a zero-by-zero drawing surface.
+- [x] Fine-grained synchronization *into* the island. `sync(read, apply)` is
+      one effect per declared relationship, so a signal changing runs one
+      applier and touches one object rather than causing a redraw. `apply` runs
+      untracked, so an applier reaching into a scene that reads signals of its
+      own does not enrol them as reasons to run again — what the relationship
+      depends on is what was declared, and nothing else.
+- [x] Teardown that cannot be forgotten — the island's cleanup is the scope's.
+      Whatever `setup` returns as a disposer, and whatever it registers with
+      `onCleanup`, runs when the component goes, so "it leaked because nobody
+      called `destroy()`" is not reachable.
+- [x] Server rendering emits the host element and no children. Not a check
+      written into the island: `setup` runs from a user effect and a server
+      build's flush stops after the data lane, so this is the scheduler's shape
+      rather than a branch someone could forget. Tested against the scheduler,
+      including that the effect is *queued rather than skipped* — a request
+      scope left alive would draw the island the moment anything flushed.
 
 The motivating case is a document viewer with hundreds of pages and thousands
 of annotations, where selecting one annotation must touch one object.

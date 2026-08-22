@@ -66,6 +66,7 @@ export * from './virtualizer.js';
 export * from './anchoring.js';
 export * from './announcer.js';
 export * from './clipboard.js';
+export * from './island.js';
 export * from './calendar.js';
 export * from './date-picker.js';
 export * from './chat.js';
