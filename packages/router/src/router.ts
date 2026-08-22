@@ -119,6 +119,23 @@ export interface RouterOptions<R extends readonly RouteDefinition[]> {
    * would be a side effect the user never asked for.
    */
   readonly preloadOnHover?: boolean;
+  /**
+   * Animate a navigation with the platform's View Transitions. Default false.
+   *
+   * Off by default, and not out of caution about support — the fallback is
+   * simply the navigation, so an engine without it loses nothing. It is off
+   * because a view transition is *document-scoped and serialized*: the
+   * platform allows one at a time, and a route change arriving while a list
+   * reorder is mid-transition is a real conflict rather than a hypothetical.
+   * Turning it on is a statement that this application's navigations are the
+   * transition worth having, which is a thing only the application knows.
+   *
+   * Three cases are handled here rather than left to the caller: an engine
+   * without the API, a reader who has asked for reduced motion, and a
+   * navigation arriving while a transition is already running. All three take
+   * the ordinary path, which is the navigation happening immediately.
+   */
+  readonly viewTransition?: boolean;
 }
 
 /**
@@ -287,6 +304,8 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
   const branches: RouteBranch[] = flattenRoutes(options.routes);
   const scrollEnabled = options.scroll !== false;
   const preloadOnHover = options.preloadOnHover !== false;
+  // Off unless asked for; see `RouterOptions.viewTransition` for why.
+  const viewTransition = options.viewTransition === true;
 
   const pathnameSignal = new Signal.State(normalizePathname(window.location.pathname));
   const searchSignal = new Signal.State(window.location.search);
@@ -672,30 +691,48 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
     currentKey = entry.key;
     currentIndex = entry.index;
 
-    // Torn down before the signals move, so a component on its way out never
-    // runs an effect against the location of the page that replaced it.
-    unmountFrom(reusable);
+    /**
+     * Everything the navigation does to the document, as one function.
+     *
+     * It has to be one function because a view transition is defined by a
+     * callback: the platform takes a snapshot, runs this, takes another, and
+     * animates between them. The `flushSync` at the end is what makes that
+     * work at all here — Volt patches the DOM when effects drain, so without
+     * it the callback would return having only written signals and the second
+     * snapshot would be of a page that had not changed yet.
+     */
+    const swap = (): void => {
+      // Torn down before the signals move, so a component on its way out never
+      // runs an effect against the location of the page that replaced it.
+      unmountFrom(reusable);
 
-    batch(() => {
-      pathnameSignal.set(to.pathname);
-      searchSignal.set(to.search);
-      hashSignal.set(to.hash);
-      stateSignal.set(entry.state);
-      paramsSignal.set(next.at(-1)?.params ?? {});
-      matchesSignal.set(next);
-      errorSignal.set(undefined);
-      for (const [index, data] of revalidated) segments[index]!.data.set(data);
-    });
+      batch(() => {
+        pathnameSignal.set(to.pathname);
+        searchSignal.set(to.search);
+        hashSignal.set(to.hash);
+        stateSignal.set(entry.state);
+        paramsSignal.set(next.at(-1)?.params ?? {});
+        matchesSignal.set(next);
+        errorSignal.set(undefined);
+        for (const [index, data] of revalidated) segments[index]!.data.set(data);
+      });
 
-    for (let i = reusable; i < next.length; i++) {
-      const result = loaded.get(i)!;
-      segments.push(mountSegment(next[i]!, result.component, result.data));
-    }
+      for (let i = reusable; i < next.length; i++) {
+        const result = loaded.get(i)!;
+        segments.push(mountSegment(next[i]!, result.component, result.data));
+      }
 
-    // The DOM the scroll is about to be measured against has to be final, and
-    // a route whose template reads a signal set in the batch above is still
-    // pending until this runs.
-    flushSync();
+      // The DOM the scroll is about to be measured against has to be final, and
+      // a route whose template reads a signal set in the batch above is still
+      // pending until this runs.
+      flushSync();
+    };
+
+    // Never on the first commit. A view transition animates between two
+    // snapshots, and the initial render has nothing to animate away from —
+    // running one there fades the whole page in on load, which is not a
+    // navigation and is not what the option asked for.
+    await withViewTransition(swap, viewTransition && mode !== 'initial');
 
     if (!options.preserveScroll) restoreScroll(mode, entry.key, to.hash);
     statusSignal.set('idle');
@@ -914,4 +951,53 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
       root = null;
     },
   };
+}
+
+
+/**
+ * Run a document change inside a view transition, where that is the right
+ * thing and possible at all.
+ *
+ * Three refusals, and each is the ordinary path rather than a failure: an
+ * engine without the API; a reader who has asked for less motion, for whom an
+ * animated page change is the thing they asked to be spared; and a transition
+ * already running, because the platform serializes them and a route change
+ * arriving mid-animation would be queued behind something the reader has
+ * already navigated away from.
+ *
+ * Awaited on `updateCallbackDone` rather than on `finished`. The first settles
+ * once the DOM has been changed, which is what the rest of a navigation is
+ * waiting for; the second settles when the animation ends, and holding scroll
+ * restoration until then would leave the reader looking at the old scroll
+ * position for the length of the transition.
+ */
+let transitionRunning = false;
+
+async function withViewTransition(swap: () => void, enabled: boolean): Promise<void> {
+  const start = (document as StartsViewTransitions).startViewTransition;
+  if (
+    !enabled ||
+    transitionRunning ||
+    typeof start !== 'function' ||
+    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
+  ) {
+    swap();
+    return;
+  }
+
+  transitionRunning = true;
+  try {
+    const transition = start.call(document, swap);
+    await transition.updateCallbackDone;
+  } finally {
+    transitionRunning = false;
+  }
+}
+
+interface ViewTransitionLike {
+  readonly updateCallbackDone: Promise<void>;
+}
+
+interface StartsViewTransitions {
+  startViewTransition?: (callback: () => void) => ViewTransitionLike;
 }

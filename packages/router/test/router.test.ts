@@ -1149,3 +1149,148 @@ describe('lifecycle', () => {
     await expect(router.start(host)).rejects.toThrow(/already started/);
   });
 });
+
+describe('view transitions', () => {
+  const routes = defineRoutes([
+    {
+      path: '/',
+      component: Root,
+      children: [{ path: 'users', component: UsersLayout }],
+    },
+  ]);
+
+  interface Started {
+    calls: (() => void)[];
+    restore: () => void;
+  }
+
+  /**
+   * Stand in for the platform API, which happy-dom does not implement.
+   *
+   * The callback is run immediately, as a real engine does — the snapshot it
+   * takes around it is the part that cannot be observed here, and is not what
+   * this is about. What is worth asserting is *whether* the navigation went
+   * through it, and that the page ends up right either way.
+   */
+  function stubTransitions(): Started {
+    const calls: (() => void)[] = [];
+    const doc = document as unknown as Record<string, unknown>;
+    const had = 'startViewTransition' in doc;
+    const before = doc.startViewTransition;
+    doc.startViewTransition = (callback: () => void) => {
+      calls.push(callback);
+      callback();
+      return { updateCallbackDone: Promise.resolve() };
+    };
+    return {
+      calls,
+      restore: () => {
+        if (had) doc.startViewTransition = before;
+        else delete doc.startViewTransition;
+      },
+    };
+  }
+
+  function stubReducedMotion(reduce: boolean): () => void {
+    const before = window.matchMedia;
+    (window as unknown as Record<string, unknown>).matchMedia = (query: string) => ({
+      matches: reduce && query.includes('prefers-reduced-motion'),
+      media: query,
+addEventListener: () => {},
+      removeEventListener: () => {},
+    });
+    return () => {
+      (window as unknown as Record<string, unknown>).matchMedia = before;
+    };
+  }
+
+  it('is off unless the application asks for it', async () => {
+    const stub = stubTransitions();
+    try {
+      const router = track(createRouter({ routes }));
+      await router.start(host);
+      await router.navigate('/users');
+
+      expect(stub.calls).toHaveLength(0);
+      expect(router.pathname()).toBe('/users');
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it('runs the whole swap inside one transition when it is asked for', async () => {
+    const stub = stubTransitions();
+    try {
+      const router = track(createRouter({ routes, viewTransition: true }));
+      await router.start(host);
+      await router.navigate('/users');
+
+      // One for the navigation. `start` itself is an initial commit and must
+      // not animate: there is no previous page to animate away from.
+      expect(stub.calls).toHaveLength(1);
+      expect(router.pathname()).toBe('/users');
+      expect(built).toContain('users');
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it('navigates anyway on an engine that has no such API', async () => {
+    const doc = document as unknown as Record<string, unknown>;
+    delete doc.startViewTransition;
+    const router = track(createRouter({ routes, viewTransition: true }));
+    await router.start(host);
+    await router.navigate('/users');
+
+    expect(router.pathname()).toBe('/users');
+    expect(built).toContain('users');
+  });
+
+  it('respects a reader who asked for less motion', async () => {
+    const stub = stubTransitions();
+    const restoreMedia = stubReducedMotion(true);
+    try {
+      const router = track(createRouter({ routes, viewTransition: true }));
+      await router.start(host);
+      await router.navigate('/users');
+
+      expect(stub.calls).toHaveLength(0);
+      expect(router.pathname()).toBe('/users');
+    } finally {
+      restoreMedia();
+      stub.restore();
+    }
+  });
+
+  it('does not start a second while one is running, since the platform serializes them', async () => {
+    // The hazard the roadmap names: a transition is document-scoped, so a
+    // route change arriving during one would queue behind an animation the
+    // reader has already navigated away from.
+    const calls: (() => void)[] = [];
+    const doc = document as unknown as Record<string, unknown>;
+    const before = doc.startViewTransition;
+    let inner: Promise<unknown> | null = null;
+    let router!: Router<string>;
+
+    doc.startViewTransition = (callback: () => void) => {
+      calls.push(callback);
+      // Navigate again from *inside* the callback, which is exactly the
+      // overlap the platform cannot serve.
+      if (inner === null) inner = router.navigate('/');
+      callback();
+      return { updateCallbackDone: Promise.resolve() };
+    };
+
+    try {
+      router = track(createRouter({ routes, viewTransition: true }));
+      await router.start(host);
+      await router.navigate('/users');
+      await inner;
+
+      expect(calls).toHaveLength(1);
+    } finally {
+      if (before === undefined) delete doc.startViewTransition;
+      else doc.startViewTransition = before;
+    }
+  });
+});
