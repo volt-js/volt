@@ -205,11 +205,13 @@ describe('a message nothing asks for', () => {
 
 describe('a second build from the same plugin object', () => {
   // `used` and the catalogue are one closure per `volt()` call, and Vite brings
-  // the same plugin object up more than once: `build --watch` on every change,
-  // and a build with a client environment and a server one runs `buildStart`
-  // and `buildEnd` once for each. Both cycles report on themselves alone,
-  // which is what a rebuild needs and what a multi-environment build has to be
-  // read as — the client half has not seen the server's modules.
+  // the same plugin object up more than once, for two different reasons that
+  // need opposite answers. `build --watch` starts a new build on every change,
+  // and that one has to report on itself alone or it would warn about the
+  // previous run's graph. A build with a client environment and a server one
+  // runs the cycle once for each *within* one build, and that one has to
+  // accumulate — the client half has not seen the server's modules, and
+  // reporting from it alone calls a server-only message unused.
   const temporary: string[] = [];
   afterAll(() => Promise.all(temporary.map((dir) => rm(dir, { recursive: true, force: true }))));
 
@@ -479,5 +481,58 @@ describe('a message nobody imported', { timeout: 120_000 }, () => {
     // it, which is exactly the regression reading the source cannot see.
     expect(one.length).toBeLessThan(every.length / 2);
     expect(one).not.toContain('_all');
+  });
+});
+
+describe('a build with more than one environment', () => {
+  // The two environments of one build run the whole cycle each, against the
+  // same plugin object. What tells them apart from two builds is only that
+  // they overlap, so that is what the plugin counts.
+  it('waits for the last environment before reporting', async () => {
+    const { messages, templates } = build();
+
+    await start(messages);
+    await call<Promise<unknown>>(templates, 'transform', component('checkout.html'), FIXTURE_ID);
+    // The second environment starts before the first has ended, which is the
+    // whole of the difference from a rebuild.
+    await call<Promise<void>>(messages, 'buildStart');
+    await call<Promise<void>>(messages, 'buildEnd');
+    // Nothing yet: the other environment is still walking its graph.
+    expect(warned).toEqual([]);
+
+    await call<Promise<void>>(messages, 'buildEnd');
+    expect(warned).toEqual([expect.stringContaining('Message `abandoned`')]);
+  });
+
+  it('counts a message that only one environment asked for as asked for', async () => {
+    // The finding this fixes: `checkoutTotal` is used by the first
+    // environment's modules and by none of the second's. Reported per
+    // environment, the second calls it unused and a team learns to switch the
+    // warnings off.
+    const { messages, templates } = build();
+
+    await start(messages);
+    await call<Promise<unknown>>(templates, 'transform', component('checkout.html'), FIXTURE_ID);
+    await call<Promise<void>>(messages, 'buildStart');
+    await call<Promise<void>>(messages, 'buildEnd');
+    await call<Promise<void>>(messages, 'buildEnd');
+
+    expect(warned.join('\n')).not.toContain('checkoutTotal');
+  });
+
+  it('still reports on itself alone once the build after it begins', async () => {
+    const { messages, templates } = build();
+    await start(messages);
+    await call<Promise<unknown>>(templates, 'transform', component('checkout.html'), FIXTURE_ID);
+    await call<Promise<void>>(messages, 'buildEnd');
+    expect(warned).toEqual([expect.stringContaining('Message `abandoned`')]);
+
+    warned = [];
+    await call<Promise<void>>(messages, 'buildStart');
+    await call<Promise<void>>(messages, 'buildEnd');
+    expect(warned).toEqual([
+      expect.stringContaining('Message `checkoutTotal`'),
+      expect.stringContaining('Message `abandoned`'),
+    ]);
   });
 });

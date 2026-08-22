@@ -257,6 +257,19 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
    * which messages to report as unused.
    */
   const used = new Set<string>();
+  /**
+   * Environments of this build that have started and not yet ended.
+   *
+   * A build with a client environment and a server one runs the whole cycle
+   * once for each, against one plugin instance. `used` is shared, so the only
+   * thing that made the report per-environment was clearing it at every
+   * `buildStart` — the second environment wiped what the first had seen, and a
+   * message only a server-only module asks for was reported as used by nobody.
+   * Counting the environments in flight makes the window the build rather than
+   * the environment: cleared when the first starts, reported when the last
+   * ends.
+   */
+  let environmentsBuilding = 0;
   let root = process.cwd();
   let isBuild = false;
 
@@ -502,9 +515,11 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
 
     async buildStart() {
       if (!messages) return;
-      // Cleared per build so a watch-mode rebuild reports what this run saw
-      // rather than everything since the server started.
-      used.clear();
+      // Cleared when the build begins rather than when an environment does, so
+      // a watch-mode rebuild still reports what this run saw and nothing
+      // earlier, while the two environments of one run accumulate together.
+      if (environmentsBuilding === 0) used.clear();
+      environmentsBuilding++;
       catalog = null;
       const loaded = await loadCatalog();
       if (!loaded) return;
@@ -547,7 +562,14 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
     },
 
     async buildEnd(error) {
-      if (!messages || error || (messages.unused ?? 'warn') === 'off') return;
+      if (!messages) return;
+      // Decremented before any early return, or an environment that bailed
+      // would leave the count above zero and the last one would never report.
+      environmentsBuilding = Math.max(0, environmentsBuilding - 1);
+      // Another environment of this build is still walking its graph, and it
+      // may be the one that uses the message this environment did not.
+      if (environmentsBuilding > 0) return;
+      if (error || (messages.unused ?? 'warn') === 'off') return;
       // A dev-server rebuild transforms the modules that changed and nothing
       // else, so it has seen a fraction of the call sites. Reporting from
       // there would mean warning about messages that are used — which is the

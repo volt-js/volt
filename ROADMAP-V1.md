@@ -1084,25 +1084,37 @@ Not yet, and the reason:
       into a message key and a missing one into a build error. The compiler has
       no way to tell the locale's `t` from anyone else's, and guessing would
       cost the check its certainty.
-- [ ] **The unused report is per environment, not per build.** A build with a
-      client environment and a server one runs the cycle once for each, and
-      `used` is cleared at every `buildStart` — which is what a `build --watch`
-      rebuild needs. So a message only a server-only module asks for is
-      unaccounted for in the client's graph and the client half reports it.
-      Nothing in a `buildEnd` can see the other environment, so the answer for
-      now is `messages.ignore` or `unused: 'off'`.
+- [x] **The unused report is per build.** It was per environment: `used` is
+      shared across them already, and the only thing making the report narrower
+      was clearing it at every `buildStart`, so the second environment wiped
+      what the first had seen and a message only a server-only module asks for
+      was reported as used by nobody. A `buildEnd` still cannot see another
+      environment, but it does not need to — what distinguishes two
+      environments of one build from two builds is that they *overlap*, so the
+      plugin counts the ones in flight: cleared when the first starts, reported
+      when the last ends. A `build --watch` rebuild still reports on itself
+      alone, which is the opposite answer the same code has to give.
 - [ ] `t` from the generated module names every message, so importing it links
       the catalogue whole. That is the dynamic-key path, and the per-message
       functions are the one to reach for.
-- [ ] **A template links the runtime `t`, not the compiled function.** Only the
-      checking half of "the compiler reads the call sites" has landed:
-      `{ t('close') }` is held against the catalogue and then emitted as the
-      `useLocale().t` call it always was, with no import of the generated
-      module. So tree-shaking serves a hand-written
-      `import { close } from 'virtual:volt-messages'` and nothing a template
-      writes. Rewriting the call site to that import is what would make the
-      two halves one pass — and is the prerequisite for the chunk attribution
-      above.
+- [x] **A template links the runtime `t`, and must keep doing so.** Decided
+      rather than built, and the decision is the opposite of what this entry
+      used to propose. Rewriting `{ t('close') }` to
+      `import { close } from 'virtual:volt-messages'` would make the two halves
+      one pass and give templates tree-shaking — and would freeze every
+      template to one language. The generated module bakes a locale into every
+      `Intl` instance it builds and exports it as a constant; `useLocale().t`
+      resolves a catalogue held by the locale, which is per request on a
+      server. So the rewrite would hand a request for French the locale the
+      build was compiled in. That was a fair trade to propose before server
+      rendering existed and is not one now.
+      A correct version is possible and is a much larger feature than this
+      entry describes: one generated module per locale, chunked per locale, and
+      a call site that resolves which one at request time. Until then the
+      compiled per-message functions are for code a project writes by hand,
+      where it knows what it is choosing, and templates stay on the runtime
+      path. The chunk attribution below depends on this and is therefore
+      blocked rather than open.
 
 ## Editor support
 
