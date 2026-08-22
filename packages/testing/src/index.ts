@@ -72,6 +72,21 @@ export {
   unhover,
 } from './interact.js';
 
+export {
+  dialogHarness,
+  dialogIsOpen,
+  disclosureHarness,
+  listboxHarness,
+  menuHarness,
+  tabsHarness,
+  type DialogHarness,
+  type DisclosureHarness,
+  type HarnessOptions,
+  type ListboxHarness,
+  type MenuHarness,
+  type TabsHarness,
+} from './harness.js';
+
 export { liveEffectCount, settle } from './scheduler.js';
 
 export { installClock, type ClockOptions, type FakeClock } from './clock.js';
