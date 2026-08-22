@@ -229,12 +229,31 @@ cell `Ctrl+End` names is not in the document to move focus to. A cell owns its
 own binding, which is the claim the section rests on: setting one cell's signal
 runs one accessor and updates one text node, asserted rather than asserted-to.
 
-Everything in the bullets below beyond rendering, columns and interaction is
-untouched: no sorting, no filtering, no grouping or aggregation or pivoting, no
-tree data or master/detail, no editing of any kind, no selection beyond a
-single active cell, no pinning, no variable row height, no RTL, no drag and
-drop, no export, no state save/restore, and no data source but the client-side
-one.
+**Sorting, filtering and selection are built on top of it.** Both sort and
+filter are one computed over the caller's rows, never a mutation of them — with
+nothing active the view is returned *by identity*, which is what keeps an
+ordinary grid subscribing to no cell value at all. Multi-column sort cycles
+ascending, descending, none; Shift adds a term; collation and case folding come
+from the locale. `rowCount()` is the *filtered* count, so a virtualized grid
+does not tell a screen reader there are ten thousand rows when a filter left
+nine. Row selection is held by key so it survives a re-sort; a cell range is
+held by position and dropped when the view changes, because the rows between
+its corners are somewhere else now.
+
+The cursor survives a re-sort with no stored anchor: the row the reader was
+standing on *is* `previous[cursor.row]`, so there is no second copy of that
+fact to go stale. And a re-sort that moves nothing re-renders nothing — row
+views are reused by identity, so `each` writes a value the row already holds
+and notifies no one. That is asserted by counting accessor calls, and holds
+under mutation: defeating the reuse fails exactly those three tests.
+
+Still untouched: grouping, aggregation, pivoting, tree data, master/detail,
+editing of any kind, pinning, variable row height, RTL, drag and drop, export,
+state save/restore, and any data source but the client-side one. Known
+footguns rather than guards: `getRowKey` defaults to the index, and a selection
+held by an index cannot survive a sort — documented, with a test pinning the
+degraded behaviour. `aria-sort` is set on every sorted column, which ARIA says
+authors SHOULD not do; the announcement carries the whole order to compensate.
 
 **Decided: started in parallel**, rather than after the six behaviour-forming
 components. The cost to watch is that the grid needs virtualization,

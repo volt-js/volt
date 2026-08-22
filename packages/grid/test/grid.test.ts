@@ -22,9 +22,14 @@ import {
   GRID_RESIZER_ATTRIBUTE,
   HEADER_ROW,
   createGrid,
+  rangeBounds,
+  rangeContains,
   type Grid,
+  type GridCellRange,
   type GridColumn,
+  type GridFilter,
   type GridOptions,
+  type GridSort,
 } from '../src/index.ts';
 
 // ---------------------------------------------------------------------------
@@ -71,7 +76,41 @@ function makeColumns(count = COLUMN_COUNT): GridColumn<Person>[] {
       reads.push(`${row.id}:${index}`);
       return row.cells[index]!.get();
     },
+    // The same signals, read without the bookkeeping. `reads` is the
+    // instrument for what *rendered*, and a comparator or a filter reading a
+    // value is not a cell re-rendering — mixing the two would make the
+    // fine-grained assertions below unreadable. The default path, where both
+    // of these fall back to `value`, is covered on its own.
+    sortValue: (row: Person) => row.cells[index]!.get(),
+    filterValue: (row: Person) => row.cells[index]!.get(),
   }));
+}
+
+/** Columns with neither accessor, so sorting and filtering fall back to `value`. */
+function makeBareColumns(count: number): GridColumn<Person>[] {
+  return makeColumns(count).map(({ id, header, width, value }) => ({ id, header, width, value }));
+}
+
+/**
+ * A short, hand-written table.
+ *
+ * The generated thousand is right for virtualization and useless for asserting
+ * an order: a test that says which rows came out first has to be able to hold
+ * the whole answer.
+ */
+function tableOf(cells: readonly (readonly string[])[]): void {
+  columns.set(makeColumns(cells[0]!.length));
+  people.set(
+    cells.map((values, id) => ({
+      id,
+      cells: values.map((value) => new Signal.State(value)),
+    })),
+  );
+}
+
+/** Rows identified by what they are, which is what selection and re-sorting need. */
+function byId(): void {
+  gridOptions = { ...gridOptions, getRowKey: (row: Person) => row.id };
 }
 
 let host: HTMLElement;
@@ -159,6 +198,10 @@ afterEach(() => {
   for (const handle of mounted) handle.unmount();
   mounted = [];
   flushSync();
+  // Sorting and filtering both announce, so most tests below leave a region
+  // behind. One that outlived its test would make the next one's silence
+  // impossible to tell from a stale sentence.
+  resetAnnouncer();
   for (let i = restores.length - 1; i >= 0; i--) restores[i]!();
   restores = [];
 });
@@ -168,7 +211,8 @@ const TEMPLATE = `
        :keydown="onKey($event)" :focusin="g.onFocusIn($event)">
     <div class="header" :spread="g.headerProps()">
       <div class="header-row" :spread="g.headerRowProps()">
-        <div class="th" :for="col in g.columns()" :key="col.key" :spread="g.headerCellProps(col)">
+        <div class="th" :for="col in g.columns()" :key="col.key" :spread="g.headerCellProps(col)"
+             :click="g.onHeaderClick($event)">
           <span class="label">{ col.column.header }</span>
           <span class="resizer" :spread="g.resizerProps(col)"
                 :pointerdown="g.onResizePointerDown($event)"></span>
@@ -180,7 +224,8 @@ const TEMPLATE = `
         <div class="container" :ref="container" :spread="g.containerProps()">
           <div class="row" :for="row in g.rows()" :key="row.key" :spread="g.rowProps(row)">
             <div class="cell" :for="col in g.columns()" :key="col.key"
-                 :spread="g.cellProps(row, col)">{ g.cellValue(row, col) }</div>
+                 :spread="g.cellProps(row, col)"
+                 :click="g.onCellClick($event)">{ g.cellValue(row, col) }</div>
           </div>
         </div>
       </div>
@@ -258,6 +303,26 @@ function userScroll(el: HTMLElement, { top = 0, left = 0 } = {}): void {
   el.scrollLeft = left;
   el.dispatchEvent(new Event('scroll'));
   flushSync();
+}
+
+function click(el: Element, modifiers: Partial<MouseEventInit> = {}): void {
+  el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ...modifiers }));
+  flushSync();
+}
+
+/** What one column of the rendered window says, top to bottom. */
+function columnText(index: number): (string | null)[] {
+  return rows().map((row) => row.querySelectorAll('.cell')[index]?.textContent ?? null);
+}
+
+/** The polite live region's text, once it has one. */
+async function announced(): Promise<string> {
+  let text = '';
+  await vi.waitFor(() => {
+    text = document.querySelector("[data-volt-announcer='polite']")?.textContent ?? '';
+    expect(text).not.toBe('');
+  });
+  return text;
 }
 
 function press(el: Element, key: string, modifiers: Partial<KeyboardEventInit> = {}): void {
@@ -952,5 +1017,967 @@ describe('moving without the keyboard', () => {
     harness.root.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
     flushSync();
     expect(harness.g.activeCell()).toEqual({ row: 0, column: 0 });
+  });
+});
+
+/**
+ * A short table with something to sort and something to filter in every
+ * column: text, numbers that arrived as strings, a small set of categories,
+ * and one blank.
+ */
+const FRUIT: readonly (readonly string[])[] = [
+  ['pear', '3', 'red'],
+  ['apple', '10', 'green'],
+  ['plum', '7', 'red'],
+  ['fig', '', 'blue'],
+];
+
+describe('sorting', () => {
+  it('cycles a column through ascending, descending and unsorted as its header is clicked', () => {
+    tableOf(FRUIT);
+    const harness = setup();
+
+    click(headerCells()[0]!);
+    expect(columnText(0)).toEqual(['apple', 'fig', 'pear', 'plum']);
+    expect(headerCells()[0]!.getAttribute('aria-sort')).toBe('ascending');
+
+    click(headerCells()[0]!);
+    expect(columnText(0)).toEqual(['plum', 'pear', 'fig', 'apple']);
+    expect(headerCells()[0]!.getAttribute('aria-sort')).toBe('descending');
+
+    // The third state is the order the rows arrived in. A grid that could not
+    // be put back has lost something the reader may want.
+    click(headerCells()[0]!);
+    expect(columnText(0)).toEqual(['pear', 'apple', 'plum', 'fig']);
+    expect(headerCells()[0]!.getAttribute('aria-sort')).toBe('none');
+    expect(harness.g.sort()).toEqual([]);
+  });
+
+  it('sorts a view and never the array it was given', () => {
+    tableOf(FRUIT);
+    const harness = setup();
+    const source = people.get();
+    const order = [...source];
+
+    harness.g.toggleSort('c0');
+    flushSync();
+    expect(columnText(0)).toEqual(['apple', 'fig', 'pear', 'plum']);
+
+    // The same array, holding the same objects in the same places. A caller
+    // rendering these rows somewhere else is rendering what they were.
+    expect(people.get()).toBe(source);
+    expect(source.every((row, index) => row === order[index])).toBe(true);
+    // And the grid hands back those very objects, not copies of them.
+    expect(harness.g.rows()[0]!.item).toBe(source[1]);
+    expect(harness.g.rows()[3]!.item).toBe(source[2]);
+  });
+
+  it('adds a column to the order with a shift-click rather than replacing it', () => {
+    tableOf([
+      ['b', '2'],
+      ['a', '2'],
+      ['b', '1'],
+      ['a', '1'],
+    ]);
+    const harness = setup();
+
+    click(headerCells()[0]!);
+    click(headerCells()[1]!, { shiftKey: true });
+
+    expect(harness.g.sort()).toEqual([
+      { columnId: 'c0', direction: 'ascending' },
+      { columnId: 'c1', direction: 'ascending' },
+    ]);
+    expect(columnText(0)).toEqual(['a', 'a', 'b', 'b']);
+    expect(columnText(1)).toEqual(['1', '2', '1', '2']);
+    expect(attrs('.th', 'aria-sort')).toEqual(['ascending', 'ascending']);
+    // Which term is which, for a header that wants to show a 1 and a 2.
+    expect(attrs('.th', 'data-sort-index')).toEqual(['1', '2']);
+
+    // Cycling the second term off leaves the first alone.
+    click(headerCells()[1]!, { shiftKey: true });
+    click(headerCells()[1]!, { shiftKey: true });
+    expect(harness.g.sort()).toEqual([{ columnId: 'c0', direction: 'ascending' }]);
+    expect(attrs('.th', 'data-sort-index')).toEqual([null, null]);
+  });
+
+  it('keeps rows the terms cannot separate in the order they arrived in', () => {
+    tableOf([
+      ['b', '2'],
+      ['a', '2'],
+      ['b', '1'],
+      ['a', '1'],
+    ]);
+    const harness = setup();
+
+    harness.g.toggleSort('c0');
+    flushSync();
+    // Both `a` rows tie, and a stable sort leaves them as they were — which is
+    // what makes a second sort a refinement of the first rather than a reshuffle.
+    expect(columnText(1)).toEqual(['2', '1', '2', '1']);
+  });
+
+  it('sorts by a comparator of the column\'s own when it has one', () => {
+    tableOf(FRUIT);
+    const list = makeColumns(3);
+    // Nothing a general comparator could reach: the row's identity.
+    list[0] = { ...list[0]!, compare: (a, b) => b.id - a.id };
+    columns.set(list);
+    const harness = setup();
+
+    harness.g.toggleSort('c0');
+    flushSync();
+    expect(columnText(0)).toEqual(['fig', 'plum', 'apple', 'pear']);
+
+    harness.g.toggleSort('c0');
+    flushSync();
+    // Descending negates whatever the comparator returned.
+    expect(columnText(0)).toEqual(['pear', 'apple', 'plum', 'fig']);
+  });
+
+  it('puts blank values last whichever way the column is sorted', () => {
+    tableOf(FRUIT);
+    const harness = setup();
+
+    harness.g.toggleSort('c1');
+    flushSync();
+    expect(columnText(1)).toEqual(['3', '7', '10', '']);
+
+    harness.g.toggleSort('c1');
+    flushSync();
+    // Reversing a sort asks for the largest values first, not for the rows
+    // that have no value at all.
+    expect(columnText(1)).toEqual(['10', '7', '3', '']);
+  });
+
+  it('sorts by what the cell shows when the column names no other key', () => {
+    tableOf(FRUIT);
+    columns.set(makeBareColumns(1));
+    const harness = setup();
+
+    harness.g.toggleSort('c0');
+    flushSync();
+    expect(columnText(0)).toEqual(['apple', 'fig', 'pear', 'plum']);
+  });
+
+  it('marks every sortable column and leaves one that says it is not', () => {
+    const list = makeColumns(3);
+    list[1] = { ...list[1]!, sortable: false };
+    columns.set(list);
+    const harness = setup();
+
+    // `none` on a sortable column is the affordance: without it the header
+    // says nothing about being sortable until it already is.
+    expect(attrs('.th', 'aria-sort')).toEqual(['none', null, 'none']);
+
+    click(headerCells()[1]!);
+    expect(harness.g.sort()).toEqual([]);
+    expect(harness.g.sortDirection('c1')).toBe(null);
+  });
+
+  it('ignores the click that ends a resize drag', () => {
+    const harness = setup();
+    const handle = resizerFor('c0');
+
+    handle.dispatchEvent(pointer('pointerdown', { clientX: 0 }));
+    handle.dispatchEvent(pointer('pointermove', { clientX: 40 }));
+    handle.dispatchEvent(pointer('pointerup', { clientX: 40 }));
+    flushSync();
+    expect(harness.g.columns()[0]!.width).toBe(140);
+
+    // The browser fires a click after the drag, on the handle, and it bubbles
+    // to the header cell around it.
+    click(handle);
+    expect(harness.g.sort()).toEqual([]);
+  });
+
+  it('sorts from the header with Enter, and adds a column with Shift and Space', () => {
+    tableOf(FRUIT);
+    const harness = setup();
+
+    press(harness.root, 'ArrowUp');
+    press(harness.root, 'Enter');
+    expect(harness.g.sort()).toEqual([{ columnId: 'c0', direction: 'ascending' }]);
+
+    press(harness.root, 'ArrowRight');
+    press(harness.root, ' ', { shiftKey: true });
+    expect(harness.instance.handled).toBe(true);
+    expect(harness.g.sort()).toEqual([
+      { columnId: 'c0', direction: 'ascending' },
+      { columnId: 'c1', direction: 'ascending' },
+    ]);
+  });
+
+  it('says the whole order out loud, since the rows moving is the only other sign', async () => {
+    tableOf(FRUIT);
+    const harness = setup();
+
+    harness.g.toggleSort('c0');
+    flushSync();
+    expect(await announced()).toContain('Sorted by Column 0 ascending');
+    resetAnnouncer();
+
+    harness.g.toggleSort('c1', true);
+    flushSync();
+    // The column just clicked is the one thing the reader already knows; what
+    // they cannot see is what it did to the terms around it.
+    expect(await announced()).toContain('Sorted by Column 0 ascending, then Column 1 ascending');
+  });
+
+  it('says nothing when a saved order is restored rather than chosen', async () => {
+    const harness = setup();
+    harness.g.setSort([{ columnId: 'c0', direction: 'descending' }]);
+    flushSync();
+
+    expect(harness.g.sortDirection('c0')).toBe('descending');
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(document.querySelector("[data-volt-announcer='polite']")).toBe(null);
+  });
+
+  it('keeps the cursor on the row it was on when a sort moves it', () => {
+    byId();
+    const harness = setup();
+
+    press(harness.root, 'ArrowDown');
+    press(harness.root, 'ArrowDown');
+    press(harness.root, 'ArrowDown');
+    expect(harness.g.activeCell()).toEqual({ row: 3, column: 0 });
+    expect(document.activeElement).toBe(cellAt(3, 0));
+
+    // Ascending is the order the rows were already in, so nothing moves.
+    harness.g.toggleSort('c0');
+    flushSync();
+    expect(harness.g.activeCell()).toEqual({ row: 3, column: 0 });
+
+    harness.g.toggleSort('c0');
+    flushSync();
+    // Row `r3` is now the fourth from the end. The cursor is on it, not on
+    // whatever slid into position three.
+    expect(harness.g.activeCell()).toEqual({ row: ROW_COUNT - 4, column: 0 });
+    expect(cellAt(ROW_COUNT - 4, 0)!.textContent).toBe('r3c0');
+    // Focus was on the cursor, so it came along.
+    expect(document.activeElement).toBe(cellAt(ROW_COUNT - 4, 0));
+  });
+
+  it('follows the row without pulling focus when focus was not on the cursor', () => {
+    byId();
+    const harness = setup();
+
+    // A pointer user clicking a header twice: nothing in the body has focus.
+    click(headerCells()[0]!);
+    click(headerCells()[0]!);
+    expect(harness.g.sortDirection('c0')).toBe('descending');
+
+    // The cursor started on row zero, which is now last — and stays with it.
+    expect(harness.g.activeCell()).toEqual({ row: ROW_COUNT - 1, column: 0 });
+    // Without scrolling the grid to it, and without taking focus off whatever
+    // the reader was using to sort.
+    expect(harness.scroller.scrollTop).toBe(0);
+    expect(cellAt(ROW_COUNT - 1, 0)).toBe(null);
+    expect(document.activeElement).not.toBe(harness.root);
+  });
+
+  it('cannot follow a row when nothing identifies one', () => {
+    // The default key is the row's index, and an index names a different row
+    // after every sort. This is the documented cost of leaving `getRowKey` out.
+    const harness = setup();
+    press(harness.root, 'ArrowDown');
+    press(harness.root, 'ArrowDown');
+
+    harness.g.toggleSort('c0');
+    harness.g.toggleSort('c0');
+    flushSync();
+    expect(harness.g.activeCell()).toEqual({ row: 2, column: 0 });
+  });
+});
+
+describe('filtering', () => {
+  it('filters a view and never the array it was given', () => {
+    tableOf(FRUIT);
+    const harness = setup();
+    const source = people.get();
+
+    harness.g.setFilter('c2', { type: 'set', values: ['red'] });
+    flushSync();
+
+    expect(columnText(0)).toEqual(['pear', 'plum']);
+    expect(people.get()).toBe(source);
+    expect(source).toHaveLength(4);
+    expect(harness.g.rows()[0]!.item).toBe(source[0]);
+    expect(harness.g.rows()[1]!.item).toBe(source[2]);
+  });
+
+  it('counts the rows a filter left, not the rows it was given', () => {
+    const harness = setup();
+    harness.g.setFilter('c0', { type: 'text', value: 'r99', operator: 'startsWith' });
+    flushSync();
+
+    // `r99`, and `r990` through `r999`.
+    expect(harness.g.rowCount()).toBe(11);
+    expect(harness.g.sourceRowCount()).toBe(ROW_COUNT);
+    // A reader told there are a thousand rows in a grid holding eleven is
+    // worse off than a reader told nothing. One more than eleven, for the
+    // header row.
+    expect(harness.root.getAttribute('aria-rowcount')).toBe('12');
+    expect(harness.sizer.style.height).toBe(`${11 * ROW_HEIGHT}px`);
+    expect(attrs('.row', 'aria-rowindex')).toEqual(['2', '3', '4', '5', '6', '7', '8']);
+  });
+
+  it('matches text with the operator the filter names', () => {
+    tableOf(FRUIT);
+    const harness = setup();
+
+    harness.g.setFilter('c0', { type: 'text', value: 'p' });
+    flushSync();
+    expect(columnText(0)).toEqual(['pear', 'apple', 'plum']);
+
+    harness.g.setFilter('c0', { type: 'text', value: 'p', operator: 'startsWith' });
+    flushSync();
+    expect(columnText(0)).toEqual(['pear', 'plum']);
+
+    // Folded in the grid's locale unless the filter asks otherwise.
+    harness.g.setFilter('c0', { type: 'text', value: 'PLUM', operator: 'equals' });
+    flushSync();
+    expect(columnText(0)).toEqual(['plum']);
+
+    harness.g.setFilter('c0', {
+      type: 'text',
+      value: 'PLUM',
+      operator: 'equals',
+      caseSensitive: true,
+    });
+    flushSync();
+    expect(columnText(0)).toEqual([]);
+
+    harness.g.setFilter('c0', { type: 'text', value: 'p', operator: 'notContains' });
+    flushSync();
+    expect(columnText(0)).toEqual(['fig']);
+  });
+
+  it('compares a number filter as numbers, whatever the cell is holding', () => {
+    tableOf(FRUIT);
+    const harness = setup();
+
+    // The cells hold strings, which is what a number out of JSON looks like.
+    harness.g.setFilter('c1', { type: 'number', value: 5, operator: 'greaterThan' });
+    flushSync();
+    expect(columnText(1)).toEqual(['10', '7']);
+
+    harness.g.setFilter('c1', { type: 'number', value: 3, operator: 'between', to: 7 });
+    flushSync();
+    expect(columnText(1)).toEqual(['3', '7']);
+
+    // And an empty cell is not zero, which is the trap `Number('')` sets.
+    harness.g.setFilter('c1', { type: 'number', value: 0, operator: 'greaterThanOrEqual' });
+    flushSync();
+    expect(columnText(1)).toEqual(['3', '10', '7']);
+  });
+
+  it('keeps only the values a set filter names', () => {
+    tableOf(FRUIT);
+    const harness = setup();
+
+    harness.g.setFilter('c2', { type: 'set', values: ['red', 'blue'] });
+    flushSync();
+    expect(columnText(2)).toEqual(['red', 'red', 'blue']);
+
+    // Nothing ticked is nothing kept — a caller who wants everything removes
+    // the filter rather than emptying it.
+    harness.g.setFilter('c2', { type: 'set', values: [] });
+    flushSync();
+    expect(columnText(2)).toEqual([]);
+  });
+
+  it('searches every column with the quick filter, and wants every word', () => {
+    tableOf(FRUIT);
+    const harness = setup();
+
+    harness.g.setQuickFilter('red');
+    flushSync();
+    expect(columnText(0)).toEqual(['pear', 'plum']);
+
+    // Two words mean both, and they may land in different columns.
+    harness.g.setQuickFilter('plum red');
+    flushSync();
+    expect(columnText(0)).toEqual(['plum']);
+
+    harness.g.setQuickFilter('fig red');
+    flushSync();
+    expect(columnText(0)).toEqual([]);
+
+    harness.g.setQuickFilter('   ');
+    flushSync();
+    expect(columnText(0)).toEqual(['pear', 'apple', 'plum', 'fig']);
+  });
+
+  it('treats a filter the reader has not finished as no filter at all', () => {
+    tableOf(FRUIT);
+    const harness = setup();
+
+    harness.g.setFilter('c0', { type: 'text', value: '' });
+    flushSync();
+    expect(harness.g.rowCount()).toBe(4);
+
+    // A range with only one end typed into it.
+    harness.g.setFilter('c1', { type: 'number', value: 3, operator: 'between' });
+    flushSync();
+    expect(harness.g.rowCount()).toBe(4);
+    // Held, though — the filter UI is still showing what the reader typed.
+    expect(harness.g.filters().size).toBe(2);
+  });
+
+  it('combines a column filter with the quick filter', () => {
+    tableOf(FRUIT);
+    const harness = setup();
+
+    harness.g.setFilter('c2', { type: 'set', values: ['red'] });
+    harness.g.setQuickFilter('plum');
+    flushSync();
+    expect(columnText(0)).toEqual(['plum']);
+
+    harness.g.clearFilters();
+    flushSync();
+    expect(harness.g.filters().size).toBe(0);
+    expect(harness.g.quickFilter()).toBe('');
+    expect(columnText(0)).toEqual(['pear', 'apple', 'plum', 'fig']);
+  });
+
+  it('marks a column whose filter is doing something', () => {
+    const harness = setup();
+    harness.g.setFilter('c1', { type: 'text', value: 'r1' });
+    flushSync();
+    expect(attrs('.th', 'data-filtered')).toEqual([null, '', null, null, null]);
+  });
+
+  it('says how many rows are left, since nothing else reports it', async () => {
+    const harness = setup();
+    harness.g.setFilter('c0', { type: 'text', value: 'r99', operator: 'startsWith' });
+    flushSync();
+
+    // The rows that stopped matching are not in the document, and in a
+    // virtualized grid they never all were.
+    expect(await announced()).toContain('11 of 1000 rows');
+  });
+
+  it('keeps the cursor inside a view a filter has shrunk', () => {
+    byId();
+    const harness = setup();
+    press(harness.root, 'End', { ctrlKey: true });
+    expect(harness.g.activeCell().row).toBe(ROW_COUNT - 1);
+
+    harness.g.setFilter('c0', { type: 'text', value: 'r99c0', operator: 'equals' });
+    flushSync();
+    expect(harness.g.rowCount()).toBe(1);
+    expect(harness.g.activeCell()).toEqual({ row: 0, column: COLUMN_COUNT - 1 });
+  });
+
+  it('sorts what the filter left, in that order', () => {
+    tableOf(FRUIT);
+    const harness = setup();
+
+    harness.g.setFilter('c2', { type: 'set', values: ['red', 'green'] });
+    harness.g.toggleSort('c0');
+    flushSync();
+    expect(columnText(0)).toEqual(['apple', 'pear', 'plum']);
+  });
+});
+
+describe('selection', () => {
+  it('says nothing about selection in a grid that has none', () => {
+    const harness = setup();
+    expect(harness.root.getAttribute('aria-multiselectable')).toBe(null);
+    expect(rows()[0]!.getAttribute('aria-selected')).toBe(null);
+    expect(cellAt(0, 0)!.getAttribute('aria-selected')).toBe(null);
+  });
+
+  it('holds one row at a time when only one may be chosen', () => {
+    byId();
+    gridOptions = { ...gridOptions, rowSelection: 'single' };
+    const harness = setup();
+
+    click(cellAt(2, 0)!);
+    expect([...harness.g.selectedRows()]).toEqual([2]);
+    expect(rows()[2]!.getAttribute('aria-selected')).toBe('true');
+    // Not `false` on the rest: a screenful of "not selected" for the one that
+    // is, in a grid where only one can be.
+    expect(rows()[3]!.getAttribute('aria-selected')).toBe(null);
+    expect(harness.root.getAttribute('aria-multiselectable')).toBe(null);
+
+    click(cellAt(4, 0)!);
+    expect([...harness.g.selectedRows()]).toEqual([4]);
+    expect(rows()[2]!.getAttribute('aria-selected')).toBe(null);
+  });
+
+  it('holds any number of rows, and says so on the grid', () => {
+    byId();
+    const seen: number[][] = [];
+    gridOptions = {
+      ...gridOptions,
+      rowSelection: 'multiple',
+      onRowSelectionChange: (keys) => seen.push([...keys] as number[]),
+    };
+    const harness = setup();
+
+    expect(harness.root.getAttribute('aria-multiselectable')).toBe('true');
+
+    click(cellAt(1, 0)!);
+    click(cellAt(3, 0)!, { ctrlKey: true });
+    expect([...harness.g.selectedRows()]).toEqual([1, 3]);
+    // Here the `false` is what makes the set legible.
+    expect(attrs('.row', 'aria-selected')).toEqual([
+      'false', 'true', 'false', 'true', 'false', 'false', 'false',
+    ]);
+    expect(seen).toEqual([[1], [1, 3]]);
+
+    click(cellAt(3, 0)!, { ctrlKey: true });
+    expect([...harness.g.selectedRows()]).toEqual([1]);
+  });
+
+  it('takes a range of rows from the last one deliberately chosen', () => {
+    byId();
+    gridOptions = { ...gridOptions, rowSelection: 'multiple' };
+    const harness = setup();
+
+    click(cellAt(1, 0)!);
+    click(cellAt(4, 0)!, { shiftKey: true });
+    expect([...harness.g.selectedRows()].sort()).toEqual([1, 2, 3, 4]);
+
+    // The anchor stays put, so dragging the shift-click back shrinks the one
+    // range rather than leaving a trail of them.
+    click(cellAt(2, 0)!, { shiftKey: true });
+    expect([...harness.g.selectedRows()].sort()).toEqual([1, 2]);
+  });
+
+  it('toggles the row under the cursor with Space', () => {
+    byId();
+    gridOptions = { ...gridOptions, rowSelection: 'multiple' };
+    const harness = setup();
+
+    press(harness.root, 'ArrowDown');
+    press(harness.root, ' ');
+    expect([...harness.g.selectedRows()]).toEqual([1]);
+    expect(harness.instance.handled).toBe(true);
+
+    press(harness.root, ' ');
+    expect([...harness.g.selectedRows()]).toEqual([]);
+  });
+
+  it('leaves Space alone in a grid with no row selection', () => {
+    const harness = setup();
+    press(harness.root, ' ');
+    expect(harness.instance.handled).toBe(false);
+  });
+
+  it('selects every row the filter left with Ctrl+A, and no row it removed', () => {
+    byId();
+    gridOptions = { ...gridOptions, rowSelection: 'multiple' };
+    tableOf(FRUIT);
+    const harness = setup();
+
+    harness.g.setFilter('c2', { type: 'set', values: ['red'] });
+    flushSync();
+
+    press(harness.root, 'a', { ctrlKey: true });
+    // Not the green one and not the blue one: a bulk action must not reach
+    // rows the reader cannot see and did not mean.
+    expect([...harness.g.selectedRows()].sort()).toEqual([0, 2]);
+
+    harness.g.clearRowSelection();
+    flushSync();
+    expect(harness.g.selectedRows().size).toBe(0);
+  });
+
+  it('keeps a row selected through a re-sort, because it is held by key', () => {
+    byId();
+    gridOptions = { ...gridOptions, rowSelection: 'multiple' };
+    tableOf(FRUIT);
+    const harness = setup();
+
+    click(cellAt(2, 0)!);
+    expect(columnText(0)).toEqual(['pear', 'apple', 'plum', 'fig']);
+    expect(attrs('.row', 'aria-selected')).toEqual(['false', 'false', 'true', 'false']);
+
+    harness.g.toggleSort('c0');
+    flushSync();
+    expect(columnText(0)).toEqual(['apple', 'fig', 'pear', 'plum']);
+    // The same record, three places along.
+    expect([...harness.g.selectedRows()]).toEqual([2]);
+    expect(attrs('.row', 'aria-selected')).toEqual(['false', 'false', 'false', 'true']);
+  });
+
+  it('extends a rectangle of cells with Shift and the arrows', () => {
+    gridOptions = { ...gridOptions, cellSelection: 'range' };
+    const harness = setup();
+
+    expect(harness.root.getAttribute('aria-multiselectable')).toBe('true');
+
+    press(harness.root, 'ArrowDown', { shiftKey: true });
+    expect(harness.g.cellRange()).toEqual({
+      anchor: { row: 0, column: 0 },
+      focus: { row: 1, column: 0 },
+    });
+
+    press(harness.root, 'ArrowRight', { shiftKey: true });
+    // The anchor is pinned where Shift was first held; only the focus moves.
+    expect(harness.g.cellRange()).toEqual({
+      anchor: { row: 0, column: 0 },
+      focus: { row: 1, column: 1 },
+    });
+    expect(harness.g.activeCell()).toEqual({ row: 1, column: 1 });
+
+    expect(cellAt(0, 0)!.getAttribute('aria-selected')).toBe('true');
+    expect(cellAt(0, 1)!.getAttribute('aria-selected')).toBe('true');
+    expect(cellAt(1, 1)!.getAttribute('aria-selected')).toBe('true');
+    expect(cellAt(1, 1)!.getAttribute('data-selected')).toBe('');
+    expect(cellAt(2, 0)!.getAttribute('aria-selected')).toBe('false');
+    expect(cellAt(0, 2)!.getAttribute('aria-selected')).toBe('false');
+  });
+
+  it('extends to the far edge of the grid with Shift and Ctrl', () => {
+    gridOptions = { ...gridOptions, cellSelection: 'range' };
+    const harness = setup();
+
+    press(harness.root, 'ArrowDown', { shiftKey: true });
+    press(harness.root, 'ArrowDown', { shiftKey: true, ctrlKey: true });
+
+    expect(harness.g.cellRange()).toEqual({
+      anchor: { row: 0, column: 0 },
+      focus: { row: ROW_COUNT - 1, column: 0 },
+    });
+    // The cell it named had never been rendered, so the scroll came first.
+    expect(document.activeElement).toBe(cellAt(ROW_COUNT - 1, 0));
+
+    press(harness.root, 'ArrowRight', { shiftKey: true, ctrlKey: true });
+    expect(harness.g.cellRange()!.focus).toEqual({
+      row: ROW_COUNT - 1,
+      column: COLUMN_COUNT - 1,
+    });
+  });
+
+  it('never extends the rectangle onto the column header', () => {
+    gridOptions = { ...gridOptions, cellSelection: 'range' };
+    const harness = setup();
+
+    press(harness.root, 'ArrowDown');
+    press(harness.root, 'ArrowDown');
+    press(harness.root, 'ArrowUp', { shiftKey: true, ctrlKey: true });
+
+    // Row zero, not the header: a rectangle with a column header in it is not
+    // a rectangle of data.
+    expect(harness.g.cellRange()).toEqual({
+      anchor: { row: 2, column: 0 },
+      focus: { row: 0, column: 0 },
+    });
+    expect(harness.g.activeCell()).toEqual({ row: 0, column: 0 });
+    expect(headerCells()[0]!.getAttribute('aria-selected')).toBe(null);
+  });
+
+  it('ends the rectangle on any move that is not an extension', () => {
+    gridOptions = { ...gridOptions, cellSelection: 'range' };
+    const harness = setup();
+
+    press(harness.root, 'ArrowDown', { shiftKey: true });
+    expect(harness.g.cellRange()).not.toBe(null);
+
+    press(harness.root, 'ArrowDown');
+    expect(harness.g.cellRange()).toBe(null);
+    expect(attrs('.cell', 'aria-selected').every((value) => value === 'false')).toBe(true);
+  });
+
+  it('drops the rectangle when the rows are re-sorted underneath it', () => {
+    byId();
+    gridOptions = { ...gridOptions, cellSelection: 'range' };
+    const harness = setup();
+
+    press(harness.root, 'ArrowDown', { shiftKey: true });
+    press(harness.root, 'ArrowRight', { shiftKey: true });
+    expect(harness.g.cellRange()).not.toBe(null);
+
+    // The rows between its corners are somewhere else now, and the reader
+    // never asked for whatever is between them today.
+    harness.g.toggleSort('c0');
+    flushSync();
+    expect(harness.g.cellRange()).toBe(null);
+  });
+
+  it('leaves Shift alone where there is no rectangle to make', () => {
+    const harness = setup();
+    press(harness.root, 'ArrowRight', { shiftKey: true });
+
+    expect(harness.instance.handled).toBe(false);
+    expect(harness.g.activeCell()).toEqual({ row: 0, column: 0 });
+    expect(harness.g.cellRange()).toBe(null);
+  });
+
+  it('reports a range as the two spans it covers, however it was dragged', () => {
+    // A consumer painting the border of a range needs to know which cell is on
+    // which edge, and that arithmetic comes out inverted when done by hand.
+    expect(rangeBounds({ anchor: { row: 4, column: 3 }, focus: { row: 1, column: 5 } })).toEqual({
+      fromRow: 1,
+      toRow: 4,
+      fromColumn: 3,
+      toColumn: 5,
+    });
+  });
+
+  it('lets a consumer drive both selections from outside', () => {
+    byId();
+    const chosen = new Signal.State<ReadonlySet<string | number>>(new Set([2]));
+    gridOptions = { ...gridOptions, rowSelection: 'multiple', selectedRows: chosen };
+    const harness = setup();
+
+    expect(rows()[2]!.getAttribute('aria-selected')).toBe('true');
+
+    harness.g.selectRow(5, true);
+    flushSync();
+    expect([...chosen.get()].sort()).toEqual([2, 5]);
+    expect(rows()[5]!.getAttribute('aria-selected')).toBe('true');
+  });
+});
+
+describe('a cell still owns its binding once the view is derived', () => {
+  it('writes one text node when a value changes under an active sort', () => {
+    byId();
+    const harness = setup();
+    harness.g.toggleSort('c0');
+    flushSync();
+
+    const before = cells();
+    const texts = before.map((cell) => cell.firstChild);
+    reads = [];
+
+    // Column four is no part of the sort, so the view does not even recompute.
+    people.get()[3]!.cells[4]!.set('changed');
+    flushSync();
+
+    expect(reads).toEqual(['3:4']);
+    expect(cellAt(3, 4)!.textContent).toBe('changed');
+    expect(cells()).toEqual(before);
+    expect(cells().map((cell) => cell.firstChild)).toEqual(texts);
+  });
+
+  it('rebuilds no cell when a re-sort leaves the rows where they were', () => {
+    byId();
+    const harness = setup();
+
+    const before = cells();
+    const texts = before.map((cell) => cell.firstChild);
+    const rendered = before.map((cell) => cell.textContent);
+    reads = [];
+
+    // Ascending is the order they are already in, so every row keeps its key,
+    // its index and its offset.
+    harness.g.toggleSort('c0');
+    flushSync();
+    expect(harness.g.sortDirection('c0')).toBe('ascending');
+
+    // Not one accessor ran. The view is a different array holding the same
+    // rows in the same places, and a row handed back as the same object sets
+    // its own item signal to the value it already had.
+    expect(reads).toEqual([]);
+    expect(cells()).toEqual(before);
+    expect(cells().map((cell) => cell.firstChild)).toEqual(texts);
+    expect(cells().map((cell) => cell.textContent)).toEqual(rendered);
+  });
+
+  it('re-reads one cell when a sorted value changes without moving its row', () => {
+    byId();
+    const harness = setup();
+    harness.g.toggleSort('c0');
+    flushSync();
+
+    const before = cells();
+    const texts = before.map((cell) => cell.firstChild);
+    reads = [];
+
+    // A value the comparator itself reads, changed so that the order holds.
+    people.get()[3]!.cells[0]!.set('r3c0!');
+    flushSync();
+
+    // The whole thousand rows were re-compared, and one cell rendered.
+    expect(reads).toEqual(['3:0']);
+    expect(cellAt(3, 0)!.textContent).toBe('r3c0!');
+    expect(cells()).toEqual(before);
+    expect(cells().map((cell) => cell.firstChild)).toEqual(texts);
+  });
+
+  it('rebuilds no cell in the window when a filter removes rows below it', () => {
+    byId();
+    const harness = setup();
+
+    const before = cells();
+    const texts = before.map((cell) => cell.firstChild);
+    reads = [];
+
+    // A row a thousand places below the seven on screen.
+    harness.g.setFilter('c0', { type: 'text', value: 'r999c0', operator: 'notEquals' });
+    flushSync();
+
+    expect(harness.g.rowCount()).toBe(ROW_COUNT - 1);
+    expect(reads).toEqual([]);
+    expect(cells()).toEqual(before);
+    expect(cells().map((cell) => cell.firstChild)).toEqual(texts);
+  });
+});
+
+describe('driven from outside', () => {
+  it('takes the sort, the filters and the quick filter from signals a consumer holds', () => {
+    const sort = new Signal.State<readonly GridSort[]>([
+      { columnId: 'c0', direction: 'descending' },
+    ]);
+    const filters = new Signal.State<ReadonlyMap<string, GridFilter>>(new Map());
+    const quick = new Signal.State('');
+    gridOptions = { ...gridOptions, sort, filters, quickFilter: quick };
+    tableOf(FRUIT);
+    const harness = setup();
+
+    // A saved view, restored before the first render.
+    expect(columnText(0)).toEqual(['plum', 'pear', 'fig', 'apple']);
+    expect(headerCells()[0]!.getAttribute('data-sort')).toBe('descending');
+
+    filters.set(new Map([['c2', { type: 'set', values: ['red'] }]]));
+    flushSync();
+    expect(columnText(0)).toEqual(['plum', 'pear']);
+
+    quick.set('plum');
+    flushSync();
+    expect(columnText(0)).toEqual(['plum']);
+
+    // And the grid writes back into the same signals.
+    harness.g.toggleSort('c0');
+    flushSync();
+    expect(sort.get()).toEqual([]);
+  });
+
+  it('reports every change to a consumer mirroring the state', () => {
+    const sorts: string[] = [];
+    const filtered: string[] = [];
+    gridOptions = {
+      ...gridOptions,
+      onSortChange: (sort) => sorts.push(sort.map((entry) => entry.direction).join(',')),
+      onFilterChange: (map, quick) => filtered.push(`${[...map.keys()].join(',')}|${quick}`),
+    };
+    tableOf(FRUIT);
+    const harness = setup();
+
+    harness.g.toggleSort('c0');
+    harness.g.setSort([]);
+    harness.g.setFilter('c1', { type: 'number', value: 5, operator: 'greaterThan' });
+    harness.g.setQuickFilter('red');
+    harness.g.clearFilters();
+    flushSync();
+
+    expect(sorts).toEqual(['ascending', '']);
+    expect(filtered).toEqual(['c1|', 'c1|red', '|']);
+  });
+
+  it('takes announcements of its own for both', async () => {
+    gridOptions = {
+      ...gridOptions,
+      sortAnnouncement: (sort) =>
+        sort.length === 0 ? 'unsorted' : `${sort[0]!.column.header} is ${sort[0]!.direction}`,
+      filterAnnouncement: (shown, total) => `${shown}/${total}`,
+    };
+    tableOf(FRUIT);
+    const harness = setup();
+
+    harness.g.toggleSort('c0');
+    flushSync();
+    expect(await announced()).toContain('Column 0 is ascending');
+    resetAnnouncer();
+
+    harness.g.setQuickFilter('red');
+    flushSync();
+    expect(await announced()).toContain('2/4');
+  });
+
+  it('sets a rectangle of cells without the keyboard, and reports it', () => {
+    const seen: (GridCellRange | null)[] = [];
+    gridOptions = { ...gridOptions, cellSelection: 'range', onCellRangeChange: (r) => seen.push(r) };
+    const harness = setup();
+
+    const range = { anchor: { row: 1, column: 1 }, focus: { row: 3, column: 2 } };
+    harness.g.setCellRange(range);
+    flushSync();
+
+    expect(harness.g.isCellSelected(2, 1)).toBe(true);
+    expect(harness.g.isCellSelected(0, 1)).toBe(false);
+    expect(rangeContains(range, 3, 2)).toBe(true);
+    expect(cellAt(2, 2)!.getAttribute('aria-selected')).toBe('true');
+    expect(cellAt(4, 2)!.getAttribute('aria-selected')).toBe('false');
+
+    // Setting the same rectangle again is not a change, and is not reported.
+    harness.g.setCellRange({ anchor: { row: 1, column: 1 }, focus: { row: 3, column: 2 } });
+    flushSync();
+    expect(seen).toEqual([range]);
+  });
+
+  it('answers whether a row is selected, and marks it for a stylesheet', () => {
+    byId();
+    gridOptions = { ...gridOptions, rowSelection: 'multiple' };
+    const harness = setup();
+
+    harness.g.selectRow(2);
+    harness.g.selectRow(4, true);
+    flushSync();
+
+    expect(harness.g.isRowSelected(2)).toBe(true);
+    expect(harness.g.isRowSelected(3)).toBe(false);
+    expect(attrs('.row', 'data-selected')).toEqual([null, null, '', null, '', null, null]);
+  });
+});
+
+describe('the cursor and the view', () => {
+  it('follows the row the cursor is on even when a consumer put it there', () => {
+    // Nothing told the grid this move happened: the row the cursor is on is
+    // worked out from the view being replaced, so there is no second copy of
+    // it to have gone stale.
+    byId();
+    const cursor = new Signal.State({ row: 3, column: 0 });
+    gridOptions = { ...gridOptions, activeCell: cursor };
+    tableOf(FRUIT);
+    const harness = setup();
+
+    cursor.set({ row: 3, column: 1 });
+    flushSync();
+
+    harness.g.toggleSort('c0');
+    flushSync();
+    expect(columnText(0)).toEqual(['apple', 'fig', 'pear', 'plum']);
+    // `fig` was third and is now second.
+    expect(harness.g.activeCell()).toEqual({ row: 1, column: 1 });
+    expect(cursor.get()).toEqual({ row: 1, column: 1 });
+  });
+
+  it('leaves the cursor where it is when the row under it is filtered away', () => {
+    byId();
+    tableOf(FRUIT);
+    const harness = setup();
+
+    press(harness.root, 'ArrowDown');
+    press(harness.root, 'ArrowDown');
+    expect(harness.g.activeCell()).toEqual({ row: 2, column: 0 });
+
+    // `plum` goes; there is no row left to follow, so the position stands.
+    harness.g.setFilter('c0', { type: 'text', value: 'plum', operator: 'notEquals' });
+    flushSync();
+    expect(columnText(0)).toEqual(['pear', 'apple', 'fig']);
+    expect(harness.g.activeCell()).toEqual({ row: 2, column: 0 });
+  });
+
+  it('leaves the cursor on the header when the rows move underneath it', () => {
+    byId();
+    tableOf(FRUIT);
+    const harness = setup();
+
+    press(harness.root, 'ArrowUp');
+    expect(harness.g.activeCell()).toEqual({ row: HEADER_ROW, column: 0 });
+
+    press(harness.root, 'Enter');
+    press(harness.root, 'Enter');
+    expect(columnText(0)).toEqual(['plum', 'pear', 'fig', 'apple']);
+    // Row one is row one whatever the data does, and focus has not left it.
+    expect(harness.g.activeCell()).toEqual({ row: HEADER_ROW, column: 0 });
+    expect(document.activeElement).toBe(headerCells()[0]);
   });
 });
