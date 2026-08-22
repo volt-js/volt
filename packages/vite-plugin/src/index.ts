@@ -38,7 +38,7 @@ import {
   scanMessageKeys,
   unusedMessages,
 } from '@voltdev/compiler';
-import type { A11ySeverity, MessageCatalog } from '@voltdev/compiler';
+import type { A11ySeverity, CodegenTarget, MessageCatalog } from '@voltdev/compiler';
 import type { Plugin } from 'vite';
 import { DecoratorError, planLowering } from './decorators.js';
 import { planServerFunctions, ServerFunctionError } from './server-functions.js';
@@ -82,6 +82,24 @@ export interface VoltPluginOptions {
    * is switching all of them off. `off` skips the pass.
    */
   a11y?: A11ySeverity;
+  /**
+   * Compile the client build to hydrate the server's markup rather than to
+   * build the page from nothing.
+   *
+   * Opt-in, and it has to be. This roadmap's position is that client rendering
+   * is first-class and server rendering is something an application chooses,
+   * never the price of using the framework — so a turnkey mode that quietly
+   * made every project a server project would contradict it. It is also not
+   * inferable: a project may render on the server for a crawler and ship a
+   * client build that never hydrates, and guessing wrong either way produces a
+   * page that is silently wrong rather than one that fails.
+   *
+   * It changes the client emit only. The server environment is chosen by its
+   * consumer as before, and `target` is excused from `__VOLT_BUILD__`, so a
+   * hydrating client and the server it hydrates hash identically — which they
+   * must, or the client would discard every page the server printed.
+   */
+  hydrate?: boolean;
   /**
    * Module the two halves of a `@Server()` method import from.
    *
@@ -169,8 +187,25 @@ function sideOf(environment: { config?: { consumer?: string } } | undefined): 'c
  * writes the import while the compiler decides the hash, so a disagreement
  * here is an import of a module that has none of the helpers being called.
  */
-function defaultRuntime(side: 'client' | 'server'): string {
-  return side === 'server' ? '@voltdev/core/server' : '@voltdev/core/runtime';
+function defaultRuntime(target: CodegenTarget): string {
+  // Hydration is the client runtime: `hClaim`, `hClose` and `hInsert` live in
+  // `dom.ts` beside the bindings they hand nodes to, and are reached through
+  // the same entry.
+  return target === 'server' ? '@voltdev/core/server' : '@voltdev/core/runtime';
+}
+
+/**
+ * Which of the three emits this environment gets.
+ *
+ * The server side is decided by the environment, as it always was. The client
+ * side is the one with a choice to make, and the project makes it.
+ */
+function targetFor(
+  environment: { config?: { consumer?: string } } | undefined,
+  hydrate: boolean,
+): CodegenTarget {
+  const side = sideOf(environment);
+  return side === 'server' ? 'server' : hydrate ? 'hydrate' : 'client';
 }
 
 /** Two spaces, so a generated render function reads like the file around it. */
@@ -195,12 +230,13 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
    * would discard every page the server printed. An option nobody set hashes
    * the same on both sides however differently it resolves.
    */
-  const runtimeFor = (side: 'client' | 'server'): string =>
-    options.runtimeModule ?? defaultRuntime(side);
+  const runtimeFor = (target: CodegenTarget): string =>
+    options.runtimeModule ?? defaultRuntime(target);
   const precompile = options.precompileTemplates ?? true;
   const groupRowBindings = options.groupRowBindings ?? false;
   const lowerSignals = options.lowerSignals ?? true;
   const serverModule = options.serverModule ?? '@voltdev/server';
+  const hydrate = options.hydrate ?? false;
 
   const shouldProcess = (id: string): boolean => {
     const clean = id.split('?')[0] ?? id;
@@ -250,7 +286,7 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
 
       try {
         return await compileTemplates(code, id, {
-          target: sideOf(this.environment),
+          target: targetFor(this.environment, hydrate),
           runtimeModule: options.runtimeModule,
           debug: options.debug ?? false,
           groupRowBindings,
@@ -376,7 +412,7 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
         for (const { at, text } of plan.insertions) s.appendRight(at, text);
         s.prepend(
           `import { defineComponent as ${DEFINE_LOCAL} } from ` +
-            `${JSON.stringify(runtimeFor(sideOf(this.environment)))};\n`,
+            `${JSON.stringify(runtimeFor(targetFor(this.environment, hydrate)))};\n`,
         );
         // Only decorators were removed, so what is left is ordinary
         // TypeScript that Vite's own transformer handles.
@@ -612,8 +648,8 @@ interface StyleSite {
 
 /** Everything the transform needs from the plugin that is running it. */
 interface TemplateBuild {
-  /** Which emit these templates get; see `sideOf`. */
-  target: 'client' | 'server';
+  /** Which emit these templates get; see `targetFor`. */
+  target: CodegenTarget;
   /** Only when a project overrode it; see `runtimeFor`. */
   runtimeModule: string | undefined;
   debug: boolean;

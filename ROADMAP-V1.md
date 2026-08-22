@@ -461,10 +461,12 @@ Not yet, and the reason:
       non-negotiable: without it the markerless path wipes what the server
       wrote. Mismatch handling is tier four only — compare the node name, stall,
       clone, report — and tiers one to three are still open below.
-      **Not yet reachable from a build.** `@voltdev/vite-plugin` chooses
-      `client` or `server` from the environment and has no notion of a client
-      build that is hydrating one, so an application cannot ask for this emit
-      yet. Also open: per-row delimiters for variable-arity `:for` rows, which
+      Reachable from a build: `volt({ hydrate: true })` compiles the client
+      side to claim rather than clone, and the server side is chosen by its
+      consumer as before. Opt-in deliberately — client rendering stays
+      first-class, and it is not inferable either, since a project may render
+      on a server for a crawler and ship a client build that never hydrates.
+      Also open: per-row delimiters for variable-arity `:for` rows, which
       clone rather than claim; `bindHtml` skipping its first write; `:model`
       inverting on its first hydration run, since bfcache and autofill restore
       values before hydration; and portals, which the server hands back

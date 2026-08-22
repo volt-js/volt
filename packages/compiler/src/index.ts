@@ -12,7 +12,13 @@
  */
 
 import { parse, CompilerError, type ParserOptions } from './parser.js';
-import { generate, type CodegenOptions, type CodegenResult, type CompileStats } from './codegen.js';
+import {
+  generate,
+  type CodegenOptions,
+  type CodegenResult,
+  type CodegenTarget,
+  type CompileStats,
+} from './codegen.js';
 import { buildHash, COMPILER_VERSION, type BuildOptions } from './build.js';
 import type { RootNode } from './ast.js';
 
@@ -44,6 +50,7 @@ export type {
   ParserOptions,
   CodegenOptions,
   CodegenResult,
+  CodegenTarget,
   CompileStats,
   RootNode,
 };

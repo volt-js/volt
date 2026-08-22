@@ -27,11 +27,13 @@ async function runTransform(
   plugin: Plugin,
   code: string,
   id = FIXTURE_ID,
+  environment?: { config?: { consumer?: 'client' | 'server' } },
 ): Promise<string | null> {
   const hook = plugin.transform as unknown as TransformHook;
   watched = [];
   warned = [];
   const context = {
+    environment,
     error(message: string): never {
       throw new Error(message);
     },
@@ -422,5 +424,50 @@ describe('the build flags', () => {
       expect(config.environments.ssr!.define?.__VOLT_SERVER__, command).toBe('true');
       expect(config.environments.client!.define?.__VOLT_SERVER__, command).toBe('false');
     }
+  });
+});
+
+describe('which emit a build gets', () => {
+  /** The three are told apart by what the generated code calls. */
+  const emitOf = (code: string): 'client' | 'server' | 'hydrate' =>
+    code.includes('_rt.hClaim(') || code.includes('_rt.hClose(') || code.includes('_rt.hInsert(')
+      ? 'hydrate'
+      : code.includes('_o.raw(') || code.includes('_o.text(')
+        ? 'server'
+        : 'client';
+
+  it('builds the page from nothing unless a project asks otherwise', async () => {
+    const { templates } = plugins();
+    const out = await runTransform(templates, COMPONENT);
+    expect(emitOf(out!)).toBe('client');
+  });
+
+  it('claims the server’s nodes when the project asks for it', async () => {
+    // The opt-in the roadmap requires: client rendering stays first-class, and
+    // a project that never server-renders carries no second emit of anything.
+    const { templates } = plugins({ hydrate: true });
+    const out = await runTransform(templates, COMPONENT);
+    expect(emitOf(out!)).toBe('hydrate');
+  });
+
+  it('leaves the server environment alone, which has no use for either', async () => {
+    const { templates } = plugins({ hydrate: true });
+    const out = await runTransform(templates, COMPONENT, FIXTURE_ID, {
+      config: { consumer: 'server' },
+    });
+    expect(emitOf(out!)).toBe('server');
+  });
+
+  it('hashes a hydrating client the same as the server it hydrates', async () => {
+    // `target` is excused from `__VOLT_BUILD__` deliberately. If it were not,
+    // the two builds would disagree and the client would discard every page
+    // the server printed as stale.
+    const hash = (code: string) => /__VOLT_BUILD__|buildHash[^\n]*/.exec(code)?.[0] ?? null;
+    const { templates } = plugins({ hydrate: true });
+    const client = await runTransform(templates, COMPONENT);
+    const server = await runTransform(templates, COMPONENT, FIXTURE_ID, {
+      config: { consumer: 'server' },
+    });
+    expect(hash(client!)).toEqual(hash(server!));
   });
 });

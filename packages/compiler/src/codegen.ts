@@ -67,6 +67,9 @@ import {
   type MessageSite,
 } from './messages.js';
 
+/** Which of the three emits a compile produces. See `CodegenOptions.target`. */
+export type CodegenTarget = 'client' | 'server' | 'hydrate';
+
 export interface CodegenOptions {
   runtime?: string;
   ctx?: string;
@@ -116,7 +119,7 @@ export interface CodegenOptions {
    * browser that never server-renders must not carry a second emit of every
    * template, and a server has no use for either of the other two.
    */
-  target?: 'client' | 'server' | 'hydrate';
+  target?: CodegenTarget;
 }
 
 export interface CodegenResult {
@@ -131,7 +134,7 @@ export interface CodegenResult {
    */
   hoisted: string[];
   /** Which emit this is; see `CodegenOptions.target`. */
-  target: 'client' | 'server' | 'hydrate';
+  target: CodegenTarget;
   /**
    * The render function's parameter list — `_ctx` for a client build, and
    * `_ctx, _o` for a server one, whose second parameter is the writer the
