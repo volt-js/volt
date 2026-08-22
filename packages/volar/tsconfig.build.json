@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "emitDeclarationOnly": true,
+    "declaration": true,
+    "declarationMap": true,
+    // Declarations ship, so these do go to dist — alongside Vite's bundle,
+    // never overlapping it.
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/.tsbuildinfo"
+  },
+  "exclude": ["**/*.test.ts", "test/**"]
+}

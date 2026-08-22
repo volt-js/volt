@@ -181,6 +181,22 @@ importers:
         specifier: ^8.0.0
         version: 8.2.1(@types/node@26.2.0)(esbuild@0.28.2)(sass@1.102.0)(terser@5.49.2)
 
+  packages/volar:
+    dependencies:
+      '@volar/language-core':
+        specifier: ^2.4.28
+        version: 2.4.28
+      '@voltdev/compiler':
+        specifier: workspace:*
+        version: link:../compiler
+      '@voltdev/vite-plugin':
+        specifier: workspace:*
+        version: link:../vite-plugin
+    devDependencies:
+      '@types/node':
+        specifier: ^26.2.0
+        version: 26.2.0
+
 packages:
 
   '@algolia/abtesting@1.22.0':
@@ -1136,6 +1152,12 @@ packages:
 
   '@vitest/utils@4.1.10':
     resolution: {integrity: sha512-fy9am/HWxbaGt/Sawrp90vt6Y6jQwf1RX77cz3uwoJwJVMli/e1IEwRPnMNJ7vKfPTwo0diXifkpPvwH9v7nGA==}
+
+  '@volar/language-core@2.4.28':
+    resolution: {integrity: sha512-w4qhIJ8ZSitgLAkVay6AbcnC7gP3glYM3fYwKV3srj8m494E3xtrCv6E+bWviiK/8hs6e6t1ij1s2Endql7vzQ==}
+
+  '@volar/source-map@2.4.28':
+    resolution: {integrity: sha512-yX2BDBqJkRXfKw8my8VarTyjv48QwxdJtvRgUpNE5erCsgEUdI2DsLbpa+rOQVAJYshY99szEcRDmyHbF10ggQ==}
 
   '@vue/compiler-core@3.5.41':
     resolution: {integrity: sha512-q0Xtv/F9w2YO/7htQhtiL+Ev2WCJbe5N2hc+XfgyKkEKqWpSxknmT8QOuGdEKNdjPq0c3F7rNpFkTo3Kfrm7pg==}
@@ -2490,6 +2512,12 @@ snapshots:
       '@vitest/pretty-format': 4.1.10
       convert-source-map: 2.0.0
       tinyrainbow: 3.1.1
+
+  '@volar/language-core@2.4.28':
+    dependencies:
+      '@volar/source-map': 2.4.28
+
+  '@volar/source-map@2.4.28': {}
 
   '@vue/compiler-core@3.5.41':
     dependencies:
