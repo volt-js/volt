@@ -381,3 +381,66 @@ with a metric that counted the opposite of what it documented and with no
 component using it; both are fixed, and the lesson stands beside the decision:
 a phase that nothing measures in is a phase that does nothing.
 
+
+## Async lives in a lane, not in the graph
+
+Solid 2 makes its reactive graph promise-aware: a computed may be pending, a
+component may return a promise, and `createResource` dissolves into an ordinary
+memo. It is the more elegant answer, and Volt is not taking it. The reasoning
+matters more than the verdict, because the verdict should be revisited if the
+reasoning changes.
+
+**Volt's reactivity is the TC39 proposal, not an interpretation of it.**
+`graph.ts` says so in its first line, and it is the constraint that decides
+this. The proposal's `Computed` has two outcomes: it returns a value or it
+throws the error it stored. There is no third. A promise-aware graph needs one
+— a node that is neither yet — and there are only three ways to add it. Return
+a sentinel, and every `get()` in every consumer has to test for it. Throw a
+promise, as React does, and `get()` starts throwing something that is not an
+error while the graph's colours are left half-propagated by the unwind. Or add
+a fourth node state and the API to observe it, which is a fork of the standard
+Volt has committed to implementing.
+
+Solid does not pay that price, because its reactivity is its own and it may
+extend it. That asymmetry is the whole of the difference, and it is not a
+judgement about which design is better in the abstract.
+
+**Glitch-freedom is defined over synchronous evaluation, and async removes the
+premise rather than complicating it.** A CHECK node consults its sources'
+versions before recomputing, which is what makes a diamond evaluate once and
+never observe a half-updated graph. That argument works because evaluation is
+total: by the time anything is read, every source has a settled version. Two
+async computeds settling at different moments can be observed in a combination
+that no synchronous ordering would have produced, and no version check can
+detect it — the versions are all current, they were just current at different
+times. Keeping the guarantee under async means a consistent snapshot across
+time, which is a substantially larger idea than the one the proposal specifies.
+
+**The flush would have to become async, and that costs the guarantee it is
+built on.** `flushSync` loops over four lanes and starts again from the top
+until nothing is dirty, and it refuses to run at all inside an open batch, so
+nothing can observe a half-applied group. A continuation resuming inside that
+loop would either re-enter a phase that has already drained, or make the loop
+itself async — at which point a bare `.set()` becomes observable mid-update by
+anything that runs in between. The measure lane makes this concrete rather than
+theoretical: it exists precisely to guarantee that every write has landed before
+any geometry is read, and an await between them is exactly the interleaving it
+was built to prevent.
+
+**And it is paid for by clients that never await anything.** A fourth state is
+a test on the hot path of every read and every propagation, in a graph whose
+whole case is that it is small and fast.
+
+So the `dataEffect` lane stays: a third lane that a handful of primitives know
+about, rather than a concept every signal carries. The contradiction it resolves
+is real — a resource's first fetch runs from a deferred user effect, so "no
+effects run on the server" and "the server awaits its data" cannot both be true
+without it — and the lane resolves it where the problem is, in scheduling,
+instead of in the type of every value in the system.
+
+**What would change this.** If TC39 adds an async or pending notion to the
+proposal, the constraint above disappears and this should be reopened
+immediately — it is the only argument here that is about Volt's commitments
+rather than about the shape of the problem. Streaming SSR is the feature that
+would encode this decision deepest, and it is being built after it rather than
+before, which is the whole reason the decision was made now.

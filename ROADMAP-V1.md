@@ -510,21 +510,31 @@ Both work. The difference is where the complexity sits — in a scheduler lane
 that a handful of primitives know about, or in the graph that every signal
 already goes through.
 
-- [ ] Decide this before streaming SSR and server functions harden around the
-      current shape. **Half of that deadline has passed.** Server functions
-      landed without the decision — though they turned out not to touch the
-      graph at all, importing nothing from reactivity, so they encode nothing
-      either way. What did harden around the lane is server rendering, which
-      settles a request through it. Streaming is still ahead of the decision,
-      and is the half that would be expensive to reverse.
-- [ ] The criteria, in order: whether a promise-aware graph can keep the
-      glitch-freedom the TC39 proposal specifies, since Volt's reactivity is
-      the proposal rather than an interpretation of it and that is not a
-      constraint Solid carries; what it costs a client that never awaits
-      anything; and whether it survives the measure lane, which splits a flush
-      into phases that an async continuation would have to re-enter.
-- [ ] If the lane stays, say why here rather than by default. Deciding by not
-      deciding is how the API shape gets fixed by whatever shipped first.
+- [x] Decided, and before streaming rather than after it: **the lane stays**.
+      Server functions had already landed without it, but turned out not to
+      touch the graph at all — they import nothing from reactivity, so they
+      encode nothing either way. Server rendering did harden around the lane.
+      Streaming, the half that would have been expensive to reverse, is still
+      ahead of the decision, which is the whole reason it was made now.
+- [x] The criteria were answered in that order, and the first was decisive.
+      The proposal's `Computed` returns a value or throws the error it stored;
+      there is no third outcome, and a pending node needs one — so a
+      promise-aware graph means a sentinel every consumer must test for, a
+      thrown promise that unwinds the graph's colours half-propagated, or a
+      fourth node state, which is a fork of the standard Volt has committed to
+      implementing. Solid does not pay that, because its reactivity is its own.
+      Glitch-freedom is also defined over *synchronous* evaluation: version
+      checks work because every source has settled by the time anything reads,
+      and two async computeds settling at different moments are observable in a
+      combination no version check can detect. The measure lane makes the third
+      criterion concrete rather than theoretical — it exists to guarantee every
+      write has landed before any geometry is read, and an await between them is
+      exactly the interleaving it was built to prevent.
+- [x] Said, at length, in
+      [Design decisions](docs/guide/design-decisions.md) — "Async lives in a
+      lane, not in the graph" — including what would reopen it: if TC39 adds a
+      pending notion to the proposal, the constraint that decided this
+      disappears and the question is live again.
 
 The convergence worth noting separately: Solid 2 splits effects into compute
 and apply phases, which is the measure lane arrived at independently. Two
