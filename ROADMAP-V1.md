@@ -20,8 +20,18 @@ Solid's number, not native's.
 - [x] Fix quadratic list teardown (`Watcher.unwatch`, scope detach)
 - [x] Effect fast path — skip value/equality bookkeeping nothing reads
 - [ ] `select row`: close the remaining per-effect gap. The one-effect-per-row
-      codegen is written and tested, but `groupRowBindings` defaults to false in
-      both the compiler and the plugin, so no shipped build gets it.
+      codegen is written and tested, and `groupRowBindings` still defaults to
+      false in both the compiler and the plugin, so no shipped build gets it.
+      **Half of the measurement it was waiting on is now taken**, in
+      `core/test/group-bindings-memory.test.ts`: grouping saves about 2.3 kB a
+      row, which is the order the estimate predicted and enough to matter on a
+      long list. But that is the memory half, and it is the half that argues
+      *for* the flag. Grouping also makes invalidation coarser — one binding
+      changing re-runs all three of a row's accessors — so it helps `create`
+      and works against `select row`, which is this item. Deciding the default
+      needs the CPU half, and that needs a real browser: happy-dom's DOM is
+      JavaScript and dominates any timing taken here. It is therefore blocked
+      on the browser matrix below rather than on anyone's opinion.
 - [ ] `create`: 1.15–1.19x, the next largest gap after select
 
 ### Bundle size
@@ -60,8 +70,11 @@ leaning it found nothing: removing a per-write allocation made writes slower
 - [x] **SSR** — decided, and built as far as markup: a server codegen target,
       a markup writer, and request-scoped isolation. Hydration is not built at
       all; the SSR section below says what that leaves.
-- [ ] **Error boundaries** — no equivalent feature today, and specified below
-      rather than left as a name.
+- [x] **Error boundaries** — built, and specified below rather than left as a
+      name. An error walks the scope chain to the nearest boundary; `onError`
+      swallows, replaces the subtree, or rethrows upward. Two of that section's
+      six bullets are still open: errors during server rendering, and
+      production diagnostics that survive the `__VOLT_DEV__` strip.
 
 ## Track 2 — the component library
 
