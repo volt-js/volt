@@ -10,10 +10,14 @@
  * serialize, which is why a ten-thousand-row page is a string builder's
  * problem rather than a tree's.
  *
- * What this stage deliberately has not got: ids and a state payload. The
- * markers are here — `openHole`/`closeHole` delimit every dynamic child, so a
- * hydration walk can step over a hole whose width only this side knows — but
- * nothing yet identifies a component or carries a value across the wire.
+ * The markers are the writer's: `openHole`/`closeHole` delimit every dynamic
+ * child, so a hydration walk can step over a hole whose width only this side
+ * knows. Both consumers therefore write the same bytes, which is what §3.5 of
+ * `docs/design/ssr.md` means by the segment tree being the primitive —
+ * `renderToStaticMarkup` is the walk with nothing attached to it, and
+ * `renderToString` the same walk with the state payload the client adopts.
+ * What is still missing is streaming, and with it the out-of-order records a
+ * boundary resolving after the shell has flushed has to push.
  *
  * Reached from `renderToStaticMarkup` below, and from generated code — the
  * compiler defaults a server build's runtime module to `@voltdev/core/server`,
@@ -24,6 +28,7 @@ import {
   createRequestScope,
   createRoot,
   isSignal,
+  onError,
   runInRequest,
   settleRequest,
   type Dispose,
@@ -31,6 +36,7 @@ import {
 
 import { renderComponent, requestStyles, type ComponentType } from './component.js';
 import { normalizeClass, normalizeStyle, toDisplayString } from './dom.js';
+import { registeredState, STATE_ATTRIBUTE } from './state.js';
 
 // Everything generated code reaches that is not about writing bytes is the
 // client's own helper, imported rather than reimplemented: a second spelling
@@ -498,4 +504,291 @@ export async function renderToStaticMarkup(
   runInRequest(scope, dispose);
 
   return { html: writer.toString(), portals: writer.portals(), styles };
+}
+
+// ---------------------------------------------------------------------------
+// The state payload
+// ---------------------------------------------------------------------------
+
+/**
+ * Escape a JSON document so that it is inert inside a `<script>` element.
+ *
+ * A serializer that writes into a page is a security boundary, and this is the
+ * boundary. Script content is *raw text*: the parser decodes no entities in
+ * it, so there is nothing to escape with — the only lever is that JSON's own
+ * `\uXXXX` escape means the same character to `JSON.parse` and a different
+ * byte to the HTML tokenizer.
+ *
+ * `<` is the whole attack surface and so it is the whole rule. It is what
+ * starts `</script>`, which ends the element and spills the rest of the value
+ * into the page as markup; it is what starts `<!--`, which puts the tokenizer
+ * into script-data-escaped state, where a later `</script>` no longer closes
+ * anything and the rest of the document is swallowed; and it is what starts a
+ * nested `<script`, which is the other half of that same trap. Escaping the
+ * character all three begin with closes all three, and needs no case folding
+ * or lookahead to be sure it did.
+ *
+ * U+2028 and U+2029 are escaped because they are line terminators to a
+ * JavaScript parser and ordinary characters to a JSON one. They are harmless
+ * where this payload stands today, and stop being harmless the moment anything
+ * copies the document into a JS literal — a bundler inlining it, an inline
+ * boot record, streaming's own `__VOLT__.push`. Paying for them here is two
+ * scans; discovering it later is a syntax error in production.
+ *
+ * A lone surrogate needs no rule of its own: `JSON.stringify` is well-formed
+ * and writes one as `\udXXX`, so what reaches the page is always encodable.
+ */
+function escapeJsonForScript(json: string): string {
+  return json
+    .replaceAll('<', '\\u003C')
+    .replaceAll('\u2028', '\\u2028')
+    .replaceAll('\u2029', '\\u2029');
+}
+
+/**
+ * Refuse the values `JSON.stringify` would carry wrongly rather than not at all.
+ *
+ * Silence is the failure mode worth spending code on. `NaN` becomes `null`, a
+ * `bigint` throws a message naming nothing, and a hole in an array becomes a
+ * `null` the client then indexes into — each of which reaches the browser as
+ * data that is merely *different* from what the server rendered, which is the
+ * one class of hydration bug nothing downstream can detect.
+ *
+ * `undefined` as an object property is the exception, and it is not laxity:
+ * JSON drops the key, and reading a missing property gives `undefined` on the
+ * client exactly as it did on the server. The same value inside an array is
+ * refused, because there the drop is a `null` in a position that had a hole.
+ *
+ * Written as a `function` rather than an arrow so that `this` is the object or
+ * array holding the value, which is the only way to tell those two apart.
+ */
+function refuseWhatJsonWouldCorrupt(this: unknown, key: string, value: unknown): unknown {
+  const inArray = Array.isArray(this);
+  const kind = typeof value;
+
+  if (value === undefined || kind === 'function' || kind === 'symbol') {
+    if (value === undefined && !inArray) return value;
+    throw new Error(
+      `[volt] hydration state cannot carry ${value === undefined ? 'undefined' : `a ${kind}`}` +
+        `${key === '' ? '' : ` at "${key}"`}. JSON ${inArray ? 'writes it as null' : 'drops it'}, ` +
+        'so the client would start from a value the server never rendered.',
+    );
+  }
+  if (kind === 'number' && !Number.isFinite(value)) {
+    throw new Error(
+      `[volt] hydration state cannot carry ${String(value)}${key === '' ? '' : ` at "${key}"`}: ` +
+        'JSON writes it as null, and null is a value the client would read as real.',
+    );
+  }
+  if (kind === 'bigint') {
+    throw new Error(
+      `[volt] hydration state cannot carry a bigint${key === '' ? '' : ` at "${key}"`}. ` +
+        'Send it as a string and parse it back, until the wire format that carries one lands.',
+    );
+  }
+  return value;
+}
+
+/** Options every emitter of the payload takes, because a page under CSP needs them. */
+export interface StateScriptOptions {
+  /**
+   * The `nonce` of the page's `script-src` policy.
+   *
+   * First-class rather than something a caller splices in afterwards, because
+   * the failure without it is silent: the element is dropped by the browser,
+   * every signal starts at its default, and the page still renders — so what a
+   * missing nonce looks like is server rendering having quietly stopped
+   * paying for itself, on the production deployment that has a CSP and not on
+   * the development one that does not.
+   */
+  nonce?: string;
+}
+
+/**
+ * The one `<script>` a shell carries its state in.
+ *
+ * `type="application/json"` rather than a script that assigns an object
+ * literal, for two reasons that both get better as a page gets bigger:
+ * `JSON.parse` is markedly faster than a parse-as-program of the same bytes,
+ * and this element is data — nothing in it can execute however it was built,
+ * so a value that reached the page from a database cannot become a program.
+ * The escaping above is what keeps it *inside* the element; the type is what
+ * makes escaping the only thing that has to hold.
+ *
+ * Empty when there is nothing to carry, so a page with no hydratable state
+ * ships no element rather than an empty one.
+ */
+export function stateScript(
+  values: Record<string, unknown>,
+  options: StateScriptOptions = {},
+): string {
+  // Assembled per key rather than in one `JSON.stringify`, so a refusal can
+  // name the value it came from. A replacer only ever sees a property name,
+  // and "cannot carry undefined at items[2]" without saying which piece of
+  // state owns `items` is a message you bisect a page to act on.
+  let body = '';
+  for (const key of Object.keys(values)) {
+    const value = values[key];
+    // A key still holding `undefined` is left out entirely rather than written
+    // as null. That is the honest encoding of "the server has nothing for
+    // this": it costs no bytes, `wasHydrated` comes back false on the client,
+    // and whatever would have fetched still does.
+    if (value === undefined) continue;
+    let json: string;
+    try {
+      json = JSON.stringify(value, refuseWhatJsonWouldCorrupt);
+    } catch (cause) {
+      throw new Error(
+        `[volt] the hydration state for ${JSON.stringify(key)} could not be serialized: ` +
+          `${cause instanceof Error ? cause.message : String(cause)}`,
+        { cause },
+      );
+    }
+    body += `${body === '' ? '' : ','}${JSON.stringify(key)}:${json}`;
+  }
+
+  if (body === '') return '';
+
+  const json = escapeJsonForScript(`{${body}}`);
+  const nonce = options.nonce === undefined ? '' : ` nonce="${escapeAttr(options.nonce)}"`;
+  return `<script type="application/json" ${STATE_ATTRIBUTE}${nonce}>${json}</script>`;
+}
+
+// ---------------------------------------------------------------------------
+// renderToString
+// ---------------------------------------------------------------------------
+
+/** A render that finished, and everything the caller needs to answer with it. */
+export interface RenderedPage extends StaticMarkup {
+  status: 200;
+  error: null;
+  /**
+   * The `<script type="application/json">` carrying initial signal state, or
+   * the empty string when this page has none.
+   *
+   * Handed over as an element rather than as an object for the same reason
+   * `portals` is handed over separately: only the caller knows where the end
+   * of its body is, and the payload has to be parsed after the markup it
+   * belongs to has been.
+   */
+  state: string;
+}
+
+/** A render that threw, with nothing of it written out. */
+export interface FailedPage {
+  status: 500;
+  error: unknown;
+  /**
+   * Always null, and typed that way so the compiler makes the caller look.
+   *
+   * There is no partial page here on purpose. The walk buffered its bytes, so
+   * a throw halfway through it discards them and the status line has not been
+   * sent — which is the whole reason this ships before streaming, where the
+   * same throw arrives after the headers and there is nothing left to say.
+   */
+  html: null;
+}
+
+export type PageRender = RenderedPage | FailedPage;
+
+export interface StringRenderOptions extends RenderOptions, StateScriptOptions {}
+
+/**
+ * Render a page that is going to hydrate.
+ *
+ * The same walk `renderToStaticMarkup` makes, over the same segments — §3.5 of
+ * the design record puts it that way deliberately: the segment tree is the
+ * primitive and this is a second consumer of the finished one, not a second
+ * emitter. What it adds is the two things a page needs in order to be taken
+ * over rather than merely looked at. The markup carries the hole delimiters
+ * the hydrate emit steps by, which is the writer's doing and is why the bytes
+ * are the same bytes. And the state every hydratable signal came to hold is
+ * collected after the request settled and written as one script element, so
+ * the client starts from the values the markup was rendered from instead of
+ * from defaults it has already painted over.
+ *
+ * A failure is returned rather than thrown. Not for the sake of a nicer API:
+ * it is the one capability this has and streaming does not, and it disappears
+ * the moment the first byte is flushed. Everything the walk wrote before the
+ * throw is discarded with the writer, so there is no half-written page to send
+ * by accident, and `status` is the answer — 200 or 500 — rather than something
+ * the caller has to infer from an exception it might not have caught.
+ *
+ * A build that is not a server build still throws, because that is not a
+ * request failing. It is the wrong bundle, it will fail identically for every
+ * request, and answering 500 to each of them would hide it.
+ */
+export async function renderToString(
+  component: ComponentType<unknown>,
+  options: StringRenderOptions = {},
+): Promise<PageRender> {
+  if (!__VOLT_SERVER__) {
+    throw new Error(
+      '[volt] renderToString needs a server build. Templates are compiled for one side or ' +
+        'the other, and a client build emits render functions that clone markup rather than ' +
+        'write it — @voltdev/vite-plugin decides this per environment.',
+    );
+  }
+
+  const writer = new MarkupWriter();
+  const scope = createRequestScope();
+  let dispose: Dispose = () => {};
+  /**
+   * The first error nothing below took responsibility for.
+   *
+   * Not every failure reaches the `catch`. An effect that throws is caught by
+   * the scheduler and put into the error channel instead, which on a server
+   * means `console.error` and a page that is missing whatever that binding was
+   * going to write — a 200 with a hole in it, which is the one answer worse
+   * than a 500. A boundary on the render's own root is where that error
+   * surfaces: it is per-render, so two requests cannot see each other's, and
+   * it sits above every boundary the page declares, so anything an application
+   * chose to recover from never arrives here at all.
+   */
+  const failure: { error: unknown; failed: boolean } = { error: null, failed: false };
+
+  try {
+    await settleRequest(scope, () => {
+      createRoot((disposeRoot) => {
+        dispose = disposeRoot;
+        onError((error) => {
+          if (!failure.failed) {
+            failure.failed = true;
+            failure.error = error;
+          }
+        });
+        renderComponent(component, writer, options.props ?? null);
+      });
+    });
+
+    // Thrown rather than returned from here, so that the one `catch` below is
+    // the only place a failed render is turned into an answer.
+    if (failure.failed) throw failure.error;
+
+    // Both read inside the request, because both live in it: the styles this
+    // request's components asked for, and the slots its signals registered.
+    // Serializing is inside the `try` as well — a value JSON would corrupt is
+    // a page that cannot be sent, and it is the caller's 500 like any other.
+    const state = runInRequest(scope, () =>
+      stateScript(Object.fromEntries([...registeredState()].map(([k, v]) => [k, v.get()])), options),
+    );
+    const styles = runInRequest(scope, () => new Map(requestStyles()));
+
+    return {
+      status: 200,
+      error: null,
+      html: writer.toString(),
+      portals: writer.portals(),
+      styles,
+      state,
+    };
+  } catch (error) {
+    return { status: 500, error, html: null };
+  } finally {
+    // In the `finally` because a request that threw still owns effects, and a
+    // failed render that leaves them observing is a leak per failed request —
+    // which is the shape of leak that only appears once something is going
+    // wrong in production.
+    runInRequest(scope, dispose);
+  }
 }

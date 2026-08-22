@@ -465,7 +465,13 @@ the stage before this one and needs rewriting.
 
 Not yet, and the reason:
 
-- [ ] `renderToString`, then `renderToStream` for streaming
+- [x] `renderToString` — a walk over the finished tree that emits the hole
+      delimiters a hydrating client claims, and carries the state payload. It
+      returns a result discriminated on `status`, with `html` typed `null` on
+      the failure branch so a caller cannot forget to answer 500: the walk
+      buffers, so a throw discards the writer rather than leaving a half-written
+      prefix. `renderToStream` is still open, and the design record ties it to
+      error boundaries rather than to this.
 - [x] A hydration codegen mode reusing the existing path resolution. The server
       writes `<!--[-->` and `<!--]-->` where the client template punches a child
       marker, and the hydrate emit resolves each hole once — `hClose` per hole,
@@ -484,7 +490,15 @@ Not yet, and the reason:
       inverting on its first hydration run, since bfcache and autofill restore
       values before hydration; and portals, which the server hands back
       separately while the client appends fresh.
-- [ ] Serialize initial signal state, and adopt it on the client
+- [x] Serialize initial signal state, and adopt it on the client. One
+      `<script type="application/json">` rather than an object literal — it
+      parses faster at size and cannot execute — with `nonce` a first-class
+      option, since a page under a `script-src` CSP without one ships no state
+      at all and says nothing about it. `hydratable(key, initial)` registers the
+      *signal* on the server rather than its value, so what is written out is
+      what the request settled on rather than the loading state a field
+      initializer saw; `wasHydrated` is what a fetch gates on, so a page that
+      arrived with its data does not immediately ask for it again.
 - [ ] **Effects a browser is the point of must not run on the server** —
       measure and user work, which today is enforced by the flush stopping
       after the data lane. What is left is saying so at the point of use: an

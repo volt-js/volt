@@ -27,6 +27,15 @@ export {
 export { createId, resetIds } from './ids.js';
 
 /**
+ * State the server's render hands to the client's, so a hydrated page starts
+ * where the server left it rather than at a default it has already replaced.
+ * Written by an application and by the primitives that fetch, which is why it
+ * is here rather than in the server entry — the same call has to compile into
+ * a client bundle and find the payload there.
+ */
+export { hydratable, wasHydrated, STATE_ATTRIBUTE } from './state.js';
+
+/**
  * A boundary is content, like `:if` is: it decides what is on screen. It lives
  * in the DOM runtime with the rest of the control flow, and is re-exported
  * here because an application writes it by hand rather than through a compiled

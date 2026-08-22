@@ -1,10 +1,15 @@
 # Server rendering
 
-Volt renders to markup with `renderToStaticMarkup`, and to nothing else yet.
-The markup carries hydration's delimiters and nothing more: no ids and no state
-payload. `renderToString` and `renderToStream` come after hydration rather than
-before it, because what they add is identity and ordering and both are defined
-against these bytes.
+Volt renders to markup two ways. `renderToStaticMarkup` writes a page nothing
+is going to attach to; `renderToString` writes one that will hydrate, and
+carries the state its signals came to hold. Both are walks over the same
+segments, so they write the same bytes — the delimiters a hydration walk steps
+by are the writer's, not either consumer's.
+
+`renderToStream` comes after both, because streaming has a hard dependency on
+error boundaries: once the first byte is out the status line is gone, and a
+throw has nowhere to go. That is exactly the capability `renderToString` still
+has, and it is why it ships first.
 
 Underneath it are two things the primitives already depend on: the lane a
 server flushes, and the scope that keeps one request's state out of the next
@@ -45,6 +50,97 @@ on the `<option>`, and by the time the value is known the writer has passed the
 place those options are written. Marking it needs a hole to come back to, which
 is what the segment tree grows when hydration and streaming need one. This is a
 gap rather than a decision.
+
+## Rendering a page that hydrates
+
+```ts
+import { renderToString } from '@voltdev/core/server';
+
+const page = await renderToString(App, { props: { title: 'Volt' }, nonce });
+if (page.status === 500) return new Response('Internal Server Error', { status: 500 });
+
+return new Response(
+  `<!doctype html><html><body><div id="app">${page.html}</div>${page.state}</body></html>`,
+  { status: page.status, headers: { 'content-type': 'text/html; charset=utf-8' } },
+);
+```
+
+| Field | Description |
+|---|---|
+| `status` | `200` when the walk finished, `500` when it threw |
+| `error` | What was thrown, or `null` |
+| `html` | The markup, or `null` — typed so the compiler makes you look |
+| `state` | The `<script>` carrying initial signal state, or `''` |
+| `portals` | What `:portal` wrote |
+| `styles` | The styles this request's components declared, by selector |
+
+A failure is returned rather than thrown, and that is the whole point of this
+entry. The walk buffers its bytes, so a throw discards them: there is no
+half-written page to send by accident, and the status line has not gone out
+yet. A build that is not a server build still throws, because that is not a
+request failing — it is the wrong bundle, it fails identically every time, and
+a 500 per request would hide it.
+
+### The state payload
+
+Markup alone hydrates a page that looks right and is empty behind it. The
+client's signals start wherever their declarations say, so a value the server
+already fetched and shipped is back at its default the moment the bundle runs,
+and is fetched again to arrive at what is already on the screen.
+
+`hydratable` is the signal that crosses, and `wasHydrated` is how a fetch knows
+not to happen twice:
+
+```ts
+import { hydratable, wasHydrated } from '@voltdev/core';
+
+class Profile {
+  data = hydratable<User | undefined>('profile.user', () => undefined);
+  user = createResource(load, { data: this.data, immediate: !wasHydrated(this.data) });
+}
+```
+
+The key is a string an author writes rather than a position the two renders
+happen to agree on: components are reached in different orders on the two sides
+once a shell streams or a route resolves, while the names they know their own
+data by do not move. It has to be unique across a page, and a server render
+meeting the same key twice refuses rather than letting the last one win.
+
+What is registered on the server is the signal, not its value — read after
+`settleRequest` has finished, which is the only moment the answer is the one
+the page was built from. A key still holding `undefined` is left out entirely,
+so `wasHydrated` comes back false and whatever would have fetched still does.
+
+Values are carried as JSON. Anything JSON would carry *wrongly* is refused with
+the key named: `NaN` and `Infinity`, a `bigint`, a function, and a hole in an
+array. `undefined` as an object property is allowed, because JSON drops the key
+and reading it gives `undefined` on both sides. Dates, Maps and shared
+references wait on the wire format server functions also need.
+
+### The script, and the nonce
+
+The payload is one `<script type="application/json" data-volt-state>`.
+`JSON.parse` beats evaluating an object literal at size, and an element of that
+type cannot execute however it was built.
+
+```ts
+import { stateScript } from '@voltdev/core/server';
+
+stateScript({ 'profile.user': { name: 'Ada' } }, { nonce });
+```
+
+Inside it, `<` is written as `\u003C` — the one rule, because `<` is what
+starts `</script>`, `<!--` and a nested `<script`, and escaping the character
+all three begin with needs neither case folding nor lookahead. U+2028 and
+U+2029 are escaped too: they are line terminators to a JavaScript parser and
+ordinary characters to a JSON one, which costs nothing here and stops being
+free the moment anything copies the document into a JS literal.
+
+Pass `nonce` on any page with a `script-src` policy. Without it the element is
+dropped by the browser, every signal starts at its default, and the page still
+renders — so what a missing nonce looks like is server rendering having quietly
+stopped paying for itself, on the deployment that has a CSP and not on the one
+that does not.
 
 ## Hydration
 

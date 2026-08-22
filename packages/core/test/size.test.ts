@@ -108,7 +108,30 @@ const BUDGETS: Record<string, number> = {
   // re-export barrel, so what it weighs is names rather than code; the channel
   // itself is measured against the reactivity budget above. 21 B for somewhere
   // for a thrown error to go is the cheapest line in this table.
-  'packages/core/dist/index.js': 600,
+  //
+  // Raised again from 600 by `hydratable`, `wasHydrated` and `STATE_ATTRIBUTE`,
+  // which is 61 B measured by building the package with and without the
+  // re-export — 572 B to 633 B. What that buys is the second half of
+  // hydration: the delimiters carry the shape of a render across and these
+  // carry its values, so a page arrives holding the data the server fetched
+  // instead of fetching it again over the connection the user is waiting on.
+  // An application that never declares hydratable state drops the names and
+  // the chunk below with them — building without the re-export emits no
+  // `state-*.js` at all — because nothing in a client emit reaches them
+  // unless that application wrote the call itself.
+  'packages/core/dist/index.js': 675,
+  // The state a server render hands to the page that hydrates it. Its own
+  // chunk because both entries import it — the index for the browser and the
+  // server entry for `renderToString` — and it is budgeted for the reason the
+  // reactivity graph chunk is: bytes that leave a measured file for one
+  // nothing weighs have not left anything. 694 B at the time of writing, and
+  // most of what is in there is the refusals and the two guarded halves — the
+  // registry a server build keeps and the payload a client build reads — since
+  // the published bundle carries both with the defines still open. A key
+  // claimed twice and a payload that did not parse are failures whose only
+  // other symptom is server rendering having quietly stopped paying for
+  // itself, which is what makes them worth their bytes.
+  'packages/core/dist/state-*.js': 750,
   // The tools themselves. A production build drops the whole file — that is
   // asserted on bundled bytes in `devtools.test.ts` — so this is a ceiling on
   // what a development build carries, and it is here so that growing it is a
