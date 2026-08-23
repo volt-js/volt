@@ -303,6 +303,24 @@ describe('slider: what assistive technology is told', () => {
     ]);
   });
 
+  it('does not point a range thumb at the group label as well as naming it', () => {
+    const { thumbs } = setup({ defaultValue: [20, 80] });
+    // Both would be announced, and the group's name is already read out around
+    // them — "Price Minimum Price" is what a thumb carrying both says.
+    expect(thumbs().map((el) => el.hasAttribute('aria-labelledby'))).toEqual([false, false]);
+    expect(thumbs().map((el) => el.getAttribute('aria-label'))).toEqual(['Minimum', 'Maximum']);
+  });
+
+  it('flags the thumb the pointer picked up, and only that one', () => {
+    const { thumbs, track } = setup({ defaultValue: [20, 80] });
+    // Nothing is active until something picks a thumb up, and a styling hook
+    // that is on every thumb at rest cannot say which one moved.
+    expect(thumbs().map((el) => el.hasAttribute('data-active'))).toEqual([false, false]);
+
+    pointerDown(track, { clientX: 180 });
+    expect(thumbs().map((el) => el.hasAttribute('data-active'))).toEqual([false, true]);
+  });
+
   it('takes the thumb names it is given', () => {
     const { thumbs } = setup({
       defaultValue: [20, 80],
@@ -738,6 +756,72 @@ describe('slider: the value', () => {
     // range slider crossed over.
     expect(slider.values()).toEqual([80, 80]);
   });
+
+  it('refuses an index the slider has no thumb for', () => {
+    const onValueChange = vi.fn();
+    const { slider } = setup({ defaultValue: [20], onValueChange });
+
+    // A caller reaching past the last thumb would otherwise grow the value a
+    // thumb at a time, and the array it grew is what the form submits.
+    slider.setValue(1, 60);
+    slider.setValue(-1, 60);
+    flushSync();
+
+    expect(slider.values()).toEqual([20]);
+    expect(onValueChange).not.toHaveBeenCalled();
+  });
+
+  it('reports nothing for a write that leaves the value where it was', () => {
+    const onValueChange = vi.fn();
+    const { slider } = setup({ defaultValue: [40], onValueChange });
+
+    slider.setValues([40]);
+    flushSync();
+    // Off the grid on the way in and the same value once settled, which is the
+    // case a comparison made before quantising would miss.
+    slider.setValues([40.4]);
+    flushSync();
+
+    expect(slider.values()).toEqual([40]);
+    expect(onValueChange).not.toHaveBeenCalled();
+  });
+
+  it('survives a negative step and a negative page step', () => {
+    const { slider, thumb } = setup({ defaultValue: [50], step: -10, largeStep: -100 });
+
+    // Zero is the caller bug that divides; a negative one is the caller bug
+    // that runs the slider backwards, and both fall back to the default.
+    press(thumb(0), 'ArrowRight');
+    expect(slider.value()).toBe(51);
+    press(thumb(0), 'PageUp');
+    expect(slider.value()).toBe(61);
+  });
+
+  it('refuses a value that is not a number rather than reporting NaN', () => {
+    const value = new Signal.State<readonly number[]>([40]);
+    const { slider, thumb } = setup({ value, min: 10, max: 90 });
+
+    // What an upstream parse hands back when it failed. NaN reaches the form
+    // through the mirror and `aria-valuenow` through the thumb, and neither is
+    // a value anything can act on.
+    value.set([Number.NaN]);
+    flushSync();
+
+    expect(slider.value()).toBe(10);
+    expect(thumb(0).getAttribute('aria-valuenow')).toBe('10');
+  });
+
+  it('answers zero for a track with no span rather than NaN', () => {
+    const { slider, thumb } = setup({ defaultValue: [5], min: 5, max: 5 });
+
+    // A range whose ends have come out equal is a caller bug the same way a
+    // step of zero is, and the answer it must not give is a percentage nobody
+    // can position with.
+    expect(slider.percentAt(0)).toBe(0);
+    expect(slider.percentFor(5)).toBe(0);
+    expect(slider.fill()).toEqual({ start: 0, end: 0 });
+    expect(thumb(0).getAttribute('aria-valuenow')).toBe('5');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -784,6 +868,16 @@ describe('slider: two thumbs', () => {
     layout(bottom.track, HORIZONTAL);
     pointerDown(bottom.track, { clientX: 140 });
     expect(bottom.slider.values()).toEqual([0, 70]);
+  });
+
+  it('gives a press to the nearer thumb when that is the lower one', () => {
+    const { slider, track } = setup({ defaultValue: [20, 80] });
+    // 60px of 200 is 30, which is nearer 20 than 80. The tie-break that pulls
+    // a stack apart walks upwards from the nearest thumb, and it must stop at
+    // the first neighbour that is not sitting on the same value.
+    pointerDown(track, { clientX: 60 });
+    expect(slider.values()).toEqual([30, 80]);
+    expect(slider.activeIndex()).toBe(0);
   });
 
   it('picks up a thumb where it is rather than jumping it to the press', () => {
@@ -854,6 +948,24 @@ describe('slider: dragging', () => {
     flushSync();
     // A second finger must not fight the first for the same thumb.
     expect(slider.value()).toBe(10);
+  });
+
+  it('ignores a release from a pointer that is not the one being dragged', () => {
+    const onValueCommit = vi.fn();
+    const { slider, track } = setup({ defaultValue: [0], onValueCommit });
+    pointerDown(track, { clientX: 20 });
+
+    document.dispatchEvent(new PointerEvent('pointerup', { pointerId: 99, bubbles: true }));
+    flushSync();
+
+    // A second finger lifting must not end the first finger's drag: the value
+    // would stop following the pointer that is still down, and the commit
+    // would report a gesture the user has not finished.
+    expect(slider.isDragging()).toBe(true);
+    expect(onValueCommit).not.toHaveBeenCalled();
+
+    pointerMove({ clientX: 180 });
+    expect(slider.value()).toBe(90);
   });
 
   it('lets go of the document when the component unmounts mid-drag', () => {
@@ -939,6 +1051,19 @@ describe('slider: marks', () => {
     expect(slider.value()).toBe(100);
     press(thumb(0), 'Home');
     expect(slider.value()).toBe(0);
+  });
+
+  it('leaves the value off the marks until it is asked to snap', () => {
+    const { slider, thumb } = setup({ defaultValue: [20], marks: [0, 25, 50, 75, 100] });
+
+    // Without `snapToMarks` the marks are a scale to read the thumb against,
+    // and the value goes on moving by step through them.
+    expect(slider.values()).toEqual([20]);
+    slider.setValue(0, 30);
+    flushSync();
+    expect(slider.value()).toBe(30);
+    press(thumb(0), 'ArrowRight');
+    expect(slider.value()).toBe(31);
   });
 
   it('snaps a press to the nearest mark', () => {

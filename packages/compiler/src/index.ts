@@ -71,6 +71,7 @@ export {
   LIBRARY_MESSAGE_KEYS,
   checkCatalog,
   checkMessageSites,
+  checkTranslateNames,
   collectTranslateCalls,
   generateMessages,
   messageShape,
@@ -89,6 +90,7 @@ export type {
   MessageSite,
   PluralForms,
   TranslateCall,
+  TranslateNames,
   UnusedOptions,
 } from './messages.js';
 

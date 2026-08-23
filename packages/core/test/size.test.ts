@@ -97,7 +97,19 @@ const BUDGETS: Record<string, number> = {
   // shakes them out, since nothing in a client emit calls any of them — which
   // is the whole reason hydration is a third compile target and not a flag
   // read at every instantiation.
-  'packages/core/dist/runtime.js': 850,
+  //
+  // Raised again from 850 by `:model` becoming one entry point per control —
+  // `modelText`, `modelCheckbox`, `modelRadio`, `modelSelect` — where there
+  // was one function switching on a `kind` string. 53 B measured by building
+  // the package with and without the split, 827 B to 880 B. This file weighs
+  // the whole runtime, which now carries four bodies and the shared read
+  // instead of one body, so it is the one place the split can only look like
+  // a loss. What it buys is paid to an application rather than to this
+  // number: the compiler already knows which control it is looking at, so a
+  // page that binds a text input no longer drags the checkbox, radio and
+  // select paths in behind it, and a runtime switch no longer re-decides per
+  // instantiation what the build settled.
+  'packages/core/dist/runtime.js': 900,
   // Raised from 400 when ids moved here from @voltdev/primitives, which is
   // where they have to be minted: an id is now a component's position in the
   // tree rather than a number from a counter, and only the component runtime

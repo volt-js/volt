@@ -33,6 +33,7 @@ import {
   CompilerError,
   LIBRARY_MESSAGE_KEYS,
   checkCatalog,
+  checkTranslateNames,
   compile,
   formatDiagnostic,
   generateMessages,
@@ -42,6 +43,9 @@ import {
   type MessageCatalog,
 } from '@voltdev/compiler';
 import { DEFAULT_MESSAGES, createLocale, resetLocaleCaches } from '@voltdev/primitives';
+// Not part of the package's surface: the names the generator binds are its own
+// business, and the test below is what keeps the list of them honest.
+import { MODULE_BINDINGS } from '../src/messages.js';
 
 const CATALOG: MessageCatalog = {
   close: 'Close',
@@ -216,11 +220,68 @@ describe('a message key the catalogue does not have', () => {
 
   it('reads any `t` with a literal argument as a call site, which reserves the name', () => {
     // The compiler cannot tell the locale's `t` from a component method of the
-    // same name, so with a catalogue configured `t` is spelled for one thing.
-    // Written down here and in the reference, because it is a refusal rather
-    // than a warning and there is no way to opt one call out of it.
+    // same name, so with a catalogue configured and nothing said about which
+    // `t` is which, `t` is spelled for one thing.
     expect(() => build(`<p>{ t('mm-dd') }</p>`)).toThrow(/no such message/);
     expect(() => build(`<p>{ dates.t('mm-dd') }</p>`)).toThrow(/no such message/);
+  });
+
+  it('says the name may be somebody else’s when nothing in the catalogue is close', () => {
+    // The other explanation for a key that resembles no message: this is not
+    // the locale's `t` at all. It belongs in the error, because the person
+    // reading it is the only one who knows.
+    expect(() => build(`<p>{ dates.t('mm-dd') }</p>`)).toThrow(/name the spellings that are/);
+    // Not when a near miss explains it better — a typo is not a collision.
+    expect(() => build(`<p>{ t('clsoe') }</p>`)).not.toThrow(/name the spellings/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Which `t` is the locale's
+// ---------------------------------------------------------------------------
+
+describe('a project that says which spellings of `t` are the locale’s', () => {
+  const sites = (template: string, translate?: readonly string[]) =>
+    compile(template, { translate }).messageKeys;
+
+  it('reads those, and leaves every other `t` alone', () => {
+    const template = `<p>{ locale.t('a') } { dates.t('b') } { t('c') }</p>`;
+    expect(sites(template)).toEqual(['a', 'b', 'c']);
+    expect(sites(template, ['locale.t'])).toEqual(['a']);
+    expect(sites(template, ['locale.t', 't'])).toEqual(['a', 'c']);
+  });
+
+  it('names a receiver by what it is reached through last, so `this` is not a spelling', () => {
+    expect(sites(`<p>{ this.locale.t('a') }</p>`, ['locale.t'])).toEqual(['a']);
+  });
+
+  it('calls a receiver with no name `.t`, which is all anyone can say about it', () => {
+    expect(sites(`<p>{ useLocale().t('a') }</p>`, ['locale.t'])).toEqual([]);
+    expect(sites(`<p>{ useLocale().t('a') }</p>`, ['.t'])).toEqual(['a']);
+  });
+
+  it('gives a component its own `t` back, catalogue and all', () => {
+    // The whole point of the list: `dates.t('mm-dd')` is a method call again,
+    // and the build that used to refuse it now compiles it.
+    const build = (translate?: readonly string[]) =>
+      compile(`<p>{ locale.t('close') } { dates.t('mm-dd') }</p>`, {
+        catalog: CATALOG,
+        catalogFile: 'messages/en.json',
+        translate,
+      });
+    expect(() => build()).toThrow(/no such message/);
+    expect(() => build(['locale.t'])).not.toThrow();
+  });
+
+  it('refuses a spelling no call site could ever match', () => {
+    // An entry that matches nothing does not narrow the check — it switches it
+    // off for the calls it was written to cover, and says nothing while it
+    // does. Held at the option rather than at the call sites, which would
+    // report the absence of a finding, which nothing reports.
+    expect(() => checkTranslateNames(['locale.translate'])).toThrow(/is not a way to spell/);
+    expect(() => compile(`<p>x</p>`, { translate: ['t()'] })).toThrow(/is not a way to spell/);
+    expect(() => checkTranslateNames(['t', 'locale.t', '.t'])).not.toThrow();
+    expect(() => checkTranslateNames(undefined)).not.toThrow();
   });
 });
 
@@ -401,6 +462,30 @@ describe('a catalogue shape no message can have', () => {
   it('refuses a key that cannot be a function name, wherever the catalogue is read', () => {
     expect(() => refuse({ 'user.name': 'Name' })).toThrow(/userName/);
     expect(() => refuse({ default: 'Default' })).toThrow(/cannot be a message key/);
+  });
+
+  it('refuses a key the generated module already binds, and suggests one it does not', () => {
+    // `locale` is a valid identifier and a legitimate-looking message name, so
+    // it passes every other check here and then emits a module declaring
+    // `locale` twice — which does not parse, taking every message in the
+    // catalogue with it and reporting a syntax error in generated code.
+    expect(() => refuse({ locale: 'Locale' })).toThrow(/the generated module binds that name/);
+    expect(() => refuse({ locale: 'Locale' })).toThrow(/`localeMessage` would work/);
+    expect(() => refuse({ _nf: 'x' })).toThrow(/the generated module binds that name/);
+    expect(() => refuse({ t: 'x' })).toThrow(/the generated module binds that name/);
+  });
+
+  it('is the set of names the generator actually binds, and no more', () => {
+    // Written by hand and therefore able to fall behind the generator. A
+    // helper added later without a line here would be shadowed by a message of
+    // its name, silently, in the module the message is in.
+    const { code } = generateMessages(CATALOG, { locale: 'en' });
+    const bound = new Set<string>();
+    for (const match of code.matchAll(/^(?:export )?(?:const|let) ([A-Za-z_$][\w$]*)/gm)) {
+      bound.add(match[1]!);
+    }
+    for (const key of Object.keys(CATALOG)) bound.delete(key);
+    expect([...bound].sort()).toEqual([...MODULE_BINDINGS].sort());
   });
 
   it('accepts the shapes a catalogue is allowed to have', () => {

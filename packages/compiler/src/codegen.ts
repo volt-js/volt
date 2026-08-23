@@ -62,9 +62,11 @@ import {
 import { patternNames, type ExprNode, type PatternNode } from './expression/ast.js';
 import {
   checkMessageSites,
+  checkTranslateNames,
   collectTranslateCalls,
   type MessageCatalog,
   type MessageSite,
+  type TranslateNames,
 } from './messages.js';
 
 /** Which of the three emits a compile produces. See `CodegenOptions.target`. */
@@ -105,6 +107,16 @@ export interface CodegenOptions {
   catalog?: MessageCatalog;
   /** Where that catalogue came from, so the error says what to edit. */
   catalogFile?: string;
+  /**
+   * Which spellings of `t` are the locale's — `['t', 'locale.t']`.
+   *
+   * Absent means every `t(...)` and every `<anything>.t(...)` with a literal
+   * key, which is the widest check and reserves the name for one thing. A
+   * project with a `t` of its own says which ones are the locale's instead,
+   * and the rest are read as the ordinary calls they are. See
+   * `TranslateNames`.
+   */
+  translate?: TranslateNames;
   /**
    * Which side of the render this build is for.
    *
@@ -357,7 +369,8 @@ export function generate(root: RootNode, options: CodegenOptions = {}): CodegenR
   // Both read up front so the option-coverage gate in `build-hash.test.ts`
   // sees them: an option consulted only down a branch nothing in the corpus
   // takes is one that can drift out of that gate's reach.
-  const { catalog, catalogFile } = options;
+  const { catalog, catalogFile, translate } = options;
+  checkTranslateNames(translate);
   if (catalog) {
     try {
       checkMessageSites(result.messageSites, catalog, {
@@ -405,6 +418,8 @@ class Generator {
 
   /** Every literal `t('key')` this template makes, with where it was made. */
   private messageSites: MessageSite[] = [];
+  /** See `CodegenOptions.translate`. */
+  private readonly translate: TranslateNames | undefined;
   /** Expression texts already collected, keyed by where they were written. */
   private notedExpressions = new Set<string>();
 
@@ -433,6 +448,7 @@ class Generator {
     this.runtimeModule =
       options.runtimeModule ?? (this.server ? '@voltdev/core/server' : '@voltdev/core/runtime');
     this.groupRowBindings = options.groupRowBindings ?? false;
+    this.translate = options.translate;
   }
 
   /** Everything but the accessibility warnings, which `generate` adds. */
@@ -523,7 +539,7 @@ class Generator {
     if (this.notedExpressions.has(at)) return;
     this.notedExpressions.add(at);
 
-    for (const call of collectTranslateCalls(parsed)) {
+    for (const call of collectTranslateCalls(parsed, [], this.translate)) {
       this.messageSites.push({ ...call, loc: { line: loc.line, column: loc.column } });
     }
   }
@@ -1523,14 +1539,21 @@ class Generator {
         const kind = modelKind(node);
         const target = this.genAccessor(dir.exp!, ctx, dir.loc);
         const setter = this.genModelSetter(dir.exp!, ctx, dir);
-        const modifiers = JSON.stringify({
-          number: dir.modifiers.includes('number'),
+        // A checkbox, a radio and a select each read one value and write one
+        // back; only a text field has modifiers to obey, and `.number` is what
+        // `type="number"` means, so the tag decides it here rather than the
+        // runtime re-deciding it per instantiation.
+        if (kind !== 'text' && kind !== 'number') {
+          const fn = kind === 'checkbox' ? 'modelCheckbox' : kind === 'radio' ? 'modelRadio' : 'modelSelect';
+          push((el) => [`${this.rt}.${fn}(${el}, ${target}, ${setter});`]);
+          return;
+        }
+        const modifiers = flags({
+          number: kind === 'number' || dir.modifiers.includes('number'),
           trim: dir.modifiers.includes('trim'),
           lazy: dir.modifiers.includes('lazy'),
         });
-        push((el) => [
-          `${this.rt}.model(${el}, ${JSON.stringify(kind)}, ${target}, ${setter}, ${modifiers});`,
-        ]);
+        push((el) => [`${this.rt}.modelText(${el}, ${target}, ${setter}, ${modifiers});`]);
         return;
       }
 
@@ -1581,12 +1604,12 @@ class Generator {
     }
 
     if (guards.length || systems.length || keys.length) {
-      const config = JSON.stringify({
+      const config = flags({
         stop: guards.includes('stop'),
         prevent: guards.includes('prevent'),
         self: guards.includes('self'),
-        system: systems,
-        keys,
+        system: systems.length ? systems : false,
+        keys: keys.length ? keys : false,
       });
       handler = `${this.rt}.guard(${handler}, ${config})`;
     }
@@ -2367,6 +2390,21 @@ function stripQuotes(value: string): string {
     return trimmed.slice(1, -1);
   }
   return trimmed;
+}
+
+/**
+ * An options object carrying only what was actually set.
+ *
+ * Every field of `GuardConfig` and `ModelModifiers` is optional and read for
+ * truthiness, so `false` and an empty array say exactly what leaving the key
+ * out says. The difference is in the bytes an application ships: emitting all
+ * of them turns every guarded handler into
+ * `{stop:!1,prevent:!0,self:!1,system:[],keys:[]}` where `{prevent:!0}` is the
+ * whole of what it means.
+ */
+function flags(entries: Record<string, boolean | string[]>): string {
+  const set = Object.entries(entries).filter(([, value]) => value !== false);
+  return `{${set.map(([key, value]) => `${JSON.stringify(key)}: ${JSON.stringify(value)}`).join(', ')}}`;
 }
 
 function modelKind(node: ElementNode): string {

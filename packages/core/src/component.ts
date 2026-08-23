@@ -654,6 +654,23 @@ interface LazyRecord {
 const LAZY = new WeakMap<ComponentType<unknown>, LazyRecord>();
 
 /**
+ * How a lazy placeholder renders, installed by `lazy` rather than named
+ * directly by the code that needs it.
+ *
+ * Every application reaches `createComponent`, and a call to
+ * `createLazyComponent` from inside it makes that function — and the loader,
+ * the retry and the two signals behind it, about 500 B of an app bundle —
+ * reachable from the entry point whether or not anything is ever lazy. A
+ * bundler cannot tell the difference and has to ship it to everyone. Assigning
+ * the binding from `lazy` instead moves the decision into the import graph: an
+ * application that never calls `lazy` never mentions the only function that
+ * assigns this, so the whole path drops out. Measured on `examples/counter` in
+ * `bundle-composition.test.ts`.
+ */
+let renderLazy: ((record: LazyRecord, props: Record<string, unknown> | null, slots: SlotMap | null) => unknown) | null =
+  null;
+
+/**
  * A component fetched on first use, so it lands in its own chunk.
  *
  *   const Chart = lazy('v-chart', () => import('./chart.js'), {
@@ -674,6 +691,7 @@ export function lazy<T = unknown>(
 ): ComponentType<T> {
   const placeholder = class LazyComponent {} as unknown as ComponentType<unknown>;
   defineComponent(placeholder, { selector });
+  renderLazy = createLazyComponent;
 
   LAZY.set(placeholder, {
     loader: loader as () => Promise<unknown>,
@@ -770,7 +788,9 @@ export function createComponent(
   const component = resolveComponent(parentCtx, tag);
   if (component) {
     const lazyRecord = LAZY.get(component);
-    if (lazyRecord) return createLazyComponent(lazyRecord, props, slots);
+    // A record only exists because `lazy` created it, and creating one is what
+    // assigns `renderLazy`, so reaching here with it unset is impossible.
+    if (lazyRecord) return renderLazy!(lazyRecord, props, slots);
 
     if (__VOLT_DEV__ && events) {
       // Components have no event channel: a parent passes a function in as an

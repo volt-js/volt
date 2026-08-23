@@ -1371,51 +1371,34 @@ export function writeModel(target: unknown, value: unknown, assign: () => void):
   else assign();
 }
 
-export function model(
+/**
+ * `:model="name"` yields the signal itself, not its value, so unwrap it.
+ */
+function readModel(accessor: Accessor<unknown>): unknown {
+  const raw = accessor();
+  return isSignal(raw) ? raw.get() : raw;
+}
+
+/*
+ * One entry point per control instead of one that switches on a `kind` string.
+ *
+ * The compiler already knows which control it is looking at — it reads the tag
+ * and the `type` attribute to decide — so a runtime switch re-decides at every
+ * instantiation what the build settled at compile time, and makes the checkbox,
+ * radio and select paths reachable from any template that binds a text input.
+ * That was about 340 B of an app bundle spent on three controls the page does
+ * not contain; `bundle-composition.test.ts` measures it on `examples/counter`.
+ */
+
+export function modelText(
   el: HTMLElement,
-  kind: string,
   accessor: Accessor<unknown>,
   setter: (value: unknown) => void,
   modifiers: ModelModifiers,
 ): void {
-  // `:model="name"` yields the signal itself, not its value, so unwrap it.
-  const read = (): unknown => {
-    const raw = accessor();
-    return isSignal(raw) ? raw.get() : raw;
-  };
-
-  if (kind === 'checkbox') {
-    const input = el as HTMLInputElement;
-    renderEffect(() => {
-      input.checked = Boolean(read());
-    });
-    on(input, 'change', () => setter(input.checked));
-    return;
-  }
-
-  if (kind === 'radio') {
-    const input = el as HTMLInputElement;
-    renderEffect(() => {
-      input.checked = read() === input.value;
-    });
-    on(input, 'change', () => {
-      if (input.checked) setter(input.value);
-    });
-    return;
-  }
-
-  if (kind === 'select') {
-    const select = el as HTMLSelectElement;
-    renderEffect(() => {
-      select.value = toDisplayString(read());
-    });
-    on(select, 'change', () => setter(select.value));
-    return;
-  }
-
   const input = el as HTMLInputElement;
   renderEffect(() => {
-    const value = toDisplayString(read());
+    const value = toDisplayString(readModel(accessor));
     // Skip while the user is mid-edit, or the caret jumps to the end.
     if (input.value !== value) input.value = value;
   });
@@ -1423,12 +1406,50 @@ export function model(
   on(input, modifiers.lazy ? 'change' : 'input', () => {
     let value: string | number = input.value;
     if (modifiers.trim) value = value.trim();
-    if (modifiers.number || kind === 'number') {
+    if (modifiers.number) {
       const parsed = Number.parseFloat(value);
       value = Number.isNaN(parsed) ? value : parsed;
     }
     setter(value);
   });
+}
+
+export function modelCheckbox(
+  el: HTMLElement,
+  accessor: Accessor<unknown>,
+  setter: (value: unknown) => void,
+): void {
+  const input = el as HTMLInputElement;
+  renderEffect(() => {
+    input.checked = Boolean(readModel(accessor));
+  });
+  on(input, 'change', () => setter(input.checked));
+}
+
+export function modelRadio(
+  el: HTMLElement,
+  accessor: Accessor<unknown>,
+  setter: (value: unknown) => void,
+): void {
+  const input = el as HTMLInputElement;
+  renderEffect(() => {
+    input.checked = readModel(accessor) === input.value;
+  });
+  on(input, 'change', () => {
+    if (input.checked) setter(input.value);
+  });
+}
+
+export function modelSelect(
+  el: HTMLElement,
+  accessor: Accessor<unknown>,
+  setter: (value: unknown) => void,
+): void {
+  const select = el as HTMLSelectElement;
+  renderEffect(() => {
+    select.value = toDisplayString(readModel(accessor));
+  });
+  on(select, 'change', () => setter(select.value));
 }
 
 // ---------------------------------------------------------------------------

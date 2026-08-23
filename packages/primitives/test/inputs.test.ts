@@ -660,6 +660,11 @@ describe('number input', () => {
     // With no range there is nowhere to jump to, so the document keeps the key.
     expect(press(open.input(), 'End').defaultPrevented).toBe(false);
     expect(open.instance.handled).toBe(false);
+    // Both ends, or the one without a test jumps to `undefined` and the box
+    // reads NaN.
+    expect(press(open.input(), 'Home').defaultPrevented).toBe(false);
+    expect(open.instance.handled).toBe(false);
+    expect(open.instance.num.value()).toBe(4);
   });
 
   it('clamps what the arrows and the box can reach', () => {
@@ -673,6 +678,19 @@ describe('number input', () => {
     blur(input());
     expect(instance.num.value()).toBe(10);
     expect(input().value).toBe('10');
+  });
+
+  it('clamps at the bottom of the range as well as the top', () => {
+    numberOptions = { min: 0, max: 10, defaultValue: 0 };
+    const { instance, input } = numberInput();
+
+    press(input(), 'ArrowDown');
+    expect(instance.num.value()).toBe(0);
+
+    typeInto(input(), '-5');
+    blur(input());
+    expect(instance.num.value()).toBe(0);
+    expect(input().value).toBe('0');
   });
 
   it('leaves an out-of-range value alone when asked, and reports it instead', () => {

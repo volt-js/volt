@@ -174,6 +174,44 @@ export interface MessageSite extends TranslateCall {
 }
 
 /**
+ * How a template spells the locale's translate function.
+ *
+ * With no list, every `t(...)` and every `<anything>.t(...)` is one, which is
+ * the widest check and reserves the name: a component method called `t` turns
+ * its argument into a message key, and a key the catalogue has not got into a
+ * build error on correct code. The compiler cannot tell the two apart, and
+ * guessing which receiver is a locale would cost the check the certainty that
+ * makes it worth having — so a project that needs the name back says which
+ * spellings are the locale's instead, and every other `t` goes unread.
+ *
+ * A spelling is written the way the template writes it: `t`, or `locale.t` for
+ * a call through a field. `this.locale.t` is the same call and the same
+ * spelling. A receiver with no name — `useLocale().t` — is `.t`, which can be
+ * listed but says nothing about which receiver it was.
+ */
+export type TranslateNames = readonly string[];
+
+/** The shapes a spelling may have, which is what makes a typo in one findable. */
+const SPELLING = /^(?:[A-Za-z_$][A-Za-z0-9_$]*)?\.?t$/;
+
+/**
+ * Refuse a spelling no call site can ever match.
+ *
+ * A list is how a project turns the check back on for its own `t` and off for
+ * everyone else's, so an entry that matches nothing does not narrow the check:
+ * it silently switches it off for the calls it was written to cover.
+ */
+export function checkTranslateNames(names: TranslateNames | undefined): void {
+  for (const name of names ?? []) {
+    if (SPELLING.test(name)) continue;
+    throw new Error(
+      `[volt:messages] \`${name}\` is not a way to spell the locale's \`t\`. Name it as a ` +
+        'template writes it: `t`, or `locale.t` for a call through a field.',
+    );
+  }
+}
+
+/**
  * Every `t('key')` in one parsed expression.
  *
  * Only a literal key is collected. `t(whichever)` is legitimate and unknowable
@@ -184,13 +222,15 @@ export interface MessageSite extends TranslateCall {
 export function collectTranslateCalls(
   node: ExprNode,
   out: TranslateCall[] = [],
+  names?: TranslateNames,
 ): TranslateCall[] {
-  const isTranslateCallee = (callee: ExprNode): boolean =>
-    (callee.type === 'Identifier' && callee.name === 't') ||
-    (callee.type === 'Member' &&
-      !callee.computed &&
-      callee.property.type === 'Identifier' &&
-      callee.property.name === 't');
+  const accepted = names ? new Set(names) : null;
+
+  const isTranslateCallee = (callee: ExprNode): boolean => {
+    const spelling = translateSpelling(callee);
+    if (spelling === null) return false;
+    return accepted === null || accepted.has(spelling);
+  };
 
   const visit = (n: ExprNode | PatternNode | null | undefined): void => {
     if (!n || typeof n !== 'object') return;
@@ -220,6 +260,22 @@ export function collectTranslateCalls(
 
   visit(node);
   return out;
+}
+
+/** How this callee is written, or null when it is not a `t` at all. */
+function translateSpelling(callee: ExprNode): string | null {
+  if (callee.type === 'Identifier') return callee.name === 't' ? 't' : null;
+  if (callee.type !== 'Member' || callee.computed) return null;
+  if (callee.property.type !== 'Identifier' || callee.property.name !== 't') return null;
+
+  const object = callee.object;
+  // A receiver is named by whatever it is reached through last, so `locale.t`
+  // and `this.locale.t` are one spelling — they are one call written twice.
+  if (object.type === 'Identifier') return `${object.name}.t`;
+  if (object.type === 'Member' && !object.computed && object.property.type === 'Identifier') {
+    return `${object.property.name}.t`;
+  }
+  return '.t';
 }
 
 /** The names a `t(key, ...)` second argument supplies, or null if unreadable. */
@@ -289,7 +345,13 @@ export function checkMessageSites(
       const near = Object.keys(catalog).find((k) => isOneEditFrom(k, site.key));
       throw new CompilerError(
         `\`t('${site.key}')\` — no such message in ${where}.` +
-          (near ? `\n  Did you mean \`t('${near}')\`?` : `\n  Add it there, or fix the key.`),
+          (near
+            ? `\n  Did you mean \`t('${near}')\`?`
+            : // Nothing in the catalogue is close, so the other explanation is
+              // worth putting on screen: this may not be the locale's `t` at
+              // all. The compiler cannot tell, and this is how it is told.
+              `\n  Add it there, or fix the key.` +
+              `\n  If this \`t\` is not the locale's, name the spellings that are with \`translate\`.`),
         site.loc,
         undefined,
         options.filename,
@@ -392,6 +454,14 @@ export function checkCatalog(catalog: MessageCatalog, options: CatalogCheckOptio
         `[volt:messages] \`${key}\` cannot be a message key: a compiled message is an exported ` +
           `function, and that is not a name one can have. Rename it in ${where} — ` +
           `\`${suggestIdentifier(key)}\` would work.`,
+      );
+    }
+
+    if (MODULE_BINDINGS.has(key)) {
+      throw new Error(
+        `[volt:messages] \`${key}\` cannot be a message key: the generated module binds that ` +
+          `name itself, and a module that declares it twice does not parse at all. Rename it in ` +
+          `${where} — \`${suggestIdentifier(key)}\` would work.`,
       );
     }
 
@@ -503,6 +573,21 @@ const RESERVED = new Set([
 ]);
 
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+/**
+ * Names the generated module declares for itself.
+ *
+ * `locale` and `catalogFile` are exports and the helpers are module-level
+ * consts, so a message of any of these names emits a second declaration of one
+ * and the whole module stops parsing — every message in the catalogue lost to
+ * one key, and the failure arrives as a syntax error in generated code rather
+ * than as anything naming the catalogue. `messages.test.ts` reads the names
+ * back out of a generated module, so a helper added later cannot quietly leave
+ * this list behind.
+ */
+export const MODULE_BINDINGS = new Set([
+  'locale', 'catalogFile', 't', '_all', '_v', '_p', '_nf', '_pr',
+]);
 
 /**
  * Turn a catalogue into a module a bundler can take apart.
@@ -714,5 +799,7 @@ function suggestIdentifier(key: string): string {
     next ? next.toUpperCase() : '',
   );
   const identifier = /^[0-9]/.test(cleaned) ? `_${cleaned}` : cleaned;
-  return RESERVED.has(identifier) || identifier === '' ? `${identifier}Message` : identifier;
+  return RESERVED.has(identifier) || MODULE_BINDINGS.has(identifier) || identifier === ''
+    ? `${identifier}Message`
+    : identifier;
 }

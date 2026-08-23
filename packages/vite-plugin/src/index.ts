@@ -135,6 +135,19 @@ export interface VoltMessagesOptions {
   /** What the generated module answers to. Defaults to `virtual:volt-messages`. */
   id?: string;
   /**
+   * Which spellings of `t` in a template are the locale's — `['locale.t']`.
+   *
+   * Leaving it out reads every `t('literal')` and every `<anything>.t(...)` as
+   * a message, which is the widest check and the reason `t` is a reserved name
+   * once a catalogue is configured: a component method of that name turns its
+   * argument into a message key, and a key the catalogue has not got into a
+   * build error on correct code. The compiler cannot tell one `t` from
+   * another and will not guess, so a project that needs the name back says
+   * which spellings are the locale's here — and gives up the check on every
+   * other one, which is the trade it is making knowingly.
+   */
+  translate?: readonly string[];
+  /**
    * Where to write the declarations, if anywhere.
    *
    * Opt-in because it writes into somebody's repository. Point it at a file
@@ -306,6 +319,7 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
           a11y: options.a11y,
           catalog: loaded?.catalog,
           catalogFile: loaded?.file,
+          translate: messages?.translate,
           watch: (file) => this.addWatchFile(file),
           warn: (message) => this.warn(message),
           use: (key) => used.add(key),
@@ -679,6 +693,8 @@ interface TemplateBuild {
   a11y: A11ySeverity | undefined;
   catalog: MessageCatalog | undefined;
   catalogFile: string | undefined;
+  /** Which spellings of `t` are the locale's; see `VoltMessagesOptions.translate`. */
+  translate: readonly string[] | undefined;
   /** Registering a file makes an edit to it re-run this transform. */
   watch: (file: string) => void;
   /** Where a finding the compiler is not certain enough about to throw goes. */
@@ -700,8 +716,8 @@ async function compileTemplates(
   id: string,
   build: TemplateBuild,
 ): Promise<{ code: string; map: null } | null> {
-  const { target, runtimeModule, debug, groupRowBindings, a11y, catalog, catalogFile, watch, warn, use } =
-    build;
+  const { target, runtimeModule, debug, groupRowBindings, a11y, catalog, catalogFile } = build;
+  const { translate, watch, warn, use } = build;
   const templates = findTemplateSites(code);
   const styles = findStyleSites(code);
   if (templates.length === 0 && styles.length === 0) return null;
@@ -742,6 +758,7 @@ async function compileTemplates(
       a11y,
       catalog,
       catalogFile,
+      translate,
     });
 
     for (const key of result.messageKeys) use(key);
