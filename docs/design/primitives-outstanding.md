@@ -141,6 +141,26 @@ hands it back to the first tag, because the tags that come back are new ones and
 a stop left where the row was last entered would drop Tab into the middle of
 them. Both are load-bearing, and each has a test that fails without it.
 
+That first sentence described something the code did not do until recently. The
+stop was read back clamped to the *value* while every other focus decision was
+clamped to the *row*, so a consumer whose row shows fewer tags than the value
+holds — the case `handOffFrom` exists for — could be left with no tab stop at
+all. The clamp is now on the write side, in the settle effect, and the two
+records of where focus is have been collapsed into the one `roving` already
+reads, which closed a second symptom nobody had reported separately: a stale
+`activeTag` also steered the arrows, so they refused to move while reporting the
+press as handled.
+
+**One path into it is still open, and it is worth stating rather than
+discovering twice.** The settle effect tracks a single signal — the value's
+length — so it re-runs when the value changes and at no other time. A row that
+changes for any other reason, such as a consumer's filter narrowing it while the
+value stands still, does not re-run it, and the stop can be left outside the
+row again. Closing that needs the effect to observe the row rather than the
+value, and the row is a live DOM query rather than a signal, which is why the
+clamp is where it is. Reported by the agent that verified the fix, rather than
+by the one that made it.
+
 Covered by tests that fail without the part they name: the hand-off landing on
 the row when a disabled field's box refuses focus, and on the field itself when
 the row has gone too; the stop after `removeAt`, after a click, and after a

@@ -1076,6 +1076,62 @@ describe('slider: marks', () => {
     pointerDown(track, { clientX: 120 });
     expect(slider.value()).toBe(50);
   });
+
+  it('refuses a mark the gap puts out of reach instead of moving the other thumb', () => {
+    const changes: number[][] = [];
+    const { slider, thumbs } = setup({
+      defaultValue: [25, 50],
+      marks: [0, 25, 50, 75, 100],
+      snapToMarks: true,
+      minStepsBetweenThumbs: 1,
+      onValueChange: (value) => {
+        changes.push([...value]);
+      },
+    });
+
+    press(thumbs()[0]!, 'ArrowRight');
+
+    // The next mark is 50 and the gap keeps this thumb at 49, which is not a
+    // mark at all. Writing 49 and re-quantising it on read reported [50, 51]
+    // over a signal holding [49, 50]: a value the slider never submits, and an
+    // upper thumb that moved on its own because the lower one was shoved into
+    // it. 25 is the only mark this thumb can reach, and it is already there.
+    expect(slider.values()).toEqual([25, 50]);
+    expect(changes).toEqual([]);
+  });
+
+  it('reports the value the signal beside it is holding, gap and marks and all', () => {
+    const value = new Signal.State<readonly number[]>([25, 50]);
+    const { slider, thumbs } = setup({
+      value,
+      marks: [0, 25, 50, 75, 100],
+      snapToMarks: true,
+      minStepsBetweenThumbs: 1,
+    });
+
+    press(thumbs()[0]!, 'ArrowRight');
+    flushSync();
+
+    // What a form submits is the signal, and what the interface shows is
+    // `values()`. The two disagreeing is the defect whichever of them is right.
+    expect(slider.values()).toEqual(value.get());
+  });
+
+  it('walks a blocked thumb up to the last mark that fits in front of it', () => {
+    const { slider, thumbs } = setup({
+      defaultValue: [0, 50],
+      marks: [0, 25, 50, 75, 100],
+      snapToMarks: true,
+      minStepsBetweenThumbs: 1,
+    });
+
+    // Dragged past its neighbour: 49 is where the gap stops it and 25 is the
+    // last mark before that, so the thumb goes as far as the grid allows
+    // rather than parking between two marks.
+    slider.setValue(0, 100);
+    flushSync();
+    expect(slider.values()).toEqual([25, 50]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2101,6 +2157,24 @@ describe('upload: progress', () => {
     await settle();
     expect(harness.upload.isUploading()).toBe(false);
   });
+
+  it('stops saying it is busy when the last file in flight is removed', async () => {
+    const harness = buildUpload({ transport: heldTransport() });
+    const [only] = harness.upload.add([file('a.png')]);
+    await settle();
+    expect(harness.root.getAttribute('data-uploading')).toBe('');
+
+    harness.upload.remove(only!.id);
+    await settle();
+
+    // The queue is empty and the request it was for has been aborted. The count
+    // of requests in flight is the only thing that still says otherwise, and a
+    // rendered attribute reading a number nothing announces goes on saying an
+    // upload is in progress for the life of the page.
+    expect(harness.upload.items()).toHaveLength(0);
+    expect(harness.upload.isUploading()).toBe(false);
+    expect(harness.root.getAttribute('data-uploading')).toBe(null);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2334,6 +2408,24 @@ describe('upload: refusing a file', () => {
     expect(harness.upload.items()[2]!.error!.code).toBe('count');
   });
 
+  it('lets a single-file upload replace the one file it is allowed to hold', async () => {
+    const harness = buildUpload({ multiple: false, maxFiles: 1, transport: heldTransport() });
+    harness.upload.add([file('a.png')]);
+    await settle();
+
+    harness.upload.add([file('b.png')]);
+    await settle();
+
+    // The file being replaced is on its way out and occupies no place. Counting
+    // it refused the replacement and cancelled what it replaced, leaving the
+    // control holding one rejected file, nothing to send, and an empty list on
+    // the input the form reads.
+    expect(harness.upload.items().map((entry) => entry.file.name)).toEqual(['b.png']);
+    expect(statuses(harness.upload)).toEqual(['uploading']);
+    expect(codes(harness.upload)).toEqual([undefined]);
+    expect(picked(harness.picker)).toEqual(['b.png']);
+  });
+
   it('frees a place again when a file is removed', async () => {
     const harness = buildUpload({ maxFiles: 1 });
     const [first] = harness.upload.add([file('a.png')]);
@@ -2505,6 +2597,20 @@ describe('upload: dragging and dropping', () => {
     // `stopPropagation` does not reach a listener on the same node. Both run,
     // and one drop is queued twice.
     expect(harness.upload.items()).toHaveLength(1);
+  });
+
+  it('leaves a page-wide drop that is carrying no files to the page', async () => {
+    const harness = buildUpload({ fullPage: true });
+
+    const event = dispatch(document.body, dragEvent('drop', [], ['text/plain']));
+    await settle();
+
+    // A selection dragged into a textarea somewhere else on the page. Cancelling
+    // it drops the text on the floor, and a full-page upload that does this
+    // breaks drag-and-drop editing everywhere it is mounted — the same hazard
+    // `onDragOver` and `onPaste` each already guard against.
+    expect(event.defaultPrevented).toBe(false);
+    expect(harness.upload.items()).toHaveLength(0);
   });
 
   it('takes files pasted onto the page, and lets go on unmount', async () => {

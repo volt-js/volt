@@ -336,6 +336,45 @@ export function createSlider(options: SliderOptions): Slider {
     return roundTo(min + steps * step, precision);
   }
 
+  /** The last value the grid offers at or below `value`, if it offers one. */
+  function gridBelow(value: number): number | null {
+    if (snapToMarks && markValues.length > 0) {
+      let best: number | null = null;
+      for (const mark of markValues) if (mark <= value) best = mark;
+      return best;
+    }
+    const nearest = quantise(value);
+    return nearest <= value ? nearest : roundTo(nearest - step, precision);
+  }
+
+  /** The first value the grid offers at or above `value`, if it offers one. */
+  function gridAbove(value: number): number | null {
+    if (snapToMarks && markValues.length > 0) {
+      for (const mark of markValues) if (mark >= value) return mark;
+      return null;
+    }
+    const nearest = quantise(value);
+    return nearest >= value ? nearest : roundTo(nearest + step, precision);
+  }
+
+  /**
+   * Where a thumb asked for `value` may actually land, or `null` for nowhere.
+   *
+   * Clamping to a neighbour's bound is not enough on its own. The gap puts that
+   * bound wherever it likes — between two marks, as a rule — and a value parked
+   * on it is off the grid, so the settle every read applies snaps it back past
+   * the bound and shoves the neighbour along to make room. The signal then
+   * holds one array while `values()` reports another, and `onValueChange` is
+   * handed a value the slider will never report or submit. Refusing the move is
+   * the honest answer for a thumb with no room left in front of it.
+   */
+  function landing(value: number, low: number, high: number): number | null {
+    const wanted = quantise(clamp(value, low, high));
+    if (wanted >= low && wanted <= high) return wanted;
+    const nearest = wanted > high ? gridBelow(high) : gridAbove(low);
+    return nearest !== null && nearest >= low && nearest <= high ? nearest : null;
+  }
+
   /**
    * The array as it is allowed to exist: every value on the grid, in range,
    * and in ascending order.
@@ -379,8 +418,8 @@ export function createSlider(options: SliderOptions): Slider {
     if (index < 0 || index >= list.length) return;
 
     const [low, high] = boundsAt(index, list);
-    const next = clamp(quantise(value), low, high);
-    if (next === list[index]) return;
+    const next = landing(value, low, high);
+    if (next === null || next === list[index]) return;
 
     const out = [...list];
     out[index] = next;
@@ -1408,7 +1447,18 @@ export function createFileUpload(options: FileUploadOptions): FileUpload {
   const wanted = new Set<string>();
   /** Pending retry waits, so unmounting does not leave one running. */
   const timers = new Set<ReturnType<typeof setTimeout>>();
-  let active = 0;
+  /**
+   * In-flight requests.
+   *
+   * A signal rather than a plain counter because `data-uploading` is rendered
+   * from it: a number read once is never read again, so removing the last file
+   * mid-flight left the attribute standing over an empty queue for the life of
+   * the page. The queue's own arithmetic reads it through `inFlight`, which
+   * subscribes nothing — `pump` runs inside whatever effect a consumer called
+   * `upload()` from, and has no business waking it.
+   */
+  const active = new Signal.State(0);
+  const inFlight = (): number => untrack(() => active.get());
   /**
    * Latched on teardown.
    *
@@ -1533,7 +1583,10 @@ export function createFileUpload(options: FileUploadOptions): FileUpload {
     if (disabled()) return [];
 
     const list = [...untrack(items)];
-    let accepted = occupied(list);
+    // A single-file upload is about to drop everything it holds, so what it
+    // holds does not occupy a place: counting it refuses the replacement and
+    // leaves the queue with a rejected item and nothing to submit.
+    let accepted = multiple ? occupied(list) : 0;
     const added: UploadItem[] = [];
 
     for (const file of files) {
@@ -1598,7 +1651,7 @@ export function createFileUpload(options: FileUploadOptions): FileUpload {
     const transport = options.transport;
     if (!transport) return;
 
-    while (active < concurrency) {
+    while (inFlight() < concurrency) {
       const next = untrack(items).find((item) => item.status === 'pending' && wanted.has(item.id));
       if (!next) return;
       void run(next.id, transport);
@@ -1628,7 +1681,7 @@ export function createFileUpload(options: FileUploadOptions): FileUpload {
   async function run(id: string, transport: UploadTransport): Promise<void> {
     const controller = new AbortController();
     controllers.set(id, controller);
-    active += 1;
+    active.set(inFlight() + 1);
     // Claimed before the first await, so a second pass of `pump` in the same
     // tick cannot pick the same item up again.
     patch(id, { status: 'uploading', error: null });
@@ -1675,7 +1728,7 @@ export function createFileUpload(options: FileUploadOptions): FileUpload {
         }
       }
     } finally {
-      active -= 1;
+      active.set(inFlight() - 1);
       controllers.delete(id);
       wanted.delete(id);
       announce();
@@ -1850,7 +1903,7 @@ export function createFileUpload(options: FileUploadOptions): FileUpload {
   }
 
   const isUploading = () =>
-    items().some((item) => item.status === 'uploading') || active > 0;
+    items().some((item) => item.status === 'uploading') || active.get() > 0;
 
   /**
    * The aggregate bar, and one per file.
@@ -2037,10 +2090,21 @@ export function createFileUpload(options: FileUploadOptions): FileUpload {
       if (pageDepth === 0) pageDragging.set(false);
     };
 
+    // Every drop on the page arrives here, including a text selection dragged
+    // between two fields that have nothing to do with this upload. Cancelling
+    // that one is how a full-page zone silently breaks editing across the whole
+    // page, so the drops that are not ours are left alone entirely. The zone's
+    // own `onDrop` cancels unconditionally still: a drop that landed on the
+    // zone is ours whatever it was carrying.
+    const onDrop = (event: DragEvent) => {
+      if (!hasFiles(event)) return;
+      acceptDrop(event);
+    };
+
     document.addEventListener('dragenter', onEnter);
     document.addEventListener('dragover', onOver);
     document.addEventListener('dragleave', onLeave);
-    document.addEventListener('drop', acceptDrop);
+    document.addEventListener('drop', onDrop);
 
     onCleanup(() => {
       pageDepth = 0;
@@ -2048,7 +2112,7 @@ export function createFileUpload(options: FileUploadOptions): FileUpload {
       document.removeEventListener('dragenter', onEnter);
       document.removeEventListener('dragover', onOver);
       document.removeEventListener('dragleave', onLeave);
-      document.removeEventListener('drop', acceptDrop);
+      document.removeEventListener('drop', onDrop);
     });
   });
 

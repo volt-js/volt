@@ -2136,6 +2136,44 @@ describe('tags input', () => {
     expect(chips().map((el) => el.getAttribute('tabindex'))).toEqual(['0']);
   });
 
+  it('keeps the stop inside a row showing fewer tags than the value holds', () => {
+    tagsOptions = { defaultValue: ['ada', 'grace', 'edsger'] };
+    // The row a consumer filtered, as above — but here the stop is the thing
+    // left behind rather than focus. Counted against the value the stop is
+    // still in range and so nothing corrects it, while the row it is supposed
+    // to be pointing into is a tag shorter than that.
+    tagsVisible = (tags) => tags.filter((tag) => tag !== 'edsger');
+    const { instance, chip, input, chips } = tagsInput();
+
+    chip(1).focus();
+    // Out of the row before the removal, so there is no focus to rescue and
+    // nothing arrives anywhere to say where the stop belongs now.
+    input().focus();
+    instance.tags.removeAt(1);
+    flushSync();
+
+    expect(chips()).toHaveLength(1);
+    // Every tag at `-1` is a row Tab cannot reach at all, which is the exact
+    // failure the stop is read back off the row to prevent.
+    expect(chips().map((el) => el.getAttribute('tabindex'))).toEqual(['0']);
+  });
+
+  it('carries the stop along with the tag focus is on when the row opens up before it', () => {
+    const value = new Signal.State<readonly string[]>(['ada', 'grace', 'edsger']);
+    tagsOptions = { value };
+    const { chip, chips } = tagsInput();
+
+    const held = chip(0);
+    held.focus();
+    value.set(['zoe', 'ada', 'grace', 'edsger']);
+    flushSync();
+
+    // Focus never moved, so nothing announced an arrival to write the stop
+    // from — and the tag it is on is one further along the row than it was.
+    expect(document.activeElement).toBe(held);
+    expect(chips().map((el) => el.getAttribute('tabindex'))).toEqual(['-1', '0', '-1', '-1']);
+  });
+
   it('hands focus to the row when the text box will not take it', () => {
     const value = new Signal.State<readonly string[]>(['ada']);
     tagsOptions = { value, disabled: () => true };

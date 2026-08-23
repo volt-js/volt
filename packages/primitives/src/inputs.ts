@@ -1856,23 +1856,28 @@ export function createTagsInput(options: TagsInputOptions): TagsInput {
 
   const tagCollection = createCollection(options.list);
   /**
-   * Which tag focus last reached, and so where the row's single stop belongs.
+   * Where focus is in the row, and so where the row's single stop belongs.
+   *
+   * One record answers both, because they are one question asked about two
+   * moments: which tag Tab comes back to, and which tag takes over when the
+   * one holding focus is destroyed. Kept apart they drift — a row that moves
+   * under the tag holding focus moved one of them and not the other — and a
+   * field whose stop is on one tag while the user is on another is the split
+   * this whole model exists to close.
+   *
+   * It counts along the row and never along the value, for the same reason the
+   * hand-off does: what it names is an element to focus. A row can show fewer
+   * tags than the value holds, and an index counted against the value points
+   * past the end of such a row, at no tag to leave the stop on — which leaves
+   * every tag at `tabindex="-1"` and the whole row unreachable by Tab.
    *
    * Written where focus arrives rather than by each thing that moves it, so
    * that the stop cannot disagree with the tag the user is on: a click moves
-   * focus too, and nothing that moves it by key ever hears about that one.
+   * focus too, and nothing that moves it by key ever hears about that one. The
+   * row moving underneath is the one change no arrival announces, and the
+   * effect below reads it back off the row for exactly that reason.
    */
   const activeTag = new Signal.State(0);
-
-  /**
-   * Which tag holds the row's single tab stop.
-   *
-   * Clamped to the row on the way out rather than corrected at each removal: a
-   * row that shrinks under the stop would keep it on an index no tag has any
-   * more, leaving every tag at `tabindex="-1"` and the whole row unreachable by
-   * Tab. An emptied row is the one case that also writes, below.
-   */
-  const tabStop = (): number => Math.min(activeTag.get(), state.get().length - 1);
 
   const roving = createRovingFocus(
     tagCollection,
@@ -1939,9 +1944,11 @@ export function createTagsInput(options: TagsInputOptions): TagsInput {
    * only `removeAt` and `clear` — the value is a signal a consumer can own, so
    * a `:for` over it takes the row apart for a write from anywhere — and a
    * guard at those two call sites answers for the two of them alone.
+   *
+   * Where it sits is not recorded beside it: that is `activeTag`, which the
+   * tag holding focus is already the answer to.
    */
   let focusedTag: HTMLElement | null = null;
-  let focusedIndex = -1;
 
   effect(() => {
     const list = options.list();
@@ -1955,7 +1962,6 @@ export function createTagsInput(options: TagsInputOptions): TagsInput {
       const index =
         target instanceof Element ? tags.findIndex((tag) => tag.contains(target)) : -1;
       focusedTag = tags[index] ?? null;
-      focusedIndex = index;
       // The stop belongs where focus is, and this is the only place that hears
       // a click. Focus on the row itself is focus in the field but on no tag,
       // and leaves the stop where it was.
@@ -1971,7 +1977,6 @@ export function createTagsInput(options: TagsInputOptions): TagsInput {
       const target = event.target;
       if (target instanceof Element && !target.isConnected) return;
       focusedTag = null;
-      focusedIndex = -1;
     };
 
     list.addEventListener('focusin', onFocusIn);
@@ -1980,12 +1985,11 @@ export function createTagsInput(options: TagsInputOptions): TagsInput {
       list.removeEventListener('focusin', onFocusIn);
       list.removeEventListener('focusout', onFocusOut);
       focusedTag = null;
-      focusedIndex = -1;
     });
   });
 
   /**
-   * Apply the rule to every removal there is.
+   * Settle the record against the row every time the row is rebuilt.
    *
    * The row is rendered from the value, so `removeAt`, `clear` and a write to a
    * value signal the consumer owns all arrive here alike. An effect runs after
@@ -1993,6 +1997,11 @@ export function createTagsInput(options: TagsInputOptions): TagsInput {
    * tag that took the removed one's place is already on the page to receive
    * focus, and a tag that only moved along the row is still on it and keeps the
    * focus it had.
+   *
+   * This is where the record meets the only collection it counts along. Focus
+   * arriving says where the record is; the row moving underneath is the one
+   * thing that changes the answer without any focus arriving anywhere, and it
+   * changes it whether a tag was destroyed or merely carried along.
    */
   effect(() => {
     const empty = state.get().length === 0;
@@ -2003,24 +2012,32 @@ export function createTagsInput(options: TagsInputOptions): TagsInput {
       if (empty) activeTag.set(0);
 
       const held = focusedTag;
-      if (!held) return;
-
-      if (held.isConnected) {
-        // The row can close up around the tag holding focus without destroying
-        // it, and the record has to follow or a later removal would rescue to
-        // the wrong end of the row. One that has left the row altogether is not
-        // the field's to rescue at all.
-        focusedIndex = tagCollection.all().indexOf(held);
-        if (focusedIndex === -1) focusedTag = null;
-        return;
+      if (held?.isConnected) {
+        // The row can close up around the tag holding focus, or open up before
+        // it, without destroying it. The record has to follow, or a later
+        // removal would rescue to the wrong end of the row and Tab would come
+        // back to a tag nobody is on. One that has left the row altogether is
+        // not the field's to rescue at all.
+        const at = tagCollection.all().indexOf(held);
+        if (at === -1) focusedTag = null;
+        else activeTag.set(at);
+      } else if (held) {
+        // Let go of first, so that the focus the hand-off places is recorded as
+        // the one the row now holds rather than overwritten by what it replaced.
+        const at = activeTag.get();
+        focusedTag = null;
+        handOffFrom(at);
       }
 
-      const at = focusedIndex;
-      // Let go of first, so that the focus the hand-off places is recorded as
-      // the one the row now holds rather than overwritten by what it replaced.
-      focusedTag = null;
-      focusedIndex = -1;
-      handOffFrom(at);
+      // With no tag holding focus nothing has spoken for the stop, and the row
+      // can still have shrunk out from under it — the case no call site can be
+      // guarded, since the consumer's own write is one of them. A hand-off that
+      // reached a tag has already been heard as an arrival, so this passes over
+      // it; one that fell through to the box or the row has not.
+      if (!focusedTag) {
+        const last = tagCollection.all().length - 1;
+        if (last >= 0 && activeTag.get() > last) activeTag.set(last);
+      }
     });
   });
 
@@ -2209,7 +2226,7 @@ export function createTagsInput(options: TagsInputOptions): TagsInput {
         [ITEM_ATTRIBUTE]: true,
         'data-label': tag,
         'data-duplicate': duplicate.get() === index || undefined,
-        tabindex: index === tabStop() ? '0' : '-1',
+        tabindex: index === activeTag.get() ? '0' : '-1',
       });
     },
 
