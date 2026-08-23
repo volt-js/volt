@@ -1118,6 +1118,31 @@ describe('the combobox textbox', () => {
     ui.remountBox();
     expect(ui.combo.labelOf('ba')).toBe('Banana');
     expect(ui.combo.value()).toBe('ba');
+    // And the box says the name of the value held, rather than the markup it
+    // came back holding. The writer keeps a record of its own last write so an
+    // inline completion is left alone; that record describes the element it
+    // was written to, so a new element is still written.
+    expect(ui.input().value).toBe('Banana');
+  });
+
+  it('does not report an input change for a box that only came back', () => {
+    // The string did not change — the element did. Reporting it would be the
+    // component telling the caller something the caller did not do.
+    const seen: string[] = [];
+    comboOptions = { name: 'fruit', onInputValueChange: (value) => seen.push(value) };
+    remountable = true;
+    const ui = comboDemo();
+
+    // Named by the option that was pressed — a value nothing has named has no
+    // name here, which is the model rather than an accident.
+    openCombo(ui);
+    press(ui.option('ba'));
+    expect(ui.input().value).toBe('Banana');
+
+    seen.length = 0;
+    ui.remountBox();
+    expect(ui.input().value).toBe('Banana');
+    expect(seen).toEqual([]);
   });
 
   it('shows the label of the value it starts with when `labelFor` supplies one', () => {

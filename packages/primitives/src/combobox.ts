@@ -1725,6 +1725,17 @@ export function createCombobox<T = unknown>(options: ComboboxOptions<T>): Combob
   let lastValues: readonly string[] | null = null;
   let lastAsked: string | null = null;
   let written: string | null = null;
+  /**
+   * Which element `written` describes.
+   *
+   * The guard below exists to leave an inline completion alone — the element
+   * holds more than the box is saying, and the difference is a proposal with a
+   * caret in it. But a record of the last write means nothing about an element
+   * that was not written: a textbox rendered again is a new node holding
+   * whatever markup brought it, and without this the guard would suppress the
+   * one write that would put it right.
+   */
+  let writtenTo: Element | null = null;
   effect(() => {
     const values = core.valueState.get();
     const question = asked.get();
@@ -1747,14 +1758,20 @@ export function createCombobox<T = unknown>(options: ComboboxOptions<T>): Combob
       const learned = !chosen && question === null && lastAsked === null;
       lastAsked = chosen ? null : question;
 
-      if (text === written) return;
+      const sameText = text === written;
+      const sameElement = el === writtenTo;
+      if (sameText && sameElement) return;
       const first = written === null;
       written = text;
+      writtenTo = el;
       // Written straight to the element rather than bound in the template: this
       // owns the textbox's value — it completes it, reverts it and clears it —
       // and a `:value` binding beside that is two writers for one string.
       if (el.value !== text) el.value = text;
-      if (!first && !learned) options.onInputValueChange?.(text);
+      // A remount is not somebody typing: the element changed and the string
+      // did not, so there is nothing to report.
+      const remountedOnly = sameText && !sameElement;
+      if (!first && !learned && !remountedOnly) options.onInputValueChange?.(text);
     });
   });
 
