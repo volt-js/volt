@@ -18,14 +18,22 @@
  * bookkeeping that a rebase consists of. What is missing is a rebase function
  * and a transport, not a different document model.
  *
- * What exists so far is the model, the schema, resolved positions, and the
- * change layer those were built for: steps, position maps and transactions.
- * There is no input handling, no `beforeinput`, no composition, no clipboard,
- * no undo *history* — the inversion undo is built on is here, the stack that
- * would use it is not — and no view. A document can be built, changed by
- * transactions, and have a position carried across those changes; nothing here
- * listens to a keyboard. A replacement whose ends sit in different parents is
- * refused rather than half-done, for the reason `step.ts` gives.
+ * What exists so far is the model, the schema, resolved positions, the change
+ * layer those were built for — steps, position maps and transactions — and the
+ * input layer above it: a state that is a document and a selection, the
+ * commands an edit is made of, and the `beforeinput` translation that turns a
+ * browser event into one of them. A selection is carried across a change by the
+ * same arithmetic as every other position rather than re-read from the DOM,
+ * which is the property `state.ts` exists to hold.
+ *
+ * What is still missing is a view, and with it everything that needs one: a
+ * document is edited here through transactions and events aimed at an element,
+ * but nothing renders it, and nothing keeps a DOM selection in step with the
+ * model's. There is no undo *history* either — the inversion undo is built on
+ * is here, the stack that would use it is not — and no rich clipboard: a paste
+ * is flattened to text, since a paste that kept its structure needs a DOM
+ * parser and slices with open ends. A replacement whose ends sit in different
+ * parents is refused rather than half-done, for the reason `step.ts` gives.
  */
 
 export { Mark, sameAttrs, type Attrs } from './mark.js';
@@ -53,5 +61,16 @@ export {
   type StepResult,
 } from './step.js';
 export { basicSchema } from './basic.js';
+export { EditorState, EditorTransaction, TextSelection, type ChangedRange } from './state.js';
+export {
+  deleteBackward,
+  deleteForward,
+  deleteSelection,
+  deleteWordBackward,
+  insertParagraph,
+  insertPlainText,
+  insertText,
+} from './commands.js';
+export { EditorInput, applyInputType, type EditorInputHost } from './input.js';
 
 export const VERSION = '0.1.0';

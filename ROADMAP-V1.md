@@ -311,12 +311,21 @@ rebase function, a transport and an authority to order changes, none of which
 is a change to the document model. That is recorded in `step.ts` rather than
 here, so it sits beside the code that has to keep it true.
 
+**Stage three is built too: it listens to a keyboard.** `EditorState` holds a
+document and a selection and advances by applying a transaction, mapping the
+selection through each step as the step is taken rather than recomputing it
+afterwards. Commands cover deletion, insertion, paragraph splitting, backward
+and forward delete by grapheme cluster, delete-word-backward and plain-text
+paste. `beforeinput` translates the input types that matter and calls
+`preventDefault` so the browser does not also act, and composition is left to
+own the DOM while it runs and reconciled when it ends.
+
 Refused rather than half-done, and stated in the source: a replacement whose
 ends resolve into different parents, which needs slices with open ends the
-model does not build yet. Not built at all: input handling, `beforeinput`,
-IME composition, clipboard, the undo *stack* — inversion is here, the history
-that would use it is not — and the whole view layer. Nothing yet listens to a
-keyboard.
+model does not build yet. Not built: the undo *stack* — inversion is here and
+so is the record of where an undo unit ends, the history that would use them is
+not — hard breaks, delete-word-forward, node selections, structure-preserving
+paste, and the whole view layer.
 
 Robustness here means schema-constrained documents, collaborative editing,
 input-method support for non-Latin scripts, undo grouping, paste sanitisation,
@@ -1031,7 +1040,17 @@ deliverable.
 - Per-route rendering mode, feeding the hybrid plan above
 - Data loading tied to the route so a navigation can fetch and render together
   rather than mounting, then discovering it needs data
-- Scroll restoration, view transitions, and blocking navigation on unsaved work
+- Scroll restoration, view transitions, and blocking navigation on unsaved work.
+  **All three are built.** View transitions are opt-in via
+  `RouterOptions.viewTransition` and default to off, because the platform
+  serializes them and a route change during a list update would contend with
+  it. Three cases fall back to the ordinary swap: no `startViewTransition`,
+  `prefers-reduced-motion`, and one already running. Never on the initial
+  commit — there is no previous page to animate away from. The swap handed to
+  the platform includes its own `flushSync`, since Volt patches the DOM when
+  effects drain and a snapshot taken before that would be of an unchanged page;
+  and it is awaited on `updateCallbackDone` rather than `finished`, so scroll
+  restoration is not held for the length of the animation.
 - `<a>` that works — a real href, so middle-click, open-in-new-tab and crawlers
   all behave, with interception layered over it rather than replacing it
 
@@ -1217,6 +1236,18 @@ Not yet, and the reason:
       blocked rather than open.
 
 ## Editor support
+
+**Built, as a Volar language plugin rather than a hand-written server** —
+`@voltdev/volar`, which is what the section below argues for. Its mappings are
+derived from `generateTypeCheckBlock`'s existing marks, so the editor and
+`volt check` are one analysis with two consumers rather than two
+implementations that can disagree; the important tests run against the real
+TypeScript 7 checker rather than a stub. Three gaps are recorded in its own
+source: there is no VS Code extension, which is packaging rather than
+language-service work; `@volar/typescript`'s integration field is declared
+structurally because that package ships no types for TypeScript 7; and the
+`volt/signal-read` diagnostic is dropped rather than mistranslated, since
+carrying it across needs a service plugin.
 
 Today a template is a plain `.html` file, so an editor gives it HTML
 highlighting and nothing else: no completion for the component's own fields,

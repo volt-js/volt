@@ -38,6 +38,7 @@
 import { Fragment, Node, Slice } from './node.js';
 import { Mark } from './mark.js';
 import { resolve } from './position.js';
+import type { ResolvedPos } from './position.js';
 
 /**
  * Which side of an insertion a mapped position belongs to.
@@ -275,7 +276,7 @@ export class ReplaceStep extends Step {
       return { ok: false, reason: `${parent.type.name} cannot hold that content` };
     }
 
-    return { ok: true, doc: replaceAt(doc, $from.before($from.depth), parent.copy(replaced)) };
+    return { ok: true, doc: replaceAt(doc, containerOf($from), parent.copy(replaced)) };
   }
 
   getMap(): StepMap {
@@ -340,7 +341,7 @@ abstract class MarkStep extends Step {
       .append(middle)
       .append(parent.content.cut($to.parentOffset));
 
-    return { ok: true, doc: replaceAt(doc, $from.before($from.depth), parent.copy(rewritten)) };
+    return { ok: true, doc: replaceAt(doc, containerOf($from), parent.copy(rewritten)) };
   }
 }
 
@@ -370,6 +371,21 @@ export class RemoveMarkStep extends MarkStep {
     const to = mapping.map(this.to, -1);
     return to <= from ? null : new RemoveMarkStep(from, to, this.mark);
   }
+}
+
+/**
+ * Where the node a step rewrote begins, for `replaceAt`.
+ *
+ * A step whose ends resolve directly in the document has no such node — the
+ * parent it rewrote *is* the document, and there is no position before it to
+ * ask for. That is what `replaceAt`'s negative-position guard is for, and it
+ * has to be reached: every structural edit an editor makes at the top level —
+ * splitting a paragraph into two, joining two back into one, deleting a rule
+ * between them — is a replacement at depth zero, and asking `before(0)` for
+ * one throws instead of returning a document.
+ */
+function containerOf($from: ResolvedPos): number {
+  return $from.depth === 0 ? -1 : $from.before($from.depth);
 }
 
 /**
