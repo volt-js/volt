@@ -2713,6 +2713,41 @@ describe('what a disabled or read-only combobox refuses', () => {
   });
 });
 
+describe('a reset that restores the value already held', () => {
+  it('puts the value back into the element the platform blanked', async () => {
+    // The case the select's own reset test cannot reach, because a `<select>`
+    // is restored by its `selected` attributes while a combobox's `<input>` is
+    // written by property. Resetting to the value the widget is already
+    // holding changes no signal, so nothing re-runs — and the form goes on to
+    // submit an empty string while `value()` reports the value.
+    comboOptions = { name: 'fruit', defaultValue: 'ba' };
+    const ui = comboDemo();
+    expect(ui.combo.value()).toBe('ba');
+    expect(new FormData(ui.form()).get('fruit')).toBe('ba');
+
+    ui.form().reset();
+    await settle();
+
+    expect(ui.combo.value()).toBe('ba');
+    expect(new FormData(ui.form()).get('fruit')).toBe('ba');
+  });
+
+  it('still follows a reset that does move the value', async () => {
+    comboOptions = { name: 'fruit', defaultValue: 'ba' };
+    const ui = comboDemo();
+    const input = openCombo(ui);
+    key(input, 'ArrowDown');
+    key(input, 'Enter');
+    expect(ui.combo.value()).not.toBe('ba');
+
+    ui.form().reset();
+    await settle();
+
+    expect(ui.combo.value()).toBe('ba');
+    expect(new FormData(ui.form()).get('fruit')).toBe('ba');
+  });
+});
+
 describe('an option whose whole content is the guard that reads it', () => {
   it('takes no custom value when the widget was not told to allow one', () => {
     // Reachable directly, and the guard inside is the only refusal: the one

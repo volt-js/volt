@@ -740,6 +740,22 @@ function createListboxCore(
    * nothing fails the required check and says so. The markup that works is a
    * `<select multiple>` — see the note on the form control at the top.
    */
+  /**
+   * Put the held value into the native control.
+   *
+   * Shared with the reset handler below rather than left inside the effect,
+   * because the effect only runs when the value changes — and a reset to the
+   * value already held changes nothing. A `<select>` survives that on its own,
+   * since `selected` is an attribute the platform restores; an `<input>` is
+   * written by property, so the element the platform has just blanked stays
+   * blank unless something writes it again.
+   */
+  const writeNative = (values: readonly string[]): void => {
+    const native = options.native?.();
+    if (!native || isSelectElement(native) || !('value' in native)) return;
+    (native as { value: string }).value = multiple ? '' : (values[0] ?? '');
+  };
+
   let firstSync = true;
   effect(() => {
     const values = valueState.get();
@@ -747,9 +763,7 @@ function createListboxCore(
     if (!native) return;
 
     untrack(() => {
-      if (!isSelectElement(native) && 'value' in native) {
-        (native as { value: string }).value = multiple ? '' : (values[0] ?? '');
-      }
+      writeNative(values);
       if (firstSync) {
         firstSync = false;
         return;
@@ -767,7 +781,16 @@ function createListboxCore(
 
     // Deferred by a microtask because `reset` is dispatched as part of
     // resetting, before the controls it resets have settled.
-    const onReset = () => queueMicrotask(() => setValues(initial));
+    const onReset = () =>
+      queueMicrotask(() => {
+        setValues(initial);
+        // Unconditionally, and not only when the value moved: the platform has
+        // already blanked the element, so a reset to the value the widget was
+        // holding leaves the form submitting nothing while `value()` still
+        // reports it — which is the one failure the form-control section at
+        // the top of this file exists to prevent.
+        writeNative(valuesNow());
+      });
     form.addEventListener('reset', onReset);
     onCleanup(() => form.removeEventListener('reset', onReset));
   });
