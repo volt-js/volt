@@ -199,9 +199,19 @@ The six that force every shared behaviour into existence, in order:
       through the same CSS anchor positioning the popover and the tooltip use.
       No submenu yet: a submenu's placement is a `placement` option away, its
       keyboard is not
-- [ ] **Combobox** — built and tested, but held back from export along with
-      inputs and slider-upload until a review passes clean, and it does not
-      virtualize
+- [ ] **Combobox** — built and tested, held back from export along with inputs
+      and slider-upload, and it does not virtualize. The gate is a review round
+      that finds nothing. The latest round did find something: mutation testing
+      over its 186 guard and comparison sites left 64 alive, and four of those
+      were options and states nothing verified — `closeOnOutsidePointer`, whose
+      name appeared nowhere in the suite; `closeOnEscape`; `allowCustomValue`
+      on the direct call rather than the one guarded call site; and refusing to
+      clear while disabled or read-only, where `setValues` beneath it has no
+      guard of its own. Those four now have tests that fail when the line they
+      name is deleted. Three more survivors turned out to be unkillable rather
+      than uncovered, and are recorded as such in the suite: two guards
+      redundant with an identical one further in, and one branch made
+      unreachable by the dismiss layer being configured not to listen at all
 - [x] **Tooltip** — anchoring under pointer *and* keyboard, delay grouping
 - [x] **Tabs** — roving focus, automatic vs manual activation
 - [x] **Accordion** — presence with height animation
@@ -461,12 +471,24 @@ serialising it. Build order and what each stage has to prove are there.
 
 ### What is built
 
-Stage three of that order. The reactivity lanes and request isolation are in
-place, and so is the emitter: a server codegen target writes through
-`MarkupWriter` in `@voltdev/core/server`, which `renderToStaticMarkup` drives.
-What is absent is hydration of every kind — no markers, no ids, no state
-payload. [docs/reference/server.md](docs/reference/server.md) still describes
-the stage before this one and needs rewriting.
+Stage four of that order, and the stage-three gate it was conditional on has
+passed. The reactivity lanes and request isolation are in place; the emitter is
+a server codegen target writing through `MarkupWriter` in
+`@voltdev/core/server`; `renderToStaticMarkup` drives it for output nothing
+will attach to, and `renderToString` for a page that will hydrate — emitting
+the hole delimiters a claiming walk steps by, and carrying the state payload.
+Hydration itself claims the server's nodes rather than rebuilding over them,
+and `volt({ hydrate: true })` is how a build asks for that emit.
+
+What the design record required before any of this could start was a proof
+rather than a feature: that the server's output parses to the tree the client
+builds, across the whole template corpus, *with values*. That is
+`core/test/server-client-parity.test.ts`, which names the five places the two
+legitimately differ and asserts they still differ, so that fixing one fails the
+test rather than passing silently.
+
+Still absent: streaming, out-of-order flush, async boundaries, and the
+positional-id rework identity under an out-of-order flush would need.
 
 - [x] A fourth scheduler lane. `dataEffect` is drained after render and before
       measure, and `createResource` triggers from it. Deferred like user work,

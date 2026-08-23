@@ -2634,3 +2634,132 @@ describe('right to left', () => {
     expect(ui.combo.activeValue()).toBe('ba');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Guards nothing held
+//
+// Found by mutation rather than by reading: deleting each guard below left the
+// suite green, so nothing distinguished a widget that enforced its own options
+// and disabled state from one that ignored them. The code was right in every
+// case — what was missing was anything that would notice if it stopped being.
+//
+// These are worth more than their size suggests, because every one of them is
+// on the public surface. `toggleValue`, `clear` and `commitCustomValue` are
+// methods a consumer calls directly, so the guard inside each is the only
+// thing between a disabled widget and a value that changed anyway; and
+// `closeOnEscape` and `closeOnOutsidePointer` are options whose whole content
+// is the guard that reads them.
+// ---------------------------------------------------------------------------
+
+describe('what a disabled or read-only combobox refuses', () => {
+  it('does not take a value off', () => {
+    // Both halves are guarded twice: adding routes through `select` and
+    // removing through `deselect`, and each refuses on its own. So the guard
+    // at the top of `toggleValue` is redundant and no test can distinguish it
+    // — this asserts the behaviour, not that line.
+    comboOptions = { multiple: true, defaultValue: ['ch'], disabled: () => true };
+    const ui = comboDemo();
+    expect(ui.combo.values()).toEqual(['ch']);
+
+    ui.combo.toggleValue('ch');
+    expect(ui.combo.values()).toEqual(['ch']);
+  });
+
+  it('does not take a value off while read-only either', () => {
+    comboOptions = { multiple: true, defaultValue: ['ch'], readOnly: () => true };
+    const ui = comboDemo();
+
+    ui.combo.toggleValue('ch');
+    expect(ui.combo.values()).toEqual(['ch']);
+  });
+
+  it('does not clear what is held, where `setValues` beneath it has no guard', () => {
+    // The guard in `clear` is the only one on this path: `setValues` refuses a
+    // write that changes nothing, and nothing else.
+    comboOptions = { defaultValue: 'ch', disabled: () => true };
+    const ui = comboDemo();
+    expect(ui.combo.value()).toBe('ch');
+
+    ui.combo.clear();
+    expect(ui.combo.value()).toBe('ch');
+  });
+
+  it('does not clear while read-only', () => {
+    comboOptions = { defaultValue: 'ch', readOnly: () => true };
+    const ui = comboDemo();
+
+    ui.combo.clear();
+    expect(ui.combo.value()).toBe('ch');
+  });
+
+  // Kept as a behavioural assertion rather than as cover for the guard in
+  // `onTriggerClick`: that one is redundant with the guard in `openListbox`
+  // below it, so nothing can tell whether it is there. Defence in depth, and
+  // honest about being unobservable.
+  it('does not open its list from the trigger', () => {
+    comboOptions = { disabled: () => true };
+    const ui = comboDemo();
+
+    press(ui.toggle());
+    expect(ui.combo.isOpen()).toBe(false);
+  });
+
+  it('does not open its list when asked directly', () => {
+    comboOptions = { disabled: () => true };
+    const ui = comboDemo();
+
+    ui.combo.open();
+    expect(ui.combo.isOpen()).toBe(false);
+  });
+});
+
+describe('an option whose whole content is the guard that reads it', () => {
+  it('takes no custom value when the widget was not told to allow one', () => {
+    // Reachable directly, and the guard inside is the only refusal: the one
+    // call site that checks `allowCustomValue` before calling is not the only
+    // way in, because the method is on the public surface.
+    comboOptions = {};
+    const ui = comboDemo();
+    const input = ui.input();
+
+    type(input, 'Kumquat');
+    ui.combo.commitCustomValue();
+    expect(ui.combo.value()).toBeNull();
+  });
+
+  it('stays open on Escape when told not to close on it', () => {
+    comboOptions = { closeOnEscape: false };
+    const ui = comboDemo();
+    const input = openCombo(ui);
+    expect(ui.combo.isOpen()).toBe(true);
+
+    key(input, 'Escape');
+    expect(ui.combo.isOpen()).toBe(true);
+  });
+
+  it('stays open on an outside press when told not to close on one', () => {
+    // The option had no test of any kind — its name appeared nowhere in this
+    // file. It is enforced where the layer is configured, by not listening for
+    // outside presses at all, which makes the matching branch in the dismiss
+    // callback unreachable rather than merely uncovered. The escape branch
+    // beside it is not: `escape: true` is always claimed so that a layer which
+    // will not close still stops the press reaching the one beneath it.
+    comboOptions = { closeOnOutsidePointer: false };
+    const ui = comboDemo();
+    openCombo(ui);
+    expect(ui.combo.isOpen()).toBe(true);
+
+    press(document.querySelector<HTMLElement>('#outside')!);
+    expect(ui.combo.isOpen()).toBe(true);
+  });
+
+  it('still closes on an outside press by default, so the option is doing the work', () => {
+    comboOptions = {};
+    const ui = comboDemo();
+    openCombo(ui);
+    expect(ui.combo.isOpen()).toBe(true);
+
+    press(document.querySelector<HTMLElement>('#outside')!);
+    expect(ui.combo.isOpen()).toBe(false);
+  });
+});
