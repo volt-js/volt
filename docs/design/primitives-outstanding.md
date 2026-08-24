@@ -151,15 +151,30 @@ reads, which closed a second symptom nobody had reported separately: a stale
 `activeTag` also steered the arrows, so they refused to move while reporting the
 press as handled.
 
-**One path into it is still open, and it is worth stating rather than
-discovering twice.** The settle effect tracks a single signal — the value's
-length — so it re-runs when the value changes and at no other time. A row that
-changes for any other reason, such as a consumer's filter narrowing it while the
-value stands still, does not re-run it, and the stop can be left outside the
-row again. Closing that needs the effect to observe the row rather than the
-value, and the row is a live DOM query rather than a signal, which is why the
-clamp is where it is. Reported by the agent that verified the fix, rather than
-by the one that made it.
+That path is closed too, and how it resisted two obvious fixes is worth
+recording. The settle effect tracked one signal — the value's length — so a row
+narrowed for any other reason, a search term or a filter, never re-ran it and
+the stop could be left outside the row.
+
+Clamping on the read side does not work: `tagProps` reads no signal that changes
+when the row narrows, so the surviving tags never re-run their `:spread` and the
+stale answer stands. Clamping against the collection on the write side does not
+work either, for the mirror-image reason the original code was written against
+the value: `tagCollection` is a live DOM query and the first render pass runs
+while the `<li>` is still detached, so it is empty exactly when it is first
+asked.
+
+So the row is observed. One `MutationObserver` per field, on the element the
+field already holds a reference to, watching children and the attribute that
+marks a tag disabled, bumping a revision the settle effect tracks. The cost is
+one observer per tags input, which is the price of a guarantee about a
+collection the component does not own. It reports on a microtask, so the turn
+the row changed in is not the turn the record is corrected in — which the test
+has to allow for, and says so.
+
+The case was not expressible before: the suite's row filter was a module-level
+value fixed before mount, so a row could not be narrowed while the component
+was alive. It is a signal now.
 
 Covered by tests that fail without the part they name: the hand-off landing on
 the row when a disabled field's box refuses focus, and on the field itself when

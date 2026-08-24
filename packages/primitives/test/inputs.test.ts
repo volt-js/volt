@@ -1515,6 +1515,7 @@ let tagsVisible: ((tags: readonly string[]) => readonly string[]) | null;
 
 interface TagsInstance {
   tags: ReturnType<typeof createTagsInput>;
+  hidden: Signal.State<readonly string[]>;
   input: Signal.State<Element | null>;
   handled: boolean;
 }
@@ -1557,9 +1558,22 @@ function tagsInput(dir = '', row = '') {
       label: () => this.label.get(),
     });
 
+    /**
+     * A row a consumer narrows for reasons of their own.
+     *
+     * `hidden` is a signal rather than the module-level `tagsVisible` beside
+     * it, because the case worth testing is the row changing *without* the
+     * value changing — a search term narrowing what is shown. A filter that is
+     * not reactive can only be set before the component mounts, so the suite
+     * could not express that case at all.
+     */
+    hidden = new Signal.State<readonly string[]>([]);
+
     visible(): readonly string[] {
       const tags = this.tags.tags();
-      return tagsVisible ? tagsVisible(tags) : tags;
+      const filtered = tagsVisible ? tagsVisible(tags) : tags;
+      const out = this.hidden.get();
+      return out.length === 0 ? filtered : filtered.filter((tag) => !out.includes(tag));
     }
 
     onKey(event: KeyboardEvent): void {
@@ -2504,6 +2518,35 @@ function rating() {
     form: () => host.querySelector('form')!,
   };
 }
+
+  it('keeps the stop inside a row a consumer narrowed without touching the value', async () => {
+    // The settle effect that clamps the stop observes the value's length and
+    // nothing else, so a row narrowed for any other reason — a search term, a
+    // filter — never re-runs it. The row is a live DOM query with no reactive
+    // surface, which is why the clamp is where it is; this is the path that
+    // leaves open.
+    tagsOptions = { defaultValue: ['ada', 'grace', 'edsger'] };
+    const { instance, chip, chips } = tagsInput();
+
+    chip(2).focus();
+    flushSync();
+    instance.input.get();
+    // Leave the row, so no focus is anywhere to speak for the stop.
+    (document.activeElement as HTMLElement | null)?.blur();
+    flushSync();
+
+    instance.hidden.set(['edsger']);
+    flushSync();
+    // The row is observed rather than derived, and a MutationObserver reports
+    // on a microtask — so the turn the removal happened in is not the turn the
+    // record is corrected in.
+    await Promise.resolve();
+    flushSync();
+
+    expect(chips()).toHaveLength(2);
+    const stops = chips().map((el) => el.getAttribute('tabindex'));
+    expect(stops).toContain('0');
+  });
 
 describe('rating', () => {
   it('is a radio group, and submits like one', () => {

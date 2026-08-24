@@ -1855,6 +1855,33 @@ export function createTagsInput(options: TagsInputOptions): TagsInput {
   };
 
   const tagCollection = createCollection(options.list);
+
+  /**
+   * Bumped whenever the row's children change.
+   *
+   * The settle effect below clamps the single tab stop into the row, and it has
+   * to know when the row moved. It cannot ask the value: a consumer renders the
+   * row from the value but is not obliged to render all of it, so a search term
+   * or a filter narrows the row while the value stands still, and a stop left
+   * beyond the new end would take the whole row out of the tab order. Nor can
+   * it ask the collection, which is a live DOM query with no reactive surface —
+   * reading it from the props would not re-run them, because nothing they read
+   * would have changed.
+   *
+   * So the row is observed. One observer per field, on the element the field
+   * already has a reference to, watching children and the attribute that marks
+   * a tag disabled.
+   */
+  const rowRevision = new Signal.State(0);
+  effect(() => {
+    const list = options.list();
+    if (!list) return;
+    const observer = new MutationObserver(() => {
+      rowRevision.set(untrack(() => rowRevision.get()) + 1);
+    });
+    observer.observe(list, { childList: true, subtree: true, attributeFilter: ['data-disabled'] });
+    onCleanup(() => observer.disconnect());
+  });
   /**
    * Where focus is in the row, and so where the row's single stop belongs.
    *
@@ -2005,6 +2032,9 @@ export function createTagsInput(options: TagsInputOptions): TagsInput {
    */
   effect(() => {
     const empty = state.get().length === 0;
+    // Tracked, not read for its value: the row changing is the other half of
+    // when this has to run, and the value's length does not report it.
+    rowRevision.get();
     untrack(() => {
       // An emptied row spends what it remembered: the tags that come back are
       // new ones, and a stop left where the row was last entered would put Tab
