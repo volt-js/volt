@@ -93,6 +93,29 @@ hit left for `filtering` is the word inside a comment.
 Not exported yet. What it is waiting on is the next round finding nothing,
 rather than a named defect.
 
+### The export itself has a prerequisite nobody had looked for
+
+Readiness was the only question anybody was asking about these three, and it is
+not the only one that has to be answered. `packages/primitives/src/index.ts`
+re-exports with `export * from`, and combobox declared its own `ListboxLabels`
+and `ListboxOptionOptions` — different types from the ones `listbox.ts` exports
+under those names, one of which takes a type parameter and one of which does
+not. Adding the star export is `error TS2308` twice over: a hard build failure,
+not a silent shadow. Verified by adding the line and running `tsc`, rather than
+reasoned about.
+
+They are renamed to `ComboboxLabels` and `ComboboxOptionOptions`. Nothing
+outside the file could have referred to them, since the file was never
+exported, so the rename costs nothing — but it had to happen before the export,
+and it would have been found by whoever tried it rather than by whoever decided
+it.
+
+Checked at the same time, and not a blocker: neither `inputs` nor
+`slider-upload` collides with anything, the three do not collide with each
+other, and none of them has a stylesheet in `@voltdev/ui` — which is the norm
+rather than a gap, since nine already-exported primitives have none either.
+`@voltdev/primitives` is headless and `@voltdev/ui` covers a subset on purpose.
+
 ## inputs
 
 Went from one unfixed finding to two across three rounds — the only one of the

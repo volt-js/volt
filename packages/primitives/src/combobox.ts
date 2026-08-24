@@ -139,7 +139,7 @@ export type ListboxOpenFocus = 'selected' | 'first' | 'last' | 'none';
  */
 export type ComboboxAutocomplete = 'none' | 'list' | 'both';
 
-export interface ListboxOptionOptions {
+export interface ComboboxOptionOptions {
   /** Identifies the option. Everything else here is keyed off it. */
   value: string;
   /** Skipped by navigation and by typeahead, still announced. */
@@ -159,7 +159,7 @@ export interface ListboxOptionOptions {
  * so an application that has translated the catalogue has translated these
  * too and need pass nothing here.
  */
-export interface ListboxLabels {
+export interface ComboboxLabels {
   /** Names the popup when no field label does. Default `Suggestions`. */
   listbox?: string;
   /** Shown and announced when nothing matches. Default `No results`. */
@@ -289,7 +289,7 @@ export interface ListboxSharedOptions {
    */
   field?: Omit<FormFieldOptions, 'control' | 'id' | 'required' | 'disabled' | 'readOnly'>;
 
-  labels?: ListboxLabels;
+  labels?: ComboboxLabels;
 
   onOpenChange?: (open: boolean) => void;
   onValueChange?: (values: readonly string[]) => void;
@@ -852,7 +852,7 @@ function createListboxCore(
     };
   };
 
-  const optionProps = (option: ListboxOptionOptions): ComboboxProps => {
+  const optionProps = (option: ComboboxOptionOptions): ComboboxProps => {
     const chosen = valueState.get().includes(option.value);
     return {
       [ITEM_ATTRIBUTE]: '',
@@ -905,7 +905,7 @@ function createListboxCore(
     return props;
   };
 
-  const nativeOptionProps = (option: ListboxOptionOptions): ComboboxProps => ({
+  const nativeOptionProps = (option: ComboboxOptionOptions): ComboboxProps => ({
     value: option.value,
     selected: valueState.get().includes(option.value),
     disabled: option.disabled === true,
@@ -1074,14 +1074,14 @@ interface ListboxCommon {
   onListboxPointerDown(event: PointerEvent): void;
 
   listboxProps(): ComboboxProps;
-  optionProps(option: ListboxOptionOptions): ComboboxProps;
+  optionProps(option: ComboboxOptionOptions): ComboboxProps;
   /** `role="group"`, named by its own label rather than by an id pair. */
   groupProps(label: string): ComboboxProps;
   /** For the visible heading of a group, which its `aria-label` already carries. */
   groupLabelProps(): ComboboxProps;
   separatorProps(): ComboboxProps;
   nativeProps(): ComboboxProps;
-  nativeOptionProps(option: ListboxOptionOptions): ComboboxProps;
+  nativeOptionProps(option: ComboboxOptionOptions): ComboboxProps;
   statusProps(): ComboboxProps;
   /** For the element the popup lines up with, when it is not the control. */
   anchorProps(): ComboboxProps;
