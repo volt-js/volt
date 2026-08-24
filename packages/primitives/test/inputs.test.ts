@@ -1607,6 +1607,78 @@ function tagsInput(dir = '', row = '') {
   };
 }
 
+describe('what a disabled or read-only field refuses', () => {
+  // The same class of gap the combobox had: state guards on the public surface
+  // that nothing distinguished. Found by deleting each guard and watching the
+  // suite stay green.
+  it('offers no step in either direction while disabled', () => {
+    numberOptions = { defaultValue: 4, min: 0, max: 10, disabled: () => true };
+    const { instance } = numberInput();
+
+    expect(instance.num.canIncrement()).toBe(false);
+    expect(instance.num.canDecrement()).toBe(false);
+  });
+
+  it('offers no step while read-only either, where the value is not the user’s to move', () => {
+    numberOptions = { defaultValue: 4, min: 0, max: 10, readOnly: () => true };
+    const { instance } = numberInput();
+
+    expect(instance.num.canIncrement()).toBe(false);
+    expect(instance.num.canDecrement()).toBe(false);
+  });
+
+  it('does not move the value when told to step anyway', () => {
+    // `increment` and `decrement` are on the public surface, so a consumer can
+    // ask for a step without going through a control that is greyed out — and
+    // the guard inside is then the only thing that refuses.
+    numberOptions = { defaultValue: 4, min: 0, max: 10, disabled: () => true };
+    const { instance } = numberInput();
+
+    // One direction at a time: a step up followed by a step down returns to
+    // where it started whether the guard is there or not, which is a test that
+    // cannot fail.
+    instance.num.increment();
+    expect(instance.num.value()).toBe(4);
+
+    instance.num.decrement();
+    expect(instance.num.value()).toBe(4);
+  });
+
+  it('does not report a field the user cannot reach as invalid', async () => {
+    // A disabled control is left out of a form's submission entirely, so
+    // failing a form over a value it never sends would be a form nobody can
+    // submit and nothing on screen to explain why.
+    numberOptions = { defaultValue: 4, min: 10, max: 20, disabled: () => true };
+    const { instance } = numberInput();
+
+    expect(await instance.num.field.validate()).toBe(true);
+    expect(instance.num.field.isInvalid()).toBe(false);
+  });
+
+  it('leaves a read-only field alone too, where the value is not the user’s to correct', async () => {
+    numberOptions = { defaultValue: 4, min: 10, max: 20, readOnly: () => true };
+    const { instance } = numberInput();
+
+    expect(await instance.num.field.validate()).toBe(true);
+  });
+
+  it('adds no tag while disabled, which a consumer can ask for directly', () => {
+    tagsOptions = { disabled: () => true };
+    const { instance } = tagsInput();
+
+    expect(instance.tags.add('ada')).toBe(false);
+    expect(instance.tags.tags()).toEqual([]);
+  });
+
+  it('adds no tag while read-only either', () => {
+    tagsOptions = { readOnly: () => true };
+    const { instance } = tagsInput();
+
+    expect(instance.tags.add('ada')).toBe(false);
+    expect(instance.tags.tags()).toEqual([]);
+  });
+});
+
 describe('tags input', () => {
   it('submits one entry per tag, so the server reads a list', () => {
     tagsOptions = { name: 'topics', defaultValue: ['ada', 'grace'] };

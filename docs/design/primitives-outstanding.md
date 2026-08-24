@@ -223,6 +223,28 @@ somebody makes rather than a change nobody notices:
   only one it makes silently. Saying it needs a label the field has not got, so
   the test pins what it does rather than what it should.
 
+### What the post-fix round found
+
+Mutation over all three, at the commit where their defects were fixed, leaves
+31% of combobox's 190 sites alive, 31% of inputs' 251 and 28% of slider-upload's
+221 — one band, so none of them is anomalous beside the others. Most survivors
+are null checks nothing can reach with a null.
+
+What was not: **eight `disabled() || readOnly()` guards in inputs that nothing
+distinguished**, the same class of gap combobox had. Four are now held by tests
+that die with them — `canIncrement`, `canDecrement`, a step asked for directly
+through `increment`/`decrement`, and `add` on the tags input. Each is public
+surface, so the guard inside is the only refusal a consumer meets.
+
+One is redundant and no test can hold it: `check()` at inputs.ts:742 refuses to
+validate a disabled or read-only field, and `form-field.ts:355` has already
+refused to call it. Defence in depth, unobservable, recorded so it is not
+chased.
+
+**Still outstanding for slider-upload:** four `disabled()` guards of the same
+shape, at 2059, 2120, 2148 and 2154, have not been triaged or covered. That is
+the remaining work before it can be judged, and it is why it stays held.
+
 ## slider-upload
 
 Closest of the three: every named defect fixed, one neighbour broken each
