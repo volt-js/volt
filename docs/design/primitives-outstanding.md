@@ -1,23 +1,50 @@
 ---
-title: Components held back, and why
+title: Components held back, and what released them
 ---
 
 <!--
   Not part of the published site; `srcExclude` keeps it out.
 
-  Three components are written, tested and NOT exported. Each went through
-  repeated rounds of fixing and independent adversarial review, and each still
-  has a defect a reviewer reproduced with a probe. This records what those are
-  so the next pass starts from evidence rather than rediscovering them, and so
-  nobody exports one on a green suite alone — the suites are green.
+  Three components were written, tested and kept out of the package's exports
+  for several rounds. All three are exported now. This records what each was
+  held for, what closed it, and what the export decision rested on — so that
+  nobody re-derives any of it, and so that the handful of behaviours pinned by
+  a test rather than fixed stay decisions somebody made rather than gaps
+  nobody noticed.
 
-  The shared shape of the problem: every round fixed the finding it was given
-  and broke a neighbour, because these three each have one model whose
-  invariants are spread across many call sites. They need that model redesigned
-  once, not another finding-by-finding pass.
+  The shared shape of the problem, while it lasted: every round fixed the
+  finding it was given and broke a neighbour, because these three each have one
+  model whose invariants are spread across many call sites. What ended it was
+  redesigning that model once per component, not another finding-by-finding
+  pass.
 -->
 
-# Components held back, and why
+# Components held back, and what released them
+
+## The decision, per component
+
+All three are exported from `packages/primitives/src/index.ts`. What each
+export rests on:
+
+- **combobox** — redesigned around one naming registry and one `asked` signal,
+  reviewed independently afterwards with no defect reproduced, and its post-fix
+  mutation round closed: the ten pieces of correct code that nothing held each
+  have a test that reddens when the line is deleted. Its two name collisions
+  with `listbox.ts` were renamed before the export, which is what made the
+  export possible at all.
+- **inputs** — the focus hand-off rewritten as one rule in one place, and its
+  post-fix round closed: four of the surviving `disabled() || readOnly()`
+  guards are now held by tests that die with them, and the one that no test can
+  hold is recorded below as unobservable rather than chased.
+- **slider-upload** — the dirty model rebuilt to compare two states rather than
+  ask who wrote the value, and its post-fix round now closed as well. Every
+  non-null-check survivor is triaged below, every genuine gap has a test proven
+  by deleting the line it names, and the round found no defect in behaviour —
+  which is the same bar combobox was released on.
+
+The bar applied to all three was a round that finds no defect, not a round with
+no findings: a missing test is a finding about the suite, and it was fixed by
+writing the test. A defect in behaviour would have held the export again.
 
 ## combobox
 
@@ -90,10 +117,10 @@ code, and `labelCache`, `rememberLabels`, `rememberLabel`, `showInputValue`,
 `settledText`, `openFiltered` and `searchable` appear nowhere in it — the one
 hit left for `filtering` is the word inside a comment.
 
-Not exported yet. What it is waiting on is the next round finding nothing,
-rather than a named defect.
+Exported. What it was waiting on was the next round finding nothing rather than
+a named defect, and that is what the round found.
 
-### The export itself has a prerequisite nobody had looked for
+### The export itself had a prerequisite nobody had looked for
 
 Readiness was the only question anybody was asking about these three, and it is
 not the only one that has to be answered. `packages/primitives/src/index.ts`
@@ -241,9 +268,9 @@ validate a disabled or read-only field, and `form-field.ts:355` has already
 refused to call it. Defence in depth, unobservable, recorded so it is not
 chased.
 
-**Still outstanding for slider-upload:** four `disabled()` guards of the same
-shape, at 2059, 2120, 2148 and 2154, have not been triaged or covered. That is
-the remaining work before it can be judged, and it is why it stays held.
+slider-upload's four `disabled()` guards, at 2059, 2120, 2148 and 2154, were
+the remaining work. They are triaged under its own heading below, together with
+every other non-null-check survivor in the run.
 
 ## slider-upload
 
@@ -304,6 +331,115 @@ Two honest limits, neither of them the defect above:
   bfcache, which announces itself with neither; a script that assigns `value`
   and fires nothing shows up on the next render for any reason. `isDirty()`
   itself is right the moment it is asked.
+
+### What the survivors turned out to be
+
+The four `disabled()` guards the last round left untriaged are two findings and
+two redundancies. Worth saying first: the report names lines, not functions, and
+two of the four are not the functions their neighbours suggest — 2120 is
+`onPaste`'s guard and 2154 is `open()`'s, with the paste effect's own guard at
+2148 between them. Reading them as "the effect and its handler" gets the triage
+backwards.
+
+- **2059, in `acceptDrop` — redundant.** `add` refuses while disabled and hands
+  back an empty list, so a drop on a disabled zone is refused whichever guard
+  is missing; all this one saves is the directory walk in front of it. Deleting
+  it leaves the suite green, and the reason is the guard further in rather than
+  a test nobody wrote.
+- **2120, in `onPaste` — a gap, now held.** `onPaste` is published exactly as
+  the drag handlers are, and a consumer who wires it to an element of their own
+  reaches it while the field is disabled — the document listener is not
+  attached then, so the guard inside is the only refusal that route meets.
+  Without it the paste is cancelled *and* dropped: the files never reach the
+  queue, and the paste never reaches the field the user was really in.
+- **2148, the paste effect — one half of each.** `!options.paste` is a gap:
+  without it every upload on the page takes a paste nobody asked it to take.
+  `disabled()` is redundant with 2120, and dropping just that half leaves the
+  suite green.
+- **2154, in `open()` — redundant.** The field writes the `disabled` property
+  through to the control it was given (`form-field.ts:518`), so the click
+  `open()` would make lands on a natively disabled input and does nothing.
+  Defence in depth over the platform's own refusal, like `check()` in inputs.
+
+Reading the callers turned up neighbours of the same shape, each now held by a
+test that dies with the line it names: both halves of the full-page effect's
+guard; the two `hasFiles` guards on the page-wide *drag*, which is the half of
+the hazard the page-wide *drop* was already careful about — a full-page zone
+that lights up and cancels for a selection dragged between two other fields
+breaks drag-and-drop editing everywhere it is mounted; the page's depth counter
+going back out; and the clipboard-items fallback that the whole paste feature
+exists for, which no test had ever driven because the stand-in for a paste
+always carried an empty `items`.
+
+Then there was surface with no test at all, which the survivors pointed at
+rather than named:
+
+- **Both shipped transports.** `xhrTransport` and `fetchTransport` are exported
+  and had not one test between them. They have ten now: the multipart body and
+  the names in it, the path a directory upload carries and the case that has
+  none, progress reported and the bar finished by hand, both ends of the 2xx
+  range, an abort, `url` and `headers` as functions of the request, `raw`, the
+  `parse` hook, and a body read as its content type says rather than as JSON
+  that happens to parse — `42` announced as `text/plain` is the string.
+- **The directory walk.** `walkEntries`, `readDirectory` and the entry branch
+  of `collect` had no test, so `directory: true` was a documented option with
+  nothing behind it. A dropped folder is walked now, and stopped at
+  `maxDirectoryDepth`, which is the guard against a symlinked loop.
+- **A failed upload's message reaching the form.** Only a *refused* file was
+  covered, so half of the lookup that carries the reason could have been
+  deleted without a test noticing, and a form would have gone on submitting
+  with an upload that had failed.
+- **`add([])`**, which on a single-file upload gets as far as the replacing and
+  throws away the file it holds.
+- **An empty queue reporting itself finished**, because `every` on nothing is
+  true.
+- **The announcement counting files that were refused or called off**, which
+  leaves the region saying "1 of 3" about an upload that has sent everything it
+  was ever going to send.
+- **`accept` naming one exact type**, the third form the attribute takes and
+  the only one the suite did not exercise, and an accept list that names
+  nothing.
+- **What a transport can throw that is not an `Error` with a message**, since a
+  transport is consumer code and may throw anything at all.
+
+Twenty-eight tests, 188 to 216, and twenty-nine mutants that were alive before
+them are dead now — each one confirmed by editing the line, watching the named
+test go red, and putting it back.
+
+### The survivors that are not findings
+
+Recorded so they are not chased again:
+
+- **The grid arithmetic** — `gridBelow`, `gridAbove` and `landing`'s fallback,
+  eleven boundary mutants between them. They are reached only from `landing`,
+  and only when the value asked for quantises past a neighbour's bound. A
+  slider that is not snapping to marks has bounds that sit on the step grid by
+  construction, so it never reaches them at all; a snapping slider reaches them
+  only when the gap puts the bound *between* two marks, which is exactly the
+  case where the boundary the mutant moves is not a mark. So the mutants are
+  equivalent inside the only region that can run them. A test that drives the
+  fallback — a thumb landing on the last mark its neighbour leaves room for —
+  was written anyway, and kills none of the eleven. That is the evidence for
+  calling them equivalent, rather than the argument being it.
+- **`stepBy`'s `from === undefined`** — redundant with `setValue`'s own bounds
+  check, which refuses the same index a moment later.
+- **The invalidation listener's element test** — a listener that invalidates
+  more often recomputes the same answer.
+- **The settle effect's mount guard** — `markEdited` at mount would write the
+  value the field already holds and a dirtiness that is already false, and no
+  validation has run for it to re-trigger.
+- **The range's `from <= to`** — both branches are the same object when the
+  operands are equal.
+- **`decimalsOf`'s finiteness check** — `String(NaN)` has no decimal point
+  either, so the guard and the fall-through agree.
+- **`chunkSize`'s positivity and `syncInput`'s element test** — defensive
+  against a caller passing a negative size, or pointing `input` at something
+  that is not a file input.
+- **The per-item progress bar memo** — a bar rebuilt on every read holds the
+  same value and renders the same props. The memo saves allocations, not
+  answers.
+
+Everything else alive in the run is a null check nothing can reach with a null.
 
 ## query — the write that did not land, resolved
 

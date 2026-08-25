@@ -199,19 +199,16 @@ The six that force every shared behaviour into existence, in order:
       through the same CSS anchor positioning the popover and the tooltip use.
       No submenu yet: a submenu's placement is a `placement` option away, its
       keyboard is not
-- [ ] **Combobox** — built and tested, held back from export along with inputs
-      and slider-upload, and it does not virtualize. The gate is a review round
-      that finds nothing. The latest round did find something: mutation testing
-      over its 186 guard and comparison sites left 64 alive, and four of those
-      were options and states nothing verified — `closeOnOutsidePointer`, whose
-      name appeared nowhere in the suite; `closeOnEscape`; `allowCustomValue`
-      on the direct call rather than the one guarded call site; and refusing to
-      clear while disabled or read-only, where `setValues` beneath it has no
-      guard of its own. Those four now have tests that fail when the line they
-      name is deleted. Three more survivors turned out to be unkillable rather
-      than uncovered, and are recorded as such in the suite: two guards
-      redundant with an identical one further in, and one branch made
-      unreachable by the dismiss layer being configured not to listen at all
+- [x] **Combobox** — exported, with inputs and slider-upload, after the round
+      that was the gate. Eight defects across the three were reproduced and
+      fixed; both recorded residuals were closed; and a post-fix mutation round
+      over each triaged every survivor that was not a null check into a gap, a
+      redundancy or unreachable code. It does not virtualize, which is recorded
+      rather than hidden. The bar applied was a round that finds no defect —
+      not a round with no findings, since the last one closed two whole
+      untested surfaces: both shipped upload transports, and the directory
+      walk behind `directory: true`.
+
 - [x] **Tooltip** — anchoring under pointer *and* keyboard, delay grouping
 - [x] **Tabs** — roving focus, automatic vs manual activation
 - [x] **Accordion** — presence with height animation

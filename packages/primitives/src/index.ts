@@ -81,9 +81,7 @@ export * from './display-extras.js';
 export * from './listbox.js';
 export * from './tree.js';
 
-// combobox, inputs and slider-upload are written and tested but are not
-// exported yet. Each was put through repeated rounds of fixing and adversarial
-// review, and each still has a defect an independent reviewer could reproduce:
-// they share invariants that a fix for one part keeps breaking in another.
-// Exported when a review passes clean, not when the tests do.
+export * from './combobox.js';
+export * from './inputs.js';
+export * from './slider-upload.js';
 

@@ -19,10 +19,13 @@ import { Component, Signal, flushSync, mount } from '@voltdev/core';
 import {
   createFileUpload,
   createSlider,
+  fetchTransport,
+  xhrTransport,
   type FileUpload,
   type FileUploadOptions,
   type Slider,
   type SliderOptions,
+  type UploadItem,
   type UploadRequest,
   type UploadTransport,
 } from '../src/slider-upload.ts';
@@ -1053,6 +1056,23 @@ describe('slider: marks', () => {
     expect(slider.value()).toBe(0);
   });
 
+  it('lands a blocked thumb on the last mark its neighbour leaves room for', () => {
+    const { slider } = setup({
+      defaultValue: [0, 70],
+      marks: [0, 30, 70, 100],
+      snapToMarks: true,
+      minStepsBetweenThumbs: 5,
+    });
+
+    // The gap puts the bound between two marks, so the mark nearest the value
+    // asked for is on the far side of it. Snapping there and letting the
+    // neighbour be shoved along would leave the signal holding one array while
+    // `values()` reported another; the honest answer is the last mark this
+    // thumb still has room for.
+    slider.setValue(0, 65);
+    expect(slider.values()).toEqual([30, 70]);
+  });
+
   it('leaves the value off the marks until it is asked to snap', () => {
     const { slider, thumb } = setup({ defaultValue: [20], marks: [0, 25, 50, 75, 100] });
 
@@ -1883,13 +1903,58 @@ function buildUpload(
  * this plain object stands in for one, carrying exactly the fields the handlers
  * read.
  */
-function dragEvent(type: string, files: readonly File[], types = ['Files']): Event {
+function dragEvent(
+  type: string,
+  files: readonly File[],
+  types = ['Files'],
+  items: readonly DataTransferItem[] = [],
+): Event {
   const event = new Event(type, { bubbles: true, cancelable: true });
   Object.defineProperty(event, 'dataTransfer', {
-    value: { types, files, items: [], dropEffect: 'none' },
+    value: { types, files, items, dropEffect: 'none' },
   });
   return event;
 }
+
+/**
+ * A dropped directory tree.
+ *
+ * `FileSystemEntry` is the callback API a drop exposes, and no engine happy-dom
+ * runs implements it — so the tree is built here out of the four members the
+ * walk actually reads. `readEntries` answers once with the batch and then with
+ * nothing, because an empty result is the only end-of-list the real reader has.
+ */
+function fileEntry(one: File): FileSystemEntry {
+  return {
+    isFile: true,
+    isDirectory: false,
+    file: (ok: (value: File) => void) => ok(one),
+  } as unknown as FileSystemEntry;
+}
+
+function directoryEntry(children: readonly FileSystemEntry[]): FileSystemEntry {
+  return {
+    isFile: false,
+    isDirectory: true,
+    createReader: () => {
+      let read = false;
+      return {
+        readEntries: (ok: (batch: readonly FileSystemEntry[]) => void) => {
+          // Flipped before answering, not after: the reader is called again
+          // from inside its own callback, and a flag set afterwards is still
+          // false when the second call reads it.
+          const batch = read ? [] : children;
+          read = true;
+          ok(batch);
+        },
+      };
+    },
+  } as unknown as FileSystemEntry;
+}
+
+/** A dragged item that exposes an entry, which is how a folder arrives. */
+const entryItem = (entry: FileSystemEntry): DataTransferItem =>
+  ({ kind: 'file', webkitGetAsEntry: () => entry }) as unknown as DataTransferItem;
 
 function dispatch(el: EventTarget, event: Event): Event {
   el.dispatchEvent(event);
@@ -1897,12 +1962,22 @@ function dispatch(el: EventTarget, event: Event): Event {
   return event;
 }
 
-/** A paste carrying files. `ClipboardEvent` needs the same stand-in. */
-function pasteEvent(files: readonly File[]): Event {
+/**
+ * A paste carrying files. `ClipboardEvent` needs the same stand-in.
+ *
+ * `items` is carried separately because the engines that put a screenshot there
+ * leave `files` empty, and that split is the whole reason the handler reads
+ * both.
+ */
+function pasteEvent(files: readonly File[], items: readonly DataTransferItem[] = []): Event {
   const event = new Event('paste', { bubbles: true, cancelable: true });
-  Object.defineProperty(event, 'clipboardData', { value: { files, items: [] } });
+  Object.defineProperty(event, 'clipboardData', { value: { files, items } });
   return event;
 }
+
+/** One clipboard entry, carrying only the two members the handler reads. */
+const clipboardItem = (kind: string, value: File | null): DataTransferItem =>
+  ({ kind, getAsFile: () => value }) as unknown as DataTransferItem;
 
 /**
  * What the picker hands back.
@@ -2065,6 +2140,19 @@ describe('upload: the queue', () => {
     expect(onFilesAdded).toHaveBeenCalledWith(added);
     expect(upload.item(added[0]!.id)).toEqual(added[0]);
   });
+
+  it('changes nothing when it is handed no files', async () => {
+    const harness = buildUpload({ multiple: false, transport: heldTransport() });
+    harness.upload.add([file('a.png')]);
+    await settle();
+
+    // A single-file upload replaces what it holds, so an empty add that gets
+    // as far as the replacing throws the file away and puts nothing in its
+    // place — the one caller that can pass nothing is the consumer's own.
+    expect(harness.upload.add([])).toEqual([]);
+    await settle();
+    expect(harness.upload.items().map((entry) => entry.file.name)).toEqual(['a.png']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2072,6 +2160,24 @@ describe('upload: the queue', () => {
 // ---------------------------------------------------------------------------
 
 describe('upload: progress', () => {
+  it('reports no progress for a queue with no bytes in it', async () => {
+    const harness = buildUpload({ transport: heldTransport() });
+    // An empty queue has nothing to be finished with. Asking `every` about no
+    // files answers yes, which is how an upload holding nothing reports itself
+    // complete.
+    expect(harness.upload.progress()).toBe(0);
+
+    // Zero-byte files are the case the same branch exists for, and they are
+    // finished only once they have actually been sent.
+    harness.upload.add([file('empty.txt', 0, 'text/plain')]);
+    await settle();
+    expect(harness.upload.progress()).toBe(0);
+
+    lastFor('empty.txt').resolve();
+    await settle();
+    expect(harness.upload.progress()).toBe(100);
+  });
+
   it('reports the progress of one file as bytes arrive', async () => {
     const onItemProgress = vi.fn();
     const harness = buildUpload({ transport: heldTransport(), onItemProgress });
@@ -2353,6 +2459,25 @@ describe('upload: cancel, retry and failure', () => {
     expect(harness.upload.items()).toHaveLength(0);
     expect(sent.every((one) => one.aborted)).toBe(true);
   });
+  it('says something readable whatever the transport threw', async () => {
+    const harness = buildUpload({ transport: heldTransport() });
+    harness.upload.add([file('a.png'), file('b.png'), file('c.png')]);
+    await settle();
+
+    lastFor('a.png').reject('the disk is full');
+    lastFor('b.png').reject({ code: 500 });
+    lastFor('c.png').reject(new Error(''));
+    await settle();
+
+    // A transport is consumer code and may throw anything at all. What reaches
+    // the user has to be a sentence either way, and an object rendered into a
+    // message reads as "[object Object]".
+    expect(harness.upload.items().map((entry) => entry.error?.message)).toEqual([
+      'the disk is full',
+      'Upload failed',
+      'Upload failed',
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2479,6 +2604,28 @@ describe('upload: refusing a file', () => {
     harness.upload.add([file('a.png', 100)]);
     await settle();
     expect(harness.upload.items()[0]!.error!.message).toBe('a.png exceeds 10 bytes');
+  });
+
+  it('matches an accept list naming one exact type', async () => {
+    const harness = buildUpload({ accept: 'image/png' });
+    harness.upload.add([file('a.png', 10, 'image/png'), file('b.gif', 10, 'image/gif')]);
+    await settle();
+
+    // The third form the attribute takes, and the only one the list above does
+    // not exercise: no wildcard and no leading dot, so the type is compared
+    // whole.
+    expect(statuses(harness.upload)).toEqual(['pending', 'rejected']);
+  });
+
+  it('accepts everything when the accept list names nothing', async () => {
+    const harness = buildUpload({ accept: ' , ' });
+    harness.upload.add([file('notes.txt', 10, 'text/plain')]);
+    await settle();
+
+    // A list of separators is a list of nothing, and a filter that names no
+    // type filters nothing out — the alternative is a field that silently
+    // refuses every file it is offered.
+    expect(statuses(harness.upload)).toEqual(['pending']);
   });
 
   it('adds nothing at all while disabled', async () => {
@@ -2632,6 +2779,169 @@ describe('upload: dragging and dropping', () => {
     dispatch(document, pasteEvent([file('later.png')]));
     await settle();
     expect(harness.upload.items()).toHaveLength(1);
+  });
+
+  it('takes a plain drop even when it was asked to walk directories', async () => {
+    const harness = buildUpload({ directory: true, transport: heldTransport() });
+    dispatch(harness.zone, dragEvent('drop', [file('a.png')]));
+    await settle();
+
+    // A drag of loose files exposes no entries to walk, and `directory` says
+    // folders are welcome rather than that nothing else is.
+    expect(harness.upload.items().map((entry) => entry.file.name)).toEqual(['a.png']);
+  });
+
+  it('walks a dropped folder for the files inside it', async () => {
+    const harness = buildUpload({ directory: true, transport: heldTransport() });
+    const tree = directoryEntry([
+      fileEntry(file('top.png')),
+      directoryEntry([fileEntry(file('nested.png'))]),
+    ]);
+
+    dispatch(harness.zone, dragEvent('drop', [], ['Files'], [entryItem(tree)]));
+    // The walk is a promise per entry and a promise per page of a directory,
+    // so it takes more turns to settle than a drop of loose files does.
+    await settle(40);
+
+    // The folder itself is not a file, and neither is the one inside it: what
+    // the queue takes is what the tree holds.
+    expect(harness.upload.items().map((entry) => entry.file.name)).toEqual([
+      'top.png',
+      'nested.png',
+    ]);
+  });
+
+  it('stops walking a folder at the depth it was given', async () => {
+    const harness = buildUpload({
+      directory: true,
+      maxDirectoryDepth: 1,
+      transport: heldTransport(),
+    });
+    const tree = directoryEntry([
+      fileEntry(file('top.png')),
+      directoryEntry([fileEntry(file('nested.png'))]),
+    ]);
+
+    dispatch(harness.zone, dragEvent('drop', [], ['Files'], [entryItem(tree)]));
+    await settle(40);
+
+    // A directory tree is user input, and a symlinked loop read to the end
+    // never ends.
+    expect(harness.upload.items().map((entry) => entry.file.name)).toEqual(['top.png']);
+  });
+
+  it('takes a screenshot that arrives as a clipboard item', async () => {
+    const harness = buildUpload({ paste: true });
+    const shot = file('screenshot.png', 10, 'image/png');
+    // Some engines hand a pasted screenshot over as an item and leave `files`
+    // empty, which is the case the whole feature exists for. The string item
+    // beside it is the text half of the same paste, and is not a file.
+    const event = pasteEvent([], [
+      clipboardItem('string', null),
+      clipboardItem('file', shot),
+    ]);
+    dispatch(document, event);
+    await settle();
+
+    expect(harness.upload.items().map((entry) => entry.file.name)).toEqual(['screenshot.png']);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('watches the page for a paste only when asked', async () => {
+    const harness = buildUpload({});
+
+    const event = pasteEvent([file('screenshot.png')]);
+    dispatch(document, event);
+    await settle();
+
+    // Taking a paste nobody asked for means every copy of an image anywhere on
+    // the page lands in this queue.
+    expect(harness.upload.items()).toHaveLength(0);
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('leaves a paste to the page while disabled', async () => {
+    const harness = buildUpload({ paste: true, disabled: () => true });
+
+    // Through the handler rather than the document, because the listener is not
+    // attached while disabled: `onPaste` is published, and a consumer wires it
+    // to an element of their own exactly as the drag handlers are wired here,
+    // so the guard inside is the only refusal that route meets.
+    const event = pasteEvent([file('screenshot.png')]);
+    harness.upload.onPaste(event as ClipboardEvent);
+    await settle();
+
+    expect(harness.upload.items()).toHaveLength(0);
+    // Cancelling and then refusing is the worst of both: the files are dropped
+    // and the paste is swallowed from whatever field the user was really in.
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('watches the page for a drag only when asked', async () => {
+    const harness = buildUpload({});
+    const elsewhere = document.body;
+
+    dispatch(elsewhere, dragEvent('dragenter', [file('a.png')]));
+    expect(harness.upload.isPageDragging()).toBe(false);
+    // Cancelling `dragover` on the document is what makes the whole page a drop
+    // target, so an upload that has not been asked to be one must not.
+    expect(dispatch(elsewhere, dragEvent('dragover', [file('a.png')])).defaultPrevented).toBe(
+      false,
+    );
+
+    dispatch(elsewhere, dragEvent('drop', [file('a.png')]));
+    await settle();
+    expect(harness.upload.items()).toHaveLength(0);
+  });
+
+  it('stops watching the page while disabled', async () => {
+    const harness = buildUpload({ fullPage: true, disabled: () => true });
+    const elsewhere = document.body;
+
+    dispatch(elsewhere, dragEvent('dragenter', [file('a.png')]));
+    // A disabled zone that lights the page up and cancels the drag says the
+    // drop is coming here, and then refuses it.
+    expect(harness.upload.isPageDragging()).toBe(false);
+    expect(dispatch(elsewhere, dragEvent('dragover', [file('a.png')])).defaultPrevented).toBe(
+      false,
+    );
+
+    dispatch(elsewhere, dragEvent('drop', [file('a.png')]));
+    await settle();
+    expect(harness.upload.items()).toHaveLength(0);
+  });
+
+  it('leaves a page-wide drag that is carrying no files to the page', () => {
+    const harness = buildUpload({ fullPage: true });
+    const elsewhere = document.body;
+
+    // A selection dragged between two fields that have nothing to do with this
+    // upload. The drop is already left alone; the drag has to be too, or the
+    // page lights up for it and the browser is told it may land here.
+    dispatch(elsewhere, dragEvent('dragenter', [], ['text/plain']));
+    expect(harness.upload.isPageDragging()).toBe(false);
+    expect(dispatch(elsewhere, dragEvent('dragover', [], ['text/plain'])).defaultPrevented).toBe(
+      false,
+    );
+  });
+
+  it('puts the page highlight out when the drag leaves the page', () => {
+    const harness = buildUpload({ fullPage: true });
+    const elsewhere = document.body;
+    const files = [file('a.png')];
+
+    dispatch(elsewhere, dragEvent('dragenter', files));
+    expect(harness.upload.isPageDragging()).toBe(true);
+
+    // The same crossings the zone counts: entering the zone fires enter on it
+    // and leave on what the pointer came from, and the page is still under a
+    // drag throughout.
+    dispatch(harness.zone, dragEvent('dragenter', files));
+    dispatch(elsewhere, dragEvent('dragleave', files));
+    expect(harness.upload.isPageDragging()).toBe(true);
+
+    dispatch(harness.zone, dragEvent('dragleave', files));
+    expect(harness.upload.isPageDragging()).toBe(false);
   });
 });
 
@@ -2918,6 +3228,26 @@ describe('upload: announcements', () => {
     expect(onComplete).toHaveBeenCalledTimes(1);
   });
 
+  it('counts neither a file it refused nor one that was called off', async () => {
+    useClock();
+    const harness = buildUpload({ transport: heldTransport(), accept: 'image/*' });
+    await advance(50);
+
+    harness.upload.add([file('a.png'), file('b.png'), file('notes.txt', 10, 'text/plain')]);
+    await settle();
+
+    const called = harness.upload.items().find((entry) => entry.file.name === 'b.png')!;
+    harness.upload.cancel(called.id);
+    await settle();
+    lastFor('a.png').resolve();
+    await settle();
+
+    // Neither the refused file nor the cancelled one is part of this upload,
+    // so counting them leaves the region saying "1 of 3" about an upload that
+    // has finished everything it was ever going to send.
+    expect(harness.upload.announcement()).toBe('1 files uploaded');
+  });
+
   it('still has something to say when no region was wired up', async () => {
     const harness = buildUpload({ transport: heldTransport() }, PLAIN_UPLOAD);
     harness.upload.add([file('a.png')]);
@@ -2976,6 +3306,20 @@ describe('upload: the form around it', () => {
 
     expect(harness.upload.field.isInvalid()).toBe(true);
     expect(harness.upload.field.messages()[0]).toContain('notes.txt');
+  });
+
+  it('puts the reason an upload failed where the form can show it', async () => {
+    const harness = buildUpload({ transport: heldTransport() });
+    harness.upload.add([file('a.png')]);
+    await settle();
+    lastFor('a.png').reject(new Error('The server is out of room'));
+    await settle();
+
+    // A refusal and a failure are the same fact to a form: this control is not
+    // carrying what the user thinks it is, and the reason has to travel with
+    // the refusal rather than being left in the queue for a consumer to notice.
+    expect(harness.upload.field.isInvalid()).toBe(true);
+    expect(harness.upload.field.messages()[0]).toBe('The server is out of room');
   });
 
   it('counts a drop as an edit, though the input never saw it', async () => {
@@ -3202,5 +3546,283 @@ describe('upload: letting go', () => {
     // A timer that survives the component fires into a queue nobody is
     // watching, and holds the whole closure alive until it does.
     expect(requestsFor('a.png')).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Upload: the two transports that ship
+// ---------------------------------------------------------------------------
+
+/**
+ * A request as `pump` builds one, for driving a transport on its own.
+ *
+ * Both transports are exported and are the ones every consumer starts from, so
+ * they are judged directly rather than through a queue that would have to fake
+ * the network underneath them anyway.
+ */
+function uploadRequest(overrides: Partial<UploadRequest> = {}): UploadRequest {
+  const one = file('a.png', 4, 'image/png');
+  const item: UploadItem = {
+    id: 'item-1',
+    file: one,
+    path: one.name,
+    status: 'uploading',
+    loaded: 0,
+    total: one.size,
+    progress: 0,
+    error: null,
+    response: undefined,
+    attempts: 1,
+    chunk: 0,
+  };
+  return {
+    file: one,
+    item,
+    body: one,
+    chunk: null,
+    signal: new AbortController().signal,
+    progress: () => {},
+    ...overrides,
+  };
+}
+
+/** Enough of `XMLHttpRequest` for the transport, and a way to drive it. */
+class FakeXhr {
+  static last: FakeXhr | null = null;
+
+  status = 200;
+  responseText = '';
+  withCredentials = false;
+  method = '';
+  url = '';
+  aborted = false;
+  sent: unknown = null;
+  readonly headers: Record<string, string> = {};
+  responseHeaders: Record<string, string> = {};
+  readonly upload = new EventTarget();
+  private readonly events = new EventTarget();
+
+  constructor() {
+    FakeXhr.last = this;
+  }
+
+  open(method: string, url: string): void {
+    this.method = method;
+    this.url = url;
+  }
+
+  setRequestHeader(key: string, value: string): void {
+    this.headers[key] = value;
+  }
+
+  getResponseHeader(name: string): string | null {
+    return this.responseHeaders[name.toLowerCase()] ?? null;
+  }
+
+  addEventListener(type: string, listener: EventListener): void {
+    this.events.addEventListener(type, listener);
+  }
+
+  send(body: unknown): void {
+    this.sent = body;
+  }
+
+  abort(): void {
+    this.aborted = true;
+    this.events.dispatchEvent(new Event('abort'));
+  }
+
+  /** What the network would say: bytes on the way up, then the response. */
+  reportProgress(loaded: number, lengthComputable = true): void {
+    const event = new Event('progress');
+    Object.defineProperty(event, 'lengthComputable', { value: lengthComputable });
+    Object.defineProperty(event, 'loaded', { value: loaded });
+    this.upload.dispatchEvent(event);
+  }
+
+  respond(status: number, text = '', contentType = ''): void {
+    this.status = status;
+    this.responseText = text;
+    this.responseHeaders = contentType ? { 'content-type': contentType } : {};
+    this.events.dispatchEvent(new Event('load'));
+  }
+}
+
+describe('upload: the two transports that ship', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    FakeXhr.last = null;
+  });
+
+  const fieldsOf = (body: unknown): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const [key, value] of (body as FormData).entries()) {
+      if (typeof value === 'string') out[key] = value;
+      else out[key] = `file:${value.name}`;
+    }
+    return out;
+  };
+
+  it('sends a multipart body, and hands back what came out of it', async () => {
+    vi.stubGlobal('XMLHttpRequest', FakeXhr);
+    const request = uploadRequest();
+    const done = xhrTransport({ url: '/files' })(request);
+
+    const xhr = FakeXhr.last!;
+    expect(xhr.method).toBe('POST');
+    expect(xhr.url).toBe('/files');
+    // The name travels beside the bytes, because a multipart part carries a
+    // filename the server has no other way to trust.
+    expect(fieldsOf(xhr.sent)).toEqual({ file: 'file:a.png', name: 'a.png' });
+
+    xhr.respond(200, '{"id":"remote-1"}', 'application/json');
+    // A server that promised JSON is taken at its word, and a body that is not
+    // JSON is handed back whole rather than thrown over.
+    expect(await done).toEqual({ id: 'remote-1' });
+  });
+
+  it('adds the path a file came in under, and only when it has one', async () => {
+    vi.stubGlobal('XMLHttpRequest', FakeXhr);
+    const flat = uploadRequest();
+    void xhrTransport({ url: '/files' })(flat);
+    expect(fieldsOf(FakeXhr.last!.sent)).not.toHaveProperty('path');
+
+    const nested = uploadRequest();
+    void xhrTransport({ url: '/files' })({
+      ...nested,
+      item: { ...nested.item, path: 'holiday/a.png' },
+    });
+    // So the server can rebuild the tree rather than receive a flat pile of
+    // names — and a file whose path is its name has no tree to rebuild.
+    expect(fieldsOf(FakeXhr.last!.sent).path).toBe('holiday/a.png');
+  });
+
+  it('reports the bytes that have gone, and finishes the bar by hand', async () => {
+    vi.stubGlobal('XMLHttpRequest', FakeXhr);
+    const seen: number[] = [];
+    const request = uploadRequest({ progress: (loaded) => seen.push(loaded) });
+    const done = xhrTransport({ url: '/files' })(request);
+
+    const xhr = FakeXhr.last!;
+    xhr.reportProgress(2);
+    // A length the engine cannot measure is not a measurement.
+    xhr.reportProgress(3, false);
+    xhr.respond(200, 'ok', 'text/plain');
+    await done;
+
+    // The last progress event can arrive before the last byte is acknowledged.
+    expect(seen).toEqual([2, 4]);
+  });
+
+  it('refuses a status outside the successful range', async () => {
+    vi.stubGlobal('XMLHttpRequest', FakeXhr);
+    const done = xhrTransport({ url: '/files' })(uploadRequest());
+    FakeXhr.last!.respond(500, 'no');
+    await expect(done).rejects.toThrow('Upload failed with status 500');
+
+    const created = xhrTransport({ url: '/files' })(uploadRequest());
+    FakeXhr.last!.respond(201, 'made');
+    // 201 and 204 are what a file endpoint answers with as often as 200.
+    expect(await created).toBe('made');
+
+    const moved = xhrTransport({ url: '/files' })(uploadRequest());
+    FakeXhr.last!.respond(302, 'elsewhere');
+    await expect(moved).rejects.toThrow('Upload failed with status 302');
+  });
+
+  it('gives up when the request is called off', async () => {
+    vi.stubGlobal('XMLHttpRequest', FakeXhr);
+    const controller = new AbortController();
+    const done = xhrTransport({ url: '/files' })(uploadRequest({ signal: controller.signal }));
+
+    controller.abort();
+    expect(FakeXhr.last!.aborted).toBe(true);
+    await expect(done).rejects.toThrow('Upload cancelled');
+  });
+
+  it('takes its url and its headers from the request when they are functions', async () => {
+    vi.stubGlobal('XMLHttpRequest', FakeXhr);
+    const request = uploadRequest();
+    const done = xhrTransport({
+      url: (one) => `/files/${one.item.id}`,
+      headers: (one) => ({ 'x-name': one.file.name }),
+      method: 'PUT',
+      raw: true,
+    })(request);
+
+    const xhr = FakeXhr.last!;
+    expect(xhr.method).toBe('PUT');
+    expect(xhr.url).toBe('/files/item-1');
+    expect(xhr.headers).toEqual({ 'x-name': 'a.png' });
+    // `raw` sends the bytes themselves, which is what a signed object-storage
+    // URL expects, rather than wrapping them in a multipart form.
+    expect(xhr.sent).toBe(request.body);
+    xhr.respond(200, '');
+    await done;
+  });
+
+  it('goes over fetch when that is what it was asked for', async () => {
+    const calls: { url: string; init: RequestInit }[] = [];
+    vi.stubGlobal('fetch', (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return Promise.resolve(
+        new Response('{"id":"remote-2"}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    });
+
+    const seen: number[] = [];
+    const result = await fetchTransport({
+      url: (request) => `/files/${request.item.id}`,
+      headers: { 'x-album': 'holiday' },
+    })(uploadRequest({ progress: (loaded) => seen.push(loaded) }));
+
+    expect(calls[0]!.url).toBe('/files/item-1');
+    expect(calls[0]!.init.headers).toEqual({ 'x-album': 'holiday' });
+    expect(calls[0]!.init.credentials).toBe('same-origin');
+    expect(result).toEqual({ id: 'remote-2' });
+    // Nothing to measure, so the whole body lands at once.
+    expect(seen).toEqual([4]);
+  });
+
+  it('reads a body as the content type says to read it', async () => {
+    vi.stubGlobal('XMLHttpRequest', FakeXhr);
+    const done = xhrTransport({ url: '/files' })(uploadRequest());
+    // Valid JSON, announced as text. Parsing it anyway turns an id the server
+    // wrote as text into a number, which is not the same identifier.
+    FakeXhr.last!.respond(200, '42', 'text/plain');
+    expect(await done).toBe('42');
+
+    const asJson = xhrTransport({ url: '/files' })(uploadRequest());
+    FakeXhr.last!.respond(200, '0042', 'application/json');
+    // Malformed JSON from a server that promised JSON is still a fact worth
+    // handing back rather than an upload that looks failed.
+    expect(await asJson).toBe('0042');
+  });
+
+  it('refuses a fetch the server did not accept', async () => {
+    vi.stubGlobal('fetch', () => Promise.resolve(new Response('no', { status: 413 })));
+    await expect(fetchTransport({ url: '/files' })(uploadRequest())).rejects.toThrow(
+      'Upload failed with status 413',
+    );
+  });
+
+  it('parses the body the way it was told to', async () => {
+    vi.stubGlobal('fetch', () =>
+      Promise.resolve(
+        new Response('id=remote-3', { status: 200, headers: { 'content-type': 'text/plain' } }),
+      ),
+    );
+
+    const result = await fetchTransport({
+      url: '/files',
+      // The hook exists for the servers that answer in something other than
+      // JSON, and it is asked before the content type is looked at.
+      parse: (body, contentType) => ({ body, contentType }),
+    })(uploadRequest());
+
+    expect(result).toEqual({ body: 'id=remote-3', contentType: 'text/plain' });
   });
 });
