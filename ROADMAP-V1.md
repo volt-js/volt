@@ -599,6 +599,12 @@ Not yet, and the reason:
       in the order the work settled rather than the order it was declared, and
       a boundary whose work rejects writes its fallback instead — which is the
       only recovery there is once the headers have gone.
+      **A nested boundary deadlocks the response**, reproduced with a probe: the
+      tail loop awaits the collector before the flush that would start work an
+      outer boundary's content has just claimed, so the inner work never begins
+      and the stream never closes. One boundary inside another is not an exotic
+      shape, so this is a defect rather than a limit, and the tick above covers
+      the single-level case only.
 - [x] `renderToStaticMarkup` for output with no hydration at all — an email, an
       RSS page, a PDF source
 - [ ] SSG: enumerate routes, prerender, write files; revalidation as a cache
