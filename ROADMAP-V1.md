@@ -596,22 +596,23 @@ Not yet, and the reason:
       it before anything is awaited, so it goes out ahead of the query it is
       waiting on. A boundary writes its fallback between markers and registers
       a `dataEffect`; when the work settles it emits a `<template>` and a
-      `__VOLT__` record. **The client half is not built**: nothing in the
-      hydration runtime reads those records yet, so a streamed page arrives in
-      pieces and the late content is not relocated into its placeholder. The
-      wire format is the one the design record specifies, so the drain is
-      additive rather than a redesign.
+      `__VOLT__` record. The client half reads them: `drainStream` swaps the
+      boot array for a live sink and relocates each settled `<template>`'s
+      children into the placeholder between its markers, moving the server's
+      own nodes rather than re-parsing them. `hydrate` calls it before it
+      claims anything, so a page that was streamed is drained by booting and
+      not by remembering to ask.
 - [x] Out-of-order streaming: emit a placeholder, fill it when the data lands,
       rather than holding the response until the slowest query returns. Writes
       in the order the work settled rather than the order it was declared, and
       a boundary whose work rejects writes its fallback instead — which is the
       only recovery there is once the headers have gone.
-      **A nested boundary deadlocks the response**, reproduced with a probe: the
-      tail loop awaits the collector before the flush that would start work an
-      outer boundary's content has just claimed, so the inner work never begins
-      and the stream never closes. One boundary inside another is not an exotic
-      shape, so this is a defect rather than a limit, and the tick above covers
-      the single-level case only.
+      A boundary inside a boundary works, and did not: writing the outer
+      chunk is what claims the inner one, a claim only registers the work, and
+      the tail loop reached its wait before the flush that would have started
+      it — so the inner work never began and the response never closed. The
+      flush now runs before the emptiness test rather than after the wait, and
+      the regression test hangs to its own timeout without it.
 - [x] `renderToStaticMarkup` for output with no hydration at all — an email, an
       RSS page, a PDF source
 - [ ] SSG: enumerate routes, prerender, write files; revalidation as a cache
