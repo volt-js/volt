@@ -104,6 +104,9 @@ function decodeMappings(mappings: string): Segment[][] {
   return lines;
 }
 
+/** Bytes no original line owns: the chunk's wrapper and Vite's own preamble. */
+const GLUE = '(module glue)';
+
 interface SourceMap {
   sources: (string | null)[];
   mappings: string;
@@ -139,15 +142,20 @@ function segmentAt(decoded: Decoded, line: number, column: number): Segment | nu
 }
 
 /**
- * Minified bytes per original source file.
+ * Minified bytes per original source file, and per line within it.
  *
  * Two levels of map, because the application's map names the *packages'* built
  * files — `core/dist/component-*.js` — and a budget written against a content
  * hash measures nothing the first time the chunk changes. Following each
  * package's own map the rest of the way lands on `src/dom.ts`, which is a name
  * that survives a rebuild and a name somebody can act on.
+ *
+ * The line is kept as well as the file because "40% is the component and DOM
+ * runtime" is not an answer anybody can act on either: it says where the bytes
+ * are and not what they buy. A line resolves to a declaration, and a
+ * declaration is a thing a reader can decide is worth its weight.
  */
-function attribute(code: string, map: SourceMap, dir: string): Map<string, number> {
+function attribute(code: string, map: SourceMap, dir: string): Map<string, Map<number, number>> {
   const top = decode(map, dir);
   const codeLines = code.split('\n');
   const nested = new Map<number, Decoded | null>();
@@ -164,37 +172,41 @@ function attribute(code: string, map: SourceMap, dir: string): Map<string, numbe
     return loaded;
   };
 
-  const bytes = new Map<string, number>();
-  const add = (key: string, count: number): void => bytes.set(key, (bytes.get(key) ?? 0) + count);
+  const bytes = new Map<string, Map<number, number>>();
+  const add = (key: string, line: number, count: number): void => {
+    const lines = bytes.get(key) ?? new Map<number, number>();
+    lines.set(line, (lines.get(line) ?? 0) + count);
+    bytes.set(key, lines);
+  };
 
   for (const [generatedLine, row] of top.lines.entries()) {
     // The newline is a byte of the file too, and dropping it leaves the parts
     // adding up to less than the whole for no reason a reader could guess.
     const lineLength = (codeLines[generatedLine] ?? '').length + 1;
     if (row.length === 0) {
-      add('(module glue)', lineLength);
+      add(GLUE, 0, lineLength);
       continue;
     }
-    if (row[0]!.column > 0) add('(module glue)', row[0]!.column);
+    if (row[0]!.column > 0) add(GLUE, 0, row[0]!.column);
 
     for (const [i, segment] of row.entries()) {
       const end = i + 1 < row.length ? row[i + 1]!.column : lineLength;
       const count = Math.max(0, end - segment.column);
       if (segment.source < 0) {
-        add('(module glue)', count);
+        add(GLUE, 0, count);
         continue;
       }
       const chain = chainFor(segment.source);
       if (!chain) {
-        add(relative(root, resolve(dir, top.sources[segment.source] ?? '')), count);
+        add(relative(root, resolve(dir, top.sources[segment.source] ?? '')), segment.line, count);
         continue;
       }
       const inner = segmentAt(chain, segment.line, segment.sourceColumn);
       if (!inner || inner.source < 0) {
-        add('(module glue)', count);
+        add(GLUE, 0, count);
         continue;
       }
-      add(relative(root, resolve(chain.dir, chain.sources[inner.source] ?? '')), count);
+      add(relative(root, resolve(chain.dir, chain.sources[inner.source] ?? '')), inner.line, count);
     }
   }
   return bytes;
@@ -216,9 +228,18 @@ const bundled = (async () => {
   )!;
   if (chunk.type !== 'chunk' || !chunk.map) throw new Error('the example built without a map');
 
-  const bytes = attribute(chunk.code, chunk.map as SourceMap, resolve(example, 'dist/assets'));
-  return { code: chunk.code, bytes };
+  const lines = attribute(chunk.code, chunk.map as SourceMap, resolve(example, 'dist/assets'));
+  return { code: chunk.code, bytes: totals(lines), lines };
 })();
+
+/** One entry per file, which is what every share below is taken over. */
+function totals(bytes: Map<string, Map<number, number>>): Map<string, number> {
+  const flat = new Map<string, number>();
+  for (const [file, lines] of bytes) {
+    flat.set(file, [...lines.values()].reduce((a, b) => a + b, 0));
+  }
+  return flat;
+}
 
 /** Every source under a package directory, added together. */
 function share(bytes: Map<string, number>, prefixes: string[]): number {
@@ -251,6 +272,45 @@ const generated = (): number => {
   }
   return total;
 };
+
+/**
+ * What a top-level declaration is called, and the line it starts on.
+ *
+ * Read from the source rather than from the map's `names` field: that field
+ * records what the minifier renamed, which for a module-private helper is a
+ * single letter. The declaration keyword at column zero is the whole rule, and
+ * it holds because these are hand-written modules rather than generated ones.
+ */
+function declarations(file: string): { name: string; line: number }[] {
+  const source = readFileSync(resolve(root, file), 'utf8').split('\n');
+  const found: { name: string; line: number }[] = [];
+  for (const [index, text] of source.entries()) {
+    const match = /^(?:export )?(?:declare )?(?:async )?(?:function\*? |class |const |let |var )([A-Za-z_$][\w$]*)/.exec(text);
+    if (match) found.push({ name: match[1]!, line: index });
+  }
+  return found;
+}
+
+/**
+ * Minified bytes per declaration of one source file, largest first.
+ *
+ * A line belongs to the last declaration that began at or before it, which is
+ * what a flat module means: everything after `function insert(` and before the
+ * next declaration is `insert`.
+ */
+function perDeclaration(lines: Map<number, number>, file: string): [string, number][] {
+  const marks = declarations(file);
+  const bytes = new Map<string, number>();
+  for (const [line, count] of lines) {
+    let owner = '(module top)';
+    for (const mark of marks) {
+      if (mark.line > line) break;
+      owner = mark.name;
+    }
+    bytes.set(owner, (bytes.get(owner) ?? 0) + count);
+  }
+  return [...bytes].sort((a, b) => b[1] - a[1]);
+}
 
 /** The sources under a package directory that carry any bytes at all, by file name. */
 function modulesUnder(bytes: Map<string, number>, prefix: string): string[] {
@@ -347,6 +407,96 @@ describe.skipIf(!built)('what an application bundle is made of', { timeout: 120_
     // absolute figure is allowed to move when a template does.
     expect(emitted / code.length, `${emitted} B of generated code`).toBeGreaterThan(0.14);
     expect(emitted / code.length, `${emitted} B of generated code`).toBeLessThan(0.21);
+  });
+
+  it('spends a third of the DOM runtime on keyed lists, and names the rest', async () => {
+    const { code, lines } = await bundled;
+    const dom = perDeclaration(lines.get('packages/core/src/dom.ts')!, 'packages/core/src/dom.ts');
+    const report = dom.map(([name, count]) => `${String(count).padStart(5)}  ${name}`).join('\n');
+    const bytes = (name: string): number => dom.find(([n]) => n === name)?.[1] ?? 0;
+
+    // The roadmap asks what 41% is spent on, and a share of a file is not an
+    // answer to that: `dom.ts` is one flat module, so the reply has to be per
+    // declaration. `each` is the largest single thing in the bundle at 1,034 B
+    // and its reconciler is the second at 781 B — together with `createRow`,
+    // 2,000 B, a twelfth of everything the browser downloads, for keeping a
+    // keyed list in step with an array without re-rendering it.
+    expect(dom[0]![0], `\n${report}\n`).toBe('each');
+    const keyed = bytes('each') + bytes('reconcileArrays') + bytes('createRow');
+    expect(keyed / code.length, `${keyed} B of keyed-list machinery`).toBeGreaterThan(0.06);
+    expect(keyed / code.length, `${keyed} B of keyed-list machinery`).toBeLessThan(0.11);
+  });
+
+  it('carries only the parts of the DOM runtime these three templates reach', async () => {
+    const { lines } = await bundled;
+    const dom = perDeclaration(lines.get('packages/core/src/dom.ts')!, 'packages/core/src/dom.ts');
+
+    // The module-level pin above says `dom.ts` ships; this says what of it,
+    // which is the only form in which "40%" is something a reader can argue
+    // with. Every name here is reached by one of `app.html`, `counter.html`
+    // and `todos.html`, and the names that are *not* here are the argument
+    // that the share is a floor rather than a slack: no hydration walk, no
+    // lazy boundary, no portal, and one `:model` entry point out of four
+    // because the compiler picks the control at build time rather than
+    // switching on it at runtime. A binding kind appearing here that no
+    // template asks for is a tree-shaking regression, and it would otherwise
+    // be invisible — `dom.ts` would simply weigh more.
+    expect(dom.map(([name]) => name).sort()).toEqual([
+      'appendAll',
+      'bind',
+      'bindClassToggle',
+      'bindProp',
+      'bindText',
+      'branch',
+      'buildEffect',
+      'collecting',
+      'createRow',
+      'delegate',
+      'delegatedTypes',
+      'dispatchDelegated',
+      'each',
+      'flattenToNodes',
+      'guard',
+      'insert',
+      'insertExpression',
+      'materializeBlock',
+      'modelText',
+      'on',
+      'readModel',
+      'reconcileArrays',
+      'removeNodes',
+      'replaceContent',
+      'template',
+      'toDisplayString',
+      'writeModel',
+    ]);
+  });
+
+  it('spends three fifths of the reactive graph on its three kinds of node', async () => {
+    const { lines } = await bundled;
+    const file = 'packages/reactivity/src/graph.ts';
+    const graph = perDeclaration(lines.get(file)!, file);
+    const report = graph.map(([name, count]) => `${String(count).padStart(5)}  ${name}`).join('\n');
+    const bytes = (name: string): number => graph.find(([n]) => n === name)?.[1] ?? 0;
+
+    // The other half of the same question. 30.9% of the bundle is the reactive
+    // core, and 2,479 B of it — three fifths of its largest module — is three
+    // class bodies: a signal that is written, one that is derived, and the
+    // watcher an effect hangs from. The graph algorithm they share is a
+    // quarter of the file between `track`, `propagate`, `link` and the two
+    // unlinks; nothing else in there is above 250 B. There is no single
+    // expensive function to remove, which is the reading that matters: the
+    // weight is the data structure, so cutting it means changing what a signal
+    // is rather than tidying a routine.
+    const total = [...lines.get(file)!.values()].reduce((a, b) => a + b, 0);
+    const nodes = bytes('StateSignal') + bytes('ComputedSignal') + bytes('WatcherNode');
+    expect(graph.slice(0, 3).map(([name]) => name).sort(), `\n${report}\n`).toEqual([
+      'ComputedSignal',
+      'StateSignal',
+      'WatcherNode',
+    ]);
+    expect(nodes / total, `${nodes} B of ${total} B`).toBeGreaterThan(0.55);
+    expect(nodes / total, `${nodes} B of ${total} B`).toBeLessThan(0.68);
   });
 
   it('leaves the bundle accounted for', async () => {

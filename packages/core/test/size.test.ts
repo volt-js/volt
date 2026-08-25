@@ -144,6 +144,26 @@ const BUDGETS: Record<string, number> = {
   // other symptom is server rendering having quietly stopped paying for
   // itself, which is what makes them worth their bytes.
   'packages/core/dist/state-*.js': 750,
+  // What a server build resolves, and nothing a browser ever does:
+  // `@voltdev/core/server` is the module generated server templates are
+  // compiled against, plus the three consumers of the writer. It is budgeted
+  // now because streaming made it worth weighing — and because the entry
+  // stopped being one file when it did. `server.ts` and `stream.ts` reference
+  // each other (the writer meets a boundary; the boundary needs a writer), so
+  // the bundle hoists both into a shared chunk and leaves the entry a
+  // re-export barrel. Bytes that move from a measured file into one nothing
+  // weighs have not moved anywhere, which is why both are named.
+  //
+  // 333 B and 4232 B at the time of writing, against 2616 B for the single
+  // `server.js` before streaming: 1949 B for the boundary machinery, the wake
+  // channel the tail waits on, the `__VOLT__` records, the per-chunk styles
+  // and the epilogue. Measured by building the package with and without
+  // `stream.ts` and its re-export. It is the largest single raise in this
+  // table and it is paid only by a server: the client entry, the runtime and
+  // the state chunk are all unchanged by it, which is the point of the entry
+  // being separate at all.
+  'packages/core/dist/server.js': 400,
+  'packages/core/dist/server-*.js': 4_400,
   // The tools themselves. A production build drops the whole file — that is
   // asserted on bundled bytes in `devtools.test.ts` — so this is a ceiling on
   // what a development build carries, and it is here so that growing it is a

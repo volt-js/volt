@@ -14,10 +14,10 @@
  * child, so a hydration walk can step over a hole whose width only this side
  * knows. Both consumers therefore write the same bytes, which is what §3.5 of
  * `docs/design/ssr.md` means by the segment tree being the primitive —
- * `renderToStaticMarkup` is the walk with nothing attached to it, and
- * `renderToString` the same walk with the state payload the client adopts.
- * What is still missing is streaming, and with it the out-of-order records a
- * boundary resolving after the shell has flushed has to push.
+ * `renderToStaticMarkup` is the walk with nothing attached to it,
+ * `renderToString` the same walk with the state payload the client adopts, and
+ * `renderToStream` in `stream.ts` the same walk again with the shell handed
+ * over the moment it is written instead of when the slowest query answers.
  *
  * Reached from `renderToStaticMarkup` below, and from generated code — the
  * compiler defaults a server build's runtime module to `@voltdev/core/server`,
@@ -87,7 +87,7 @@ function escapeText(value: string): string {
  * needs no escaping inside a quoted value and is left alone, so that one rule
  * covers the bytes whichever emitter wrote them.
  */
-function escapeAttr(value: string): string {
+export function escapeAttr(value: string): string {
   let escaped = '';
   let last = 0;
   for (let i = 0; i < value.length; i++) {
@@ -105,6 +105,24 @@ function escapeAttr(value: string): string {
 // ---------------------------------------------------------------------------
 // The writer
 // ---------------------------------------------------------------------------
+
+/**
+ * The brand an async boundary carries, and the only thing this module knows
+ * about one.
+ *
+ * A boundary is a value in a dynamic-child position — `{ this.body }` — so the
+ * writer is where it is met, and the writer is on the wrong side of the
+ * dependency to own it: everything about waiting, ordering and out-of-order
+ * flush lives in `stream.ts`, which imports this. What is left here is a brand
+ * whose value is the function that writes the placeholder, so `child` can hand
+ * itself over and be done. A render with no stream ever installed still meets
+ * boundaries — `renderToString` does — and that function is what decides a
+ * fallback is all such a render can show.
+ */
+export const BOUNDARY = Symbol('volt.boundary');
+
+/** What a boundary's brand holds; see `boundary` in `stream.ts`. */
+export type BoundaryClaim = (out: MarkupWriter) => void;
 
 /** Content a portal wrote, and where it asked to be put. */
 export interface PortalMarkup {
@@ -179,6 +197,19 @@ export class MarkupWriter {
   }
 
   /**
+   * A comment the stream's own machinery reads, rather than the compiler's.
+   *
+   * Straight onto the segment for the reason the delimiters are: these are the
+   * writer's bytes, and the content `raw` holds back belongs behind an
+   * element's `>` rather than behind a marker. `text` is never a runtime
+   * value — the only caller is `stream.ts`, writing a boundary id it minted
+   * itself — so there is nothing here for a `-->` to escape from.
+   */
+  comment(text: string): void {
+    this.parts.push('<!--', text, '-->');
+  }
+
+  /**
    * A dynamic child, where the client has a marker and `insert`.
    *
    * Mirrors `insertExpression`: only null and undefined write nothing, an
@@ -192,6 +223,19 @@ export class MarkupWriter {
     if (resolved === null || resolved === undefined) return;
     if (Array.isArray(resolved)) {
       for (const item of resolved) this.child(item);
+      return;
+    }
+    // Before `String`, because a boundary stringifies to nothing anybody wants
+    // and because this is the position it is declared in: a hole is what it
+    // fills, whether with a fallback now or with an answer later.
+    //
+    // Read rather than tested with `in`. A value reaching a hole is whatever
+    // the application put there, including a proxy whose `has` trap answers
+    // every question `true` — so the question asked is the one with an answer
+    // that cannot be faked into a crash: is there a function here to call.
+    const claim = (resolved as { [BOUNDARY]?: BoundaryClaim })[BOUNDARY];
+    if (typeof claim === 'function') {
+      claim(this);
       return;
     }
     const text = escapeText(String(resolved));
@@ -538,7 +582,7 @@ export async function renderToStaticMarkup(
  * A lone surrogate needs no rule of its own: `JSON.stringify` is well-formed
  * and writes one as `\udXXX`, so what reaches the page is always encodable.
  */
-function escapeJsonForScript(json: string): string {
+export function escapeJsonForScript(json: string): string {
   return json
     .replaceAll('<', '\\u003C')
     .replaceAll('\u2028', '\\u2028')
@@ -622,6 +666,23 @@ export function stateScript(
   values: Record<string, unknown>,
   options: StateScriptOptions = {},
 ): string {
+  const json = stateJson(values);
+  if (json === '') return '';
+  const nonce = options.nonce === undefined ? '' : ` nonce="${escapeAttr(options.nonce)}"`;
+  return `<script type="application/json" ${STATE_ATTRIBUTE}${nonce}>${json}</script>`;
+}
+
+/**
+ * The state object, serialized and made inert, or the empty string for nothing.
+ *
+ * Split out from `stateScript` because streaming needs the same bytes in a
+ * different element: the shell carries its state as data in a
+ * `type="application/json"` script, and everything that arrives after the shell
+ * has to be pushed into a queue instead, since the element the shell wrote has
+ * long since been parsed. Two escapings for one payload would be two things to
+ * keep right, and the second one is always the one that rots.
+ */
+export function stateJson(values: Record<string, unknown>): string {
   // Assembled per key rather than in one `JSON.stringify`, so a refusal can
   // name the value it came from. A replacer only ever sees a property name,
   // and "cannot carry undefined at items[2]" without saying which piece of
@@ -647,11 +708,7 @@ export function stateScript(
     body += `${body === '' ? '' : ','}${JSON.stringify(key)}:${json}`;
   }
 
-  if (body === '') return '';
-
-  const json = escapeJsonForScript(`{${body}}`);
-  const nonce = options.nonce === undefined ? '' : ` nonce="${escapeAttr(options.nonce)}"`;
-  return `<script type="application/json" ${STATE_ATTRIBUTE}${nonce}>${json}</script>`;
+  return body === '' ? '' : escapeJsonForScript(`{${body}}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -690,6 +747,14 @@ export interface FailedPage {
 }
 
 export type PageRender = RenderedPage | FailedPage;
+
+// The third consumer of the writer, re-exported from here because this is the
+// module a server build already resolves: `@voltdev/core/server` is where the
+// generated templates, the two buffered renders and the streaming one all
+// live, and splitting the streaming entry point off would mean a caller had to
+// know which of two modules a boundary belongs to.
+export { boundary, renderToStream } from './stream.js';
+export type { Boundary, BoundaryOptions, StreamOptions } from './stream.js';
 
 export interface StringRenderOptions extends RenderOptions, StateScriptOptions {}
 

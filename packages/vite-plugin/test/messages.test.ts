@@ -484,6 +484,121 @@ describe('a message nobody imported', { timeout: 120_000 }, () => {
   });
 });
 
+/**
+ * The dynamic-key path, and what it costs the report.
+ *
+ * `t` from the generated module names every message, so a module that imports
+ * it links the catalogue whole — that half is the bundler's, and the bundling
+ * tests above weigh it. This half is the report's. A key written out is still
+ * readable through that export and still accounted for, however the import
+ * renamed it. A key that is an expression is not, and every message left over
+ * may be the one it selects — so naming them as unused would be the warning
+ * on correct code that teaches a team to switch the report off. Before this,
+ * `checkoutTotal` and `abandoned` were both reported against a module that
+ * may well have been asking for either.
+ */
+describe('a module that asks the catalogue for a key nothing can read', () => {
+  const dynamic = (clause: string, from = 'virtual:volt-messages') =>
+    `import ${clause} from '${from}';\nexport const line = (k: string) => t(k);`;
+
+  /** What the report said after one module was transformed. */
+  async function report(source: string): Promise<string[]> {
+    const { messages } = build();
+    await start(messages);
+    call(messages, 'transform', source, FIXTURE_ID);
+    await call<Promise<void>>(messages, 'buildEnd');
+    return warned;
+  }
+
+  it('is named, and stands the report down rather than guessing', async () => {
+    const warnings = await report(dynamic('{ t }'));
+    expect(warnings).toEqual([expect.stringContaining('for a key this build cannot read')]);
+    // The module's own path, so the reply says where to go and not only what
+    // is wrong.
+    expect(warnings[0]).toContain('component.ts');
+    expect(warnings.join('\n')).not.toContain('Message `abandoned`');
+    expect(warnings.join('\n')).not.toContain('Message `checkoutTotal`');
+  });
+
+  it('still reports when every key was written out, which is what makes the silence mean something', async () => {
+    const warnings = await report(
+      `import { t } from 'virtual:volt-messages';\nexport const line = () => t('checkoutTotal');`,
+    );
+    expect(warnings.join('\n')).toContain('Message `abandoned`');
+    expect(warnings.join('\n')).not.toContain('Message `checkoutTotal`');
+    expect(warnings.join('\n')).not.toContain('cannot read');
+  });
+
+  it('reads a key through the name the import gave it', async () => {
+    // `import { t as translate }` and then `translate('checkoutTotal')`: the
+    // scan beside this one looks for `t(` and sees nothing, so before this the
+    // message was reported as asked for by nobody.
+    const warnings = await report(
+      `import { t as translate } from 'virtual:volt-messages';\n` +
+        `export const line = () => translate('checkoutTotal');`,
+    );
+    expect(warnings.join('\n')).not.toContain('Message `checkoutTotal`');
+    expect(warnings.join('\n')).toContain('Message `abandoned`');
+  });
+
+  it('reads the exported name, not the local one', async () => {
+    // One message under a short name is the shape the report exists to
+    // encourage, and standing the report down for it would punish exactly the
+    // right code.
+    const one = await report(dynamic('{ checkoutTotal as t }'));
+    expect(one.join('\n')).not.toContain('cannot read');
+    expect(one.join('\n')).toContain('Message `abandoned`');
+  });
+
+  it('counts a namespace import and a re-export, which hand on the same thing', async () => {
+    expect(
+      (
+        await report(
+          `import * as messages from 'virtual:volt-messages';\n` +
+            `export const line = (k: string) => messages.t(k);`,
+        )
+      ).join('\n'),
+    ).toContain('cannot read');
+    // A re-export is the one shape the scan cannot follow: whoever calls it
+    // imports from here and never mentions the catalogue at all.
+    expect((await report(`export { t } from 'virtual:volt-messages';`)).join('\n')).toContain(
+      'cannot read',
+    );
+  });
+
+  it('is about the module the build serves, not the word `t` anywhere', async () => {
+    // Another library's `t` is another library's business; only the
+    // catalogue's own export names every message in the catalogue.
+    const other = await report(dynamic('{ t }', 'some-other-library'));
+    expect(other.join('\n')).not.toContain('cannot read');
+    expect(other.join('\n')).toContain('Message `abandoned`');
+  });
+
+  it('says nothing on a dev server, where the report is off anyway', async () => {
+    const { messages } = build();
+    await start(messages, 'serve');
+    call(messages, 'transform', dynamic('{ t }'), FIXTURE_ID);
+    await call<Promise<void>>(messages, 'buildEnd');
+    expect(warned).toEqual([]);
+  });
+
+  it('is forgotten by the build after it', async () => {
+    const { messages } = build();
+    await start(messages);
+    call(messages, 'transform', dynamic('{ t }'), FIXTURE_ID);
+    await call<Promise<void>>(messages, 'buildEnd');
+    expect(warned).toHaveLength(1);
+
+    warned = [];
+    await call<Promise<void>>(messages, 'buildStart');
+    await call<Promise<void>>(messages, 'buildEnd');
+    // The module is not in this build's graph, so this build has a report
+    // again — the same answer `used` gives, and for the same reason.
+    expect(warned.join('\n')).toContain('Message `abandoned`');
+    expect(warned.join('\n')).not.toContain('cannot read');
+  });
+});
+
 describe('a build with more than one environment', () => {
   // The two environments of one build run the whole cycle each, against the
   // same plugin object. What tells them apart from two builds is only that

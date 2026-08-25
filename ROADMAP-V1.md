@@ -584,9 +584,21 @@ Not yet, and the reason:
       differently on the two sides with nothing to read that says why.
 - [ ] Portals — render inline on the server, relocate on hydration
 - [ ] Event delegation attaches once on hydration rather than per element
-- [ ] Async boundaries, so streaming can flush a shell before data arrives
-- [ ] Out-of-order streaming: emit a placeholder, fill it when the data lands,
-      rather than holding the response until the slowest query returns
+- [x] Async boundaries, so streaming can flush a shell before data arrives.
+      `renderToStream` builds the shell inside one request scope and enqueues
+      it before anything is awaited, so it goes out ahead of the query it is
+      waiting on. A boundary writes its fallback between markers and registers
+      a `dataEffect`; when the work settles it emits a `<template>` and a
+      `__VOLT__` record. **The client half is not built**: nothing in the
+      hydration runtime reads those records yet, so a streamed page arrives in
+      pieces and the late content is not relocated into its placeholder. The
+      wire format is the one the design record specifies, so the drain is
+      additive rather than a redesign.
+- [x] Out-of-order streaming: emit a placeholder, fill it when the data lands,
+      rather than holding the response until the slowest query returns. Writes
+      in the order the work settled rather than the order it was declared, and
+      a boundary whose work rejects writes its fallback instead — which is the
+      only recovery there is once the headers have gone.
 - [x] `renderToStaticMarkup` for output with no hydration at all — an email, an
       RSS page, a PDF source
 - [ ] SSG: enumerate routes, prerender, write files; revalidation as a cache

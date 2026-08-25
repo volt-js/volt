@@ -24,7 +24,7 @@
  */
 
 import { readdir, readFile, writeFile } from 'node:fs/promises';
-import { basename, dirname, resolve as resolvePath } from 'node:path';
+import { basename, dirname, relative, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { transform as esbuildTransform } from 'esbuild';
 import MagicString from 'magic-string';
@@ -159,6 +159,10 @@ export interface VoltMessagesOptions {
    * only applies to a production build: a dev-server rebuild transforms the
    * modules that changed, so the set of call sites it has seen is a fraction
    * of the application's and every message would look unused.
+   *
+   * A build where something asked the generated `t` for a key it computes
+   * reports that instead: the key is an expression, so any message may be the
+   * one it selects and naming them would be a warning about correct code.
    */
   unused?: 'warn' | 'off';
   /**
@@ -270,6 +274,16 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
    * which messages to report as unused.
    */
   const used = new Set<string>();
+  /**
+   * Modules that asked the catalogue for a key this build cannot read.
+   *
+   * Only the generated `t` can be asked that way, and it names every message,
+   * so two things follow at once and only one of them is about bytes. The
+   * catalogue ships whole, which the project chose. And the unused report is
+   * a statement about the whole set of call sites, which nobody can make once
+   * one of them is an expression.
+   */
+  const dynamicCallers = new Set<string>();
   /**
    * Environments of this build that have started and not yet ended.
    *
@@ -532,7 +546,10 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
       // Cleared when the build begins rather than when an environment does, so
       // a watch-mode rebuild still reports what this run saw and nothing
       // earlier, while the two environments of one run accumulate together.
-      if (environmentsBuilding === 0) used.clear();
+      if (environmentsBuilding === 0) {
+        used.clear();
+        dynamicCallers.clear();
+      }
       environmentsBuilding++;
       catalog = null;
       const loaded = await loadCatalog();
@@ -572,6 +589,12 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
       // reaches here to be scanned as if it were somebody's source.
       if (!messages || !shouldProcess(id)) return null;
       scanMessageKeys(code, used);
+      // The catalogue's own `t` as well, which the scan above cannot see once
+      // an import renamed it — and which is the only call that can ask for a
+      // key nothing here can read.
+      const through = catalogueCalls(code, messagesId);
+      for (const key of through.keys) used.add(key);
+      if (through.unreadable) dynamicCallers.add(id);
       return null;
     },
 
@@ -592,6 +615,26 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
 
       const loaded = await loadCatalog();
       if (!loaded) return;
+
+      // A module reached for the dynamic-key path, so every remaining key may
+      // be the one it computes. Naming them as unused would be the warning on
+      // correct code that teaches a team to switch the report off — and the
+      // report is not the only thing that module cost, so the reply says what
+      // it did cost instead.
+      if (dynamicCallers.size > 0) {
+        const where = [...dynamicCallers].sort().map((id) => relative(root, id));
+        this.warn(
+          `[volt:messages] ${where.map((id) => `\`${id}\``).join(', ')} ` +
+            `asks \`t\` from \`${messagesId}\` for a key this build cannot read. That export ` +
+            `names every message, so the catalogue ships whole and no pass can say which of ` +
+            `its messages are asked for. Nothing was reported as unused.\n` +
+            `  Import the message itself where the key is known — ` +
+            `\`import { ${Object.keys(loaded.catalog)[0] ?? 'close'} } from '${messagesId}'\` — ` +
+            `and a bundler ships that one string.`,
+        );
+        return;
+      }
+
       for (const finding of unusedMessages(loaded.catalog, used, {
         filename: loaded.file,
         source: loaded.source,
@@ -659,6 +702,73 @@ function localeFromPath(file: string): string {
     );
   }
   return derived;
+}
+
+/** A key written out at the call, which is the only kind anything here can read. */
+const KEY_ARGUMENT = /^(['"`])((?:[^'"`\\]|\\.)*)\1/;
+
+/**
+ * What a module does with the generated `t`, which names every message.
+ *
+ * Two questions, and one scan answers both because they have one subject. The
+ * keys such a call asks for, which the plain scan beside this cannot see once
+ * the import renamed it. And whether any call asks for a key this pass cannot
+ * read — the dynamic-key path, where the argument is an expression and no
+ * amount of scanning will say which message it selects.
+ *
+ * Lexical, like the key scan: the plugin sees a module's source before
+ * anything has parsed it, and growing a TypeScript parser here would be the
+ * dependency the compiler is written to avoid. The bias is the same and for
+ * the same reason — a quoted import in a comment counts, and over-reading
+ * costs a report nobody was told about, while under-reading names messages
+ * that are used.
+ *
+ * A namespace import is the same fact written differently. A re-export is
+ * read as unreadable rather than followed: it hands every message to a module
+ * that imports from *here* and so never mentions the catalogue at all, which
+ * is the one shape this scan cannot see coming.
+ */
+function catalogueCalls(source: string, moduleId: string): { keys: string[]; unreadable: boolean } {
+  const specifier = moduleId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const statement = new RegExp(
+    `(?:^|[;}\\n])\\s*(import|export)\\s+([\\s\\S]*?)\\s+from\\s*['"\`]${specifier}['"\`]`,
+    'g',
+  );
+
+  const keys: string[] = [];
+  let unreadable = false;
+  /** How a call through each binding is spelled, as a source pattern. */
+  const callees: string[] = [];
+
+  for (const match of source.matchAll(statement)) {
+    const clause = match[2]!;
+    const namespace = /^\*\s+as\s+([A-Za-z_$][\w$]*)/.exec(clause);
+    if (namespace) {
+      callees.push(`${namespace[1]!}\\s*\\.\\s*t`);
+      continue;
+    }
+    const named = clause.match(/\{([\s\S]*)\}/);
+    if (!named) continue;
+    for (const binding of named[1]!.split(',')) {
+      // `t` is the exported name, whatever the importer calls it locally, so
+      // only the left of an `as` decides which export this is.
+      const [exported, local] = binding.split(/\bas\b/).map((part) => part.trim());
+      if (exported !== 't') continue;
+      if (match[1] === 'export') unreadable = true;
+      else callees.push(local || exported);
+    }
+  }
+
+  for (const callee of callees) {
+    const opening = new RegExp(`(?<![\\w$.])${callee}\\s*\\(\\s*`, 'g');
+    for (const call of source.matchAll(opening)) {
+      const key = KEY_ARGUMENT.exec(source.slice(call.index + call[0].length));
+      if (key) keys.push(key[2]!);
+      else unreadable = true;
+    }
+  }
+
+  return { keys, unreadable };
 }
 
 export default volt;

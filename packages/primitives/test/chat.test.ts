@@ -23,7 +23,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { compileTemplate } from '@voltdev/core/jit';
 import { Component, Signal, flushSync, mount } from '@voltdev/core';
 import { resetAnnouncer } from '../src/announcer.ts';
-import { createChat, type Chat, type ChatMessageInput, type ChatOptions } from '../src/chat.ts';
+import {
+  createChat,
+  type Chat,
+  type ChatMessage,
+  type ChatMessageInput,
+  type ChatOptions,
+} from '../src/chat.ts';
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -77,6 +83,8 @@ let restores: (() => void)[] = [];
 let selectors = 0;
 let sent: string[] = [];
 let pinChanges: boolean[] = [];
+let resent: string[] = [];
+let asked: string[] = [];
 
 /** Options for the chat the next `mountChat` will build. */
 let chatOptions: Omit<ChatOptions<string>, 'scroller' | 'container' | 'composer'>;
@@ -95,10 +103,16 @@ beforeEach(() => {
 
   sent = [];
   pinChanges = [];
+  resent = [];
+  asked = [];
   chatOptions = {
     itemSize: 20,
     onSend: (text) => sent.push(text),
     onPinnedChange: (next) => pinChanges.push(next),
+    onResend: (message, text) => resent.push(`${message.id}:${text}`),
+    onRegenerate: (message) => asked.push(`regenerate:${message.id}`),
+    onRetry: (message) => asked.push(`retry:${message.id}`),
+    onCancel: (message) => asked.push(`cancel:${message.id}`),
   };
 });
 
@@ -120,6 +134,21 @@ const TEMPLATE = `
                :spread="chat.messageProps(row)">
             <span class="name" :if="row.startsGroup">{ row.message.name }</span>
             <span class="body">{ row.message.text() }</span>
+            <span class="state">{ chat.statusText(row.message) }</span>
+            <div class="part" :for="part in row.message.parts()" :key="part.id"
+                 :spread="chat.partProps(part)">
+              <button class="fold" :if="part.kind === 'reasoning'"
+                      :spread="chat.partToggleProps(part)" :click="part.toggle()">fold</button>
+              <button class="copy-code" :if="part.kind === 'code'"
+                      :spread="chat.partCopyProps(part)" :click="chat.copyPart(part)">copy</button>
+              <span class="part-body" :spread="chat.partContentProps(part)">{ part.text() }</span>
+            </div>
+            <div class="actions" :spread="chat.actionsProps(row.message)"
+                 :keydown="onActionKey(row.message, $event)">
+              <button class="action" :for="action in chat.actionsFor(row.message)" :key="action"
+                      :spread="chat.actionProps(row.message, action)"
+                      :click="chat.activate(row.message, action)">{ action }</button>
+            </div>
           </div>
         </div>
       </div>
@@ -135,6 +164,8 @@ interface ChatInstance {
   chat: Chat<string>;
   /** What the composer's handler returned for the last key it saw. */
   composerHandled: boolean;
+  /** The same, for the last key an action group saw. */
+  actionHandled: boolean;
 }
 
 interface Room {
@@ -187,6 +218,7 @@ function mountChat({
     box = new Signal.State<Element | null>(null);
     composer = new Signal.State<Element | null>(null);
     composerHandled = false;
+    actionHandled = false;
     chat = createChat<string>({
       ...chatOptions,
       scroller: () => this.scroller.get(),
@@ -201,6 +233,11 @@ function mountChat({
     onComposerKey(event: KeyboardEvent): void {
       this.composerHandled = this.chat.onComposerKeyDown(event);
       if (this.composerHandled) event.preventDefault();
+    }
+
+    onActionKey(message: ChatMessage<string>, event: KeyboardEvent): void {
+      this.actionHandled = this.chat.onActionKeyDown(message, event);
+      if (this.actionHandled) event.preventDefault();
     }
   }
 
@@ -253,6 +290,58 @@ function press(el: HTMLElement, key: string, modifiers: Partial<KeyboardEventIni
   el.dispatchEvent(
     new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...modifiers }),
   );
+  flushSync();
+}
+
+/** The buttons in one message's action group, in the order they are offered. */
+function actionsOf(room: Room, index: number): HTMLButtonElement[] {
+  const el = room.row(index);
+  if (!el) throw new Error(`message ${index} is not rendered`);
+  return [...el.querySelectorAll<HTMLButtonElement>('.action')];
+}
+
+function actionIn(room: Room, index: number, name: string): HTMLButtonElement {
+  const el = actionsOf(room, index).find((button) => button.dataset.chatAction === name);
+  if (!el) throw new Error(`message ${index} does not offer ${name}`);
+  return el;
+}
+
+/** Which action of a message holds the group's single tab stop. */
+function tabStop(room: Room, index: number): string[] {
+  return actionsOf(room, index)
+    .filter((button) => button.getAttribute('tabindex') === '0')
+    .map((button) => button.dataset.chatAction ?? '');
+}
+
+function partsOf(room: Room, index: number): HTMLElement[] {
+  const el = room.row(index);
+  if (!el) throw new Error(`message ${index} is not rendered`);
+  return [...el.querySelectorAll<HTMLElement>('.part')];
+}
+
+/** A clipboard that records rather than one the environment refuses to give. */
+function stubClipboard(): string[] {
+  const written: string[] = [];
+  const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: {
+      writeText: (text: string) => {
+        written.push(text);
+        return Promise.resolve();
+      },
+    },
+  });
+  restores.push(() => {
+    if (original) Object.defineProperty(navigator, 'clipboard', original);
+    else Reflect.deleteProperty(navigator, 'clipboard');
+  });
+  return written;
+}
+
+/** Let a copy's promise resolve, and let the DOM catch up with it. */
+async function settle(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
   flushSync();
 }
 
@@ -818,4 +907,587 @@ describe('announcements', () => {
     expect(spoken()).toBe('');
   });
 
+});
+
+// ---------------------------------------------------------------------------
+// What a message can do with itself
+// ---------------------------------------------------------------------------
+
+describe('per-message actions', () => {
+  it('offers what the message is in a position to do, and nothing else', () => {
+    chatOptions = { ...chatOptions, self: 'ada' };
+    const room = mountChat({ messages: [say(0, 'ada'), say(1, 'ben')] });
+    const [mine, theirs] = room.chat.messages();
+
+    // You resend your own words and ask for somebody else's again. That is the
+    // whole of the difference, and it is the only thing `self` is read for.
+    expect(room.chat.actionsFor(mine!)).toEqual(['copy', 'edit']);
+    expect(room.chat.actionsFor(theirs!)).toEqual(['copy', 'regenerate']);
+
+    room.chat.add({ id: 'live', author: 'ben', name: 'Ben', streaming: true });
+    flushSync();
+    // Nothing to copy from a reply that has not arrived; one thing to do.
+    expect(room.chat.actionsFor(room.chat.messages().at(-1)!)).toEqual(['cancel']);
+
+    room.chat.fail('m1', 'rate limited');
+    flushSync();
+    expect(room.chat.actionsFor(theirs!)).toEqual(['retry', 'copy']);
+  });
+
+  it('offers copy alone when it has not been told whose keyboard this is', () => {
+    const room = mountChat({ messages: [say(0, 'ada')] });
+
+    // Edit-and-resend means nothing without knowing which messages are yours,
+    // and guessing is worse than not offering it.
+    expect(room.chat.actionsFor(room.chat.messages()[0]!)).toEqual(['copy']);
+  });
+
+  it('gives a message one tab stop for all of its actions, not one each', () => {
+    chatOptions = { ...chatOptions, actions: () => ['copy', 'edit', 'regenerate', 'retry'] };
+    const room = mountChat({ messages: [say(0, 'ada')] });
+
+    expect(actionsOf(room, 0)).toHaveLength(4);
+    // Four buttons behind one Tab press. Four tab stops per message is a
+    // transcript nobody can get past from the keyboard.
+    expect(actionsOf(room, 0).map((el) => el.getAttribute('tabindex'))).toEqual([
+      '0',
+      '-1',
+      '-1',
+      '-1',
+    ]);
+  });
+
+  it('moves the tab stop and the focus with the arrow keys, wrapping at the ends', () => {
+    chatOptions = { ...chatOptions, actions: () => ['copy', 'edit', 'regenerate'] };
+    const room = mountChat({ messages: [say(0, 'ada')] });
+    const copy = actionIn(room, 0, 'copy');
+    copy.focus();
+
+    press(copy, 'ArrowRight');
+    expect(tabStop(room, 0)).toEqual(['edit']);
+    expect(document.activeElement).toBe(actionIn(room, 0, 'edit'));
+    expect(room.instance.actionHandled).toBe(true);
+
+    press(actionIn(room, 0, 'edit'), 'End');
+    expect(document.activeElement).toBe(actionIn(room, 0, 'regenerate'));
+
+    // Past the end and round, which is what every other roving group here does.
+    press(actionIn(room, 0, 'regenerate'), 'ArrowRight');
+    expect(tabStop(room, 0)).toEqual(['copy']);
+    expect(document.activeElement).toBe(copy);
+
+    press(copy, 'ArrowLeft');
+    expect(document.activeElement).toBe(actionIn(room, 0, 'regenerate'));
+
+    press(actionIn(room, 0, 'regenerate'), 'Home');
+    expect(document.activeElement).toBe(copy);
+  });
+
+  it('swaps the arrows under a right-to-left writing direction', () => {
+    chatOptions = { ...chatOptions, actions: () => ['copy', 'edit', 'regenerate'] };
+    const room = mountChat({ messages: [say(0, 'ada')] });
+    host.querySelector('.room')!.setAttribute('dir', 'rtl');
+    const copy = actionIn(room, 0, 'copy');
+    copy.focus();
+
+    // Right is backwards here, so it wraps to the last action rather than
+    // stepping to the second.
+    press(copy, 'ArrowRight');
+    expect(document.activeElement).toBe(actionIn(room, 0, 'regenerate'));
+
+    press(actionIn(room, 0, 'regenerate'), 'ArrowLeft');
+    expect(document.activeElement).toBe(copy);
+  });
+
+  it('keeps the reader on the same action as they move between messages', () => {
+    chatOptions = { ...chatOptions, self: 'ada' };
+    const room = mountChat({ messages: [say(0, 'ada'), say(1, 'ada'), say(2, 'ben')] });
+    press(actionIn(room, 0, 'copy'), 'ArrowRight');
+
+    // The second message offers the same actions, so Tab lands on the column
+    // the reader was already in rather than back at the start of the row.
+    expect(tabStop(room, 1)).toEqual(['edit']);
+    // The third does not offer it, so it falls back to its own first action —
+    // which is what keeps every group at exactly one tab stop.
+    expect(tabStop(room, 2)).toEqual(['copy']);
+  });
+
+  it('leaves Enter and Space to the button under them', () => {
+    chatOptions = { ...chatOptions, actions: () => ['copy', 'edit'] };
+    const room = mountChat({ messages: [say(0, 'ada')] });
+
+    press(actionIn(room, 0, 'copy'), 'Enter');
+    expect(room.instance.actionHandled).toBe(false);
+    press(actionIn(room, 0, 'copy'), ' ');
+    expect(room.instance.actionHandled).toBe(false);
+    // The tab stop did not move either: neither key is navigation.
+    expect(tabStop(room, 0)).toEqual(['copy']);
+  });
+
+  it('copies a message, and marks only that message copied', async () => {
+    const written = stubClipboard();
+    const room = mountChat({ messages: [say(0, 'ada'), say(1, 'ada')] });
+
+    actionIn(room, 0, 'copy').click();
+    await settle();
+
+    expect(written).toEqual(['message 0']);
+    expect(actionIn(room, 0, 'copy').dataset.state).toBe('copied');
+    // Two messages copied in turn must not both look copied. There is one
+    // clipboard, and only one button can be telling the truth about it.
+    expect(actionIn(room, 1, 'copy').dataset.state).toBe('idle');
+
+    actionIn(room, 1, 'copy').click();
+    await settle();
+
+    expect(written).toEqual(['message 0', 'message 1']);
+    expect(actionIn(room, 0, 'copy').dataset.state).toBe('idle');
+    expect(actionIn(room, 1, 'copy').dataset.state).toBe('copied');
+  });
+
+  it('puts a message back in the composer, and resends it in place', () => {
+    chatOptions = { ...chatOptions, self: 'ada' };
+    const room = mountChat({ messages: [say(0, 'ada'), say(1, 'ben'), say(2, 'ada')] });
+
+    actionIn(room, 0, 'edit').click();
+    flushSync();
+
+    expect(room.chat.editing()?.id).toBe('m0');
+    expect(room.composer.value).toBe('message 0');
+    // The caret goes where the editing happens, or the button has to be
+    // followed by a Tab press nobody was told about.
+    expect(document.activeElement).toBe(room.composer);
+
+    type(room, 'what I meant');
+    press(room.composer, 'Enter');
+
+    // The message is the same message, with different words in it...
+    expect(room.chat.messages().map((message) => message.id)).toEqual(['m0']);
+    expect(room.chat.messages()[0]!.text()).toBe('what I meant');
+    // ...and everything that was a reply to the old words is gone, because a
+    // transcript that keeps them shows a conversation that never happened.
+    expect(resent).toEqual(['m0:what I meant']);
+    // Not also `onSend`: the transcript already holds this message.
+    expect(sent).toEqual([]);
+    expect(room.chat.editing()).toBe(null);
+  });
+
+  it('abandons an edit without touching the message', () => {
+    chatOptions = { ...chatOptions, self: 'ada' };
+    const room = mountChat({ messages: [say(0, 'ada'), say(1, 'ben')] });
+
+    actionIn(room, 0, 'edit').click();
+    flushSync();
+    room.chat.cancelEdit();
+    flushSync();
+
+    expect(room.chat.editing()).toBe(null);
+    expect(room.composer.value).toBe('');
+
+    type(room, 'a new message');
+    press(room.composer, 'Enter');
+
+    // The next thing sent is a new message rather than a rewrite of the one
+    // that was being edited, and the transcript kept its reply.
+    expect(sent).toEqual(['a new message']);
+    expect(resent).toEqual([]);
+    expect(room.chat.messages().map((message) => message.text())).toEqual([
+      'message 0',
+      'message 1',
+    ]);
+  });
+
+  it('forgets an edit when the conversation changes under it', () => {
+    chatOptions = { ...chatOptions, self: 'ada' };
+    const room = mountChat({ messages: [say(0, 'ada')] });
+    room.chat.beginEdit('m0');
+    flushSync();
+
+    // The same id, because a conversation is reloaded far more often than it
+    // is replaced — and an edit left standing would land on whichever message
+    // came back wearing that id rather than on the words being edited.
+    room.chat.setMessages([say(0, 'ada', 'a different history')]);
+    flushSync();
+    type(room, 'hello');
+    press(room.composer, 'Enter');
+
+    expect(room.chat.editing()).toBe(null);
+    expect(sent).toEqual(['hello']);
+    expect(resent).toEqual([]);
+    expect(room.chat.messages()[0]!.text()).toBe('a different history');
+  });
+
+  it('regenerates a reply by emptying it and waiting for another', () => {
+    chatOptions = { ...chatOptions, self: 'ada' };
+    const room = mountChat({ messages: [say(0, 'ada'), say(1, 'ben'), say(2, 'ada')] });
+
+    actionIn(room, 1, 'regenerate').click();
+    flushSync();
+
+    expect(asked).toEqual(['regenerate:m1']);
+    expect(room.chat.messages()[1]!.text()).toBe('');
+    // Waiting, not idle: the reply has been asked for and none of it is here.
+    expect(room.chat.messages()[1]!.status()).toBe('typing');
+    // What followed was a reply to the answer that has just been thrown away.
+    expect(room.chat.messages().map((message) => message.id)).toEqual(['m0', 'm1']);
+
+    room.chat.append('m1', 'a better answer');
+    flushSync();
+    expect(room.chat.messages()[1]!.text()).toBe('a better answer');
+  });
+
+  it('retries a failed message, clearing the failure with it', () => {
+    const room = mountChat({ messages: [say(0, 'ada')] });
+    room.chat.fail('m0', 'rate limited');
+    flushSync();
+
+    expect(room.chat.messages()[0]!.status()).toBe('error');
+    expect(room.chat.messages()[0]!.error()).toBe('rate limited');
+    expect(room.row(0)!.getAttribute('data-status')).toBe('error');
+
+    actionIn(room, 0, 'retry').click();
+    flushSync();
+
+    expect(asked).toEqual(['retry:m0']);
+    expect(room.chat.messages()[0]!.status()).toBe('idle');
+    expect(room.chat.messages()[0]!.error()).toBe('');
+    expect(room.row(0)!.hasAttribute('data-status')).toBe(false);
+  });
+
+  it('stops a generation that is under way, once', () => {
+    const room = mountChat({ messages: [say(0, 'ada')] });
+    room.chat.add({ id: 'live', author: 'ben', name: 'Ben', streaming: true });
+    flushSync();
+
+    actionIn(room, 1, 'cancel').click();
+    flushSync();
+
+    expect(asked).toEqual(['cancel:live']);
+    expect(room.chat.messages()[1]!.streaming()).toBe(false);
+    expect(room.chat.messages()[1]!.status()).toBe('idle');
+
+    // Nothing is generating any more, so there is nothing left to stop.
+    room.chat.cancel('live');
+    expect(asked).toEqual(['cancel:live']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// What a message is doing
+// ---------------------------------------------------------------------------
+
+describe('message states', () => {
+  it('shows a reply on its way before there is a token of it', () => {
+    const room = mountChat({ messages: [say(0, 'ada')] });
+    room.chat.add({ id: 'live', author: 'ben', name: 'Ben', typing: true });
+    flushSync();
+
+    const message = room.chat.messages().at(-1)!;
+    expect(message.status()).toBe('typing');
+    expect(room.chat.statusText(message)).toBe('Ben is typing');
+    // Read from the message, so a consumer never has a second thing to switch
+    // off — and never the indicator that stays up after the reply arrived.
+    expect(room.row(1)!.getAttribute('data-status')).toBe('typing');
+    expect(host.querySelectorAll('.state')[1]!.textContent).toBe('Ben is typing');
+  });
+
+  it('turns the indicator into the reply the moment a token lands', () => {
+    const room = mountChat({ messages: [say(0, 'ada')] });
+    room.chat.add({ id: 'live', author: 'ben', name: 'Ben', typing: true });
+    flushSync();
+
+    room.chat.append('live', 'here');
+    flushSync();
+
+    const message = room.chat.messages().at(-1)!;
+    expect(message.status()).toBe('streaming');
+    expect(message.streaming()).toBe(true);
+    expect(room.chat.statusText(message)).toBe('Ben is replying');
+    expect(room.row(1)!.getAttribute('data-status')).toBe('streaming');
+
+    room.chat.finish('live');
+    flushSync();
+    expect(message.status()).toBe('idle');
+    expect(room.chat.statusText(message)).toBe('');
+  });
+
+  it('does not count a reply that has not arrived as something unread', () => {
+    const room = mountChat({ messages: transcript(20) });
+    userScroll(room, 0);
+    expect(room.chat.isPinned()).toBe(false);
+
+    room.chat.add({ id: 'live', author: 'ben', name: 'Ben', typing: true });
+    flushSync();
+    // The count is of things there are to read, and there is nothing to read.
+    expect(room.chat.unreadCount()).toBe(0);
+
+    room.chat.add(say(21, 'ben'));
+    flushSync();
+    expect(room.chat.unreadCount()).toBe(1);
+  });
+
+  it('does not let a finish quietly clear a failure', () => {
+    const room = mountChat({ messages: [say(0, 'ada')] });
+    room.chat.add({ id: 'live', author: 'ben', name: 'Ben', streaming: true });
+    flushSync();
+    room.chat.fail('live', 'the connection dropped');
+    flushSync();
+
+    room.chat.finish('live');
+    flushSync();
+
+    // A failed message is not a finished one. Clearing it here would take the
+    // retry button away from a reader who never got their answer.
+    const message = room.chat.messages().at(-1)!;
+    expect(message.status()).toBe('error');
+    expect(room.chat.statusText(message)).toBe('Ben: the connection dropped');
+    expect(room.chat.actionsFor(message)).toEqual(['retry', 'copy']);
+  });
+
+  it('says what a message with no reason to give is failing at', () => {
+    const room = mountChat({ messages: [say(0, 'ada')] });
+    room.chat.fail('m0');
+    flushSync();
+
+    expect(room.chat.statusText(room.chat.messages()[0]!)).toBe(
+      "Ada's message could not be sent",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The shape of a message, which is not the same as its rendering
+// ---------------------------------------------------------------------------
+
+describe('the shape of a message', () => {
+  it('gives a plain message one text part over the very same signal', () => {
+    const room = mountChat({ messages: [say(0, 'ada', '')] });
+    room.chat.append('m0', 'Hel');
+    flushSync();
+
+    const parts = room.chat.messages()[0]!.parts();
+    expect(parts).toHaveLength(1);
+    expect(parts[0]!.kind).toBe('text');
+
+    const body = host.querySelector('.part-body')!;
+    const textNode = body.firstChild;
+    room.chat.append('m0', 'lo');
+    flushSync();
+
+    // The part is the message's own text signal rather than a copy of it, so
+    // rendering parts costs a streamed token exactly what rendering `text()`
+    // costs: one text node's data.
+    expect(parts[0]!.text()).toBe('Hello');
+    expect(body.firstChild).toBe(textNode);
+    expect(body.textContent).toBe('Hello');
+    // The same tokens, from the same signal, whichever of the two a template
+    // asked for. Two strings kept in step would be one string too many.
+    expect(room.chat.messages()[0]!.text()).toBe('Hello');
+    expect(host.querySelector('.body')!.textContent).toBe('Hello');
+    expect(room.chat.messages()[0]!.parts()[0]).toBe(parts[0]);
+  });
+
+  it('names a code block by its language, and lets the keyboard reach it', () => {
+    const room = mountChat({
+      messages: [
+        {
+          ...say(0, 'ben'),
+          text: undefined,
+          parts: [
+            { text: 'like this' },
+            { kind: 'code', language: 'ts', text: 'let x = 1' },
+          ],
+        },
+      ],
+    });
+
+    const [prose, code] = partsOf(room, 0);
+    expect(prose!.getAttribute('data-part')).toBe('text');
+    expect(prose!.hasAttribute('role')).toBe(false);
+
+    expect(code!.getAttribute('role')).toBe('group');
+    // The language is the one thing about a code block a reader cannot get
+    // from having its text read out to them.
+    expect(code!.getAttribute('aria-label')).toBe('Code, ts');
+    expect(code!.getAttribute('data-language')).toBe('ts');
+    // A code block scrolls sideways, and a region that scrolls has to be
+    // reachable without a mouse.
+    expect(code!.querySelector('.part-body')!.getAttribute('tabindex')).toBe('0');
+    expect(prose!.querySelector('.part-body')!.hasAttribute('tabindex')).toBe(false);
+  });
+
+  it('copies a code block without the prose around it', async () => {
+    const written = stubClipboard();
+    const room = mountChat({
+      messages: [
+        {
+          ...say(0, 'ben'),
+          text: undefined,
+          parts: [
+            { text: 'like this' },
+            { kind: 'code', language: 'ts', text: 'let x = 1' },
+          ],
+        },
+      ],
+    });
+
+    const button = room.row(0)!.querySelector<HTMLButtonElement>('.copy-code')!;
+    expect(button.getAttribute('aria-label')).toBe('Copy code');
+    expect(button.dataset.state).toBe('idle');
+
+    button.click();
+    await settle();
+
+    // The block, and nothing but the block. Pasting the sentence that
+    // introduced the code into an editor is not what the button offered.
+    expect(written).toEqual(['let x = 1']);
+    expect(button.dataset.state).toBe('copied');
+    expect(actionIn(room, 0, 'copy').dataset.state).toBe('idle');
+  });
+
+  it('folds reasoning away, and says that it is folded', () => {
+    const room = mountChat({
+      messages: [
+        {
+          ...say(0, 'ben'),
+          text: undefined,
+          parts: [{ kind: 'reasoning', text: 'first I checked' }, { text: 'no' }],
+        },
+      ],
+    });
+
+    const reasoning = partsOf(room, 0)[0]!;
+    const toggle = reasoning.querySelector<HTMLButtonElement>('.fold')!;
+    const content = reasoning.querySelector<HTMLElement>('.part-body')!;
+
+    expect(reasoning.getAttribute('aria-label')).toBe('Reasoning');
+    expect(reasoning.getAttribute('data-state')).toBe('closed');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    // The control has to say what it controls, and the two ids have to agree
+    // without either prop object holding state.
+    expect(content.id).not.toBe('');
+    expect(toggle.getAttribute('aria-controls')).toBe(content.id);
+    expect(content.hasAttribute('hidden')).toBe(true);
+
+    toggle.click();
+    flushSync();
+
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(reasoning.getAttribute('data-state')).toBe('open');
+    expect(content.hasAttribute('hidden')).toBe(false);
+  });
+
+  it('leaves reasoning and citations out of what the message says', async () => {
+    const written = stubClipboard();
+    const room = mountChat({
+      messages: [
+        {
+          ...say(0, 'ben'),
+          text: undefined,
+          parts: [
+            { kind: 'reasoning', text: 'thinking out loud' },
+            { text: 'yes' },
+            { kind: 'quote', text: 'as it says' },
+            { kind: 'source', href: 'https://example.test/a', title: 'A' },
+          ],
+        },
+      ],
+    });
+
+    // Reasoning is how the answer was arrived at and is usually folded away
+    // unread; a citation's body is a URL. Neither is what the reader asked to
+    // put on their clipboard, or to have read out to them.
+    expect(room.chat.messages()[0]!.text()).toBe('yes\n\nas it says');
+    await room.chat.copyMessage('m0');
+    expect(written).toEqual(['yes\n\nas it says']);
+    expect(partsOf(room, 0)[2]!.getAttribute('role')).toBe('blockquote');
+  });
+
+  it('numbers citations within the message they belong to', () => {
+    const room = mountChat({
+      messages: [
+        {
+          ...say(0, 'ben'),
+          text: undefined,
+          parts: [
+            { text: 'as two people put it' },
+            { kind: 'source', href: 'https://example.test/a', title: 'Widgets' },
+            { text: 'and' },
+            { kind: 'source', href: 'https://example.test/b' },
+          ],
+        },
+      ],
+    });
+
+    const sources = partsOf(room, 0).filter((el) => el.dataset.part === 'source');
+    // On screen a citation is "[2]", which is read out as "2" or as nothing.
+    expect(sources.map((el) => el.getAttribute('aria-label'))).toEqual([
+      'Source 1: Widgets',
+      'Source 2',
+    ]);
+    expect(sources[0]!.getAttribute('href')).toBe('https://example.test/a');
+  });
+
+  it('streams into the last part the consumer opened', () => {
+    const room = mountChat({ messages: [say(0, 'ben', 'here it is')] });
+    const part = room.chat.addPart('m0', { kind: 'code', language: 'ts' })!;
+    flushSync();
+
+    room.chat.append('m0', 'let x');
+    room.chat.append('m0', ' = 1');
+    flushSync();
+
+    // Tokens never decide for themselves where a part ends — that is parsing,
+    // and parsing is the consumer's.
+    expect(part.text()).toBe('let x = 1');
+    expect(room.chat.messages()[0]!.parts()[0]!.text()).toBe('here it is');
+    expect(room.chat.messages()[0]!.text()).toBe('here it is\n\nlet x = 1');
+    expect(partsOf(room, 0)[1]!.getAttribute('aria-label')).toBe('Code, ts');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// What a screen reader hears about a message's state
+// ---------------------------------------------------------------------------
+
+describe('announcing a state', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function spoken(): string {
+    return [...document.querySelectorAll("[data-volt-announcer='polite']")]
+      .map((region) => region.textContent ?? '')
+      .join('')
+      .trim();
+  }
+
+  it('says nothing about a reply that is only on its way', () => {
+    const room = mountChat({ messages: transcript(1) });
+    room.chat.add({ id: 'live', author: 'ben', name: 'Ben', typing: true });
+    flushSync();
+    vi.advanceTimersByTime(50);
+
+    // There is nothing to say yet, and saying the name of somebody who has not
+    // written anything is a stutter.
+    expect(spoken()).toBe('');
+  });
+
+  it('says what failed, politely, through the shared region', () => {
+    const room = mountChat({ messages: transcript(1) });
+    room.chat.add({ id: 'live', author: 'ben', name: 'Ben', streaming: true });
+    flushSync();
+    room.chat.fail('live', 'the connection dropped');
+    vi.advanceTimersByTime(50);
+
+    expect(spoken()).toBe('Ben: the connection dropped');
+    // A failure is worth interrupting a sentence for far less often than it
+    // feels like it is, and this region is the one the announcer owns.
+    expect(document.querySelectorAll("[data-volt-announcer='assertive']")).toHaveLength(0);
+    expect(document.querySelectorAll("[data-volt-announcer='polite']")).toHaveLength(1);
+  });
 });
