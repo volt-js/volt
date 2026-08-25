@@ -322,10 +322,19 @@ own the DOM while it runs and reconciled when it ends.
 
 Refused rather than half-done, and stated in the source: a replacement whose
 ends resolve into different parents, which needs slices with open ends the
-model does not build yet. Not built: the undo *stack* — inversion is here and
-so is the record of where an undo unit ends, the history that would use them is
-not — hard breaks, delete-word-forward, node selections, structure-preserving
-paste, and the whole view layer.
+model does not build yet. **The undo stack is built too.** It is a stack of inverse steps rather than of
+documents, so history costs what the edits cost and not what the document
+weighs. A run of typing collapses into one unit by time and adjacency — a
+character per undo is not an editor — and `closeHistory` ends a unit whatever
+the clock says, which is the decision a return or a finished composition makes.
+Undo restores the selection the edit *began* from rather than the document
+alone, which is the difference between an undo and a rewind, and a fresh edit
+after an undo discards what was ahead.
+
+Nothing binds it to a keystroke yet: `beforeinput` still declines the
+`historyUndo` and `historyRedo` input types, so a host calls `record`, `undo`
+and `redo` itself. Not built: hard breaks, delete-word-forward, node
+selections, structure-preserving paste, and the whole view layer.
 
 Robustness here means schema-constrained documents, collaborative editing,
 input-method support for non-Latin scripts, undo grouping, paste sanitisation,
