@@ -1370,11 +1370,22 @@ need one.
       above, not this one.
 - [x] **Performance** — effect run counts and durations, flush timings, and
       which bindings are re-running most
-- [ ] Session replay — recording state changes, events, navigation and network
-      together, and replaying them to reach a UI state again. Time travel below
-      covers signal history alone; a defect a user hit needs the events that
-      caused it too, and a production build carries no attribution at all until
-      the diagnostics item above is answered.
+- [x] Session replay — recording state changes, events, navigation and network
+      together, and replaying them to reach a UI state again. `session: true`
+      wraps `fetch` and `pushState` and takes a capture-phase listener per
+      event type, all of it put back when the session stops; `timeline()` is
+      the one ordered log, and `replay()` drives the inputs back through the
+      application with the network served out of the recording, so a replay is
+      safe against a page whose handlers post things. It reports where it
+      stopped matching rather than only that it finished, by comparing the
+      writes it produced against the writes recorded — which is what turns
+      "it did not reproduce" into a location. Three limits, all measured
+      rather than assumed: a dispatched event is not trusted, a target is
+      remembered as a position in the tree so a structurally diverged replay
+      reports `unreachable` instead of clicking the wrong node, and 1531 B
+      gzipped is a large raise on a chunk — affordable only because a
+      production build drops that chunk whole. The production half of this
+      remains blocked on the `__VOLT_DEV__` split, as below.
 - [x] **Time travel** — signal history, step back and forth. Off even inside a
       session and asked for by depth, because keeping `previous` keeps the past
       reachable. It restores state rather than the page: effects re-run, so a

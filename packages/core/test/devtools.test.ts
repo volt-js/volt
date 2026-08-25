@@ -1457,3 +1457,281 @@ describe('stepping back through what was written', () => {
     expect(tools.history().writes).toHaveLength(1);
   });
 });
+
+/**
+ * Session replay: the inputs, not just their consequences.
+ *
+ * `travelTo` above restores state; this restores *causes*. The distinction is
+ * the whole reason both exist, and it is what the assertions here are written
+ * against: a replay that only ended with the same numbers on screen would be
+ * indistinguishable from time travel, so what is checked is that the
+ * application's own handlers ran again — the click is dispatched, and the
+ * write it produces is compared against the write the recording holds.
+ *
+ * Every claim here is asserted against something that would notice if the
+ * mechanism were removed. A replay reporting `dispatched: 3` proves nothing on
+ * its own — three events were sent at something — so the page's own state is
+ * read afterwards as well.
+ */
+describe('session replay', () => {
+  @Component({
+    selector: 'v-clicker',
+    render: compileTemplate(
+      `<div><button :click="bump()">go</button><span>{ count.get() }</span></div>`,
+    ),
+  })
+  class Clicker {
+    count = new Signal.State(0);
+    bump(): void {
+      this.count.set(this.count.get() + 1);
+    }
+  }
+
+  function mountClicker(): { button: HTMLButtonElement; readout: () => string } {
+    const handle = mount(Clicker, host);
+    unmount = handle.unmount;
+    flushSync();
+    return {
+      button: host.querySelector('button')!,
+      readout: () => host.querySelector('span')!.textContent ?? '',
+    };
+  }
+
+  afterEach(() => {
+    tools.stopRecording();
+  });
+
+  it('records the event and the write it caused, in that order', () => {
+    const { button } = mountClicker();
+    tools.startRecording({ session: true, history: 20 });
+
+    button.click();
+    flushSync();
+
+    const log = tools.timeline();
+    const click = log.findIndex((entry) => entry.kind === 'event' && entry.type === 'click');
+    const write = log.findIndex((entry) => entry.kind === 'write');
+    expect(click, 'the click was not recorded').toBeGreaterThan(-1);
+    expect(write, 'the write was not recorded').toBeGreaterThan(-1);
+    // The order is the finding, not the presence: a log that collected the two
+    // into separate lists could not say which caused which.
+    expect(click).toBeLessThan(write);
+  });
+
+  it('does not record anything until a session asks for it', () => {
+    const { button } = mountClicker();
+    // A recording session, but not a replay one.
+    tools.startRecording({ history: 20 });
+    button.click();
+    flushSync();
+    expect(tools.timeline()).toEqual([]);
+  });
+
+  it('reaches the same state by re-running the handlers, not by restoring', async () => {
+    const { button, readout } = mountClicker();
+    tools.startRecording({ session: true, history: 20 });
+
+    button.click();
+    flushSync();
+    button.click();
+    flushSync();
+    expect(readout()).toBe('2');
+
+    const result = await tools.replay();
+
+    expect(result.dispatched).toBe(2);
+    expect(result.unreachable).toBe(0);
+    // The page is back where it was — and got there through `bump()`, which is
+    // what `dispatched` above says ran.
+    expect(readout()).toBe('2');
+    // And it arrived by the same route: every write the recording holds was
+    // produced again, in order, with the same value.
+    expect(result.divergence).toBeNull();
+    expect(result.diverged).toBe(0);
+  });
+
+  it('rewinds before replaying, so the count is not four', async () => {
+    const { button, readout } = mountClicker();
+    tools.startRecording({ session: true, history: 20 });
+    button.click();
+    flushSync();
+    button.click();
+    flushSync();
+
+    await tools.replay();
+
+    // Two clicks recorded and two replayed. Without the rewind the handlers
+    // would have run four times in total and the page would read '4' — which
+    // is the difference between replaying a session and repeating it.
+    expect(readout()).toBe('2');
+  });
+
+  it('serves a recorded response instead of sending the request again', async () => {
+    let sent = 0;
+    const live = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      sent++;
+      return new Response(`{"n":${sent}}`, { status: 200 });
+    }) as typeof fetch;
+
+    // The handler fetches, so replaying the click is what puts a request back
+    // on the wire — which is the only way to test that one is served instead.
+    @Component({
+      selector: 'v-fetcher',
+      render: compileTemplate(`<div><button :click="load()">go</button><span>{ n.get() }</span></div>`),
+    })
+    class Fetcher {
+      n = new Signal.State('-');
+      async load(): Promise<void> {
+        const answer = (await (await globalThis.fetch('/api/thing')).json()) as { n: number };
+        this.n.set(String(answer.n));
+      }
+    }
+
+    try {
+      const handle = mount(Fetcher, host);
+      unmount = handle.unmount;
+      flushSync();
+      const button = host.querySelector('button')!;
+
+      tools.startRecording({ session: true, history: 20 });
+      button.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      expect(sent).toBe(1);
+      expect(host.querySelector('span')!.textContent).toBe('1');
+
+      const result = await tools.replay();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+
+      // The handler ran again and asked again — and was answered out of the
+      // recording. This is the assertion the feature exists for: a replay must
+      // be safe to run against a page whose handlers post things.
+      expect(result.served).toBe(1);
+      expect(result.missed).toBe(0);
+      expect(sent, 'the replay sent a second request').toBe(1);
+      // Served the *recorded* answer, not a fresh one: the stub above would
+      // have returned `{"n":2}` for a real second call, so the page reading
+      // '1' is what distinguishes the two.
+      expect(host.querySelector('span')!.textContent).toBe('1');
+
+      const network = tools.timeline().filter((entry) => entry.kind === 'network');
+      expect(network).toHaveLength(1);
+      expect(network[0]).toMatchObject({ method: 'GET', url: '/api/thing', status: 200 });
+    } finally {
+      globalThis.fetch = live;
+    }
+  });
+
+  it('gives the page back its own fetch when the session stops', async () => {
+    const live = globalThis.fetch;
+    tools.startRecording({ session: true });
+    // Wrapped while recording: this is the cost the option is opt-in for.
+    expect(globalThis.fetch).not.toBe(live);
+    tools.stopRecording();
+    // And unwrapped after, because leaving it wrapped instruments the page for
+    // the rest of its life over a panel someone closed.
+    expect(globalThis.fetch).toBe(live);
+  });
+
+  it('names the write where a replay stopped matching the recording', async () => {
+    // A handler that is not a function of its inputs: the value it writes
+    // depends on how many times it has ever run. Replaying it therefore cannot
+    // reach the recorded state, and saying so is the whole job.
+    let runs = 0;
+    @Component({
+      selector: 'v-drift',
+      render: compileTemplate(
+        `<div><button :click="bump()">go</button><span>{ label.get() }</span></div>`,
+      ),
+    })
+    class Drift {
+      label = new Signal.State('-');
+      bump(): void {
+        this.label.set(`run-${++runs}`);
+      }
+    }
+
+    const handle = mount(Drift, host);
+    unmount = handle.unmount;
+    flushSync();
+    const button = host.querySelector('button')!;
+
+    tools.startRecording({ session: true, history: 20 });
+    button.click();
+    flushSync();
+    expect(host.querySelector('span')!.textContent).toBe('run-1');
+
+    const result = await tools.replay();
+
+    expect(result.dispatched).toBe(1);
+    expect(result.diverged).toBeGreaterThan(0);
+    // Not merely that it diverged, but where and into what — a replay that
+    // reported only a boolean would leave the reader to find this by hand.
+    expect(result.divergence).toContain('run-1');
+    expect(result.divergence).toContain('run-2');
+  });
+
+  it('puts the typed text back before dispatching, since input does not carry it', async () => {
+    // An `input` event carries no value — the handler reads it off the field.
+    // So a replay that only re-dispatched the event would hand the handler
+    // whatever the field happens to hold now, which after the rewind is the
+    // empty string.
+    @Component({
+      selector: 'v-typed',
+      render: compileTemplate(
+        `<div><input :input="take($event.target.value)"><span>{ text.get() }</span></div>`,
+      ),
+    })
+    class Typed {
+      text = new Signal.State('');
+      take(value: string): void {
+        this.text.set(value);
+      }
+    }
+
+    const handle = mount(Typed, host);
+    unmount = handle.unmount;
+    flushSync();
+    const field = host.querySelector('input')!;
+
+    tools.startRecording({ session: true, history: 20 });
+    field.value = 'hello';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(host.querySelector('span')!.textContent).toBe('hello');
+
+    // The page as it stood before the session: a replay is run against a
+    // fresh page, and a field on a fresh page is empty. Leaving 'hello' in it
+    // would let the replay pass on the browser's memory rather than on the
+    // recording — the field would still hold the text whether or not anything
+    // put it back.
+    field.value = '';
+
+    const result = await tools.replay();
+
+    expect(result.dispatched).toBe(1);
+    // Both halves of the claim: the field holds the text again, and the
+    // handler saw it — which are different failures and would be different
+    // bugs.
+    expect(field.value).toBe('hello');
+    expect(host.querySelector('span')!.textContent).toBe('hello');
+    expect(result.divergence).toBeNull();
+  });
+
+  it('counts an event whose target has gone rather than clicking something else', async () => {
+    const { button } = mountClicker();
+    tools.startRecording({ session: true, history: 20 });
+    button.click();
+    flushSync();
+
+    // The page moved on, and the recorded position now names nothing.
+    host.innerHTML = '';
+
+    const result = await tools.replay();
+
+    expect(result.dispatched).toBe(0);
+    expect(result.unreachable).toBe(1);
+  });
+});

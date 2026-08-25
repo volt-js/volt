@@ -193,7 +193,23 @@ const BUDGETS: Record<string, number> = {
   // at 3313 B gzipped. A production build drops this file whole, which
   // `devtools.test.ts` asserts on bundled bytes, so this is a ceiling on what
   // a development build carries.
-  'packages/core/dist/devtools.js': 3_350,
+  //
+  // Raised from 3350 by session replay, which is 1531 B measured by building
+  // the package with and without it — 3313 B to 4844 B — and much the largest
+  // single raise this entry has taken. It is taken deliberately. Replay needs
+  // three things none of the rest of this file needed: a capture-phase
+  // listener per event type with the fields to rebuild each one, `fetch` and
+  // `pushState` wrapped and put back, and a driver that re-dispatches the log
+  // while serving the recorded answers. There is no smaller version of that
+  // which still re-runs an application's own handlers, and re-running them is
+  // the entire difference between replay and the `travelTo` above it.
+  //
+  // What makes the size affordable is where it lands. This file is dropped
+  // whole by a production build — asserted on bundled bytes in
+  // `devtools.test.ts`, not promised — so the 1531 B is paid by a development
+  // build and by nothing that ships. If that ever stops being true this entry
+  // is the wrong shape and the feature is the wrong trade.
+  'packages/core/dist/devtools.js': 4_900,
 };
 
 describe('bundle budgets', () => {

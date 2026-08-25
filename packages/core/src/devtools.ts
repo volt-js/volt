@@ -16,6 +16,15 @@
  * sees what a binding changed rather than what it owns. The gap between those
  * two is stated on the method and cannot be closed from here.
  *
+ * A sixth, `timeline()` and `replay()`, records a session's *inputs* — events,
+ * navigations and the answers the network gave — beside its writes, and drives
+ * them back through the application. That is a different thing from the
+ * `travelTo()` beside it and the difference is the point: travelling restores
+ * the signals, replaying re-runs the handlers. Only the second reproduces a
+ * defect that lived in the order two handlers ran, and only the second can
+ * report that it failed to reproduce one, which it does by comparing the
+ * writes it produced against the writes recorded.
+ *
  * Every entry point is reached only from inside an `if (__VOLT_DEV__)` block,
  * so a production build drops the call sites, then this module, then the
  * listener it installs. `test/devtools.test.ts` proves that on built bytes
@@ -51,6 +60,7 @@
 
 import type { Scope } from '@voltdev/reactivity';
 import {
+  flushSync,
   requestState,
   setDevListener,
   type DevListener,
@@ -189,6 +199,95 @@ export interface RecordOptions {
    * and exactly what a long session should not accumulate unasked.
    */
   history?: number;
+  /**
+   * Record the session's *inputs* as well as its writes: events, navigations
+   * and network answers, in one ordered log that `replay` can drive back
+   * through the application.
+   *
+   * A session cost and a large one — a capture-phase listener per event type,
+   * `fetch` wrapped, and `pushState` wrapped — so it is off unless asked for,
+   * and it does nothing at all where there is no document.
+   */
+  session?: boolean;
+}
+
+/**
+ * One thing that happened, in the order it happened.
+ *
+ * Writes are here beside the inputs rather than in a list of their own,
+ * because the question a replay answers is what a write happened *after* —
+ * and a log that has to be re-interleaved to answer that is a log that has
+ * lost the answer.
+ */
+export type SessionEntry =
+  | { readonly kind: 'write'; readonly seq: number; readonly time: number; readonly write: Write }
+  | {
+      readonly kind: 'event';
+      readonly seq: number;
+      readonly time: number;
+      readonly type: string;
+      /** Child indices from `documentElement`, or null if the target had left the page. */
+      readonly path: readonly number[] | null;
+      /** The field's value at the moment of the event; `input` does not carry it. */
+      readonly value?: string;
+      readonly key?: string;
+      readonly button?: number;
+      readonly clientX?: number;
+      readonly clientY?: number;
+    }
+  | {
+      readonly kind: 'navigation';
+      readonly seq: number;
+      readonly time: number;
+      readonly to: string;
+      readonly how: 'push' | 'replace' | 'pop';
+    }
+  | {
+      readonly kind: 'network';
+      readonly seq: number;
+      readonly time: number;
+      readonly method: string;
+      readonly url: string;
+      readonly status: number;
+      readonly body: string | null;
+      readonly ms: number;
+    };
+
+/**
+ * What a replay reached, and whether it was the same place.
+ *
+ * The counts are the mechanics; `divergence` is the finding. A replay that
+ * dispatches everything and diverges on write three has located the defect
+ * far better than one that reports only that it finished.
+ */
+export interface ReplayResult {
+  /** Events re-dispatched into the live document. */
+  dispatched: number;
+  /** Events whose recorded target no longer resolves to a node. */
+  unreachable: number;
+  navigations: number;
+  /** Requests answered out of the recording rather than sent. */
+  served: number;
+  /** Requests the recording had no answer for. These were allowed through. */
+  missed: number;
+  /** Writes the replay produced that did not match the ones recorded. */
+  diverged: number;
+  /** The first divergence, in words, or null if the replay tracked throughout. */
+  divergence: string | null;
+}
+
+export interface ReplayOptions {
+  /** Stop after this many entries. The whole log by default. */
+  until?: number;
+  /**
+   * Put every signal back before the first recorded write first.
+   *
+   * On by default, and it is what makes a replay a replay rather than a
+   * second set of interactions on top of the first. Requires the session to
+   * have been recorded with `history`, since that is what holds the values to
+   * go back to; without it there is nothing to restore and this is a no-op.
+   */
+  reset?: boolean;
 }
 
 export interface Devtools {
@@ -269,6 +368,40 @@ export interface Devtools {
    * which is the binding layer's to say and not this module's.
    */
   nodesWrittenBy(effect: object | number): Node[];
+
+  /**
+   * Everything the session recorded, in one order: writes, events,
+   * navigations and network answers.
+   *
+   * Empty unless the session asked for `session: true`, except for the writes,
+   * which are here whenever `history` was asked for.
+   */
+  timeline(): SessionEntry[];
+
+  /**
+   * Drive the recorded inputs back through the application.
+   *
+   * This is not `travelTo`, and the difference is the whole point of it.
+   * Travelling puts the signals back where they stood; replaying puts the
+   * *events* back and lets the application produce the state again. Only the
+   * second reproduces a defect that lived in the order two handlers ran, or in
+   * what a handler did with a response — because only the second re-runs the
+   * handlers.
+   *
+   * Network is served out of the recording rather than sent again, so a replay
+   * neither re-posts an order nor depends on a server still answering the same
+   * way. A request the recording has no answer for is allowed through and
+   * counted, because failing it would be inventing a result.
+   *
+   * Three things it cannot do, all of them worth knowing before trusting it.
+   * A dispatched event is not trusted, so a handler gated on `isTrusted` will
+   * not run. A target is remembered as a position in the tree, so a replay
+   * that has already diverged structurally will fail to find later targets —
+   * which is reported as `unreachable` rather than papered over. And the
+   * recorded writes are compared against the produced ones, so what comes back
+   * says whether the replay actually arrived where the recording did.
+   */
+  replay(options?: ReplayOptions): Promise<ReplayResult>;
 
   /** Drop everything collected. The tree and live effects are kept. */
   reset(): void;
@@ -411,6 +544,45 @@ let history: Write[] = [];
 let historyAt = -1;
 let travelling = false;
 let limit = DEFAULT_LIMIT;
+
+/**
+ * The session log, and what had to be wrapped to collect it.
+ *
+ * `entrySeq` numbers entries rather than reusing `writeSeq`, because the log
+ * holds four kinds of thing and only one of them is a write — and a panel
+ * showing "entry 14 of 30" is showing a position in this list, not a write
+ * count. `detach` holds every undo the capture owes: listeners to remove,
+ * `fetch` to put back, `pushState` to unwrap. It is one array because a
+ * session that half-detaches leaves the page permanently instrumented.
+ */
+let sessionOn = false;
+let sessionLog: SessionEntry[] = [];
+let entrySeq = 0;
+let detach: (() => void)[] = [];
+/** Set while `replay` drives, so the capture does not record its own driving. */
+let replaying = false;
+/** Writes produced during a replay, for comparing against the recording. */
+let produced: Write[] = [];
+
+/** The events a replay can put back. Anything else is not re-dispatchable. */
+const CAPTURED_EVENTS = [
+  'pointerdown',
+  'pointerup',
+  'click',
+  'dblclick',
+  'keydown',
+  'keyup',
+  'input',
+  'change',
+  'submit',
+  'focusin',
+  'focusout',
+] as const;
+
+/** A session log longer than this drops its oldest entries. */
+const MAX_SESSION_ENTRIES = 5_000;
+/** A recorded response body longer than this is truncated. */
+const MAX_BODY = 64 * 1024;
 
 let flushStart = 0;
 let flushRuns = 0;
@@ -775,6 +947,272 @@ function effectById(id: number): object | null {
 }
 
 // ---------------------------------------------------------------------------
+// Session replay
+// ---------------------------------------------------------------------------
+
+/** Append to the log, dropping the oldest once it is full. */
+function record(entry: Omit<SessionEntry, 'seq' | 'time'> & Partial<SessionEntry>): void {
+  sessionLog.push({ ...entry, seq: ++entrySeq, time: now() } as SessionEntry);
+  if (sessionLog.length > MAX_SESSION_ENTRIES) sessionLog.shift();
+}
+
+/**
+ * Where a node is, as child indices from `documentElement`.
+ *
+ * A position rather than a selector, because a selector needs the page to
+ * have given the node something to select it by and most nodes have not. The
+ * cost of that choice is that the path is only valid against a tree of the
+ * same shape — which is exactly the tree a replay from the beginning
+ * rebuilds, and is why a replay that has diverged reports `unreachable`
+ * instead of clicking the wrong thing.
+ */
+function pathTo(node: Node): number[] | null {
+  const root = document.documentElement as Node | null;
+  if (!root) return null;
+  const path: number[] = [];
+  let current: Node | null = node;
+  while (current !== null && current !== root) {
+    const parent: Node | null = current.parentNode;
+    if (parent === null) return null;
+    path.push(Array.prototype.indexOf.call(parent.childNodes, current));
+    current = parent;
+  }
+  return current === root ? path.reverse() : null;
+}
+
+function nodeAt(path: readonly number[]): Node | null {
+  let current: Node | null = document.documentElement;
+  for (const index of path) {
+    const next: Node | undefined = current?.childNodes[index];
+    if (next === undefined) return null;
+    current = next;
+  }
+  return current;
+}
+
+/** The event constructor that carries the fields this type is recorded with. */
+function rebuild(entry: Extract<SessionEntry, { kind: 'event' }>): Event {
+  const init = { bubbles: true, cancelable: true } as const;
+  if (entry.clientX !== undefined && typeof MouseEvent === 'function') {
+    return new MouseEvent(entry.type, {
+      ...init,
+      clientX: entry.clientX,
+      clientY: entry.clientY,
+      button: entry.button,
+    });
+  }
+  if (entry.key !== undefined && typeof KeyboardEvent === 'function') {
+    return new KeyboardEvent(entry.type, { ...init, key: entry.key });
+  }
+  return new Event(entry.type, init);
+}
+
+function startCapture(): void {
+  if (typeof document === 'undefined') return;
+
+  for (const type of CAPTURED_EVENTS) {
+    const handler = (event: Event): void => {
+      if (replaying) return;
+      const target = event.target as Node | null;
+      const field = target as { value?: unknown } | null;
+      const pointer = event as { clientX?: number; clientY?: number; button?: number };
+      const key = (event as { key?: string }).key;
+      record({
+        kind: 'event',
+        type,
+        path: target ? pathTo(target) : null,
+        // Read now, not at replay: an `input` event carries no value, and the
+        // field has moved on by the time anything asks it.
+        value: typeof field?.value === 'string' ? field.value : undefined,
+        key,
+        button: pointer.button,
+        clientX: pointer.clientX,
+        clientY: pointer.clientY,
+      });
+    };
+    // Capture phase, so what is recorded is what arrived rather than what
+    // survived a handler calling `stopPropagation`.
+    document.addEventListener(type, handler, true);
+    detach.push(() => document.removeEventListener(type, handler, true));
+  }
+
+  // `globalThis.history`, spelled out: this module has a `history` of its own —
+  // the writes a session keeps for stepping — and the bare name is that one.
+  if (globalThis.history !== undefined && globalThis.location !== undefined) {
+    const nav = globalThis.history;
+    const pushState = nav.pushState;
+    const replaceState = nav.replaceState;
+    const wrap = (how: 'push' | 'replace', original: typeof pushState) =>
+      function (this: History, ...args: Parameters<typeof pushState>): void {
+        original.apply(this, args);
+        if (!replaying) record({ kind: 'navigation', to: globalThis.location.href, how });
+      };
+    nav.pushState = wrap('push', pushState);
+    nav.replaceState = wrap('replace', replaceState);
+    const onPop = (): void => {
+      if (!replaying) record({ kind: 'navigation', to: globalThis.location.href, how: 'pop' });
+    };
+    globalThis.addEventListener('popstate', onPop);
+    detach.push(() => {
+      nav.pushState = pushState;
+      nav.replaceState = replaceState;
+      globalThis.removeEventListener('popstate', onPop);
+    });
+  }
+
+  if (typeof globalThis.fetch === 'function') {
+    const original = globalThis.fetch;
+    globalThis.fetch = async function (
+      ...args: Parameters<typeof fetch>
+    ): Promise<Response> {
+      if (replaying) return original.apply(globalThis, args);
+      const started = now();
+      const request = args[0];
+      const url = typeof request === 'string' ? request : String((request as Request).url ?? request);
+      const method = (args[1]?.method ?? (request as Request).method ?? 'GET').toUpperCase();
+      const response = await original.apply(globalThis, args);
+      // Cloned, because a body can be read once and the caller has not read it
+      // yet. A clone that throws — a body already consumed upstream — records
+      // the exchange without it rather than taking the page down.
+      let body: string | null = null;
+      try {
+        body = (await response.clone().text()).slice(0, MAX_BODY);
+      } catch {
+        body = null;
+      }
+      record({
+        kind: 'network',
+        method,
+        url,
+        status: response.status,
+        body,
+        ms: now() - started,
+      });
+      return response;
+    } as typeof fetch;
+    detach.push(() => {
+      globalThis.fetch = original;
+    });
+  }
+}
+
+function stopCapture(): void {
+  for (const undo of detach) undo();
+  detach = [];
+}
+
+/** One recorded write, described the way a divergence report needs it. */
+function describeWrite(write: Write): string {
+  return `${labelOf(write.signal)} → ${preview(write.value)}`;
+}
+
+async function runReplay(options?: ReplayOptions): Promise<ReplayResult> {
+  const result: ReplayResult = {
+    dispatched: 0,
+    unreachable: 0,
+    navigations: 0,
+    served: 0,
+    missed: 0,
+    diverged: 0,
+    divergence: null,
+  };
+
+  const entries = sessionLog.slice(0, options?.until ?? sessionLog.length);
+  const expected = entries.filter((entry) => entry.kind === 'write');
+
+  // Answers keyed by method and url, oldest first: two GETs of the same URL
+  // during a session are two different answers, and a replay that served the
+  // first one twice would be replaying a session that never happened.
+  const answers = new Map<string, Extract<SessionEntry, { kind: 'network' }>[]>();
+  for (const entry of entries) {
+    if (entry.kind !== 'network') continue;
+    const key = `${entry.method} ${entry.url}`;
+    const list = answers.get(key);
+    if (list) list.push(entry);
+    else answers.set(key, [entry]);
+  }
+
+  if ((options?.reset ?? true) && history.length > 0) api.travelTo(-1);
+
+  produced = [];
+  replaying = true;
+  const liveFetch = typeof globalThis.fetch === 'function' ? globalThis.fetch : null;
+  if (liveFetch) {
+    globalThis.fetch = async function (
+      ...args: Parameters<typeof fetch>
+    ): Promise<Response> {
+      const request = args[0];
+      const url = typeof request === 'string' ? request : String((request as Request).url ?? request);
+      const method = (args[1]?.method ?? (request as Request).method ?? 'GET').toUpperCase();
+      const list = answers.get(`${method} ${url}`);
+      const answer = list?.shift();
+      if (!answer) {
+        result.missed++;
+        return liveFetch.apply(globalThis, args);
+      }
+      result.served++;
+      return new Response(answer.body, { status: answer.status });
+    } as typeof fetch;
+  }
+
+  try {
+    for (const entry of entries) {
+      if (entry.kind === 'event') {
+        const target = entry.path ? nodeAt(entry.path) : null;
+        if (!target) {
+          result.unreachable++;
+          continue;
+        }
+        // Set before dispatching, because that is the order a browser does it
+        // in: the field already holds the new text when `input` fires.
+        if (entry.value !== undefined) {
+          const field = target as { value?: unknown };
+          if (typeof field.value === 'string') field.value = entry.value;
+        }
+        target.dispatchEvent(rebuild(entry));
+        result.dispatched++;
+      } else if (entry.kind === 'navigation') {
+        if (entry.how !== 'pop' && typeof globalThis.history !== 'undefined') {
+          globalThis.history[entry.how === 'push' ? 'pushState' : 'replaceState'](
+            null,
+            '',
+            entry.to,
+          );
+        }
+        result.navigations++;
+      } else {
+        continue;
+      }
+      // Settle before the next input, so what one handler wrote is on the page
+      // before the next event is aimed at it.
+      flushSync();
+      await Promise.resolve();
+    }
+    flushSync();
+  } finally {
+    replaying = false;
+    if (liveFetch) globalThis.fetch = liveFetch;
+  }
+
+  for (let i = 0; i < Math.max(expected.length, produced.length); i++) {
+    const want = (expected[i] as Extract<SessionEntry, { kind: 'write' }> | undefined)?.write;
+    const got = produced[i];
+    const same =
+      want && got && labelOf(want.signal) === labelOf(got.signal) && Object.is(want.value, got.value);
+    if (same) continue;
+    result.diverged++;
+    result.divergence ??= want
+      ? got
+        ? `write ${i + 1}: recorded ${describeWrite(want)}, replayed ${describeWrite(got)}`
+        : `write ${i + 1}: recorded ${describeWrite(want)}, and the replay made no such write`
+      : `write ${i + 1}: the replay wrote ${describeWrite(got!)}, which the recording does not have`;
+  }
+
+  produced = [];
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // The listener
 // ---------------------------------------------------------------------------
 
@@ -826,6 +1264,15 @@ const listener: DevListener = {
     pendingPrevious = previous;
     pendingValue = value;
     pending = null;
+
+    // Ahead of the history check, because a session log is asked for on its
+    // own terms: a replay compares what it produced against what was recorded
+    // whether or not anyone also wanted to step through the writes by hand.
+    if (sessionOn && !travelling) {
+      const write = materialise();
+      if (replaying) produced.push(write);
+      else record({ kind: 'write', write });
+    }
 
     if (historyLimit === 0 || travelling) return;
     // A write made after stepping back abandons what was ahead: the page has
@@ -991,6 +1438,12 @@ const api: Devtools = {
       history = [];
       historyAt = -1;
     }
+    if (options?.session && !sessionOn) {
+      sessionOn = true;
+      sessionLog = [];
+      entrySeq = 0;
+      startCapture();
+    }
     recording = true;
   },
   stopRecording() {
@@ -998,6 +1451,11 @@ const api: Devtools = {
     historyLimit = 0;
     runStack = [];
     stopObserving();
+    // The log is kept — a session is stopped in order to look at it — but the
+    // wrapping is not: `fetch` and `pushState` belong to the page, and leaving
+    // them wrapped past the session would be instrumenting it for ever.
+    sessionOn = false;
+    stopCapture();
     // Dropped with the session, and for the reason the causes below are: these
     // hold DOM, and a page goes on past a panel that has stopped watching it.
     writtenNodes = new WeakMap();
@@ -1079,9 +1537,15 @@ const api: Devtools = {
     return [...nodes].filter((candidate) => candidate.isConnected);
   },
 
+  timeline: () => [...sessionLog],
+
+  replay: (options) => runReplay(options),
+
   reset() {
     updateLog = [];
     flushLog = [];
+    sessionLog = [];
+    entrySeq = 0;
     runStack = [];
     wakeLog = [];
     history = [];
