@@ -28,16 +28,24 @@
  * `state.ts` exists to hold — and the reason an undo here restores the
  * selection the edit began from rather than only the document.
  *
- * What is still missing is a view, and with it everything that needs one: a
- * document is edited here through transactions and events aimed at an element,
- * but nothing renders it, and nothing keeps a DOM selection in step with the
- * model's. Nothing binds `EditorHistory` to a keystroke either — a host records
- * its transactions and asks for an undo, and the `historyUndo` input type is
- * still declined, since which surface owns that shortcut is a view's decision.
- * There is no rich clipboard: a paste is flattened to text, since a paste that
- * kept its structure needs a DOM parser and slices with open ends. A
- * replacement whose ends sit in different parents is refused rather than
- * half-done, for the reason `step.ts` gives.
+ * On top of that sits the view: `EditorView` renders a document into an
+ * element, maps positions across the DOM boundary in both directions, writes
+ * the model's selection into the browser's and reads the browser's back, and
+ * wires `beforeinput` to the input layer so typing works end to end. It keeps
+ * no shadow copy of the document — an update redraws the range the transaction
+ * says it rewrote, and nothing else.
+ *
+ * What the view deliberately does not do is decorations, node views,
+ * collaborative cursors and drag and drop; none of them can be added
+ * convincingly before there is something to decorate. Nothing binds
+ * `EditorHistory` to a keystroke either — a host records its transactions and
+ * asks for an undo, and the `historyUndo` input type is still declined, since
+ * which surface owns that shortcut is the host's decision rather than this
+ * package's. There is no rich clipboard: a paste is flattened to text, since a
+ * paste that kept its structure needs a DOM parser and slices with open ends,
+ * and for the same reason the view renders a document but does not parse one
+ * back out of the DOM. A replacement whose ends sit in different parents is
+ * refused rather than half-done, for the reason `step.ts` gives.
  */
 
 export { Mark, sameAttrs, type Attrs } from './mark.js';
@@ -77,5 +85,16 @@ export {
   insertText,
 } from './commands.js';
 export { EditorInput, applyInputType, type EditorInputHost } from './input.js';
+export {
+  EditorView,
+  basicMarkRenderers,
+  basicNodeRenderers,
+  type DOMPoint,
+  type EditorRenderers,
+  type EditorViewOptions,
+  type MarkRenderer,
+  type NodeRenderer,
+  type NodeRendering,
+} from './view.js';
 
 export const VERSION = '0.1.0';

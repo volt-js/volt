@@ -147,10 +147,20 @@ export interface PortalMarkup {
  * a single flat allocation of the size of the answer.
  */
 export class MarkupWriter {
-  private readonly root: string[] = [];
-  private readonly segments: { target: string | null; parts: string[] }[] = [];
+  private readonly root: Part[] = [];
+  private readonly segments: { target: string | null; parts: Part[] }[] = [];
   /** The segment being written; `portal` moves it and puts it back. */
-  private parts: string[] = this.root;
+  private parts: Part[] = this.root;
+  /**
+   * Whether any region has been opened, which is the only thing that can put
+   * an array inside the chunk list.
+   *
+   * Kept so the common page pays nothing for a facility it never used: with no
+   * region open the chunks are flat and `join` is the same single allocation
+   * it always was, and the recursive walk below is only reached by a page that
+   * actually declared somewhere replaceable.
+   */
+  private nested = false;
   /**
    * Content held until the element's `>` has been written.
    *
@@ -402,13 +412,36 @@ export class MarkupWriter {
       );
     }
 
-    const parts: string[] = [];
+    const parts: Part[] = [];
     // Recorded on the way in, so two portals into one container come out in
     // the order they were declared rather than the order they finished.
     this.segments.push({ target: resolved ?? null, parts });
+    this.write(parts, build);
+  }
 
+  /**
+   * A stretch of markup that can still be rewritten after it was written.
+   *
+   * The chunks a region writes go into a list of their own, spliced into the
+   * segment at the position the region was declared, so replacing it is
+   * emptying that list rather than finding and cutting out a range of the
+   * enclosing one. That distinction is the whole reason this exists: an error
+   * raised by an effect three flushes later arrives when the bytes after the
+   * region have long since been written, and a region that were merely a
+   * remembered index could only ever be truncated back to while it was still
+   * the tail.
+   */
+  region(): Part[] {
+    const parts: Part[] = [];
+    this.nested = true;
+    this.parts.push(parts);
+    return parts;
+  }
+
+  /** Write into a region: on the way in, and again to replace what it holds. */
+  write(region: Part[], build: () => void): void {
     const previous = this.parts;
-    this.parts = parts;
+    this.parts = region;
     try {
       build();
     } finally {
@@ -416,17 +449,46 @@ export class MarkupWriter {
     }
   }
 
+  /**
+   * Discard what a region wrote and put something else in its place.
+   *
+   * Discarding is unconditional, and it matters most when there is nothing to
+   * put back: a walk that threw halfway through a region may have left an
+   * element open, and half a region is not markup a browser can be handed.
+   */
+  rewrite(region: Part[], build: () => void): void {
+    region.length = 0;
+    this.write(region, build);
+  }
+
+  private join(parts: Part[]): string {
+    if (!this.nested) return (parts as string[]).join('');
+    const flat: string[] = [];
+    collect(parts, flat);
+    return flat.join('');
+  }
+
   /** The document's own markup. */
   toString(): string {
-    return this.root.join('');
+    return this.join(this.root);
   }
 
   /** What the portals wrote, in the order they were declared. */
   portals(): PortalMarkup[] {
     return this.segments.map((segment) => ({
       target: segment.target,
-      html: segment.parts.join(''),
+      html: this.join(segment.parts),
     }));
+  }
+}
+
+/** One chunk of a segment: bytes, or a region holding chunks of its own. */
+export type Part = string | Part[];
+
+function collect(parts: Part[], out: string[]): void {
+  for (const part of parts) {
+    if (typeof part === 'string') out.push(part);
+    else collect(part, out);
   }
 }
 
@@ -753,8 +815,13 @@ export type PageRender = RenderedPage | FailedPage;
 // generated templates, the two buffered renders and the streaming one all
 // live, and splitting the streaming entry point off would mean a caller had to
 // know which of two modules a boundary belongs to.
-export { boundary, renderToStream } from './stream.js';
-export type { Boundary, BoundaryOptions, StreamOptions } from './stream.js';
+export { boundary, errorBoundary, renderToStream } from './stream.js';
+export type {
+  Boundary,
+  BoundaryOptions,
+  ErrorBoundaryOptions,
+  StreamOptions,
+} from './stream.js';
 
 export interface StringRenderOptions extends RenderOptions, StateScriptOptions {}
 

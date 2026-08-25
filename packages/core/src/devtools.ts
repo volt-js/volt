@@ -10,6 +10,12 @@
  *   - `updates()`       — which write woke which effect
  *   - `effectStats()`, `flushes()` — run counts, durations, flush timings
  *
+ * And one half-answer to a fifth, `nodesWrittenBy()`: which DOM a binding
+ * wrote, so a panel can highlight it. Half because it is attribution by
+ * observation — a `MutationObserver` drained around each effect run — which
+ * sees what a binding changed rather than what it owns. The gap between those
+ * two is stated on the method and cannot be closed from here.
+ *
  * Every entry point is reached only from inside an `if (__VOLT_DEV__)` block,
  * so a production build drops the call sites, then this module, then the
  * listener it installs. `test/devtools.test.ts` proves that on built bytes
@@ -24,7 +30,8 @@
  *
  *   always   the component tree, where each effect was declared, and the
  *            writes that woke an effect this turn
- *   session  run counts, durations, flush records, the update log
+ *   session  run counts, durations, flush records, the update log, and the
+ *            DOM each effect wrote
  *
  * The split is deliberate. The tree is a handful of objects per screen, and
  * the wakes are two array slots each, which a development build can carry; a
@@ -243,6 +250,26 @@ export interface Devtools {
   effectStats(): EffectStat[];
   flushes(): FlushRecord[];
 
+  /**
+   * The nodes an effect has written since the session started, oldest touch
+   * first, and only those still in the document.
+   *
+   * What a panel draws a box around when a binding is hovered. It is
+   * attribution by observation rather than by declaration — a
+   * `MutationObserver` drained around each effect run — so what comes back is
+   * what this effect actually changed, which is narrower than what it owns in
+   * two ways worth stating rather than papering over. A binding that has not
+   * re-run since the session started has written nothing yet and reports
+   * nothing, which includes every binding on a page a panel opened after it
+   * loaded. And a write the DOM tree does not record — `el.value`, `.checked`,
+   * a listener attached — is invisible to any observer, so a binding that
+   * makes only those reports nothing however often it runs.
+   *
+   * Closing either gap means the binding naming its target as it is created,
+   * which is the binding layer's to say and not this module's.
+   */
+  nodesWrittenBy(effect: object | number): Node[];
+
   /** Drop everything collected. The tree and live effects are kept. */
   reset(): void;
 }
@@ -297,6 +324,13 @@ const MAX_FLUSHES = 60;
 const MAX_WAKE_LOG = 8_192;
 /** A graph walk stops here rather than hanging a panel on a huge app. */
 const MAX_GRAPH_NODES = 5_000;
+/**
+ * Nodes kept per effect. A highlight wants the DOM one binding writes, and a
+ * binding that writes more than this is a list body rather than a binding —
+ * where the cap is what keeps a session from holding a page's worth of nodes
+ * that the page itself has moved on from.
+ */
+const MAX_WRITTEN_NODES = 32;
 
 let hub: Devtools | null = null;
 
@@ -314,6 +348,19 @@ const labels = new WeakMap<object, string>();
 let wakeLog: object[] = [];
 /** The same, indexed per effect, kept only while a session is recording. */
 let causes = new WeakMap<object, Write[]>();
+/**
+ * The DOM each effect wrote, collected only while a session is recording.
+ *
+ * A `MutationObserver` over the document is the only way to learn this without
+ * the binding layer's help, and it is a session cost rather than an always-on
+ * one: it queues a record for every mutation the page makes, including all the
+ * ones nothing here asked about. The queue is drained by hand around each
+ * effect run rather than in the observer's own callback, because that callback
+ * arrives a microtask later — by which time the flush is over and every record
+ * in it would be credited to whichever effect happened to run last.
+ */
+let writtenNodes = new WeakMap<object, Set<Node>>();
+let observer: MutationObserver | null = null;
 const effects = new Map<object, EffectRecord>();
 /**
  * The component each effect was created under, kept whether or not a session
@@ -651,6 +698,83 @@ function pathFrom(effect: object, signal: object): number[] {
 }
 
 // ---------------------------------------------------------------------------
+// What a binding wrote
+// ---------------------------------------------------------------------------
+
+function startObserving(): void {
+  if (observer || typeof MutationObserver === 'undefined' || typeof document === 'undefined') {
+    return;
+  }
+  // The callback is never how records are read here; `takeRecords` is. It
+  // exists because the constructor demands one.
+  observer = new MutationObserver(() => {});
+  observer.observe(document, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    characterData: true,
+  });
+}
+
+function stopObserving(): void {
+  observer?.disconnect();
+  observer = null;
+}
+
+function note(nodes: Set<Node>, node: Node): void {
+  // Re-inserted rather than left where it was, so the cap drops whichever node
+  // this binding touched longest ago rather than one it is still writing to.
+  nodes.delete(node);
+  nodes.add(node);
+  if (nodes.size > MAX_WRITTEN_NODES) nodes.delete(nodes.values().next().value!);
+}
+
+/**
+ * Credit everything mutated since the last drain to the run now on top.
+ *
+ * Called as a run starts and again as it ends, which is what keeps a nested
+ * effect's writes its own and leaves the writes around it with the outer one.
+ */
+function drain(): void {
+  if (!observer) return;
+  const records = observer.takeRecords();
+  if (records.length === 0) return;
+
+  const frame = runStack.length > 0 ? runStack[runStack.length - 1] : undefined;
+  // Dropped rather than held over for the next run: a page writing the DOM
+  // from an event handler owes no binding for it, and crediting the effect
+  // that happens to run next would file a node under a binding that never
+  // touched it.
+  if (!frame) return;
+
+  let nodes = writtenNodes.get(frame.record.node);
+  if (!nodes) writtenNodes.set(frame.record.node, (nodes = new Set()));
+  for (const record of records) {
+    if (record.type !== 'childList') {
+      note(nodes, record.target);
+      continue;
+    }
+    for (const added of record.addedNodes) note(nodes, added);
+    // A binding that only removed nodes owns the parent it emptied: there is
+    // nothing else left of that write to highlight.
+    if (record.addedNodes.length === 0) note(nodes, record.target);
+  }
+}
+
+/**
+ * The effect a panel named by id, without minting an id for anything.
+ *
+ * A scan, because ids are handed out by a `WeakMap` that cannot be walked
+ * backwards, and because this is reached when a hover asks — never from the
+ * flush. `ids.get` rather than `idOf`, so asking about an effect that is gone
+ * does not give some other node a number it never had.
+ */
+function effectById(id: number): object | null {
+  for (const node of effects.keys()) if (ids.get(node) === id) return node;
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // The listener
 // ---------------------------------------------------------------------------
 
@@ -745,6 +869,9 @@ const listener: DevListener = {
   },
 
   runStarted(effect, phase) {
+    // Before this run's frame is pushed, so that whatever was written before
+    // it began belongs to the run around it — or, outside a flush, to nothing.
+    drain();
     if (!recording) return;
     runStack.push({
       record: effectRecord(effect, phase),
@@ -757,9 +884,15 @@ const listener: DevListener = {
   runEnded(effect) {
     const frame = runStack.length > 0 ? runStack[runStack.length - 1] : undefined;
     if (!frame || frame.record.node !== effect) return;
+
+    // The clock is read before the tools do any work of their own, so that
+    // what a panel reports as an effect's cost is the effect's and not the
+    // cost of watching it. The drain follows while the frame is still on top,
+    // which is what makes the DOM it wrote its own rather than the next one's.
+    const durationMs = now() - frame.start;
+    drain();
     runStack.pop();
 
-    const durationMs = now() - frame.start;
     const record = frame.record;
     record.runs++;
     record.totalMs += durationMs;
@@ -834,7 +967,8 @@ const listener: DevListener = {
 // ---------------------------------------------------------------------------
 
 const api: Devtools = {
-  version: 1,
+  // 2: `nodesWrittenBy`. An extension reads this to know the call is there.
+  version: 2,
 
   componentTree: () => roots().map(toNode),
   componentFor: (instance) => {
@@ -849,6 +983,7 @@ const api: Devtools = {
   labelOf,
 
   startRecording(options) {
+    startObserving();
     limit = options?.limit ?? DEFAULT_LIMIT;
     captureStacks = options?.stacks ?? false;
     historyLimit = options?.history ?? 0;
@@ -862,6 +997,10 @@ const api: Devtools = {
     recording = false;
     historyLimit = 0;
     runStack = [];
+    stopObserving();
+    // Dropped with the session, and for the reason the causes below are: these
+    // hold DOM, and a page goes on past a panel that has stopped watching it.
+    writtenNodes = new WeakMap();
     // Replaced rather than emptied — there is no walking a WeakMap — so that
     // the next session cannot open with causes left over from this one.
     causes = new WeakMap();
@@ -931,6 +1070,15 @@ const api: Devtools = {
 
   flushes: () => [...flushLog],
 
+  nodesWrittenBy(effect) {
+    const node = typeof effect === 'number' ? effectById(effect) : effect;
+    const nodes = node ? writtenNodes.get(node) : undefined;
+    if (!nodes) return [];
+    // A node the page has since removed cannot be highlighted — a panel
+    // drawing a box around it would draw it nowhere.
+    return [...nodes].filter((candidate) => candidate.isConnected);
+  },
+
   reset() {
     updateLog = [];
     flushLog = [];
@@ -939,6 +1087,7 @@ const api: Devtools = {
     history = [];
     historyAt = -1;
     causes = new WeakMap();
+    writtenNodes = new WeakMap();
     updateSeq = 0;
     for (const record of effects.values()) {
       record.runs = 0;

@@ -328,7 +328,14 @@ Undo restores the selection the edit *began* from rather than the document
 alone, which is the difference between an undo and a rewind, and a fresh edit
 after an undo discards what was ahead.
 
-Nothing binds it to a keystroke yet: `beforeinput` still declines the
+**And it renders.** `EditorView` draws a document, maps positions between the
+model and the DOM in both directions, reflects a selection each way — written
+out on change, and read back from `selectionchange` when a click or a drag
+moves the caret — and wires `beforeinput` to the input layer, so typing goes
+through to a transaction and back to the screen. Not built there: decorations,
+node views, collaborative cursors, drag and drop.
+
+Nothing binds undo to a keystroke yet: `beforeinput` still declines the
 `historyUndo` and `historyRedo` input types, so a host calls `record`, `undo`
 and `redo` itself. Not built: hard breaks, delete-word-forward, node
 selections, structure-preserving paste, and the whole view layer.

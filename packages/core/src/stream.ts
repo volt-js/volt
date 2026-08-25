@@ -52,13 +52,16 @@
 import {
   createRequestScope,
   createRoot,
+  createScope,
   currentRequest,
   dataEffect,
   flushSync,
   onError,
   requestState,
   runInRequest,
+  runWithScope,
   type Dispose,
+  type Scope,
 } from '@voltdev/reactivity';
 
 import { renderComponent, requestStyles, type ComponentType } from './component.js';
@@ -205,6 +208,124 @@ export function boundary<T>(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Error boundaries
+// ---------------------------------------------------------------------------
+
+/** What a server-side error boundary does with a failure below it. */
+export interface ErrorBoundaryOptions {
+  /**
+   * Markup to put where the region was, given the error.
+   *
+   * Without one the boundary swallows: the region is emptied — half a region
+   * is not markup, since the walk may have left an element open — and the rest
+   * of the page is rendered around the hole.
+   */
+  fallback?: (error: unknown, out: MarkupWriter) => void;
+  /**
+   * Told before anything is replaced. Throwing from here sends the error on to
+   * the boundary above, which is how a boundary declines a failure it does not
+   * know what to do with.
+   */
+  onError?: (error: unknown, scope: Scope | null) => void;
+}
+
+/**
+ * A boundary around a region of a server render: anything that fails below it
+ * is answered with markup rather than with the loss of the page.
+ *
+ * The two failures a server has looked like different problems and are not. A
+ * component that throws while the walk is passing through it, and an effect
+ * that throws three flushes later and reaches the error channel instead of any
+ * `catch`, are the same region of the same page failing. What differs is only
+ * whether the bytes have left:
+ *
+ *   - **Still held.** `renderToString` buffers the whole page and a stream
+ *     holds the shell until the first flush, so the region is a list of chunks
+ *     nobody has read. The fallback is written where the region was and the
+ *     page is sent whole — a 200 with a recovered region rather than a 500,
+ *     which is the answer `renderToString` could not give before.
+ *   - **Gone.** After the shell has flushed the status line and those bytes
+ *     are both spent. The fallback goes out as a chunk of its own inside a
+ *     `<template>`, with a record naming the region it replaces — the same
+ *     chunk, the same record and the same delimiters an async boundary's
+ *     answer travels in, because it is the same act.
+ *
+ * That is deliberately one mechanism with one branch in it rather than two
+ * mechanisms: the failure does not know which render it is in, and neither of
+ * the two answers is reachable from a boundary that only knows about its own
+ * data.
+ *
+ * Placed in a dynamic-child position, exactly like `boundary`, and for the
+ * same reason: a hole is what a region is, and the writer already hands one
+ * over. `children` writes into the same writer the page is being written into.
+ */
+export function errorBoundary(
+  children: (out: MarkupWriter) => void,
+  options: ErrorBoundaryOptions = {},
+): Boundary {
+  return {
+    toJSON: misplaced,
+    toString: misplaced,
+    [BOUNDARY]: (out: MarkupWriter): void => {
+      const collector = collectorOf();
+      // Delimiters only where something could come back for them. A buffered
+      // render replaces in place and leaves no seam, so writing markers into
+      // its bytes would be two comments per boundary that no reader on either
+      // side has any use for.
+      const id = collector === null ? '' : collector.claim();
+      if (collector !== null) out.comment(`v${id}`);
+      const region = out.region();
+      if (collector !== null) out.comment(`/v${id}`);
+
+      // What is showing is a plain variable rather than a signal, for the
+      // reason the client boundary keeps one: it is read from inside a handler
+      // running in the middle of an effect, where a tracked read would make
+      // that effect depend on it.
+      let showing = false;
+      const scope = createScope();
+
+      const fail = (error: unknown, from: Scope | null): void => {
+        // A failure with the fallback already up either came from the fallback
+        // or from something that outlived the region. Replacing the fallback
+        // with itself would loop, so it goes to the boundary above.
+        if (showing) throw error;
+        options.onError?.(error, from);
+        const write = options.fallback;
+        if (write === undefined) return;
+        showing = true;
+
+        // Under the boundary's own scope, so what the fallback builds belongs
+        // to the region it replaces — and so a fallback that fails in turn
+        // arrives back here, where `showing` sends it to the boundary above
+        // instead of letting it replace itself for ever.
+        if (collector === null || !collector.flushed) {
+          runWithScope(scope, () => out.rewrite(region, () => write(error, out)));
+          return;
+        }
+
+        const late = new MarkupWriter();
+        runWithScope(scope, () => write(error, late));
+        collector.emit?.(id, late, 'e');
+      };
+
+      runWithScope(scope, () => {
+        onError(fail);
+        try {
+          out.write(region, () => children(out));
+        } catch (error) {
+          // Thrown by the walk rather than raised by an effect: this is the
+          // one road that does not go through the error channel, and it is the
+          // one that can leave a region half written. Emptied first, so a
+          // boundary with no fallback still leaves valid markup behind.
+          out.rewrite(region, () => {});
+          fail(error, scope);
+        }
+      });
+    },
+  };
+}
+
 /**
  * The slot a streaming render keeps its collector in.
  *
@@ -244,8 +365,33 @@ class Collector {
   private wake: (() => void) | null = null;
   private waiting: Promise<void> | null = null;
 
+  /**
+   * Whether the bytes a region was written into have already been sent.
+   *
+   * This is the only thing that separates the two answers a failed region has.
+   * Before it, the region is still a list of chunks in a writer nobody has
+   * read, so the fallback is put where the region was and the page goes out
+   * whole. After it, those bytes are on a socket and the fallback can only be
+   * a later chunk saying which region it replaces.
+   */
+  flushed = false;
+
+  /**
+   * Send a replacement for a region whose bytes are gone.
+   *
+   * Installed by `renderToStream`, because only it holds the controller. Null
+   * during the shell walk and for every render that is not a stream, which is
+   * the same thing as saying that nothing can be replaced late there.
+   */
+  emit: ((id: string, out: MarkupWriter, op: 'b' | 'e') => void) | null = null;
+
+  /** An identity for a region, minted where the region is written. */
+  claim(): string {
+    return String(this.nextId++);
+  }
+
   open(record: Waiting<unknown>, out: MarkupWriter): void {
-    record.id = String(this.nextId++);
+    record.id = this.claim();
     this.outstanding++;
 
     // Delimiters of its own rather than the hole's: the compiler elides
@@ -430,6 +576,25 @@ export function renderToStream(
     return html;
   };
 
+  /**
+   * A region's replacement, as bytes.
+   *
+   * The one shape a late answer has, whichever reason it has for arriving
+   * late: an inert `<template>` carrying the markup, whatever styles the
+   * components in it declared, and a record naming the region it belongs to.
+   * A boundary that resolved and a region that failed differ in the op letter
+   * and in nothing else, which is what makes them one mechanism rather than
+   * two that happen to look alike.
+   */
+  const replacement = (id: string, out: MarkupWriter, op: 'b' | 'e'): string => {
+    for (const collected of out.portals()) portals.push(collected);
+    return (
+      styles() +
+      `<template ${BOUNDARY_ATTRIBUTE}="${id}">${out.toString()}</template>` +
+      record(`["${op}","${id}"]`)
+    );
+  };
+
   /** Everything a settled boundary contributes to the stream. */
   const chunkFor = (waiting: Waiting<unknown>): string => {
     // Written now, so it stops holding the stream open. Counted from the claim
@@ -454,13 +619,7 @@ export function renderToStream(
         // boundary writes nothing and the shell's placeholder stands.
       }
     }
-    for (const collected of out.portals()) portals.push(collected);
-    const op = waiting.state === 'done' ? 'b' : 'e';
-    return (
-      styles() +
-      `<template ${BOUNDARY_ATTRIBUTE}="${waiting.id}">${out.toString()}</template>` +
-      record(`["${op}","${waiting.id}"]`)
-    );
+    return replacement(waiting.id, out, waiting.state === 'done' ? 'b' : 'e');
   };
 
   /** The state that moved after the shell was written, and where portals went. */
@@ -557,6 +716,11 @@ export function renderToStream(
       };
 
       try {
+        // A region that fails once the shell is gone has one road left, and
+        // this is it: its fallback goes out as a chunk of its own, on the same
+        // controller and in the same shape as a boundary's answer.
+        collector.emit = (id, out, op) => send(replacement(id, out, op));
+
         runInRequest(scope, () => {
           requestState(COLLECTOR, () => collector);
           createRoot((disposeRoot) => {
@@ -581,6 +745,10 @@ export function renderToStream(
         for (const collected of writer.portals()) portals.push(collected);
         send(styles() + writer.toString() + stateScript(shellState, options));
         shellFlushed = true;
+        // Set with the send rather than before it: everything up to this line
+        // is still a region a boundary can rewrite in place, and the boundary
+        // reads this to decide which of its two answers exists.
+        collector.flushed = true;
       } catch (error) {
         // Nothing has been written, so the writer's bytes go with it and the
         // caller still has a status line to send.

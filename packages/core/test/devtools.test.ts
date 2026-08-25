@@ -63,6 +63,21 @@ class Counter {
   label = new Signal.State('hi');
 }
 
+@Component({
+  selector: 'v-list',
+  render: compileTemplate(`<ul><li :for="row in rows.get()" :key="row">{ row }</li></ul>`),
+})
+class List {
+  rows = new Signal.State(['a', 'b']);
+}
+
+// `data-tip` rather than `title`: an attribute with no IDL property behind it
+// is set through `setAttribute`, which is the binding shape this is about.
+@Component({ selector: 'v-tagged', render: compileTemplate(`<p :data-tip="tip.get()">t</p>`) })
+class Tagged {
+  tip = new Signal.State('first');
+}
+
 @Component({ selector: 'v-overlay', render: compileTemplate(`<i>overlay</i>`) })
 class Overlay {}
 
@@ -937,6 +952,197 @@ describe('performance', () => {
 });
 
 /**
+ * The DOM a binding wrote, which is what a panel highlights on hover.
+ *
+ * Every claim here is about attribution rather than about markup: the DOM
+ * these bindings write is already covered elsewhere, and what is new is which
+ * effect gets the credit for it. So each test writes through more than one
+ * binding, or writes outside every binding, and asserts on the split.
+ */
+describe('the DOM a binding wrote', () => {
+  /** The last update, which is the effect a targeted write woke. */
+  function lastEffect(): number {
+    return tools.updates().at(-1)!.effect;
+  }
+
+  it('names the text node the binding rewrote, by id or by node', () => {
+    mountCounter();
+    const span = host.querySelector('span')!;
+    const text = span.firstChild!;
+
+    tools.startRecording();
+    counter.count.set(3);
+    flushSync();
+    expect(span.textContent).toBe('6');
+
+    const id = lastEffect();
+    expect(tools.nodesWrittenBy(id)).toEqual([text]);
+    // The same answer for a panel holding the graph node rather than its id.
+    const node = tools.signalGraph().find((candidate) => candidate.id === id)!.node;
+    expect(tools.nodesWrittenBy(node)).toEqual([text]);
+  });
+
+  it('gives each binding in one flush the node it wrote, not the flush\'s nodes', () => {
+    mountCounter();
+    const span = host.querySelector('span')!;
+    const em = host.querySelector('em')!;
+
+    tools.startRecording();
+    counter.count.set(5);
+    counter.label.set('bye');
+    flushSync();
+    expect(span.textContent).toBe('10');
+    expect(em.textContent).toBe('bye');
+
+    const written = new Map(
+      tools.updates().map((update) => [update.effect, tools.nodesWrittenBy(update.effect)]),
+    );
+    const counted = [...written.values()].filter((nodes) => nodes.length > 0);
+    // Two bindings ran and each is credited with one node: the span's text and
+    // the badge's, never both under one effect.
+    expect(counted).toContainEqual([span.firstChild]);
+    expect(counted).toContainEqual([em.firstChild]);
+    expect(counted.every((nodes) => nodes.length === 1)).toBe(true);
+  });
+
+  it('names the element an attribute binding wrote', () => {
+    const handle = mount(Tagged, host);
+    unmount = handle.unmount;
+    const p = host.querySelector('p')!;
+
+    tools.startRecording();
+    (handle.instance as Tagged).tip.set('second');
+    flushSync();
+    expect(p.getAttribute('data-tip')).toBe('second');
+
+    expect(tools.nodesWrittenBy(lastEffect())).toEqual([p]);
+  });
+
+  it('does not blame a binding for DOM the page wrote outside every effect', () => {
+    mountCounter();
+    const span = host.querySelector('span')!;
+
+    tools.startRecording();
+    // A write no binding made: an event handler reaching for the DOM itself,
+    // or anything else on the page. It happens before the flush, so the first
+    // effect to run is the one that would wear it.
+    const stray = document.createElement('aside');
+    host.appendChild(stray);
+
+    counter.count.set(9);
+    flushSync();
+
+    expect(tools.nodesWrittenBy(lastEffect())).toEqual([span.firstChild]);
+  });
+
+  it('names the nodes a list binding inserted, and the parent it emptied', () => {
+    const handle = mount(List, host);
+    unmount = handle.unmount;
+    const rows = (handle.instance as List).rows;
+    const ul = host.querySelector('ul')!;
+
+    tools.startRecording();
+    rows.set(['a', 'b', 'c']);
+    flushSync();
+
+    const added = host.querySelectorAll('li')[2]!;
+    expect(added.textContent).toBe('c');
+
+    // One effect in that flush is credited with the new row, and it is the
+    // binding that put it in the list rather than the row itself: the row's
+    // own text binding ran for the first time, into DOM still detached, and
+    // an observer of the document cannot see a write like that at all.
+    const credited = tools
+      .updates()
+      .filter((update) => tools.nodesWrittenBy(update.effect).includes(added));
+    expect(credited.length).toBe(1);
+    const firstRuns = tools.updates().filter((update) => update.causes.length === 0);
+    expect(firstRuns.length).toBeGreaterThan(0);
+    expect(firstRuns.map((update) => tools.nodesWrittenBy(update.effect))).toEqual(
+      firstRuns.map(() => []),
+    );
+
+    rows.set(['a', 'b']);
+    flushSync();
+    expect(host.querySelectorAll('li').length).toBe(2);
+
+    const after = tools.nodesWrittenBy(credited[0]!.effect);
+    // The row is gone from the document, so there is nothing to draw a box
+    // around; what the binding emptied is still there and still its.
+    expect(after).not.toContain(added);
+    expect(after).toContain(ul);
+  });
+
+  it('keeps the nodes a binding wrote most recently rather than every node', () => {
+    const texts = Array.from({ length: 36 }, () => host.appendChild(document.createTextNode('')));
+    const tick = new Signal.State(0);
+
+    tools.startRecording();
+    effect(() => {
+      if (tick.get() === 0) {
+        // Filled to the cap exactly, so the next run is the one that evicts.
+        for (let i = 0; i < 32; i++) texts[i]!.data = 'a';
+        return;
+      }
+      // The oldest of those written again, then four it has never written.
+      // Four nodes have to go, and the one just rewritten is not among them.
+      texts[0]!.data = 'b';
+      for (let i = 32; i < 36; i++) texts[i]!.data = 'b';
+    });
+    flushSync();
+    tick.set(1);
+    flushSync();
+
+    const written = tools.nodesWrittenBy(lastEffect());
+    expect(written.length).toBe(32);
+    expect(written).toContain(texts[0]);
+    expect(written).toContain(texts[35]);
+    expect(written).not.toContain(texts[4]);
+  });
+
+  it('drops what it collected when the session is reset, and goes on collecting', () => {
+    mountCounter();
+    const span = host.querySelector('span')!;
+
+    tools.startRecording();
+    counter.count.set(21);
+    flushSync();
+    const id = lastEffect();
+    expect(tools.nodesWrittenBy(id)).toEqual([span.firstChild]);
+
+    tools.reset();
+    expect(tools.nodesWrittenBy(id)).toEqual([]);
+
+    // The session is still running, so the binding's next write is collected
+    // like the first: reset drops what was collected, not the collecting.
+    counter.count.set(22);
+    flushSync();
+    expect(span.textContent).toBe('44');
+    expect(tools.nodesWrittenBy(lastEffect())).toEqual([span.firstChild]);
+  });
+
+  it('collects nothing once the session is over', () => {
+    mountCounter();
+    const span = host.querySelector('span')!;
+
+    tools.startRecording();
+    counter.count.set(11);
+    flushSync();
+    const id = lastEffect();
+    expect(tools.nodesWrittenBy(id)).toEqual([span.firstChild]);
+
+    tools.stopRecording();
+    expect(tools.nodesWrittenBy(id)).toEqual([]);
+
+    // And the binding goes on writing that node without any of it being kept.
+    counter.count.set(12);
+    flushSync();
+    expect(span.textContent).toBe('24');
+    expect(tools.nodesWrittenBy(id)).toEqual([]);
+  });
+});
+
+/**
  * A server renders many pages in one process, and nothing disposes a request's
  * scopes: the request is dropped whole. Instrumentation kept in module scope
  * would therefore hand every request the last one's instances, props and
@@ -1058,6 +1264,13 @@ describe('production build', () => {
     expect(markers.filter((marker) => development.includes(marker))).toEqual(markers);
     expect(markers.filter((marker) => production.includes(marker))).toEqual([]);
     expect(production.length).toBeLessThan(development.length);
+
+    // Asserted here rather than added to the list above, which the test below
+    // also holds `dist` to: that bundle is built when the package is published
+    // and not when this file changes, so a marker added here would fail there
+    // until the next release rather than say anything about the strip.
+    expect(development).toContain('nodesWrittenBy');
+    expect(production).not.toContain('nodesWrittenBy');
   }, 30_000);
 
   /**

@@ -518,6 +518,230 @@ export function hydrate(host: Node, build: () => unknown): void {
 }
 
 // ---------------------------------------------------------------------------
+// Streamed chunks
+// ---------------------------------------------------------------------------
+
+/**
+ * The global a streaming render appends its records to; see `stream.ts`.
+ *
+ * `self` there and `globalThis` here are the same object in a page and in a
+ * worker, and the name is written out in both places rather than shared,
+ * because the two halves are compiled into different bundles and a server
+ * build's constant cannot reach a browser.
+ */
+const QUEUE = '__VOLT__';
+
+/** The attribute a late chunk's `<template>` carries its boundary id on. */
+const BOUNDARY_ATTRIBUTE = 'data-volt-b';
+
+/** The attribute a relocatable portal's `<template>` carries its target on. */
+const PORTAL_ATTRIBUTE = 'data-volt-portal';
+
+/**
+ * One instruction: `["b"|"e", id]`, `["p", selector]`, or `["s", state]`.
+ *
+ * Written by a server and read here, so it is only ever what the response
+ * happened to contain — which is why every field is narrowed rather than
+ * trusted, and why an op this build does not know is dropped instead of
+ * throwing. A record from a newer server must not take the page down.
+ */
+type StreamRecord = readonly unknown[];
+
+/** What the array is swapped for: a queue that applies rather than collects. */
+interface Sink {
+  push(...records: StreamRecord[]): void;
+}
+
+interface QueueHost {
+  [QUEUE]?: StreamRecord[] | Sink;
+}
+
+/**
+ * The sink this document installed, or null before anything has drained.
+ *
+ * Held only to answer "is the queue already live", which is what makes
+ * `drainStream` idempotent — the design's requirement, and a practical one:
+ * the call sits wherever a page boots, and a page can boot twice.
+ */
+let installed: Sink | null = null;
+
+/**
+ * Take over the record queue and apply everything in it.
+ *
+ * The array-then-swap of §3.5. A boundary can settle before any script has
+ * run, so the server writes `self.__VOLT__=self.__VOLT__||[]` ahead of its
+ * first record and pushes into whatever that found; this replaces the array
+ * with an object whose `push` applies immediately, having first applied
+ * whatever the array collected. Both orders therefore work, and the one that
+ * matters is the one an ordinary page has: records arriving for minutes after
+ * the runtime loaded.
+ *
+ * Idempotent, and safe to call before the first record exists — a page that
+ * boots early installs the sink and the server's own boot line, finding
+ * something already there, leaves it alone.
+ */
+export function drainStream(): void {
+  const host = globalThis as QueueHost;
+  const queued = host[QUEUE];
+  if (installed !== null && queued === installed) return;
+
+  // A fresh queue per install rather than one per module: what is parked
+  // below belongs to the document it was parked against, and a second
+  // document — a test, a page a router replaced wholesale — must not inherit
+  // instructions naming nodes that no longer exist.
+  const parked: StreamRecord[] = [];
+  const accept = (record: unknown): void => {
+    if (!Array.isArray(record)) return;
+    if (!apply(record as StreamRecord)) {
+      parked.push(record as StreamRecord);
+      return;
+    }
+    // Relocating one region can put another region's markers on the page, so
+    // anything that missed is offered the document again. Repeated until a
+    // pass changes nothing, because the nesting can be any depth.
+    for (let moved = true; moved && parked.length > 0; ) {
+      moved = false;
+      for (let i = parked.length - 1; i >= 0; i--) {
+        if (!apply(parked[i]!)) continue;
+        parked.splice(i, 1);
+        moved = true;
+      }
+    }
+  };
+
+  const sink: Sink = {
+    push: (...records: StreamRecord[]): void => {
+      for (const record of records) accept(record);
+    },
+  };
+  installed = sink;
+  host[QUEUE] = sink;
+  if (Array.isArray(queued)) for (const record of queued) accept(record);
+}
+
+/** False when the page does not hold what this record names — see `accept`. */
+function apply(record: StreamRecord): boolean {
+  const op = record[0];
+  if (op === 'b' || op === 'e') return relocateBoundary(String(record[1]), op === 'e');
+  if (op === 'p') return relocatePortal(String(record[1]));
+  // Everything else, `["s", state]` included. State that moved after the shell
+  // was written is not applied here and this is where that ends: the client
+  // half of `hydratable` reads the JSON payload once, at the moment a signal
+  // is created, and keeps no registry of live signals by key for a late value
+  // to be written into. Dropping the record is the honest answer until there
+  // is one — parking it would be a queue that grows and never drains.
+  return true;
+}
+
+/**
+ * Move a settled boundary's content into the placeholder the shell wrote.
+ *
+ * The shell has `<!--v3-->` fallback `<!--/v3-->` where the answer goes, and
+ * the chunk has `<template data-volt-b="3">` holding it. Both ends are found
+ * by that id rather than by position, because settle order is what decides
+ * where a chunk lands in the response and the id is the only thing tying the
+ * two halves of a boundary together once the two orders have come apart.
+ *
+ * Returning false parks the record: the markers are missing because they are
+ * inside a `<template>` that has not been relocated yet, which is what a
+ * boundary nested inside another boundary looks like from here.
+ */
+function relocateBoundary(id: string, failed: boolean): boolean {
+  const open = findComment(`v${id}`);
+  if (open === null) return false;
+  const template = findTemplate(BOUNDARY_ATTRIBUTE, id);
+  // Nothing to move. Either this record has already been applied — a stream
+  // read twice, a page booted twice — or the response was cut off between the
+  // record and the content it names. Both leave the fallback standing, and
+  // neither is worth parking a record forever over.
+  if (template === null) return true;
+
+  let close: Node | null = open.nextSibling;
+  while (close !== null && !isDelimiter(close, `/v${id}`)) close = close.nextSibling;
+  // Truncated mid-region: without the far end there is no telling how much of
+  // what follows was the fallback, and removing the rest of the parent is a
+  // worse answer than leaving the page as it arrived.
+  if (close === null) return true;
+
+  const content = template.content;
+  // A failure whose own `failed` writer wrote nothing — or threw — sends an
+  // empty template, and `stream.ts` says what that means: the boundary has
+  // nothing to show and the shell's fallback is what the reader is left with.
+  // A `done` boundary that resolved to nothing is a different thing, and does
+  // clear the fallback.
+  if (failed && content.firstChild === null) {
+    template.remove();
+    return true;
+  }
+
+  let node = open.nextSibling;
+  while (node !== null && node !== close) {
+    const next = node.nextSibling;
+    (node as ChildNode).remove();
+    node = next;
+  }
+  // The fragment empties itself into the page, so the whole chunk moves in one
+  // call and the nodes are the server's own rather than copies of them.
+  open.parentNode!.insertBefore(content, close);
+  template.remove();
+  return true;
+}
+
+/**
+ * Move portalled content into the element it named.
+ *
+ * Only a selector target is ever relocated; content portalled to the body was
+ * written at the end of the response, where appending it is what the client's
+ * own `portal` would have done anyway. Parked when the target is not on the
+ * page yet, since a portal's container can itself be inside a boundary that
+ * has not landed.
+ */
+function relocatePortal(selector: string): boolean {
+  const template = findTemplate(PORTAL_ATTRIBUTE, selector);
+  if (template === null) return true;
+  const target = document.querySelector(selector);
+  if (target === null) return false;
+  target.appendChild(template.content);
+  template.remove();
+  return true;
+}
+
+/**
+ * The `<template>` an attribute names, or null.
+ *
+ * `JSON.stringify` for the quoting: a selector target is author text and can
+ * hold a quote or a backslash, and both are escaped the same way in a CSS
+ * string as in a JSON one.
+ */
+function findTemplate(attribute: string, value: string): HTMLTemplateElement | null {
+  return document.querySelector(`template[${attribute}=${JSON.stringify(value)}]`);
+}
+
+/**
+ * The first comment in the document carrying exactly this text.
+ *
+ * A walk per record rather than an index, because the thing an index would
+ * have to be invalidated by is the relocation itself — every move can reveal
+ * markers that were inside a template a moment ago. Pages have a handful of
+ * boundaries and one walk each is cheaper than the bookkeeping, and this runs
+ * once per chunk rather than once per frame.
+ *
+ * A `<template>`'s content is not part of the document, which is exactly the
+ * property being relied on: a nested boundary's markers stay invisible here
+ * until the boundary around them has been moved into the page.
+ */
+function findComment(data: string): Comment | null {
+  // 128 is `NodeFilter.SHOW_COMMENT`, spelled as the number because reaching
+  // the constant would put the whole `NodeFilter` object in every bundle for
+  // one integer.
+  const walker = document.createTreeWalker(document, 128);
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    if ((node as Comment).data === data) return node as Comment;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Control flow
 // ---------------------------------------------------------------------------
 

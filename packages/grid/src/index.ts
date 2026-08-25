@@ -32,6 +32,34 @@ export {
 
 export type { GridSort, GridSortDirection } from './sort.js';
 
+/**
+ * Grouping and editing are layers over `createGrid` rather than parts of it.
+ * Grouping hands the grid a longer collection with the group headers in it;
+ * editing hands the caller a change and never writes a row. Both are documented
+ * where they are defined.
+ */
+export {
+  createGrouping,
+  GRID_GROUP_ATTRIBUTE,
+  type GridAggregateKind,
+  type GridAggregation,
+  type GridGroupNode,
+  type GridGroupSpec,
+  type GridGrouping,
+  type GridGroupingOptions,
+  type GridGroupedRow,
+} from './group.js';
+
+export {
+  createCellEditing,
+  GRID_EDITOR_ATTRIBUTE,
+  type GridCellEditing,
+  type GridCellEditingOptions,
+  type GridEditChange,
+  type GridEditSession,
+  type GridEditor,
+} from './edit.js';
+
 export type {
   GridFilter,
   GridNumberFilter,

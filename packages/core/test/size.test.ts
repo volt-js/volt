@@ -109,7 +109,16 @@ const BUDGETS: Record<string, number> = {
   // page that binds a text input no longer drags the checkbox, radio and
   // select paths in behind it, and a runtime switch no longer re-decides per
   // instantiation what the build settled.
-  'packages/core/dist/runtime.js': 900,
+  //
+  // Raised again from 900 by the drain — `drainStream` and the relocations
+  // behind it — which is 22 B measured by building the package with and
+  // without the block, 880 B to 902 B. It is the client half of streaming:
+  // without it a streamed page arrives in pieces and stays in pieces, since
+  // the `<template>`s a stream writes are inert and the records saying where
+  // they belong are pushed into an array nothing reads. A page that never
+  // boots a streamed response drops the name with the rest of the hydration
+  // entries, because nothing in a compiled template calls any of them.
+  'packages/core/dist/runtime.js': 925,
   // Raised from 400 when ids moved here from @voltdev/primitives, which is
   // where they have to be minted: an id is now a component's position in the
   // tree rather than a number from a counter, and only the component runtime
@@ -163,7 +172,11 @@ const BUDGETS: Record<string, number> = {
   // the state chunk are all unchanged by it, which is the point of the entry
   // being separate at all.
   'packages/core/dist/server.js': 400,
-  'packages/core/dist/server-*.js': 4_400,
+  // Raised from 4400 by making the streamed and buffered failure paths one
+  // mechanism rather than two: an error raised anywhere under a boundary now
+  // reaches the same fallback whether the headers have gone or not. Measured
+  // at 4588 B gzipped.
+  'packages/core/dist/server-*.js': 4_600,
   // The tools themselves. A production build drops the whole file — that is
   // asserted on bundled bytes in `devtools.test.ts` — so this is a ceiling on
   // what a development build carries, and it is here so that growing it is a
@@ -175,7 +188,12 @@ const BUDGETS: Record<string, number> = {
   // the value a signal held before is gone the moment it is overwritten.
   // Nothing is kept unless a session asks for it, so the cost to a
   // development build that never opens the panel is the code alone.
-  'packages/core/dist/devtools.js': 2_975,
+  // Raised from 2975 by `nodesWrittenBy`, which records the nodes an effect
+  // wrote so a panel can show the DOM a binding is responsible for. Measured
+  // at 3313 B gzipped. A production build drops this file whole, which
+  // `devtools.test.ts` asserts on bundled bytes, so this is a ceiling on what
+  // a development build carries.
+  'packages/core/dist/devtools.js': 3_350,
 };
 
 describe('bundle budgets', () => {
