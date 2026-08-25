@@ -687,6 +687,14 @@ export function renderToStream(
       });
       send(html);
       if (stopped) return;
+      // Writing a chunk can claim a boundary nested inside it, and a claim only
+      // registers the work — it does not start it. Starting it is a flush, and
+      // that has to happen before the emptiness test below: otherwise the inner
+      // boundary is registered, never run, and then waited on for ever, and the
+      // response never closes.
+      runInRequest(scope, flushSync);
+      for (const work of scope.pending) hold(work);
+      scope.pending = [];
       if (live.size === 0 && collector.outstanding === 0) break;
       // Nothing can settle between the check above and the wait below —
       // nothing else runs — so this cannot miss a wake it was told about.

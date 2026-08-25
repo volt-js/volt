@@ -514,6 +514,14 @@ function claimedRange(parent: Node, open: Node | null, close: Node | null): Node
  * that names it rather than a second implementation of it.
  */
 export function hydrate(host: Node, build: () => unknown): void {
+  // Before a single node is claimed, because a streamed response's late
+  // regions are still sitting in inert `<template>`s when the runtime loads,
+  // and their placeholders are still holding the fallback. Claiming first
+  // would bind this render to markup the drain is about to replace. Draining
+  // first also swaps the queue for a live sink, so the records that have not
+  // arrived yet apply as they land rather than piling up behind a page that
+  // has already booted.
+  drainStream();
   hInsert(host, null, null, build);
 }
 

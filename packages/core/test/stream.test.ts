@@ -572,3 +572,58 @@ describe('the parts a streamed page cannot put in a head it has already sent', (
     expect(rest.join('').split('data-volt="v-styled"')).toHaveLength(1);
   });
 });
+
+describe('a boundary inside a boundary', () => {
+  it('runs the inner work and closes the stream', async () => {
+    const outer = deferred<string>();
+    const inner = deferred<string>();
+
+    @Component({
+      selector: 'v-nest',
+      render: compileTemplate(`<main><h1>nest</h1>{ body }</main>`),
+    })
+    class Nest {
+      inner = boundary(() => inner.promise, {
+        fallback: (out: MarkupWriter) => out.raw('<p>inner pending</p>'),
+        content: (value: string, out: MarkupWriter) => out.raw(`<i>${value}</i>`),
+      });
+
+      body = boundary(() => outer.promise, {
+        fallback: (out: MarkupWriter) => out.raw('<p>outer pending</p>'),
+        // The inner boundary is only claimed once this runs, which is once the
+        // outer work has settled and its replacement is being written.
+        content: (value: string, out: MarkupWriter) => {
+          out.raw(`<o>${value}</o>`);
+          out.child(this.inner);
+        },
+      });
+    }
+
+    const stream = renderToStream(Nest);
+    // Both settle before anything reads, so a stream that never closes is the
+    // only way this can fail — which is exactly the shape of the defect.
+    outer.resolve('outer');
+    inner.resolve('inner');
+
+    const html = await Promise.race([
+      whole(stream),
+      new Promise<typeof HELD>((resolve) => setTimeout(() => resolve(HELD), 3000)),
+    ]);
+
+    expect(html, 'the stream never closed').not.toBe(HELD);
+    const text = html as string;
+    // The outer answer replaced its own placeholder, which is the single-level
+    // case and was already covered.
+    expect(text).toContain('<o>outer</o>');
+    // The claim under test. Writing the outer replacement is what claims the
+    // inner boundary, and a claim is only a registration: the response can
+    // close with the inner fallback still standing in for work that was
+    // registered and never started, and every assertion above would still
+    // pass. This one is what notices.
+    expect(text).toContain('<i>inner</i>');
+    // Its fallback went out with the shell, so the replacement is the only
+    // evidence — asserting the fallback is absent would be asserting the
+    // opposite of how the protocol works.
+    expect(text).toContain('inner pending');
+  });
+});

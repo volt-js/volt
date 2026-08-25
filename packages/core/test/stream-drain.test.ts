@@ -25,7 +25,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { compileTemplate } from '@voltdev/core/jit';
 import { Component } from '@voltdev/core';
 import { MarkupWriter, boundary, renderToStream } from '@voltdev/core/server';
-import { drainStream } from '@voltdev/core/runtime';
+import { drainStream, hydrate } from '@voltdev/core/runtime';
 
 function serverBuild(on: boolean): void {
   (globalThis as { __VOLT_SERVER__?: boolean }).__VOLT_SERVER__ = on;
@@ -309,5 +309,37 @@ describe('a record whose placeholder has not arrived', () => {
     push(['b', '0']);
 
     expect(document.querySelector('main')!.innerHTML).toBe(RELOCATED);
+  });
+});
+
+describe('the wiring', () => {
+  it('drains as part of hydrating, with nothing else asked to', async () => {
+    const one = deferred<string>();
+    const two = deferred<string>();
+    const stream = renderToStream(twoBoundaries(one.promise, two.promise));
+    one.resolve('WIRED-ONE');
+    two.resolve('WIRED-TWO');
+    for (const chunk of await chunks(stream)) receive(chunk);
+
+    const main = document.querySelector('main')!;
+    // The records are on the page and unread: this is exactly the state a real
+    // page is in at the moment its runtime script finishes evaluating.
+    expect(main.innerHTML).toContain('waiting-one');
+    expect(Array.isArray((globalThis as QueueHost).__VOLT__)).toBe(true);
+
+    // A host of its own, so what is asserted below is the drain and not
+    // whatever hydrating the streamed region would itself have done to it.
+    const app = document.createElement('div');
+    app.append(document.createComment('h'));
+    document.body.append(app);
+
+    // The only call. No `drainStream` here — if the entry does not make it,
+    // the page below is still showing both fallbacks.
+    hydrate(app, () => undefined);
+
+    expect(main.innerHTML).toContain('WIRED-ONE');
+    expect(main.innerHTML).toContain('WIRED-TWO');
+    expect(main.innerHTML).not.toContain('waiting-one');
+    expect(main.innerHTML).not.toContain('waiting-two');
   });
 });
