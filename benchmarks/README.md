@@ -34,6 +34,35 @@ Where Volt's own work does dominate, the numbers are meaningful:
 The page for real numbers, with buttons for each operation and coarse
 timings. Use DevTools' Performance panel for a breakdown.
 
+## `node benchmarks/browser/run.mjs` — one question, answered twice
+
+The page above is for a person looking at numbers. This is for settling a
+question between two builds, and it exists because the roadmap has one:
+`groupRowBindings` emits one effect per row instead of one per binding, which
+should help `create` and hurt `select row`, and no amount of argument decides
+which wins.
+
+It builds the same page twice — the flag off, then on — serves each, and drives
+one headless Chrome through both. Doing it in one process under one browser is
+the point: machine load, browser version and GC state are held still, so the
+ratio it prints is about the codegen and not about the afternoon.
+
+```bash
+node benchmarks/browser/run.mjs --iterations 15 --rows 10000
+```
+
+No dependency is added for it. Chrome is driven over the DevTools protocol
+through Node's own `WebSocket`, and the built pages are served by a static
+handler in the file.
+
+Two things to know before trusting a run. `performance.now` is coarsened to
+100µs in Chrome, and a select over a thousand rows lands within a few ticks of
+that — which is why means are printed beside medians, and why a difference
+visible only in the median at that size is not a difference. And the numbers
+move a long way under load: a run taken while anything else is busy can report
+a mean at 1.7x its own median, which is the machine talking. Run it on a quiet
+one.
+
 For official comparisons, run Volt through the real
 [js-framework-benchmark](https://github.com/krausest/js-framework-benchmark)
 harness, which drives Chrome via WebDriver and controls for GC, warmup, and

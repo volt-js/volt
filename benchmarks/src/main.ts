@@ -28,10 +28,15 @@ export class Harness {
   private readonly timings: Timing[] = [];
 
   /** Time an operation including the DOM work its signal writes trigger. */
-  private measure(name: string, operation: () => void): void {
+  private measure(name: string, operation: () => void): number {
     const started = performance.now();
     operation();
     flushSync();
+    // The layout the writes above made necessary, forced here so it is inside
+    // the measurement rather than after it. Without this the number is the
+    // cost of scheduling the work, and a change that moved work into layout
+    // would read as an improvement.
+    void document.body.offsetHeight;
     const ms = performance.now() - started;
 
     this.timings.unshift({ name, ms });
@@ -39,10 +44,26 @@ export class Harness {
     this.report.set(
       this.timings.map((t) => `${t.name.padEnd(20)}${t.ms.toFixed(2).padStart(9)} ms`).join('\n'),
     );
+    return ms;
   }
 
-  run(count: number): void {
-    this.measure(`create ${count}`, () => this.bench?.run(count));
+  run(count: number): number {
+    return this.measure(`create ${count}`, () => this.bench?.run(count));
+  }
+
+  /**
+   * Click a row's label, which is what `select row` is.
+   *
+   * Driven through a real click rather than by calling `select` directly, so
+   * the delegated listener and the handler lookup are inside the number. That
+   * is the operation js-framework-benchmark times, and calling the method
+   * would measure a different, smaller thing.
+   */
+  selectRow(index: number): number {
+    const links = document.querySelectorAll<HTMLElement>('.col-label a');
+    const link = links[index];
+    if (!link) return Number.NaN;
+    return this.measure('select row', () => link.click());
   }
 
   append(): void {
@@ -62,4 +83,20 @@ export class Harness {
   }
 }
 
-mount(Harness, '#app');
+const harness = mount(Harness, '#app').instance as Harness;
+
+/**
+ * The same operations, reachable from outside the page.
+ *
+ * `browser/run.mjs` drives these over the DevTools protocol so the comparison
+ * between two builds is taken by one script under one browser, rather than by
+ * a person clicking twice and reading two screens.
+ */
+(globalThis as Record<string, unknown>)['__bench'] = {
+  create: (count: number) => harness.run(count),
+  select: (index: number) => harness.selectRow(index),
+  update: () => harness.update(),
+  swap: () => harness.swap(),
+  clear: () => harness.clear(),
+  rows: () => document.querySelectorAll('.col-label').length,
+};

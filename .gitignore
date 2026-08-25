@@ -48,3 +48,8 @@ pnpm-debug.log*
 
 # Ignore vscode AI rules
 .github/instructions/codacy.instructions.md
+
+# Built twice by benchmarks/browser/run.mjs, one build per codegen setting.
+benchmarks/dist-plain/
+benchmarks/dist-grouped/
+benchmarks/browser/.chrome-*/
