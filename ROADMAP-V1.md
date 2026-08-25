@@ -1347,6 +1347,11 @@ need one.
       above, not this one.
 - [x] **Performance** — effect run counts and durations, flush timings, and
       which bindings are re-running most
+- [ ] Session replay — recording state changes, events, navigation and network
+      together, and replaying them to reach a UI state again. Time travel below
+      covers signal history alone; a defect a user hit needs the events that
+      caused it too, and a production build carries no attribution at all until
+      the diagnostics item above is answered.
 - [x] **Time travel** — signal history, step back and forth. Off even inside a
       session and asked for by depth, because keeping `previous` keeps the past
       reachable. It restores state rather than the page: effects re-run, so a

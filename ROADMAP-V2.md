@@ -47,3 +47,43 @@ before a step is applied, and an IME composition is one atomic change.
 Because of that, collaboration here is adding a rebase function rather than
 rewriting the model. Deferring it is safe; deferring the model's shape would
 not have been.
+
+## Reviewed against an outside proposal, and what it found
+
+Three rounds of an external design review were checked against this codebase
+rather than filed. Most of what they named is built, and several items they
+proposed are things this project rejected on purpose and wrote down: no hidden
+reactivity inferred by a compiler, no resumability, no proxies, no second
+template syntax, no styling language. `docs/guide/design-decisions.md` is the
+record, and the review's closing advice — write the constitution before the
+hundredth feature — is what that file already is.
+
+What survived the check, with nothing in the codebase behind it:
+
+| gap | why it is worth something |
+| --- | --- |
+| **URL as reactive state** | Zero occurrences. The router has typed params; nothing makes `page` a signal whose write rewrites the query string and whose Back button reads back. The largest of these and the one that fits the existing shape best. |
+| **Whole-form validation** | `createFormField` covers a field — validation, dirty, touched, errors. Nothing covers a form: a schema across fields, field arrays, nested objects, server errors mapped back onto fields. |
+| **Observability** | `onRender`/`onError`/`onNavigation` hooks and an OpenTelemetry span per render, navigation and resource. Zero occurrences. Distinct from the devtools, which are a development build only. |
+| **State machines** | Nothing. The seven matches are the editor's content-model matcher. |
+| **Workers and WebAssembly** | Nothing. A `worker(fn)` that serializes, transfers, cancels and disposes with the scope is the shape; document-heavy applications are where it pays. |
+| **Binary and streams** | `ReadableStream`, `Blob`, `File` and `ArrayBuffer` are not first-class anywhere, and chunked resumable upload with backpressure is a real gap for the applications this is aimed at. |
+| **Offline and conflict resolution** | Nothing. Architecting for it — a mutation queue and a merge policy — is cheaper than retrofitting, and the change layer in `@voltdev/editor` already has the rebase machinery for the document case. |
+| **Environment discipline** | No `PUBLIC_`/`SECRET_` split enforced at compile time. A secret reaching a browser bundle is a class of mistake a compiler can refuse. |
+| **Trusted and untrusted HTML** | Escaping is right where it exists — the state payload, attributes, text — but there is no visibly dangerous name for the unsafe path, and no Trusted Types integration. |
+| **Migration tooling** | `volt migrate` does not exist. A framework with a compiler can rewrite call sites mechanically, and promising that early is what makes a version bump something other than a rewrite. |
+| **Retention under long sessions** | The graph's memory behaviour is measured for lists and effects but not for a session that runs for hours. Weak references, cached computeds and resource caches are where a long-lived application leaks. |
+| **A CLI that answers questions** | Bundle attribution exists as a test (`core/test/bundle-composition.test.ts`) and the accessibility rules exist in the compiler; neither is reachable as `volt analyze` or `volt a11y`. Built and unreachable is this repository's recurring failure, and here it is twice. |
+
+Machine-readable component metadata — props, events, slots and template
+dependencies emitted as a manifest — is the one proposal with no equivalent
+anywhere and no obvious objection. The compiler already extracts all of it for
+`volt check` and the Volar plugin, so it is plumbing over an analysis that
+exists rather than a new analysis.
+
+Not taken, and why: a `<DataTable>` with fifteen boolean props is the prop-soup
+the same review warns against elsewhere, and the headless-primitive plus
+styled-layer split answers it better; a second JSX syntax doubles the compiler's
+surface for ecosystem optics; and compiler-inferred reactivity would trade a
+stated guarantee — an expression means the same thing in a template as in a
+method — for a little less typing.
