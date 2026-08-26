@@ -600,7 +600,14 @@ Not yet, and the reason:
       Each portal keeps an anchor of its own behind its content, so several
       into one container hold their order and each removes only what it put
       there.
-- [ ] Event delegation attaches once on hydration rather than per element
+- [x] Event delegation attaches once on hydration rather than per element.
+      It always did — `delegate` stashes the handler as a property of the node
+      and registers one listener at the document the first time it sees a type,
+      and the hydrate emit calls it exactly as the client emit does. What was
+      missing was a test that could tell the two apart, since a page that
+      attached a listener to every button works perfectly and moves no counter
+      at the document. The count is taken on `Element.prototype` instead, over
+      a hundred rows, and it is zero.
 - [x] Async boundaries, so streaming can flush a shell before data arrives.
       `renderToStream` builds the shell inside one request scope and enqueues
       it before anything is awaited, so it goes out ahead of the query it is

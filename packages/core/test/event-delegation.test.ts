@@ -15,6 +15,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { compileTemplate } from '@voltdev/core/jit';
 import { Component, mount } from '@voltdev/core';
+import { compile } from '@voltdev/compiler';
+import { createRoot } from '@voltdev/reactivity';
+import * as runtime from '@voltdev/core/runtime';
 
 /** The types a browser forces passive when the listener sits at the root. */
 const FORCED_PASSIVE = new Set(['wheel', 'touchstart', 'touchmove']);
@@ -130,5 +133,65 @@ describe('events that must not be delegated', () => {
 
     mount(Delegated, host);
     expect(documentTypes).toContain('click');
+  });
+});
+
+describe('a page the server rendered', () => {
+  it('attaches once for the type, not once per element it hydrates', () => {
+    // The claim is about a page with many handlers, so the fixture has many:
+    // a hundred rows, each with its own click. A hydration that attached per
+    // element would install a hundred listeners and the page would still
+    // work, which is why the count is what is asserted and not the clicking.
+    const { body } = compile(
+      `<ul><li :for="row in rows" :key="row"><button :click="pick(row)">{ row }</button></li></ul>`,
+      { runtime: '_rt', target: 'hydrate' },
+    );
+
+    // Asserted on the emit as well as on the count: a build that stopped
+    // emitting the handler at all would also attach nothing.
+    expect(body).toContain('_rt.delegate(');
+    expect(body).not.toContain('addEventListener');
+
+    const picked: string[] = [];
+    const rows = Array.from({ length: 100 }, (_, i) => `r${i}`);
+    host.innerHTML = `<ul>${rows.map((r) => `<li><button>${r}</button></li>`).join('')}</ul>`;
+
+    const before = documentTypes.filter((type) => type === 'click').length;
+
+    // Counted on the prototype, because counting at the document cannot tell
+    // "delegated once" from "attached to each button": neither moves the
+    // document's tally, and both leave the page working. This is the number
+    // that separates them.
+    const elementListeners: string[] = [];
+    const real = Element.prototype.addEventListener;
+    Element.prototype.addEventListener = function (
+      this: Element,
+      type: string,
+      ...rest: unknown[]
+    ) {
+      if (this !== (document as unknown as Element)) elementListeners.push(type);
+      return (real as (...args: unknown[]) => void).call(this, type, ...rest);
+    } as typeof Element.prototype.addEventListener;
+
+    const render = (new Function('_rt', body) as (rt: unknown) => (ctx: object) => unknown)(runtime);
+    try {
+      createRoot(() => {
+        runtime.hydrate(host, () => render({ rows, pick: (row: string) => picked.push(row) }));
+      });
+    } finally {
+      Element.prototype.addEventListener = real;
+    }
+    const after = documentTypes.filter((type) => type === 'click').length;
+
+    // Not one per button, and not one per button's ancestor either.
+    expect(elementListeners).toEqual([]);
+    // Zero or one at the document: zero when an earlier test in this file
+    // already registered `click` there, which is the whole point of
+    // registering it there. Never a hundred.
+    expect(after - before).toBeLessThanOrEqual(1);
+
+    // And the handlers work, so the count above is a count of something real.
+    host.querySelectorAll('button')[42]!.click();
+    expect(picked).toEqual(['r42']);
   });
 });
