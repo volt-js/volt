@@ -589,7 +589,17 @@ Not yet, and the reason:
       after the data lane. What is left is saying so at the point of use: an
       `effect` that a server silently skips is a component that behaves
       differently on the two sides with nothing to read that says why.
-- [ ] Portals — render inline on the server, relocate on hydration
+- [x] Portals — render inline on the server, relocate on hydration. The drain
+      moves the server's portalled markup into its target and the client's own
+      `portal` adopts those nodes rather than building a second copy on top of
+      them, which is the duplication this used to have. Which half arrives
+      first is the network's decision, not the framework's, so both orders are
+      handled: a record already in the boot array is relocated and then
+      claimed, and a record landing on a page that has long since hydrated
+      finds the content already built and drops its `<template>` unopened.
+      Each portal keeps an anchor of its own behind its content, so several
+      into one container hold their order and each removes only what it put
+      there.
 - [ ] Event delegation attaches once on hydration rather than per element
 - [x] Async boundaries, so streaming can flush a shell before data arrives.
       `renderToStream` builds the shell inside one request scope and enqueues

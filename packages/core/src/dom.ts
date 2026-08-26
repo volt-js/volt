@@ -704,15 +704,69 @@ function relocateBoundary(id: string, failed: boolean): boolean {
  * own `portal` would have done anyway. Parked when the target is not on the
  * page yet, since a portal's container can itself be inside a boundary that
  * has not landed.
+ *
+ * Both halves of a server-rendered portal end up here, and which one arrives
+ * first is decided by the network: the record can be in the boot array before
+ * the runtime loads, or it can land minutes later on a page that has long
+ * since hydrated. Either way exactly one copy of the content is on the page —
+ * the nodes are left for the client's `portal` to adopt, or the client has
+ * already built them and the server's `<template>` is dropped unopened.
  */
 function relocatePortal(selector: string): boolean {
   const template = findTemplate(PORTAL_ATTRIBUTE, selector);
   if (template === null) return true;
   const target = document.querySelector(selector);
   if (target === null) return false;
-  target.appendChild(template.content);
+
+  const handoff = portalHandoff(target);
+  if (handoff.owed > 0) {
+    // The client's own portal ran before this record arrived and built the
+    // content itself. Appending the server's copy behind it is the
+    // duplication this exists to prevent.
+    handoff.owed--;
+  } else {
+    // The fragment empties itself into the target, so what lands there are the
+    // server's own nodes; they are remembered so the `portal` call that is
+    // about to build the same content takes them over rather than adding a
+    // second copy of it.
+    const moved = childNodes(template.content);
+    target.appendChild(template.content);
+    if (moved.length > 0) handoff.ranges.push(moved);
+  }
+
   template.remove();
   return true;
+}
+
+/**
+ * What the two halves of a server-rendered portal leave each other, per
+ * container.
+ *
+ * A count in one direction and a queue in the other, because a container can
+ * hold several portals and both sides declare them in the same order: the
+ * server records its segments as they are opened, and a page hydrates in the
+ * order it was written.
+ */
+interface PortalHandoff {
+  /** Relocated ranges no client portal has taken over yet, in order. */
+  ranges: Node[][];
+  /**
+   * Client portals that were built before their server nodes arrived.
+   *
+   * A count rather than a queue, and it does not need to be more than that: a
+   * record only ever names a portal the server rendered, and the page that
+   * hydrates builds those same portals before anything a reader does can add
+   * one of its own.
+   */
+  owed: number;
+}
+
+const portalHandoffs = new WeakMap<Element, PortalHandoff>();
+
+function portalHandoff(container: Element): PortalHandoff {
+  let entry = portalHandoffs.get(container);
+  if (entry === undefined) portalHandoffs.set(container, (entry = { ranges: [], owed: 0 }));
+  return entry;
 }
 
 /**
@@ -1438,31 +1492,77 @@ function setAttribute(el: Element, name: string, value: unknown): void {
  * `target` may be an element, a selector string, or null for `document.body`.
  * It is read once: re-homing live content is not something an overlay needs,
  * and supporting it would cost every portal a move path it never uses.
+ *
+ * On a page a server rendered, the content is already in the container: the
+ * drain moved it there out of the `<template>` the response carried it in. So
+ * this claims those nodes the way `hInsert` claims a hole's — the block builds
+ * against them and `current` is seeded with them — and what used to be a
+ * second copy appended on top of the server's is one tree that both sides
+ * wrote. A page with nothing waiting takes neither branch and appends, which
+ * is every client-rendered portal there has ever been.
  */
 export function portal(target: unknown, build: () => unknown): void {
   const container = resolvePortalTarget(target);
+  // Only a page that booted a server response has anything to adopt, and
+  // `installed` is what says so — the drain is the only thing that relocates a
+  // portal, and it is the first thing `hydrate` does.
+  const adopted = installed === null ? null : adoptPortal(container);
 
   // Anchoring to a marker rather than appending means several portals into the
   // same container keep a stable order, and each removes only its own nodes.
+  // Behind the adopted range, because that is the same invariant seen from the
+  // other side: this portal's content sits immediately before its marker.
   const marker = document.createComment('');
-  container.appendChild(marker);
+  if (adopted === null) container.appendChild(marker);
+  else container.insertBefore(marker, adopted[adopted.length - 1]!.nextSibling);
+
+  // A single node is seeded as itself rather than as a list of one, so that a
+  // block returning exactly the node it claimed short-circuits on identity —
+  // the reason `hInsert` seeds the same way.
+  let current: Current =
+    adopted === null ? null : adopted.length === 1 ? adopted[0]! : adopted;
 
   // Portalled content is built here rather than inside an effect, so it would
   // otherwise land in an enclosing `group` — it belongs to itself.
   const previous = collecting;
+  const enclosing = claiming;
   collecting = null;
+  // The claim is replaced rather than left standing. The enclosing hole's
+  // range does not contain this content — the server wrote it into a segment
+  // of its own — so a block claiming from it would take a node belonging to
+  // something else and stall the whole range reporting it.
+  claiming =
+    adopted === null ? null : { parent: container, nodes: adopted, index: 0, stalled: false };
   let built: unknown;
   try {
     built = build();
   } finally {
     collecting = previous;
+    claiming = enclosing;
   }
-  const current = insertExpression(container, built, marker, null);
+  current = insertExpression(container, built, marker, current);
 
   onCleanup(() => {
     removeNodes(current);
     marker.remove();
   });
+}
+
+/**
+ * The server's nodes for the next portal into this container, or null.
+ *
+ * Null is also what a container that has not been portalled into by a server
+ * answers, and the call records that this portal built its own content — so a
+ * record arriving after the page has hydrated knows it has nothing to add.
+ */
+function adoptPortal(container: Element): Node[] | null {
+  const handoff = portalHandoff(container);
+  const range = handoff.ranges.shift();
+  if (range === undefined) {
+    handoff.owed++;
+    return null;
+  }
+  return range;
 }
 
 function resolvePortalTarget(target: unknown): Element {
