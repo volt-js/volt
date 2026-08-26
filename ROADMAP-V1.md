@@ -1285,15 +1285,24 @@ Not yet, and the reason:
       since a JIT compile has no bundler to resolve a part id through. Proved
       by real builds — two routes, and an assertion that neither carries the
       other's message.
-- [ ] A key must be a plain identifier. Nested and dotted catalogues are
+- [x] A key must be a plain identifier. Nested and dotted catalogues are
       refused with a suggestion rather than silently renamed, because an
       export is a function name and there is no second way to spell one.
-- [ ] **`t` is a reserved name once a catalogue is configured.** Every `t(...)`
+      `checkCatalog` refuses both, and refuses them at the read rather than at
+      the call sites: `user.name` is turned back with `userName`, a group is
+      turned back with the flattened name its first member would have, and a
+      key the generated module already binds — `locale`, `t` — is turned back
+      with one it does not. A rename that happened silently would be a
+      catalogue whose keys and whose exports were two different vocabularies.
+- [x] **`t` is a reserved name once a catalogue is configured.** Every `t(...)`
       and every `<anything>.t(...)` in a template with a literal first argument
       is a call site, so a component method of that name turns its argument
       into a message key and a missing one into a build error. The compiler has
       no way to tell the locale's `t` from anyone else's, and guessing would
-      cost the check its certainty.
+      cost the check its certainty — so it does not guess, it asks. `translate`
+      names which spellings are the locale's, the rest are read as the ordinary
+      calls they are, and the error a stray `t` produces says so in the one
+      place a reader will be looking when they need to know.
 - [x] **The unused report is per build.** It was per environment: `used` is
       shared across them already, and the only thing making the report narrower
       was clearing it at every `buildStart`, so the second environment wiped
