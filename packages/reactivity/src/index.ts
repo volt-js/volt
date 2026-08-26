@@ -36,6 +36,7 @@ export {
   flushSync,
   tick,
   getFlushMetrics,
+  serverSkippedEffects,
   resetFlushMetrics,
   createRoot,
   onCleanup,
@@ -49,7 +50,15 @@ export {
   provideContext,
 } from './effect.js';
 
-export type { Scope, Context, Dispose, CleanupFn, EffectFn, FlushMetrics } from './effect.js';
+export type {
+  Scope,
+  Context,
+  Dispose,
+  CleanupFn,
+  EffectFn,
+  FlushMetrics,
+  SkippedEffect,
+} from './effect.js';
 
 // --- Where a thrown error goes ---------------------------------------------
 

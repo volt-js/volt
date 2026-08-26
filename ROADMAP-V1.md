@@ -584,11 +584,22 @@ Not yet, and the reason:
       what the request settled on rather than the loading state a field
       initializer saw; `wasHydrated` is what a fetch gates on, so a page that
       arrived with its data does not immediately ask for it again.
-- [ ] **Effects a browser is the point of must not run on the server** —
+- [x] **Effects a browser is the point of must not run on the server** —
       measure and user work, which today is enforced by the flush stopping
-      after the data lane. What is left is saying so at the point of use: an
+      after the data lane. What was left is saying so at the point of use: an
       `effect` that a server silently skips is a component that behaves
       differently on the two sides with nothing to read that says why.
+      `serverSkippedEffects()` is the something to read — the lane, the frame
+      that registered it, and how many came from there, per request.
+      Deliberately a record and not a warning: every `effect` in every
+      component would trip a warning on every server render, including all the
+      ones whose authors know that browser work waits for a browser, and a
+      diagnostic that fires that often on correct code is one a project filters
+      rather than reads. `onMount` remains the way to say "browser only" out
+      loud. Development only, and asserted on bundled bytes — a production
+      build carries neither the record nor the symbol keying it, which took
+      folding the flag through the initialiser, since a bare `Symbol()` at
+      module scope survives every reader of it being folded away.
 - [x] Portals — render inline on the server, relocate on hydration. The drain
       moves the server's portalled markup into its target and the client's own
       `portal` adopts those nodes rather than building a second copy on top of

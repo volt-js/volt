@@ -72,7 +72,16 @@ const BUDGETS: Record<string, number> = {
   // was a single `console.error`, and the difference it buys is between a
   // message nobody reads in production and a report naming the component that
   // failed.
-  'packages/reactivity/dist/index.js': 3_750,
+  //
+  // Raised again from 3750 by the record of what a server render does not run:
+  // 205 B, measured by building the package with and without it, 3717 B to
+  // 3922 B. It is a development-only record — the request slot, the call-site
+  // capture and the map — and this budget measures the *published* bundle,
+  // which carries both branches because the flag is folded by the application
+  // that consumes it rather than here. What an application's production build
+  // takes is nothing, and `reactivity/test/skipped.test.ts` asserts that on
+  // bundled bytes rather than promising it.
+  'packages/reactivity/dist/index.js': 3_950,
   // The rest of that seam: `wake` and `write` are called from the propagation
   // code, which ships as its own chunk. 60 B of this is the seam, by the same
   // measurement, and the chunk is budgeted at all because bytes moved out of

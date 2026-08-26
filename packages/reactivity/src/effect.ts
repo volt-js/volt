@@ -31,6 +31,7 @@
 
 import { devListener, type EffectPhase } from './dev.js';
 import { declareBoundary, raiseError, type ErrorHandler } from './errors.js';
+import { requestState } from './request.js';
 import {
   ComputedSignal,
   WatcherNode,
@@ -890,6 +891,81 @@ function createEffect(fn: EffectFn, watcher: WatcherNode, immediate: boolean): D
   return dispose;
 }
 
+// ---------------------------------------------------------------------------
+// What a server does not run
+// ---------------------------------------------------------------------------
+
+/** One place that registered work a server render will not drain. */
+export interface SkippedEffect {
+  readonly lane: 'user' | 'measure';
+  /** The frame that called `effect` or `measureEffect`. */
+  readonly site: string;
+  /** How many were registered from there — a list registers one per row. */
+  readonly count: number;
+}
+
+/**
+ * The request slot the record lives in, behind the flag that folds.
+ *
+ * Written as a conditional on `__VOLT_DEV__` rather than as a plain `Symbol()`
+ * because a bundler must assume a call does something: a module-level
+ * `Symbol('volt.skipped')` survives into a production bundle after every
+ * reader of it has been folded away, and takes its description with it.
+ * Neither a `@__PURE__` annotation nor minting it lazily inside a function
+ * persuades esbuild to drop that. Folding the constant does — the whole
+ * initialiser becomes `void 0` and the string is not in the build.
+ */
+const SKIPPED: symbol = __VOLT_DEV__
+  ? Symbol('volt.skipped')
+  : (undefined as unknown as symbol);
+
+/**
+ * Work this request registered that a server render will not run.
+ *
+ * A server flushes render and data and stops, so a user or measure effect is
+ * declared and never runs — which is correct, and is also the one way a
+ * component behaves differently on the two sides with nothing to read that
+ * says so. This is the something to read.
+ *
+ * It is a record rather than a warning on purpose. Every `effect` in every
+ * component would trip a warning on every server render, including all the
+ * ones whose authors know perfectly well that browser work waits for a
+ * browser; a diagnostic that fires on correct code that often is one a project
+ * learns to filter rather than read. `onMount` is the lifecycle hook that says
+ * "browser only" out loud, and the way to say it.
+ *
+ * Per request, because a server has one process and many of them, and
+ * development only — a production build registers nothing here and gets an
+ * empty list.
+ */
+export function serverSkippedEffects(): SkippedEffect[] {
+  // Guarded at the write and not here. Reading is rare and cheap; writing
+  // captures a stack, and a second guard on the read would let a client build
+  // go on paying that per effect while this still answered with an empty list
+  // — the cost hidden behind the right answer.
+  if (!__VOLT_DEV__) return [];
+  const sites = requestState<Map<string, SkippedEffect>>(SKIPPED, () => new Map());
+  return [...sites.values()];
+}
+
+/** Note that this lane was asked for somewhere a server will not drain it. */
+function notedAsSkipped(lane: 'user' | 'measure'): void {
+  const sites = requestState<Map<string, SkippedEffect>>(SKIPPED, () => new Map());
+  const site = callerFrame();
+  const key = `${lane} ${site}`;
+  const seen = sites.get(key);
+  sites.set(key, { lane, site, count: (seen?.count ?? 0) + 1 });
+}
+
+/** The first frame outside this module, which is where the call was written. */
+function callerFrame(): string {
+  const lines = new Error().stack?.split('\n') ?? [];
+  for (const line of lines.slice(1)) {
+    if (!line.includes('effect.ts') && !/\bat Error\b/.test(line)) return line.trim();
+  }
+  return '(unknown)';
+}
+
 /**
  * A user effect.
  *
@@ -898,6 +974,7 @@ function createEffect(fn: EffectFn, watcher: WatcherNode, immediate: boolean): D
  * assigned to the instance after construction.
  */
 export function effect(fn: EffectFn): Dispose {
+  if (__VOLT_DEV__ && __VOLT_SERVER__) notedAsSkipped('user');
   return createEffect(fn, lanes.user, false);
 }
 
@@ -944,5 +1021,6 @@ export function renderEffect(fn: EffectFn): Dispose {
  * development the drain reports it.
  */
 export function measureEffect(fn: EffectFn): Dispose {
+  if (__VOLT_DEV__ && __VOLT_SERVER__) notedAsSkipped('measure');
   return createEffect(fn, lanes.measure, false);
 }
