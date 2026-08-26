@@ -615,10 +615,27 @@ Not yet, and the reason:
       the regression test hangs to its own timeout without it.
 - [x] `renderToStaticMarkup` for output with no hydration at all — an email, an
       RSS page, a PDF source
-- [ ] SSG: enumerate routes, prerender, write files; revalidation as a cache
-      policy over the same renderer
-- [ ] A build check that nothing on the render path imports a `node:` builtin,
-      since an edge deployment fails only where the tests never ran
+- [x] SSG: enumerate routes, prerender, write files; revalidation as a cache
+      policy over the same renderer. `@voltdev/vite-plugin/ssg` —
+      `enumerateRoutes` walks the router's own table rather than re-reading the
+      filesystem, `prerender` renders each URL and writes the files, and
+      `createRenderCache` is the revalidation: a map, a clock and a staleness
+      policy in front of the renderer that already exists. There is deliberately
+      no second renderer — `render` is handed in, so a prerendered page and a
+      per-request page differ in when they were produced and in nothing else,
+      which is what makes hydration identical for both. A route whose params
+      cannot be enumerated is reported as skipped rather than guessed at.
+- [x] A build check that nothing on the render path imports a `node:` builtin,
+      since an edge deployment fails only where the tests never ran. `renderPath`
+      is that check, and the judgement it makes is where the work is: a
+      `@Server()` body is allowed its builtins because it never reaches the
+      client, and everything else is not. It follows the graph, so the import
+      three modules below the entry — which is where these actually are — is
+      found, and reports every offender with the chain that reached it rather
+      than the first one. Both spellings count: `fs` resolves to the same module
+      as `node:fs` and fails the same deploy, while `fs-extra` is a package and
+      is left alone. Ordered `pre`, because the pass it reads the boundary from
+      is the pass that erases it.
 - [ ] Per-route rendering mode, and partial hydration driven by the compiler's
       existing static/dynamic split rather than an island annotation
 

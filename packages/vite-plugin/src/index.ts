@@ -1160,3 +1160,14 @@ function scanComponentProperties(
 }
 
 export { compile, CompilerError };
+
+/**
+ * The build check that nothing a render can reach imports a `node:` builtin.
+ *
+ * A plugin rather than part of `volt()`, because it is a policy and not a
+ * compilation step: a project that only ever runs on Node has nothing to gain
+ * from it, and a project deploying to an edge runtime cannot ship without it.
+ * Ordered `pre` so it reads the `@Server()` boundary before the pass that
+ * erases it.
+ */
+export { renderPath, isNodeBuiltin, type RenderPathOptions } from './render-path.js';

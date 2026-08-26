@@ -15,6 +15,10 @@
     "./components": {
       "types": "./dist/components.d.ts",
       "import": "./dist/components.js"
+    },
+    "./ssg": {
+      "types": "./dist/ssg.d.ts",
+      "import": "./dist/ssg.js"
     }
   },
   "files": [

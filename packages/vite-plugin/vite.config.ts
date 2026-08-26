@@ -22,7 +22,13 @@ export default defineConfig({
     // Volt targets current engines; nothing here is downlevelled.
     target: 'esnext',
     lib: {
-      entry: { index: r('src/index.ts'), components: r('src/components.ts') },
+      entry: {
+        index: r('src/index.ts'),
+        components: r('src/components.ts'),
+        // Build-time only: a project calls this from a script after `vite build`,
+        // never from a module the browser loads.
+        ssg: r('src/ssg.ts'),
+      },
       formats: ['es'],
     },
     rollupOptions: {

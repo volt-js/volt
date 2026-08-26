@@ -28,6 +28,54 @@ export function skipQuoted(code: string, start: number, quote: string): number {
   return i;
 }
 
+/**
+ * The end of the template literal at `start`, and where its expressions are.
+ *
+ * A template is two kinds of thing wearing one pair of backticks: literal text,
+ * which is data, and `${…}` spans, which are code. Anything walking a module
+ * has to skip the first and read the second — a scan that skipped the whole
+ * literal would be blind to every identifier a template interpolates, which in
+ * a rendering framework is most of the interesting ones.
+ */
+export function templateSpans(
+  code: string,
+  start: number,
+): { end: number; spans: [number, number][] } {
+  const spans: [number, number][] = [];
+  let i = start + 1;
+  while (i < code.length) {
+    if (code[i] === '\\') {
+      i += 2;
+      continue;
+    }
+    if (code[i] === '`') return { end: i + 1, spans };
+    if (code[i] === '$' && code[i + 1] === '{') {
+      const from = i + 2;
+      let braces = 1;
+      i = from;
+      while (i < code.length && braces > 0) {
+        if (code[i] === '{') braces++;
+        else if (code[i] === '}') braces--;
+        else if (code[i] === '`') {
+          // A template inside an expression inside a template. Its own spans
+          // are found when this one is walked, not here.
+          i = templateSpans(code, i).end;
+          continue;
+        } else if (code[i] === '"' || code[i] === "'") {
+          i = skipQuoted(code, i, code[i]!);
+          continue;
+        }
+        i++;
+      }
+      // `i` is one past the closing brace, so the expression ends before it.
+      spans.push([from, Math.max(from, i - 1)]);
+      continue;
+    }
+    i++;
+  }
+  return { end: i, spans };
+}
+
 /** Index just past the template literal opening at `start`, spans included. */
 export function skipTemplateLiteral(code: string, start: number): number {
   let i = start + 1;
@@ -283,8 +331,17 @@ function isMemberAccess(code: string, at: number): boolean {
  * on one character".
  */
 function walk(code: string, visit: (index: number) => number): void {
-  let i = 0;
-  while (i < code.length) {
+  walkRange(code, visit, 0, code.length);
+}
+
+function walkRange(
+  code: string,
+  visit: (index: number) => number,
+  from: number,
+  to: number,
+): void {
+  let i = from;
+  while (i < to) {
     const ch = code[i]!;
 
     if (ch === '"' || ch === "'") {
@@ -292,7 +349,14 @@ function walk(code: string, visit: (index: number) => number): void {
       continue;
     }
     if (ch === '`') {
-      i = skipTemplateLiteral(code, i);
+      // The text of a template is data and its `${…}` spans are code, so the
+      // spans are walked and the text between them is not. Skipping the whole
+      // literal — which this did — hides every name a template interpolates,
+      // which in a framework whose renders are template literals is most of
+      // the names worth finding.
+      const { end: past, spans } = templateSpans(code, i);
+      for (const [spanStart, spanEnd] of spans) walkRange(code, visit, spanStart, spanEnd);
+      i = past;
       continue;
     }
     if (ch === '/') {
