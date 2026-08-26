@@ -929,10 +929,11 @@ export function each(
 
   // The bookkeeping belongs to the list, not to the pass. Every buffer here is
   // written in place and handed back and forth between passes, so a reconcile
-  // allocates no keys, no rows, no node list and no per-row reuse marks. What
-  // it does still allocate is the `available` map below, rebuilt from scratch
-  // every pass and now nearly the whole cost of a no-op one: 92 B per row,
-  // against 323 B before any of this.
+  // allocates no keys, no rows, no node list and no per-row reuse marks. The
+  // one thing left that a pass allocated was the `available` map below — 92 B
+  // per row, against 323 B before any of this — and a pass whose keys did not
+  // move no longer builds it either: that is the positional scan in the
+  // reconcile, which is the shape an edit to one cell of a table has.
   let prevKeys: unknown[] = [];
   let prevRows: (Row | undefined)[] = [];
   let keys: unknown[] = [];
@@ -973,82 +974,104 @@ export function each(
     const prevCount = prevRows.length;
 
     untrack(() => {
-      // Where a previous key's rows are. A key almost always names one row, so
-      // its index is stored bare and only a key that genuinely repeats grows a
-      // bucket — which is what spares a unique-keyed list an array per row. A
-      // bucket's first slot counts how many of that key's rows have been
-      // claimed; consuming with `shift` instead would be quadratic on a list
-      // where one key repeats thousands of times.
-      const available = new Map<unknown, number | number[]>();
-      for (let i = 0; i < prevCount; i++) {
-        const key = prevKeys[i];
-        const found = available.get(key);
-        if (found === undefined) available.set(key, i);
-        else if (typeof found === 'number') available.set(key, [0, found, i]);
-        else found.push(i);
-      }
-
-      marks.begin(prevCount);
-
-      for (let i = 0; i < count; i++) {
-        const key = keys[i];
-        const found = available.get(key);
-        let oldIndex = -1;
-
-        if (typeof found === 'number') {
-          // Overwritten with -1 rather than deleted: deleting enough of a Map
-          // makes it compact its table, which is the per-pass allocation back.
-          if (found >= 0) {
-            oldIndex = found;
-            available.set(key, -1);
-          }
-        } else if (found !== undefined) {
-          const taken = found[0]! + 1;
-          if (taken < found.length) {
-            oldIndex = found[taken]!;
-            found[0] = taken;
-          }
+      // The overwhelmingly common update to a long list is one row's contents
+      // changing: same length, same keys, same order. That is decidable in one
+      // positional scan of pointer comparisons, and deciding it here skips the
+      // map below entirely — which is the only thing a no-op pass still
+      // allocates, at 92 B per row.
+      //
+      // The scan comes first and writes nothing, because falling back after
+      // half a pass of `item.set` would have refreshed rows the full algorithm
+      // is about to pair up differently, and a row holding another row's item
+      // is a corrupted list rather than a slow one.
+      if (count === prevCount && sameKeysInOrder(keys, prevKeys, count)) {
+        for (let i = 0; i < count; i++) {
+          // Position and key are both unchanged, so the index signal would be
+          // written the value it already holds and the row's DOM does not
+          // move. The item still has to be refreshed: with a `:key` the key
+          // can repeat an object the list no longer holds.
+          prevRows[i]!.item.set(items[i]);
+        }
+      } else {
+        // Where a previous key's rows are. A key almost always names one row, so
+        // its index is stored bare and only a key that genuinely repeats grows a
+        // bucket — which is what spares a unique-keyed list an array per row. A
+        // bucket's first slot counts how many of that key's rows have been
+        // claimed; consuming with `shift` instead would be quadratic on a list
+        // where one key repeats thousands of times.
+        const available = new Map<unknown, number | number[]>();
+        for (let i = 0; i < prevCount; i++) {
+          const key = prevKeys[i];
+          const found = available.get(key);
+          if (found === undefined) available.set(key, i);
+          else if (typeof found === 'number') available.set(key, [0, found, i]);
+          else found.push(i);
         }
 
-        if (oldIndex >= 0) {
-          const row = prevRows[oldIndex]!;
-          marks.claim(oldIndex);
-          rows[i] = row;
-          // Refresh in place; the row's DOM stays exactly where it is.
-          row.item.set(items[i]);
-          row.setIndex(i);
-          continue;
+        marks.begin(prevCount);
+
+        for (let i = 0; i < count; i++) {
+          const key = keys[i];
+          const found = available.get(key);
+          let oldIndex = -1;
+
+          if (typeof found === 'number') {
+            // Overwritten with -1 rather than deleted: deleting enough of a Map
+            // makes it compact its table, which is the per-pass allocation back.
+            if (found >= 0) {
+              oldIndex = found;
+              available.set(key, -1);
+            }
+          } else if (found !== undefined) {
+            const taken = found[0]! + 1;
+            if (taken < found.length) {
+              oldIndex = found[taken]!;
+              found[0] = taken;
+            }
+          }
+
+          if (oldIndex >= 0) {
+            const row = prevRows[oldIndex]!;
+            marks.claim(oldIndex);
+            rows[i] = row;
+            // Refresh in place; the row's DOM stays exactly where it is.
+            row.item.set(items[i]);
+            row.setIndex(i);
+            continue;
+          }
+
+          rows[i] = createRow(scope, rowFn, items[i], i);
         }
 
-        rows[i] = createRow(scope, rowFn, items[i], i);
+        // Emptied as it is walked: these two become the next pass's scratch, and
+        // until that pass overwrites them they would go on holding a disposed
+        // row's DOM. Clearing here rather than while the map is built also means
+        // a row body that throws leaves the previous state whole to reconcile
+        // against next time.
+        for (let i = 0; i < prevCount; i++) {
+          if (!marks.claimed(i)) prevRows[i]!.dispose();
+          prevKeys[i] = undefined;
+          prevRows[i] = undefined;
+        }
+
+        // The buffers swap rather than being copied, and both pairs are trimmed
+        // to the live count — a list that spikes to 100k and settles at 50 hands
+        // the space back on the pass that shrinks it, rather than keeping the
+        // large arrays for as long as the list is on screen.
+        const spentKeys = prevKeys;
+        const spentRows = prevRows;
+        prevKeys = keys;
+        prevRows = rows;
+        keys = spentKeys;
+        rows = spentRows;
+        if (prevKeys.length > count) prevKeys.length = count;
+        if (prevRows.length > count) prevRows.length = count;
+        if (keys.length > count) keys.length = count;
+        if (rows.length > count) rows.length = count;
       }
 
-      // Emptied as it is walked: these two become the next pass's scratch, and
-      // until that pass overwrites them they would go on holding a disposed
-      // row's DOM. Clearing here rather than while the map is built also means
-      // a row body that throws leaves the previous state whole to reconcile
-      // against next time.
-      for (let i = 0; i < prevCount; i++) {
-        if (!marks.claimed(i)) prevRows[i]!.dispose();
-        prevKeys[i] = undefined;
-        prevRows[i] = undefined;
-      }
-
-      // The buffers swap rather than being copied, and both pairs are trimmed
-      // to the live count — a list that spikes to 100k and settles at 50 hands
-      // the space back on the pass that shrinks it, rather than keeping the
-      // large arrays for as long as the list is on screen.
-      const spentKeys = prevKeys;
-      const spentRows = prevRows;
-      prevKeys = keys;
-      prevRows = rows;
-      keys = spentKeys;
-      rows = spentRows;
-      if (prevKeys.length > count) prevKeys.length = count;
-      if (prevRows.length > count) prevRows.length = count;
-      if (keys.length > count) keys.length = count;
-      if (rows.length > count) rows.length = count;
-
+      // Both paths end here, and both end with `prevRows` holding the rows
+      // this pass decided on: the node buffer is written in place from them.
       let written = 0;
       for (let i = 0; i < count; i++) {
         const rowNodes = prevRows[i]!.block.nodes();
@@ -1061,6 +1084,26 @@ export function each(
   });
 
   return () => result.get();
+}
+
+/**
+ * Are the first `count` keys of two buffers pairwise identical?
+ *
+ * The scan behind the fast path above, and the whole of its cost: one pointer
+ * comparison per row, no map, no closure, nothing allocated. A module function
+ * rather than an inner one for that last reason — an arrow declared inside the
+ * reconcile would be an allocation per pass, which is exactly what this is
+ * here to avoid.
+ *
+ * `===` rather than the `SameValueZero` a `Map` compares keys with. The two
+ * differ on `NaN` alone, and only in the safe direction: a pair this rejects
+ * is handed to the full algorithm, which pairs them up the way it always did.
+ */
+function sameKeysInOrder(next: unknown[], previous: unknown[], count: number): boolean {
+  for (let i = 0; i < count; i++) {
+    if (next[i] !== previous[i]) return false;
+  }
+  return true;
 }
 
 function createRow(

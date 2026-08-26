@@ -900,11 +900,21 @@ and almost all of it is the reconcile pass — building a key map and walking
 every entry to discover what any human already knew, that one row changed.
 That is the part worth attacking:
 
-- [ ] Same-length, same-keys-in-order is the overwhelmingly common case for
+- [x] Same-length, same-keys-in-order is the overwhelmingly common case for
       "one row changed". Detect it with a single positional scan and skip the
       key map entirely, falling back to the full algorithm at the first
       mismatch. Turns an edit in a large table into one pass of comparisons
-      with no allocation.
+      with no allocation. `sameKeysInOrder` is that scan, and the 92 B a row
+      the map cost is what a pass over an unmoved list no longer pays. The
+      scan runs before anything is written, because falling back half-way
+      through would leave rows refreshed that the full algorithm is about to
+      pair up differently — a corrupted list rather than a slow one. Two
+      guards, not one: the keys have to match *and* the lengths have to,
+      because a shortened list whose remaining keys are a prefix of the old
+      passes the scan and would leave the dropped row's scope alive. Nothing
+      visible in the DOM can see that leak — the node buffer writes the row
+      out of the document either way — so the test counts map constructions
+      instead of reading the page.
 - [x] Reuse the keys, rows and nodes buffers across reconciles rather than
       allocating three arrays per update.
 

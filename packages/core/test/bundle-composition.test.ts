@@ -466,6 +466,11 @@ describe.skipIf(!built)('what an application bundle is made of', { timeout: 120_
       'reconcileArrays',
       'removeNodes',
       'replaceContent',
+      // The positional scan the reconcile tries before building its key map.
+      // It is here because every keyed list reaches it, which is the point of
+      // it — a list that never takes the fast path pays one pointer comparison
+      // per row to find that out.
+      'sameKeysInOrder',
       'template',
       'toDisplayString',
       'writeModel',

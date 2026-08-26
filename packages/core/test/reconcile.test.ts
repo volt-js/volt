@@ -217,3 +217,225 @@ describe('surrounding content is not disturbed', () => {
     expect(host.querySelector('ul.b')!.textContent).toBe('34');
   });
 });
+
+/**
+ * The positional fast path.
+ *
+ * "One row changed" replaces the array wholesale and leaves every key where it
+ * was, which the full algorithm can only discover by building a map of the
+ * previous keys and looking each new one up in it. That map is the last thing
+ * a no-op pass allocated, so the shape is detected first, in a single scan of
+ * pointer comparisons, and the map is never built.
+ *
+ * What the tests below are actually watching is the map: a `Map` constructed
+ * anywhere during the update fails the fast-path cases, and the hand-off cases
+ * assert one *is* built, so that the absence above means the path was taken
+ * rather than that the probe stopped working. The correctness assertions are
+ * the same ones the rest of this file makes — which elements survived — since
+ * a fast path that returns the wrong nodes is the failure that matters.
+ */
+interface Keyed {
+  id: number;
+  label: string;
+}
+
+@Component({
+  selector: 'v-keyed',
+  render: compileTemplate(`<ul><li :for="r in rows.get()" :key="r.id">{ r.label }</li></ul>`),
+})
+class KeyedRows {
+  rows = new Signal.State<Keyed[]>([]);
+}
+
+/** How many `Map`s were constructed while `fn` ran. */
+function mapsBuilt(fn: () => void): number {
+  let built = 0;
+  const real = globalThis.Map;
+  globalThis.Map = new Proxy(real, {
+    construct(target, args: unknown[], newTarget) {
+      built++;
+      return Reflect.construct(target, args, newTarget) as object;
+    },
+  }) as MapConstructor;
+  try {
+    fn();
+  } finally {
+    globalThis.Map = real;
+  }
+  return built;
+}
+
+/** Mount a keyed list and hand back the rows and a setter that flushes. */
+function keyed(initial: Keyed[]) {
+  document.body.innerHTML = '<div id="app"></div>';
+  host = document.querySelector('#app')!;
+  const instance = mount(KeyedRows, host).instance as KeyedRows;
+  instance.rows.set(initial);
+  flushSync();
+
+  return {
+    elements: () => [...host.querySelectorAll('li')],
+    set(next: Keyed[]) {
+      instance.rows.set(next);
+      flushSync();
+    },
+  };
+}
+
+const KEYED = [
+  { id: 1, label: 'one' },
+  { id: 2, label: 'two' },
+  { id: 3, label: 'three' },
+];
+
+/** A wholesale replacement: new objects, same ids, in the same order. */
+const replaced = (labels: string[]) => KEYED.map((r, i) => ({ id: r.id, label: labels[i]! }));
+
+describe('same length, same keys, same order', () => {
+  it('updates the row that changed without building a key map', () => {
+    const list = keyed(KEYED);
+    const before = list.elements();
+
+    const maps = mapsBuilt(() => list.set(replaced(['one', 'TWO', 'three'])));
+
+    expect(maps).toBe(0);
+    expect(host.textContent).toBe('oneTWOthree');
+    // Every element survived, including the one whose text was rewritten.
+    expect(list.elements()).toEqual(before);
+  });
+
+  it('refreshes items the keys cannot tell apart', () => {
+    // Same keys, every item a different object with different contents. A fast
+    // path that took "the keys did not move" to mean "nothing to do" would
+    // leave all three rows showing what they showed before.
+    const list = keyed(KEYED);
+    list.set(replaced(['a', 'b', 'c']));
+    expect(host.textContent).toBe('abc');
+  });
+
+  it('pairs duplicate keys positionally, as the map path does', () => {
+    const list = keyed([
+      { id: 1, label: 'a' },
+      { id: 1, label: 'b' },
+      { id: 2, label: 'c' },
+    ]);
+    const before = list.elements();
+
+    const maps = mapsBuilt(() =>
+      list.set([
+        { id: 1, label: 'A' },
+        { id: 1, label: 'B' },
+        { id: 2, label: 'C' },
+      ]),
+    );
+
+    expect(maps).toBe(0);
+    expect(host.textContent).toBe('ABC');
+    expect(list.elements()).toEqual(before);
+  });
+
+  it('takes the path again on a list that has just been reordered', () => {
+    // The buffers swap on the pass that reorders, so the pass after it is the
+    // one that would compare this pass's keys against a stale buffer.
+    const list = keyed(KEYED);
+    list.set([KEYED[2]!, KEYED[0]!, KEYED[1]!]);
+    const before = list.elements();
+
+    const maps = mapsBuilt(() =>
+      list.set([
+        { id: 3, label: 'THREE' },
+        { id: 1, label: 'one' },
+        { id: 2, label: 'two' },
+      ]),
+    );
+
+    expect(maps).toBe(0);
+    expect(host.textContent).toBe('THREEonetwo');
+    expect(list.elements()).toEqual(before);
+  });
+});
+
+describe('the first shape the fast path has to hand off', () => {
+  it('hands off when the last key differs, and does not reuse that row', () => {
+    // The boundary from the other side: everything matches until the final
+    // comparison. A scan that stopped early — or one that only checked the
+    // length — would refresh the row keyed 3 in place, which reads correctly
+    // and is the wrong element: an id that changed is a different row, and
+    // whatever was attached to the old one has to go with it.
+    const list = keyed(KEYED);
+    const before = list.elements();
+
+    const maps = mapsBuilt(() =>
+      list.set([KEYED[0]!, KEYED[1]!, { id: 9, label: 'nine' }]),
+    );
+
+    expect(maps).toBeGreaterThan(0);
+    expect(host.textContent).toBe('onetwonine');
+    const after = list.elements();
+    expect(after.slice(0, 2)).toEqual(before.slice(0, 2));
+    expect(after[2]).not.toBe(before[2]);
+  });
+
+  it('hands off when the first key differs', () => {
+    const list = keyed(KEYED);
+    const before = list.elements();
+
+    const maps = mapsBuilt(() => list.set([{ id: 0, label: 'zero' }, KEYED[1]!, KEYED[2]!]));
+
+    expect(maps).toBeGreaterThan(0);
+    expect(host.textContent).toBe('zerotwothree');
+    const after = list.elements();
+    expect(after[0]).not.toBe(before[0]);
+    expect(after.slice(1)).toEqual(before.slice(1));
+  });
+
+  it('hands off when the list is one longer, keys and order otherwise equal', () => {
+    const list = keyed(KEYED);
+    const before = list.elements();
+
+    const maps = mapsBuilt(() => list.set([...KEYED, { id: 4, label: 'four' }]));
+
+    expect(maps).toBeGreaterThan(0);
+    expect(host.textContent).toBe('onetwothreefour');
+    expect(list.elements().slice(0, 3)).toEqual(before);
+  });
+
+  it('hands off when the list is one shorter', () => {
+    const list = keyed(KEYED);
+    const before = list.elements();
+
+    const maps = mapsBuilt(() => list.set(KEYED.slice(0, 2)));
+
+    // The map, asserted rather than inferred, and this is the one hand-off
+    // where that matters. A shortened list whose remaining keys are a prefix
+    // of the old ones passes the key scan — only the length check refuses it —
+    // and taking the fast path there leaves the dropped row's scope alive:
+    // its nodes are written out of the document by the node buffer, so every
+    // assertion about the page still holds while the row itself is never
+    // disposed. Nothing visible in the DOM can see that. This can.
+    expect(maps).toBeGreaterThan(0);
+    expect(host.textContent).toBe('onetwo');
+    expect(list.elements()).toEqual(before.slice(0, 2));
+  });
+
+  it('hands off a key that is NaN rather than pairing it', () => {
+    // `===` and a `Map` disagree about `NaN` and only about `NaN`, and the
+    // disagreement is in the safe direction: the scan refuses the pair and the
+    // full algorithm, which compares keys the way a `Map` does, keeps the row.
+    document.body.innerHTML = '<div id="app"></div>';
+    host = document.querySelector('#app')!;
+    const instance = mount(KeyedRows, host).instance as KeyedRows;
+    instance.rows.set([{ id: Number.NaN, label: 'first' }]);
+    flushSync();
+    const before = host.querySelector('li')!;
+
+    const maps = mapsBuilt(() => {
+      instance.rows.set([{ id: Number.NaN, label: 'second' }]);
+      flushSync();
+    });
+
+    expect(maps).toBeGreaterThan(0);
+    expect(host.textContent).toBe('second');
+    expect(host.querySelector('li')).toBe(before);
+  });
+});
