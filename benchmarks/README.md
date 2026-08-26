@@ -55,6 +55,23 @@ No dependency is added for it. Chrome is driven over the DevTools protocol
 through Node's own `WebSocket`, and the built pages are served by a static
 handler in the file.
 
+### What it answered
+
+`groupRowBindings` stays off. On an idle machine, across four runs at 1,000 and
+10,000 rows:
+
+| | ungrouped | grouped | ratio |
+|---|---|---|---|
+| create 1,000 | 20.5 ms | 21.1 ms | 1.03 |
+| select row 1,000 | 0.33 ms | 0.42 ms | 1.27 |
+| create 10,000 | 207.6 ms | 208.8 ms | 1.01 |
+| select row 10,000 | 3.26 ms | 4.29 ms | 1.31 |
+
+Grouping was expected to trade `select row` for `create`. It does not: `create`
+is neutral to slightly worse and `select row` is 27–64% worse. The only thing it
+buys is the ~2.3 kB a row measured in `core/test/group-bindings-memory.test.ts`,
+which is not worth that regression on the operation the gap is concentrated in.
+
 Two things to know before trusting a run. `performance.now` is coarsened to
 100µs in Chrome, and a select over a thousand rows lands within a few ticks of
 that — which is why means are printed beside medians, and why a difference

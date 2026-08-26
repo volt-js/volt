@@ -19,20 +19,32 @@ Solid's number, not native's.
 
 - [x] Fix quadratic list teardown (`Watcher.unwatch`, scope detach)
 - [x] Effect fast path — skip value/equality bookkeeping nothing reads
-- [ ] `select row`: close the remaining per-effect gap. The one-effect-per-row
-      codegen is written and tested, and `groupRowBindings` still defaults to
-      false in both the compiler and the plugin, so no shipped build gets it.
-      **Half of the measurement it was waiting on is now taken**, in
-      `core/test/group-bindings-memory.test.ts`: grouping saves about 2.3 kB a
-      row, which is the order the estimate predicted and enough to matter on a
-      long list. But that is the memory half, and it is the half that argues
-      *for* the flag. Grouping also makes invalidation coarser — one binding
-      changing re-runs all three of a row's accessors — so it helps `create`
-      and works against `select row`, which is this item. Deciding the default
-      needs the CPU half, and that needs a real browser: happy-dom's DOM is
-      JavaScript and dominates any timing taken here. It is therefore blocked
-      on the browser matrix below rather than on anyone's opinion.
-- [ ] `create`: 1.15–1.19x, the next largest gap after select
+- [x] `select row`: the per-effect question is answered, and the answer is that
+      the one-effect-per-row codegen is not the way to close it.
+      `groupRowBindings` stays off by default, and now for a measured reason
+      rather than for want of one. The memory half was already taken —
+      `core/test/group-bindings-memory.test.ts`, about 2.3 kB a row saved. The
+      CPU half needed a real browser, because happy-dom's DOM is JavaScript and
+      dominates both operations; `benchmarks/browser/run.mjs` builds the same
+      page twice and drives one headless Chrome through both, which is what
+      makes the ratio about the codegen rather than about the machine.
+
+      Grouping costs `select row` 27–64% and does not pay for it anywhere. The
+      estimate had it helping `create` — coarser invalidation, one effect per
+      row instead of three — and that is the half that turned out to be wrong:
+      `create` measures 1.006–1.120, neutral to slightly worse, across four
+      runs at 1,000 and 10,000 rows on an idle machine. So it is not a
+      trade-off between two operations. It loses on both and wins only on
+      memory, and 2.3 kB a row does not buy a 40% regression on the operation
+      this section says the gap is concentrated in.
+
+      The flag stays, because the memory saving is real and a list that never
+      selects can want it. It stays off.
+- [ ] `create`: 1.15–1.19x, the next largest gap after select. One lead is now
+      closed rather than open: grouping a row's bindings into a single effect
+      was expected to help here and measures neutral to slightly worse in a
+      real browser (see the entry above), so whatever the 15–19% is, it is not
+      per-effect overhead in the row body.
 
 ### Bundle size
 
