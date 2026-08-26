@@ -35,6 +35,7 @@ import {
 } from '@voltdev/reactivity';
 
 import { renderComponent, requestStyles, type ComponentType } from './component.js';
+import { endsItsElement, needsServerBuild, voltError } from './diagnostics.js';
 import { normalizeClass, normalizeStyle, toDisplayString } from './dom.js';
 import { registeredState, STATE_ATTRIBUTE } from './state.js';
 
@@ -271,11 +272,11 @@ export class MarkupWriter {
     const text = toDisplayString(value);
     if (!text) return;
     if (text.toLowerCase().includes(`</${tag}`)) {
-      throw new Error(
-        `[volt] a value written into <${tag}> contains "</${tag}", which ends the element ` +
-          'rather than appearing inside it. Raw text cannot be escaped — an entity there is ' +
-          'not decoded — so the value has to be encoded by whatever produced it (for JSON, ' +
-          'replacing "<" with "\\u003C").',
+      throw endsItsElement(
+        tag,
+        `a value written into <${tag}>`,
+        'the value has to be encoded by whatever produced it (for JSON, replacing "<" with ' +
+          '"\\u003C")',
       );
     }
     this.parts.push(text);
@@ -406,9 +407,12 @@ export class MarkupWriter {
     while (typeof resolved === 'function') resolved = (resolved as () => unknown)();
 
     if (resolved !== null && resolved !== undefined && typeof resolved !== 'string') {
-      throw new Error(
-        '[volt] a server render has no elements, so `:portal` needs a selector string or ' +
-          'nothing at all — an element target can only be resolved in a browser.',
+      throw voltError(
+        'V0302',
+        { target: typeof resolved },
+        __VOLT_DEV__ &&
+          'a server render has no elements, so `:portal` needs a selector string or ' +
+            'nothing at all — an element target can only be resolved in a browser.',
       );
     }
 
@@ -585,11 +589,7 @@ export async function renderToStaticMarkup(
   options: RenderOptions = {},
 ): Promise<StaticMarkup> {
   if (!__VOLT_SERVER__) {
-    throw new Error(
-      '[volt] renderToStaticMarkup needs a server build. Templates are compiled for one side ' +
-        'or the other, and a client build emits render functions that clone markup rather ' +
-        'than write it — @voltdev/vite-plugin decides this per environment.',
-    );
+    throw needsServerBuild('renderToStaticMarkup');
   }
 
   const writer = new MarkupWriter();
@@ -674,22 +674,31 @@ function refuseWhatJsonWouldCorrupt(this: unknown, key: string, value: unknown):
 
   if (value === undefined || kind === 'function' || kind === 'symbol') {
     if (value === undefined && !inArray) return value;
-    throw new Error(
-      `[volt] hydration state cannot carry ${value === undefined ? 'undefined' : `a ${kind}`}` +
-        `${key === '' ? '' : ` at "${key}"`}. JSON ${inArray ? 'writes it as null' : 'drops it'}, ` +
-        'so the client would start from a value the server never rendered.',
+    throw voltError(
+      'V0402',
+      { key, kind: value === undefined ? 'undefined' : kind },
+      __VOLT_DEV__ &&
+        `hydration state cannot carry ${value === undefined ? 'undefined' : `a ${kind}`}` +
+          `${key === '' ? '' : ` at "${key}"`}. JSON ${inArray ? 'writes it as null' : 'drops it'}, ` +
+          'so the client would start from a value the server never rendered.',
     );
   }
   if (kind === 'number' && !Number.isFinite(value)) {
-    throw new Error(
-      `[volt] hydration state cannot carry ${String(value)}${key === '' ? '' : ` at "${key}"`}: ` +
-        'JSON writes it as null, and null is a value the client would read as real.',
+    throw voltError(
+      'V0402',
+      { key, kind: String(value) },
+      __VOLT_DEV__ &&
+        `hydration state cannot carry ${String(value)}${key === '' ? '' : ` at "${key}"`}: ` +
+          'JSON writes it as null, and null is a value the client would read as real.',
     );
   }
   if (kind === 'bigint') {
-    throw new Error(
-      `[volt] hydration state cannot carry a bigint${key === '' ? '' : ` at "${key}"`}. ` +
-        'Send it as a string and parse it back, until the wire format that carries one lands.',
+    throw voltError(
+      'V0402',
+      { key, kind },
+      __VOLT_DEV__ &&
+        `hydration state cannot carry a bigint${key === '' ? '' : ` at "${key}"`}. ` +
+          'Send it as a string and parse it back, until the wire format that carries one lands.',
     );
   }
   return value;
@@ -761,9 +770,14 @@ export function stateJson(values: Record<string, unknown>): string {
     try {
       json = JSON.stringify(value, refuseWhatJsonWouldCorrupt);
     } catch (cause) {
-      throw new Error(
-        `[volt] the hydration state for ${JSON.stringify(key)} could not be serialized: ` +
-          `${cause instanceof Error ? cause.message : String(cause)}`,
+      throw Object.assign(
+        voltError(
+          'V0401',
+          { key },
+          __VOLT_DEV__ &&
+            `the hydration state for ${JSON.stringify(key)} could not be serialized: ` +
+              `${cause instanceof Error ? cause.message : String(cause)}`,
+        ),
         { cause },
       );
     }
@@ -855,11 +869,7 @@ export async function renderToString(
   options: StringRenderOptions = {},
 ): Promise<PageRender> {
   if (!__VOLT_SERVER__) {
-    throw new Error(
-      '[volt] renderToString needs a server build. Templates are compiled for one side or ' +
-        'the other, and a client build emits render functions that clone markup rather than ' +
-        'write it — @voltdev/vite-plugin decides this per environment.',
-    );
+    throw needsServerBuild('renderToString');
   }
 
   const writer = new MarkupWriter();

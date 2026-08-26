@@ -65,6 +65,18 @@ export interface VoltPluginOptions {
    * `CodegenOptions.groupRowBindings`.
    */
   groupRowBindings?: boolean;
+
+  /**
+   * Keep the structure around an error in a production build.
+   *
+   * On by default, and separate from the message text, which
+   * `__VOLT_DEV__` strips regardless. What this keeps is the error's code,
+   * the identity of what failed and the link to the full sentence — the
+   * things a report can group by once the prose is gone. Turn it off only
+   * for a target counting every byte, and accept that a production failure
+   * then arrives as a bare code.
+   */
+  diagnostics?: boolean;
   /**
    * Rewrite `Signal.State` and friends to direct imports.
    *
@@ -499,6 +511,15 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
           // left to the app, because forgetting it would mean either shipping
           // every diagnostic or crashing on an undefined identifier.
           __VOLT_DEV__: JSON.stringify(env.mode !== 'production'),
+          // The other half of that flag, and deliberately not the same value.
+          // `__VOLT_DEV__` gates the words in an error; this gates the code,
+          // the detail and the documentation link around them — which is what
+          // makes a production stack trace into minified framework code worth
+          // reading at all. On in production for that reason. A build counting
+          // every byte can define it `false` itself and get a bare code, and
+          // the constant is read through `typeof` so a build that defines
+          // neither keeps its diagnostics rather than crashing.
+          __VOLT_DIAGNOSTICS__: JSON.stringify(options.diagnostics ?? true),
           // The browser's answer, and the one anything that never reaches an
           // environment falls back to. Which side a module is really compiled
           // for is decided per environment, below.

@@ -42,6 +42,15 @@ export { hydratable, wasHydrated, STATE_ATTRIBUTE } from './state.js';
  * template.
  */
 export { errorBoundary } from './dom.js';
+/**
+ * The error every refusal in this framework throws.
+ *
+ * Public because an application is expected to branch on it: `code` is stable
+ * across releases and survives the production strip that removes the sentence,
+ * so a reporter can group by it. An error type a consumer is meant to act on
+ * and cannot name is not a contract.
+ */
+export { VoltError } from './diagnostics.js';
 
 export type { BoundaryOptions } from './dom.js';
 

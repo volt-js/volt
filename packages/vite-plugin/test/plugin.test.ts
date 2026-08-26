@@ -398,6 +398,21 @@ describe('the build flags', () => {
     expect(defines('worker', build, { consumer: 'client' }).__VOLT_SERVER__).toBe('false');
   });
 
+  it('keeps error structure in a production build, where the words are stripped', () => {
+    // The two halves of the old single flag, and the reason it was split: a
+    // production build carries no sentences and still has to say which failure
+    // this was, or a report groups every refusal in the framework together.
+    const production = defines('client', build);
+    expect(production.__VOLT_DEV__).toBe('false');
+    expect(production.__VOLT_DIAGNOSTICS__).toBe('true');
+  });
+
+  it('lets a build that counts every byte turn the structure off too', () => {
+    const plugin = volt({ diagnostics: false }).find((p) => p.name === 'volt:env')!;
+    const config = plugin.config as (config: object, env: Env) => { define: Record<string, string> };
+    expect(config.call(plugin, {}, build).define.__VOLT_DIAGNOSTICS__).toBe('false');
+  });
+
   it('marks a plain client build as a client build', () => {
     expect(defines('client', build).__VOLT_SERVER__).toBe('false');
     expect(defines('client', { mode: 'development', command: 'build' }).__VOLT_DEV__).toBe('true');

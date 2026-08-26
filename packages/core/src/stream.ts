@@ -65,6 +65,7 @@ import {
 } from '@voltdev/reactivity';
 
 import { renderComponent, requestStyles, type ComponentType } from './component.js';
+import { endsItsElement, needsServerBuild, voltError } from './diagnostics.js';
 import {
   BOUNDARY,
   MarkupWriter,
@@ -145,11 +146,14 @@ export interface Boundary {
 }
 
 function misplaced(): never {
-  throw new Error(
-    '[volt] a boundary was written as text rather than as a child. An element whose ' +
-      'children are all text is emitted as one write, so there is no hole for a late ' +
-      'answer to land in — give the boundary an element sibling, as in ' +
-      '`<div><span></span>{ body }</div>`.',
+  throw voltError(
+    'V0501',
+    {},
+    __VOLT_DEV__ &&
+      'a boundary was written as text rather than as a child. An element whose ' +
+        'children are all text is emitted as one write, so there is no hole for a late ' +
+        'answer to land in — give the boundary an element sibling, as in ' +
+        '`<div><span></span>{ body }</div>`.',
   );
 }
 
@@ -503,11 +507,7 @@ export function renderToStream(
   options: StreamOptions = {},
 ): ReadableStream<Uint8Array> {
   if (!__VOLT_SERVER__) {
-    throw new Error(
-      '[volt] renderToStream needs a server build. Templates are compiled for one side or ' +
-        'the other, and a client build emits render functions that clone markup rather than ' +
-        'write it — @voltdev/vite-plugin decides this per environment.',
-    );
+    throw needsServerBuild('renderToStream');
   }
 
   const encoder = new TextEncoder();
@@ -564,10 +564,10 @@ export function renderToStream(
       // ending the element. Refused rather than written, exactly as `rawText`
       // refuses the same shape.
       if (css.toLowerCase().includes('</style')) {
-        throw new Error(
-          `[volt] the styles for <${selector}> contain "</style", which ends the element ` +
-            'rather than appearing inside it. Raw text cannot be escaped, so the stylesheet ' +
-            'has to be written without it.',
+        throw endsItsElement(
+          'style',
+          `the styles for <${selector}>`,
+          'the stylesheet has to be written without it',
         );
       }
       html += `<style data-volt="${escapeAttr(selector)}">${css}</style>`;

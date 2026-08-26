@@ -381,6 +381,11 @@ describe.skipIf(!built)('what an application bundle is made of', { timeout: 120_
     // than left to a byte ceiling to notice.
     expect(modulesUnder(bytes, 'packages/core/src/')).toEqual([
       'component.ts',
+      // The shape every refusal in the framework throws. It is here because
+      // the throw itself is behaviour a correct program depends on — only the
+      // sentence inside it is stripped — so a build that dropped this module
+      // would be a build that stopped refusing.
+      'diagnostics.ts',
       'dom.ts',
       'ids.ts',
       'reuse-marks.ts',

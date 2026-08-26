@@ -968,8 +968,24 @@ cannot be a `try`/`catch` bolted on later.
 - [ ] Errors during server rendering, and after a streamed shell has flushed
       and the headers are gone. A boundary that can still emit a fallback into
       the stream is the only recovery available at that point.
-- [ ] Production diagnostics that survive the `__VOLT_DEV__` strip: enough
+- [x] Production diagnostics that survive the `__VOLT_DEV__` strip: enough
       structure in the error to be actionable, without shipping the messages.
+      The flag is split in two. `__VOLT_DEV__` gates the *words*, written at
+      every site as `__VOLT_DEV__ && '…'` so a production build folds it to
+      `false` and the minifier deletes the literal. `__VOLT_DIAGNOSTICS__`
+      gates the *structure* and is on in production, because a code, the
+      identity of what failed and a link to the sentence are what make a stack
+      trace into minified framework code worth reading. Read through `typeof`,
+      so a build that defines neither keeps its diagnostics rather than
+      crashing on an undefined identifier. Every refusal in `@voltdev/core` now
+      throws a `VoltError` — exported, because an error a consumer is expected
+      to branch on and cannot name is not a contract — and the message repeats
+      `code`, `detail` and `docs` as text as well as fields, since a log
+      pipeline that keeps only `message` is the common case. Asserted on
+      bundled, minified bytes from both sides: three sentences absent from a
+      production build, the codes still present, and the same sentences present
+      in a development one — the last of which is what stops the first from
+      passing against a bundler that had quietly dropped the module.
 
 What is deliberately not taken from the languages that do this best is in
 [Design decisions](docs/guide/design-decisions.md) — an error channel in every

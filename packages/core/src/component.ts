@@ -50,6 +50,7 @@ import {
   install as installDevtools,
   removeComponent,
 } from './devtools.js';
+import { voltError } from './diagnostics.js';
 import { insert } from './dom.js';
 import { enterPosition, exitPosition } from './ids.js';
 
@@ -220,7 +221,11 @@ export function defineComponent<T extends ComponentType<unknown>>(
   props?: readonly PropDefinition[] | null,
 ): T {
   if (__VOLT_DEV__ && !config.selector) {
-    throw new Error(`[volt] @Component on ${target.name || '(anonymous class)'} needs a selector.`);
+    throw voltError(
+      'V0201',
+      { cls: target.name || '(anonymous)' },
+      `@Component on ${target.name || '(anonymous class)'} needs a selector.`,
+    );
   }
 
   const propsByAlias = new Map<string, PropDef>();
@@ -249,7 +254,7 @@ export function Component(config: ComponentConfig) {
     context: ClassDecoratorContext,
   ): T {
     if (context.kind !== 'class') {
-      throw new Error('[volt] @Component can only be applied to a class.');
+      throw voltError('V0202', {}, __VOLT_DEV__ && '@Component can only be applied to a class.');
     }
     const metadata = context.metadata as MetadataRecord | undefined;
     return defineComponent(target, config, readMetadata<PropDef>(metadata, PROPS));
@@ -277,21 +282,32 @@ export function Prop(options: PropOptions = {}) {
     const name = String((context as { name?: unknown }).name);
 
     if (kind !== 'field') {
-      throw new Error(
-        `[volt] @Prop applies to a field, not ${kind} (${name}).` +
-          (kind === 'accessor'
-            ? '\n  Volt has no hidden reactivity — a property is reactive because it' +
-              '\n  holds a signal, never because a decorator rewrote it:' +
-              `\n    @Prop() ${name} = new Signal.State(...);   // reactive — read ${name}.get()` +
-              `\n    @Prop() ${name} = ...;                     // constant`
-            : ''),
+      throw voltError(
+        'V0203',
+        { prop: name, kind },
+        __VOLT_DEV__ &&
+          `@Prop applies to a field, not ${kind} (${name}).` +
+            (kind === 'accessor'
+              ? '\n  Volt has no hidden reactivity — a property is reactive because it' +
+                '\n  holds a signal, never because a decorator rewrote it:' +
+                `\n    @Prop() ${name} = new Signal.State(...);   // reactive — read ${name}.get()` +
+                `\n    @Prop() ${name} = ...;                     // constant`
+              : ''),
       );
     }
     if (context.static) {
-      throw new Error(`[volt] @Prop cannot be used on a static member (${name}).`);
+      throw voltError(
+        'V0204',
+        { prop: name },
+        __VOLT_DEV__ && `@Prop cannot be used on a static member (${name}).`,
+      );
     }
     if (typeof context.name === 'symbol') {
-      throw new Error('[volt] @Prop cannot be used on a symbol-named property.');
+      throw voltError(
+        'V0205',
+        {},
+        __VOLT_DEV__ && '@Prop cannot be used on a symbol-named property.',
+      );
     }
 
     const property = context.name;
@@ -371,14 +387,14 @@ function getRenderFn(component: ComponentType<unknown>, resolved: ResolvedConfig
     // Reaching here means the build-time pass did not run: `templateUrl` is
     // read from disk, which the browser cannot do. A production bundle was
     // built by the plugin by definition, so only the short form ships.
-    if (__VOLT_DEV__) {
-      throw new Error(
-        `[volt] ${component.name} declares templateUrl "${config.templateUrl}", which is ` +
+    throw voltError(
+      'V0206',
+      { cls: component.name, url: String(config.templateUrl) },
+      __VOLT_DEV__ &&
+        `${component.name} declares templateUrl "${config.templateUrl}", which is ` +
           'resolved at build time. Add @voltdev/vite-plugin to your Vite config, or supply ' +
           "`render` directly using compileTemplate() from '@voltdev/core/jit'.",
-      );
-    }
-    throw new Error('[volt] templateUrl was not compiled');
+    );
   } else {
     render = () => null;
   }
@@ -458,8 +474,10 @@ function closestProp(name: string, declared: string[]): string | undefined {
 function reportUnknownProp(key: string, resolved: ResolvedConfig): never {
   const declared = [...resolved.propsByAlias.keys()];
   const suggestion = closestProp(key, declared);
-  throw new Error(
-    `[volt] <${resolved.config.selector}> has no prop "${key}".` +
+  throw voltError(
+    'V0208',
+    { selector: resolved.config.selector, prop: key },
+    `<${resolved.config.selector}> has no prop "${key}".` +
       (suggestion ? ` Did you mean "${suggestion}"?` : '') +
       (declared.length ? ` Declared props: ${declared.join(', ')}.` : ' It declares no props.'),
   );
@@ -471,7 +489,11 @@ function checkRequiredProps(
 ): void {
   for (const def of resolved.propsByAlias.values()) {
     if (def.required && !(props && Object.hasOwn(props, def.alias))) {
-      throw new Error(`[volt] <${resolved.config.selector}> requires the prop "${def.alias}".`);
+      throw voltError(
+        'V0209',
+        { selector: resolved.config.selector, prop: def.alias },
+        `<${resolved.config.selector}> requires the prop "${def.alias}".`,
+      );
     }
   }
 }
@@ -531,10 +553,10 @@ function instantiate(
 ): unknown {
   const resolved = CONFIGS.get(component);
   if (!resolved) {
-    throw new Error(
-      __VOLT_DEV__
-        ? `[volt] ${component.name} is not decorated with @Component.`
-        : '[volt] not a component',
+    throw voltError(
+      'V0207',
+      { cls: component.name },
+      __VOLT_DEV__ && `${component.name} is not decorated with @Component.`,
     );
   }
 
@@ -797,8 +819,10 @@ export function createComponent(
       // ordinary input and the child calls it. Purely an authoring mistake, so
       // it is reported while developing and ignored in a shipped build.
       const name = Object.keys(events)[0] ?? '';
-      throw new Error(
-        `[volt] <${tag}> is a component, so \`:on-${name}\` does not apply. ` +
+      throw voltError(
+        'V0210',
+        { tag, event: name },
+        `<${tag}> is a component, so \`:on-${name}\` does not apply. ` +
           `Pass a callback instead: \`:on${name.charAt(0).toUpperCase()}${name.slice(1)}="..."\`, ` +
           `declared on the child as a @Prop.`,
       );
@@ -813,18 +837,19 @@ export function createComponent(
     return createCustomElement(tag, props, events, slots);
   }
 
-  if (__VOLT_DEV__) {
-    const owner = (parentCtx as { constructor?: { name: string } } | null)?.constructor?.name;
-    throw new Error(
-      `[volt] Unknown component <${tag}>` +
-        (owner ? ` used by ${owner}` : '') +
+  throw voltError(
+    'V0211',
+    { tag },
+    __VOLT_DEV__ &&
+      `Unknown component <${tag}>` +
+        ((parentCtx as { constructor?: { name: string } } | null)?.constructor?.name
+          ? ` used by ${(parentCtx as { constructor: { name: string } }).constructor.name}`
+          : '') +
         `. Add it to that component's \`imports\`` +
         (tag.includes('-')
           ? ', or define it as a custom element before the component mounts.'
           : '.'),
-    );
-  }
-  throw new Error(`[volt] unknown component <${tag}>`);
+  );
 }
 
 function createCustomElement(
@@ -925,7 +950,11 @@ export function mount(
 ): MountHandle {
   const host = typeof target === 'string' ? document.querySelector(target) : target;
   if (!host) {
-    throw new Error(`[volt] Mount target not found: ${String(target)}`);
+    throw voltError(
+      'V0212',
+      { target: String(target) },
+      __VOLT_DEV__ && `Mount target not found: ${String(target)}`,
+    );
   }
 
   let dispose: Dispose = () => {};
@@ -935,10 +964,10 @@ export function mount(
     dispose = disposeRoot;
     const resolved = CONFIGS.get(component);
     if (!resolved) {
-      throw new Error(
-        __VOLT_DEV__
-          ? `[volt] ${component.name} is not decorated with @Component.`
-          : '[volt] not a component',
+      throw voltError(
+        'V0207',
+        { cls: component.name },
+        __VOLT_DEV__ && `${component.name} is not decorated with @Component.`,
       );
     }
 

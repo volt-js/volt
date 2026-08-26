@@ -31,6 +31,7 @@ import {
   untrack,
 } from '@voltdev/reactivity/signals';
 import { createReuseMarks } from './reuse-marks.js';
+import { voltError } from './diagnostics.js';
 
 /**
  * Bindings being collected for a shared effect, or null when each makes its own.
@@ -1480,7 +1481,11 @@ function resolvePortalTarget(target: unknown): Element {
     );
   }
 
-  throw new Error('[volt] :portal expects an element, a selector string, or nothing.');
+  throw voltError(
+    'V0401',
+    {},
+    __VOLT_DEV__ && ':portal expects an element, a selector string, or nothing.',
+  );
 }
 
 /**
