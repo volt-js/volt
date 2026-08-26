@@ -1264,11 +1264,17 @@ project points it at a catalogue. The runtime catalogue is untouched.
 
 Not yet, and the reason:
 
-- [ ] **Messages follow the code split.** `messageSites` is on the compile
-      result, so which template asks for which key is known. What is missing is
-      the other half — which chunk a template ended up in, which only the
-      bundle graph knows — and a writer that turns the pair into per-chunk
-      catalogues.
+- [x] **Messages follow the code split**, and not by writing per-chunk
+      catalogues — by not writing one catalogue in the first place. The
+      generated module is cut along its own exports into one module per
+      message, `virtual:volt-messages/close` beside `virtual:volt-messages`
+      itself, so the bundler's own graph decides what lands where: a message
+      one route uses is inlined into that route, and one two routes share
+      becomes their shared chunk. No second answer to "which chunk" is needed,
+      because the bundle already has one. `code` stays as the module to *run*,
+      since a JIT compile has no bundler to resolve a part id through. Proved
+      by real builds — two routes, and an assertion that neither carries the
+      other's message.
 - [ ] A key must be a plain identifier. Nested and dotted catalogues are
       refused with a suggestion rather than silently renamed, because an
       export is a function name and there is no second way to spell one.
@@ -1288,9 +1294,13 @@ Not yet, and the reason:
       plugin counts the ones in flight: cleared when the first starts, reported
       when the last ends. A `build --watch` rebuild still reports on itself
       alone, which is the opposite answer the same code has to give.
-- [ ] `t` from the generated module names every message, so importing it links
+- [x] `t` from the generated module names every message, so importing it links
       the catalogue whole. That is the dynamic-key path, and the per-message
-      functions are the one to reach for.
+      functions are the one to reach for — so the build says so, naming the
+      module, the keys it actually asked for, and the import to write instead.
+      A module whose key is genuinely dynamic is left alone: it is already
+      answered by the reply about dynamic keys, and saying it twice would make
+      the warning something a project learns to ignore.
 - [x] **A template links the runtime `t`, and must keep doing so.** Decided
       rather than built, and the decision is the opposite of what this entry
       used to propose. Rewriting `{ t('close') }` to

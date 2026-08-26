@@ -22,7 +22,7 @@ import { join, resolve } from 'node:path';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { volt, type VoltPluginOptions } from '../src/index.js';
 import { build as viteBuild, createLogger, type Plugin } from 'vite';
-import type { RollupOutput } from 'rollup';
+import type { OutputChunk, RollupOutput } from 'rollup';
 
 const FIXTURES = resolve(import.meta.dirname, 'fixtures');
 const FIXTURE_ID = join(FIXTURES, 'component.ts');
@@ -83,6 +83,14 @@ async function start(plugin: Plugin, command: 'build' | 'serve' = 'build'): Prom
   resolveConfig({ root: FIXTURES, command });
   await call<Promise<void>>(plugin, 'buildStart');
 }
+
+/** What the plugin serves for one module id. */
+const load = (plugin: Plugin, id: string): Promise<string | null> =>
+  call<Promise<string | null>>(plugin, 'load', id);
+
+/** One part of the catalogue: a message, or the module they share. */
+const part = (plugin: Plugin, name: string): Promise<string | null> =>
+  load(plugin, `\0virtual:volt-messages/${name}`);
 
 describe('a message key the catalogue does not have', () => {
   it('fails the build, naming the template and the line', async () => {
@@ -304,29 +312,52 @@ describe('the catalogue as a module', () => {
   const temporaryDirs: string[] = [];
   afterAll(() => Promise.all(temporaryDirs.map((d) => rm(d, { recursive: true, force: true }))));
 
-  it('answers to the virtual id', async () => {
+  it('answers to the virtual id, and to the parts hanging off it', async () => {
     const { messages } = build();
     await start(messages);
     expect(call<string>(messages, 'resolveId', 'virtual:volt-messages')).toBe(
       '\0virtual:volt-messages',
     );
+    expect(call<string>(messages, 'resolveId', 'virtual:volt-messages/close')).toBe(
+      '\0virtual:volt-messages/close',
+    );
     expect(call<string | null>(messages, 'resolveId', './somewhere.ts')).toBeNull();
   });
 
-  it('serves one function per message', async () => {
+  it('serves one module per message, so a chunk can hold one of them', async () => {
     const { messages } = build();
     await start(messages);
-    const code = await call<Promise<string>>(messages, 'load', '\0virtual:volt-messages');
-    expect(code).toContain('export const close = () => "Close";');
-    expect(code).toContain('export const pageOf = (params = {}) =>');
-    expect(code).not.toMatch(/^\s*import\b/m);
+    expect(await part(messages, 'close')).toContain('export const close = () => "Close";');
+    expect(await part(messages, 'pageOf')).toContain('export const pageOf = (params = {}) =>');
+    // The one that needs nothing imports nothing, which is the whole of what a
+    // message costs the application that uses it.
+    expect(await part(messages, 'close')).not.toMatch(/^\s*import\b/m);
+  });
+
+  it('serves the id a project imports as re-exports and nothing else', async () => {
+    // The module a project names has to hold no message of its own: whatever
+    // sits in it is in every chunk that imports any message at all.
+    const { messages } = build();
+    await start(messages);
+    const facade = await load(messages, '\0virtual:volt-messages');
+    expect(facade).toContain(`export { close } from "virtual:volt-messages/close";`);
+    expect(facade).toContain(`export { t } from "virtual:volt-messages/~all";`);
+    expect(facade).not.toContain('"Close"');
+    expect(facade).not.toContain('_all');
+  });
+
+  it('says which message is missing when a part is asked for by hand', async () => {
+    const { messages } = build();
+    await start(messages);
+    await expect(load(messages, '\0virtual:volt-messages/clsoe')).rejects.toThrow(
+      /`virtual:volt-messages\/clsoe` is not a message in .*[\\/]en\.json/,
+    );
   });
 
   it('takes the locale from the catalogue’s own name', async () => {
     const { messages } = build();
     await start(messages);
-    const code = await call<Promise<string>>(messages, 'load', '\0virtual:volt-messages');
-    expect(code).toContain('export const locale = "en";');
+    expect(await part(messages, '~shared')).toContain('export const locale = "en";');
   });
 
   it('refuses a catalogue whose name is not a language tag', async () => {
@@ -360,8 +391,7 @@ describe('the catalogue as a module', () => {
   it('takes the locale it is told, whatever the file is called', async () => {
     const { messages } = build({ locale: 'de-DE' });
     await start(messages);
-    const code = await call<Promise<string>>(messages, 'load', '\0virtual:volt-messages');
-    expect(code).toContain('export const locale = "de-DE";');
+    expect(await part(messages, '~shared')).toContain('export const locale = "de-DE";');
   });
 
   it('leaves every other module alone', async () => {
@@ -423,8 +453,15 @@ describe('the unused report from a build nobody stubbed', { timeout: 120_000 }, 
     // `close` and `pageOf` are the library's own; `checkoutTotal` is asked for
     // by the entry, which is the control that keeps this from passing against
     // a report that names everything.
-    expect(printed).toEqual([expect.stringContaining('Message `abandoned`')]);
-    expect(printed[0]).toContain('en.json:5:');
+    expect(printed).toEqual([
+      // The entry reaches the catalogue through `t`, so it links every message
+      // — said first, because it is about the bundle this build just wrote.
+      expect.stringContaining('imports `t`'),
+      expect.stringContaining('Message `abandoned`'),
+    ]);
+    expect(printed[0]).toContain('used-message.ts');
+    expect(printed[0]).toContain("import { checkoutTotal } from 'virtual:volt-messages'");
+    expect(printed[1]).toContain('en.json:5:');
   });
 });
 
@@ -481,6 +518,143 @@ describe('a message nobody imported', { timeout: 120_000 }, () => {
     // it, which is exactly the regression reading the source cannot see.
     expect(one.length).toBeLessThan(every.length / 2);
     expect(one).not.toContain('_all');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Which chunk a message ends up in
+// ---------------------------------------------------------------------------
+
+/**
+ * Messages follow the code split.
+ *
+ * The tests above weigh one bundle, where tree-shaking is the whole story: a
+ * message nobody imported is not there. An application has more than one chunk,
+ * and there the question is different and a bundler answers it per *module*.
+ * One module holding every message is reached by every route that translates
+ * anything, so it lands in a chunk they share and carries the union of what
+ * they asked for — the first route loads the second route’s strings, which is
+ * the cost this whole feature exists to avoid, arriving one level up from where
+ * anyone was looking for it.
+ *
+ * So a message is a module. Then the bundle graph decides: a message one route
+ * uses is inlined into that route, a message two routes share becomes the chunk
+ * they share, and neither of them is a decision this plugin makes — which is
+ * the point, because the code split is the bundler’s and the messages now
+ * follow it.
+ */
+describe('a route that uses one message', { timeout: 120_000 }, () => {
+  const temporary: string[] = [];
+  afterAll(() => Promise.all(temporary.map((dir) => rm(dir, { recursive: true, force: true }))));
+
+  /** An application of the given files, built against the plugin. */
+  async function app(files: Record<string, string>, entries: string[]): Promise<OutputChunk[]> {
+    const dir = await mkdtemp(join(tmpdir(), 'volt-chunks-'));
+    temporary.push(dir);
+    for (const [name, source] of Object.entries(files)) {
+      await writeFile(join(dir, name), source, 'utf8');
+    }
+    const result = (await viteBuild({
+      root: dir,
+      configFile: false,
+      logLevel: 'silent',
+      plugins: [volt({ messages: { catalog: CATALOG, unused: 'off' } })],
+      build: {
+        write: false,
+        target: 'esnext',
+        // The assertions are about which strings are where, so they have to
+        // survive as themselves.
+        minify: false,
+        rollupOptions: {
+          input: Object.fromEntries(entries.map((name) => [name, join(dir, `${name}.ts`)])),
+          output: { format: 'es' },
+        },
+      },
+    })) as unknown as RollupOutput;
+    return result.output.filter((out): out is OutputChunk => out.type === 'chunk');
+  }
+
+  /**
+   * Everything a browser runs to open one entry.
+   *
+   * Its own chunk and the ones it statically imports, transitively — which is
+   * the only measure that means anything here. A message kept out of an entry
+   * chunk and put in a chunk the entry imports has not been kept out of
+   * anything.
+   */
+  function loadedBy(chunks: OutputChunk[], entry: string): string {
+    const byFile = new Map(chunks.map((chunk) => [chunk.fileName, chunk]));
+    const seen = new Set<string>();
+    const walk = (file: string): void => {
+      if (seen.has(file)) return;
+      seen.add(file);
+      for (const next of byFile.get(file)?.imports ?? []) walk(next);
+    };
+    walk(chunks.find((chunk) => chunk.name === entry)!.fileName);
+    return [...seen].map((file) => byFile.get(file)!.code).join('\n');
+  }
+
+  it('does not load the messages of the route beside it', async () => {
+    const chunks = await app(
+      {
+        'a.ts': `import { close } from 'virtual:volt-messages';\nglobalThis.a = close();\n`,
+        'b.ts':
+          `import { checkoutTotal } from 'virtual:volt-messages';\n` +
+          `globalThis.b = checkoutTotal({ amount: 1 });\n`,
+      },
+      ['a', 'b'],
+    );
+
+    expect(loadedBy(chunks, 'a')).toContain('Close');
+    expect(loadedBy(chunks, 'a')).not.toContain('Total:');
+    // Both directions, or the assertion above passes against a build that
+    // simply lost the message.
+    expect(loadedBy(chunks, 'b')).toContain('Total:');
+    expect(loadedBy(chunks, 'b')).not.toContain('Close');
+  });
+
+  it('does not load the messages of the route it can navigate to', async () => {
+    // The code split a router makes, which is the one the roadmap entry is
+    // about: the second route’s strings arrive when the route does.
+    const chunks = await app(
+      {
+        'main.ts':
+          `import { close } from 'virtual:volt-messages';\n` +
+          `globalThis.a = close();\n` +
+          `globalThis.open = () => import('./page.js');\n`,
+        'page.ts':
+          `import { pageOf } from 'virtual:volt-messages';\n` +
+          `export const label = () => pageOf({ n: 1, m: 2 });\n`,
+      },
+      ['main'],
+    );
+
+    expect(loadedBy(chunks, 'main')).toContain('Close');
+    expect(loadedBy(chunks, 'main')).not.toContain('Page ');
+    expect(chunks.map((chunk) => chunk.code).join('\n')).toContain('Page ');
+  });
+
+  it('shares a message two routes ask for, rather than copying it into both', async () => {
+    // The other half of following the code split. A message per module could
+    // have been paid for in duplication, and the bundler is what stops it:
+    // everything reached by exactly these two entries is one chunk.
+    const chunks = await app(
+      {
+        'a.ts':
+          `import { close, checkoutTotal } from 'virtual:volt-messages';\n` +
+          `globalThis.a = close() + checkoutTotal({ amount: 1 });\n`,
+        'b.ts':
+          `import { close } from 'virtual:volt-messages';\nglobalThis.b = close();\n`,
+      },
+      ['a', 'b'],
+    );
+
+    const everything = chunks.map((chunk) => chunk.code).join('\n');
+    expect(everything.match(/"Close"/g)).toHaveLength(1);
+    expect(loadedBy(chunks, 'a')).toContain('Close');
+    expect(loadedBy(chunks, 'b')).toContain('Close');
+    // And the message only the first route asks for is still only there.
+    expect(loadedBy(chunks, 'b')).not.toContain('Total:');
   });
 });
 
@@ -596,6 +770,111 @@ describe('a module that asks the catalogue for a key nothing can read', () => {
     // again — the same answer `used` gives, and for the same reason.
     expect(warned.join('\n')).toContain('Message `abandoned`');
     expect(warned.join('\n')).not.toContain('cannot read');
+  });
+});
+
+/**
+ * What importing `t` costs, and who is told.
+ *
+ * Every message is a module of its own so that a chunk carries the ones its
+ * routes ask for. `t` is the one export that undoes that — it names every
+ * message, so linking it links the catalogue whole, and the module it landed
+ * in is now the reason a route loads strings it never renders. The unused
+ * report cannot see any of this: `t('checkoutTotal')` is a key written out, so
+ * the message is accounted for and every message beside it still ships.
+ *
+ * The reply is a warning rather than a refusal because `t` is not a mistake:
+ * it is the answer for a key only the runtime knows. It is only ever the wrong
+ * reach for a key the module wrote out itself, which is what the reply says,
+ * with the import to write instead.
+ */
+describe('a module that imports the catalogue’s `t`', () => {
+  /** What the report said after one module was transformed. */
+  async function report(source: string, options = {}): Promise<string[]> {
+    const { messages } = build(options);
+    await start(messages);
+    call(messages, 'transform', source, FIXTURE_ID);
+    await call<Promise<void>>(messages, 'buildEnd');
+    return warned;
+  }
+
+  const LITERAL =
+    `import { t } from 'virtual:volt-messages';\n` +
+    `export const line = () => t('checkoutTotal', { amount: 1 });`;
+
+  it('is told what that costs, and which import to write instead', async () => {
+    const warnings = await report(LITERAL);
+    expect(warnings[0]).toContain('component.ts');
+    expect(warnings[0]).toContain('imports `t`');
+    expect(warnings[0]).toContain('names every message');
+    // The fix, spelled out: the key it already wrote, imported by name.
+    expect(warnings[0]).toContain("import { checkoutTotal } from 'virtual:volt-messages'");
+    // And what it buys, counted against this catalogue of four.
+    expect(warnings[0]).toContain('leaves the other 3 behind');
+  });
+
+  it('says nothing to a module that imports the message itself', async () => {
+    // The control, and the shape the warning exists to move people to.
+    const warnings = await report(
+      `import { checkoutTotal } from 'virtual:volt-messages';\n` +
+        `export const line = () => checkoutTotal({ amount: 1 });`,
+    );
+    expect(warnings.join('\n')).not.toContain('imports `t`');
+    expect(warnings.join('\n')).toContain('Message `abandoned`');
+  });
+
+  it('leaves a dynamic key to the reply that already names it', async () => {
+    // Both findings are true of that module, and two warnings about one line
+    // is how a build teaches people to stop reading them. The narrower one
+    // wins, because it also says what the catalogue costs.
+    const warnings = await report(
+      `import { t } from 'virtual:volt-messages';\nexport const line = (k: string) => t(k);`,
+    );
+    expect(warnings).toEqual([expect.stringContaining('for a key this build cannot read')]);
+  });
+
+  it('says it whether or not the unused report runs', async () => {
+    // `unused` is a question about a catalogue: is anything in it unasked for.
+    // This is a question about a bundle, and turning the first off is not an
+    // answer to the second.
+    const warnings = await report(LITERAL, { unused: 'off' });
+    expect(warnings).toEqual([expect.stringContaining('imports `t`')]);
+  });
+
+  it('counts a namespace import, which hands on the same export', async () => {
+    const warnings = await report(
+      `import * as messages from 'virtual:volt-messages';\n` +
+        `export const line = () => messages.t('checkoutTotal', { amount: 1 });`,
+    );
+    expect(warnings[0]).toContain('imports `t`');
+  });
+
+  it('is about the module the build serves, not the word `t` anywhere', async () => {
+    const warnings = await report(
+      `import { t } from 'some-other-library';\nexport const line = () => t('checkoutTotal');`,
+    );
+    expect(warnings.join('\n')).not.toContain('imports `t`');
+  });
+
+  it('says nothing on a dev server, which has seen a fraction of the modules', async () => {
+    const { messages } = build();
+    await start(messages, 'serve');
+    call(messages, 'transform', LITERAL, FIXTURE_ID);
+    await call<Promise<void>>(messages, 'buildEnd');
+    expect(warned).toEqual([]);
+  });
+
+  it('is forgotten by the build after it', async () => {
+    const { messages } = build();
+    await start(messages);
+    call(messages, 'transform', LITERAL, FIXTURE_ID);
+    await call<Promise<void>>(messages, 'buildEnd');
+    expect(warned[0]).toContain('imports `t`');
+
+    warned = [];
+    await call<Promise<void>>(messages, 'buildStart');
+    await call<Promise<void>>(messages, 'buildEnd');
+    expect(warned.join('\n')).not.toContain('imports `t`');
   });
 });
 

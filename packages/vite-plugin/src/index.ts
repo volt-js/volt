@@ -297,6 +297,18 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
    */
   const dynamicCallers = new Set<string>();
   /**
+   * Modules that imported the catalogue's `t`.
+   *
+   * A superset of the one above, and a different finding: that one is about a
+   * report nobody can make, this one is about bytes nobody asked for. `t`
+   * names every message, so a module that imports it puts the whole catalogue
+   * in whatever chunk it lands in — and for a call with the key written out,
+   * which is most of them, the fix is one import away. Kept with the keys each
+   * asked for, because naming them is what makes the reply a fix rather than a
+   * complaint.
+   */
+  const wholeCatalogue = new Map<string, string[]>();
+  /**
    * Environments of this build that have started and not yet ended.
    *
    * A build with a client environment and a server one runs the whole cycle
@@ -324,6 +336,25 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
     if (!messages) return null;
     catalog ??= readCatalog(resolvePath(root, messages.catalog), messages.locale);
     return catalog;
+  };
+
+  /**
+   * The catalogue as modules, by the id each answers to.
+   *
+   * Generated once per read of the catalogue rather than once per `load`: a
+   * project with a thousand messages is a thousand parts, and a build asks for
+   * as many of them as it links.
+   */
+  let modules: ReadonlyMap<string, string> | null = null;
+  const messageModules = (loaded: LoadedCatalog): ReadonlyMap<string, string> => {
+    // `moduleId` is what asks for the parts, and every message is one — which
+    // is how a message ends up in the chunk of the route that uses it rather
+    // than in a chunk every route shares.
+    return (modules ??= generateMessages(loaded.catalog, {
+      locale: loaded.locale,
+      catalogFile: loaded.file,
+      moduleId: messagesId,
+    }).modules!);
   };
 
   const templatePlugin: Plugin = {
@@ -570,9 +601,11 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
       if (environmentsBuilding === 0) {
         used.clear();
         dynamicCallers.clear();
+        wholeCatalogue.clear();
       }
       environmentsBuilding++;
       catalog = null;
+      modules = null;
       const loaded = await loadCatalog();
       if (!loaded) return;
       this.addWatchFile(loaded.file);
@@ -588,18 +621,28 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
     },
 
     resolveId(id) {
-      if (messages && id === messagesId) return resolvedMessagesId;
+      if (!messages) return null;
+      if (id === messagesId) return resolvedMessagesId;
+      // The parts, which only the module above imports — by the name a project
+      // would use, so that one `resolveId` answers for both.
+      if (id.startsWith(`${messagesId}/`)) return `\0${id}`;
       return null;
     },
 
     async load(id) {
-      if (id !== resolvedMessagesId) return null;
+      if (!messages || !id.startsWith(resolvedMessagesId)) return null;
       const loaded = await loadCatalog();
       if (!loaded) return null;
-      return generateMessages(loaded.catalog, {
-        locale: loaded.locale,
-        catalogFile: loaded.file,
-      }).code;
+      const part = messageModules(loaded).get(id.slice(1));
+      if (part !== undefined) return part;
+      // Only a hand-written import can ask for a part that is not there, and
+      // the answer it would otherwise get is Rollup's — a module id nothing
+      // loaded, which names neither the catalogue nor the key.
+      throw new Error(
+        `[volt:messages] \`${id.slice(1)}\` is not a message in ${loaded.file}. ` +
+          `Import it from \`${messagesId}\` — \`import { ${id.slice(messagesId.length + 2)} } ` +
+          `from '${messagesId}'\` — which is the only spelling of a message this build serves.`,
+      );
     },
 
     transform(code, id) {
@@ -616,6 +659,7 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
       const through = catalogueCalls(code, messagesId);
       for (const key of through.keys) used.add(key);
       if (through.unreadable) dynamicCallers.add(id);
+      if (through.imported) wholeCatalogue.set(id, through.keys);
       return null;
     },
 
@@ -627,7 +671,7 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
       // Another environment of this build is still walking its graph, and it
       // may be the one that uses the message this environment did not.
       if (environmentsBuilding > 0) return;
-      if (error || (messages.unused ?? 'warn') === 'off') return;
+      if (error) return;
       // A dev-server rebuild transforms the modules that changed and nothing
       // else, so it has seen a fraction of the call sites. Reporting from
       // there would mean warning about messages that are used — which is the
@@ -636,6 +680,32 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
 
       const loaded = await loadCatalog();
       if (!loaded) return;
+
+      // What importing `t` costs, said whether or not the unused report runs:
+      // `unused` is about a report, and this is about the bundle. Every
+      // message is a module of its own so that a chunk holds the ones its
+      // routes ask for — and `t` is the one export that undoes that, because
+      // it names them all. A module already named below is left to that
+      // reply, which says the same thing about a call this one cannot fix.
+      for (const [id, keys] of [...wholeCatalogue].sort()) {
+        if (dynamicCallers.has(id)) continue;
+        const asked = [...new Set(keys)];
+        const rest = Object.keys(loaded.catalog).length - asked.length;
+        this.warn(
+          `[volt:messages] \`${relative(root, id)}\` imports \`t\` from \`${messagesId}\`, ` +
+            `which names every message. The whole catalogue follows it into the chunk that ` +
+            `module lands in, so the messages this build split up arrive together anyway.\n` +
+            (asked.length > 0
+              ? `  It asks for ${asked.map((key) => `\`${key}\``).join(', ')} — ` +
+                `\`import { ${asked.join(', ')} } from '${messagesId}'\` links ${
+                  asked.length === 1 ? 'that one string' : 'those strings'
+                }` + (rest > 0 ? ` and leaves the other ${rest} behind.` : '.')
+              : `  Import the messages it needs by name instead, and a bundler ships those ` +
+                `strings and no others.`),
+        );
+      }
+
+      if ((messages.unused ?? 'warn') === 'off') return;
 
       // A module reached for the dynamic-key path, so every remaining key may
       // be the one it computes. Naming them as unused would be the warning on
@@ -749,7 +819,10 @@ const KEY_ARGUMENT = /^(['"`])((?:[^'"`\\]|\\.)*)\1/;
  * that imports from *here* and so never mentions the catalogue at all, which
  * is the one shape this scan cannot see coming.
  */
-function catalogueCalls(source: string, moduleId: string): { keys: string[]; unreadable: boolean } {
+function catalogueCalls(
+  source: string,
+  moduleId: string,
+): { keys: string[]; unreadable: boolean; imported: boolean } {
   const specifier = moduleId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const statement = new RegExp(
     `(?:^|[;}\\n])\\s*(import|export)\\s+([\\s\\S]*?)\\s+from\\s*['"\`]${specifier}['"\`]`,
@@ -758,6 +831,12 @@ function catalogueCalls(source: string, moduleId: string): { keys: string[]; unr
 
   const keys: string[] = [];
   let unreadable = false;
+  /**
+   * Whether the module took `t` at all, which is a fact about the bundle and
+   * not about the keys: `t` names every message, so linking it links them all
+   * however few of them the calls below turn out to ask for.
+   */
+  let imported = false;
   /** How a call through each binding is spelled, as a source pattern. */
   const callees: string[] = [];
 
@@ -765,6 +844,7 @@ function catalogueCalls(source: string, moduleId: string): { keys: string[]; unr
     const clause = match[2]!;
     const namespace = /^\*\s+as\s+([A-Za-z_$][\w$]*)/.exec(clause);
     if (namespace) {
+      imported = true;
       callees.push(`${namespace[1]!}\\s*\\.\\s*t`);
       continue;
     }
@@ -775,6 +855,7 @@ function catalogueCalls(source: string, moduleId: string): { keys: string[]; unr
       // only the left of an `as` decides which export this is.
       const [exported, local] = binding.split(/\bas\b/).map((part) => part.trim());
       if (exported !== 't') continue;
+      imported = true;
       if (match[1] === 'export') unreadable = true;
       else callees.push(local || exported);
     }
@@ -789,7 +870,7 @@ function catalogueCalls(source: string, moduleId: string): { keys: string[]; unr
     }
   }
 
-  return { keys, unreadable };
+  return { keys, unreadable, imported };
 }
 
 export default volt;

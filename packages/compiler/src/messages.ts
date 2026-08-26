@@ -543,11 +543,15 @@ export interface GenerateOptions {
   /** Named in the header, so nobody edits the output looking for the source. */
   catalogFile?: string;
   /**
-   * Wrap the declarations in `declare module '<id>' { ... }`.
+   * What the generated module answers to, which decides two things.
    *
-   * A build serves the generated code from a virtual module, which has no file
-   * for TypeScript to find. Naming the module is what lets a `.d.ts` sitting
-   * anywhere in the project type an import of it.
+   * The declarations are wrapped in `declare module '<id>' { ... }`: a build
+   * serves the code from a virtual module, which has no file for TypeScript to
+   * find, and naming the module is what lets a `.d.ts` sitting anywhere in the
+   * project type an import of it.
+   *
+   * And `modules` is emitted, because a part has to import its neighbours by
+   * the name they answer to and only the caller knows what that is.
    */
   moduleId?: string;
 }
@@ -557,6 +561,25 @@ export interface GeneratedMessages {
   code: string;
   /** Its declarations, including the `Messages` interface and a typed `t`. */
   types: string;
+  /**
+   * The same module cut along its own exports, by the id each part answers to
+   * — `virtual:volt-messages` itself, and `virtual:volt-messages/close` beside
+   * it. Present only when `moduleId` says what the parts hang off.
+   *
+   * One module per message is what makes messages follow the code split.
+   * `code` is one module, so a bundler that keeps it has to keep every message
+   * any importer asked for: two routes importing one message each share a
+   * chunk carrying both strings, and each route loads the other's. Cut up, the
+   * only thing a chunk holds is what its own entries reach — a message one
+   * route uses is inlined into that route, and a message two routes share
+   * becomes their shared chunk, which is the code split the bundle already
+   * decided.
+   *
+   * `code` stays because it is the module to *run*: a JIT compile, and the
+   * tests that execute a catalogue, have no bundler to resolve a part id
+   * through.
+   */
+  modules?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -632,53 +655,13 @@ export function generateMessages(
   const needsPlural = shapes.some((s) => s.forms !== null);
 
   const code = [...header];
-  code.push(`export const locale = ${JSON.stringify(options.locale)};`);
-  code.push(`export const catalogFile = ${JSON.stringify(from)};`);
-  code.push('');
-
-  if (needsValue) {
-    code.push(
-      '// Lazy because building a formatter is the expensive half of `Intl`, and a',
-      '// page that never interpolates a number should never pay for one.',
-      'let _nf;',
-      '/** A value in a placeholder: numbers localised, an absent one left standing. */',
-      'const _v = (value, raw) =>',
-      '  value === undefined',
-      '    ? raw',
-      "    : typeof value === 'number'",
-      '      ? (_nf ??= new Intl.NumberFormat(locale)).format(value)',
-      '      : value;',
-      '',
-    );
-  }
-
-  if (needsPlural) {
-    code.push(
-      'let _pr;',
-      '/** No count means no category to select, and `other` is the one every locale has. */',
-      'const _p = (count) =>',
-      "  typeof count === 'number' ? (_pr ??= new Intl.PluralRules(locale)).select(count) : 'other';",
-      '',
-    );
-  }
+  code.push(...preamble(options.locale, from));
+  if (needsValue) code.push(...valueHelper(''));
+  if (needsPlural) code.push(...pluralHelper(''));
 
   for (const shape of shapes) code.push(messageFunction(shape), '');
 
-  code.push(
-    '/**',
-    ' * A message by key, for a key only known at runtime.',
-    ' *',
-    ' * This is the one export that is not tree-shakeable, and deliberately so:',
-    ' * it names every message, so importing it links the catalogue whole. Import',
-    ' * the message you want instead, and a bundler ships that one string.',
-    ' *',
-    ' * A key with no message returns the key, exactly as the runtime catalogue',
-    ' * does: not a string anyone wants on screen, which is why it beats a gap.',
-    ' */',
-    `const _all = { ${shapes.map((s) => s.key).join(', ')} };`,
-    'export const t = (key, params) => _all[key]?.(params) ?? key;',
-    '',
-  );
+  code.push(...dynamicKeyExport(shapes));
 
   const types = [...header];
   types.push('export interface Messages {');
@@ -712,12 +695,140 @@ export function generateMessages(
   const declarations = types.join('\n');
   return {
     code: code.join('\n'),
+    modules: options.moduleId
+      ? splitModules(shapes, options.moduleId, options.locale, from, header)
+      : undefined,
     types: options.moduleId
       ? `declare module ${JSON.stringify(options.moduleId)} {\n` +
         declarations.replace(/^(?=.)/gm, '  ') +
         '\n}\n'
       : declarations,
   };
+}
+
+/** What every module of a catalogue says about the locale it is written in. */
+function preamble(locale: string, from: string): string[] {
+  return [
+    `export const locale = ${JSON.stringify(locale)};`,
+    `export const catalogFile = ${JSON.stringify(from)};`,
+    '',
+  ];
+}
+
+/**
+ * `_v`, exported or not.
+ *
+ * One text, two emissions: the whole module holds it as a local const, and the
+ * split one has to hand it to the messages that interpolate. A second copy of
+ * the interpolation rule is a second thing to keep in step with the runtime,
+ * and the runtime is what `messages.test.ts` compares both against.
+ */
+function valueHelper(prefix: string): string[] {
+  return [
+    '// Lazy because building a formatter is the expensive half of `Intl`, and a',
+    '// page that never interpolates a number should never pay for one.',
+    'let _nf;',
+    '/** A value in a placeholder: numbers localised, an absent one left standing. */',
+    `${prefix}const _v = (value, raw) =>`,
+    '  value === undefined',
+    '    ? raw',
+    "    : typeof value === 'number'",
+    '      ? (_nf ??= new Intl.NumberFormat(locale)).format(value)',
+    '      : value;',
+    '',
+  ];
+}
+
+/** `_p`, exported or not; see `valueHelper`. */
+function pluralHelper(prefix: string): string[] {
+  return [
+    'let _pr;',
+    '/** No count means no category to select, and `other` is the one every locale has. */',
+    `${prefix}const _p = (count) =>`,
+    "  typeof count === 'number' ? (_pr ??= new Intl.PluralRules(locale)).select(count) : 'other';",
+    '',
+  ];
+}
+
+/** `t`, and the table that is the reason importing it costs the catalogue. */
+function dynamicKeyExport(shapes: readonly MessageShape[]): string[] {
+  return [
+    '/**',
+    ' * A message by key, for a key only known at runtime.',
+    ' *',
+    ' * This is the one export that is not tree-shakeable, and deliberately so:',
+    ' * it names every message, so importing it links the catalogue whole. Import',
+    ' * the message you want instead, and a bundler ships that one string.',
+    ' *',
+    ' * A key with no message returns the key, exactly as the runtime catalogue',
+    ' * does: not a string anyone wants on screen, which is why it beats a gap.',
+    ' */',
+    `const _all = { ${shapes.map((s) => s.key).join(', ')} };`,
+    'export const t = (key, params) => _all[key]?.(params) ?? key;',
+    '',
+  ];
+}
+
+/**
+ * The catalogue as one module per message, by the id each answers to.
+ *
+ * A chunk is a set of modules, so a message can only follow the code split by
+ * being one. Four kinds of part come out of this, and the shape of the graph
+ * is the whole point:
+ *
+ *   - `<id>` re-exports the rest and holds nothing itself, so importing one
+ *     message through it reaches one message;
+ *   - `<id>/<key>`, one per message, importing a helper only if its own text
+ *     interpolates or inflects;
+ *   - `<id>/~shared`, the locale and those helpers — the one thing more than
+ *     one message has in common, and small enough that sharing it is right;
+ *   - `<id>/~all`, which imports every message and is what `t` is. Naming every
+ *     message is what `t` is *for*, and putting it in a part of its own is what
+ *     keeps that cost off the messages beside it.
+ *
+ * `~` starts none of them by accident: a message key is an identifier, which
+ * `checkCatalog` has already refused anything else, so no catalogue can name a
+ * part.
+ */
+function splitModules(
+  shapes: readonly MessageShape[],
+  moduleId: string,
+  locale: string,
+  from: string,
+  header: readonly string[],
+): Map<string, string> {
+  const modules = new Map<string, string>();
+  const part = (name: string): string => JSON.stringify(`${moduleId}/${name}`);
+
+  const shared = [...header, ...preamble(locale, from)];
+  if (shapes.some(usesPlaceholder)) shared.push(...valueHelper('export '));
+  if (shapes.some((s) => s.forms !== null)) shared.push(...pluralHelper('export '));
+  modules.set(`${moduleId}/~shared`, shared.join('\n'));
+
+  for (const shape of shapes) {
+    const needs = [usesPlaceholder(shape) ? '_v' : '', shape.forms ? '_p' : ''].filter(Boolean);
+    const lines = [...header];
+    // A message with neither imports nothing at all, which is the whole of what
+    // `close` costs an application that uses it.
+    if (needs.length > 0) {
+      lines.push(`import { ${needs.join(', ')} } from ${part('~shared')};`, '');
+    }
+    lines.push(messageFunction(shape), '');
+    modules.set(`${moduleId}/${shape.key}`, lines.join('\n'));
+  }
+
+  const all = [...header];
+  for (const shape of shapes) all.push(`import { ${shape.key} } from ${part(shape.key)};`);
+  all.push('', ...dynamicKeyExport(shapes));
+  modules.set(`${moduleId}/~all`, all.join('\n'));
+
+  const facade = [...header];
+  facade.push(`export { locale, catalogFile } from ${part('~shared')};`);
+  for (const shape of shapes) facade.push(`export { ${shape.key} } from ${part(shape.key)};`);
+  facade.push(`export { t } from ${part('~all')};`, '');
+  modules.set(moduleId, facade.join('\n'));
+
+  return modules;
 }
 
 /** One message as a function type: what it needs, and that it returns a string. */
