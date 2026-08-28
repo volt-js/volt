@@ -1549,7 +1549,24 @@ need one.
       step back past a request does not send a second one and a step back past a
       filter filters again — which is what stepping through a graph is, as
       against replaying a log.
-- [ ] Highlight the DOM a binding owns, on hover
+- [x] Highlight the DOM a binding owns, on hover. `nodesOwnedBy` is the
+      declared half of the question `nodesWrittenBy` answers by observation,
+      and both are here because they fail in opposite directions. The observed
+      one sees what a binding *changed*, so it is silent about a binding that
+      has not re-run since the panel opened — which is every binding on a page
+      the panel arrived at — and about a write no `MutationObserver` records,
+      like `el.value` or a listener attached. The declared one is what the
+      binding said about itself as it was created: exact, immediate, and empty
+      wherever a single node is not the honest answer — an application's own
+      `effect`, and a row whose bindings were grouped into one effect, where
+      one effect genuinely has several targets. A panel wanting the fullest
+      answer takes the union.
+
+      It reaches the tools through `declareTarget`, a slot in the reactive core
+      that `effectCreated` passes on and then clears — a parameter threaded
+      through `renderEffect` would have put something on the hot path of every
+      effect in the framework that only the binding layer can supply and only
+      the tools can read. 30 B, development only.
 
 ## Chat
 

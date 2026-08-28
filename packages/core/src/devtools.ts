@@ -370,6 +370,23 @@ export interface Devtools {
   nodesWrittenBy(effect: object | number): Node[];
 
   /**
+   * The node this binding is responsible for, if it said so when it was
+   * created.
+   *
+   * The declared half of the same question `nodesWrittenBy` answers by
+   * observation, and the two fail in opposite directions, which is why both
+   * are here. This one is exact and available immediately — a binding that has
+   * never re-run still has a target, and a write no `MutationObserver` records
+   * is still a write to a node this names. It is empty for everything that is
+   * not a single-element binding: an effect an application wrote itself, a
+   * `:for` body, and a row whose bindings were grouped into one effect, where
+   * one effect genuinely has several targets and naming one would be a lie.
+   *
+   * A panel wanting the fullest answer takes the union of the two.
+   */
+  nodesOwnedBy(effect: object | number): Node[];
+
+  /**
    * Everything the session recorded, in one order: writes, events,
    * navigations and network answers.
    *
@@ -493,6 +510,16 @@ let causes = new WeakMap<object, Write[]>();
  * in it would be credited to whichever effect happened to run last.
  */
 let writtenNodes = new WeakMap<object, Set<Node>>();
+/**
+ * The node each binding named as its own when it was created.
+ *
+ * Kept whether or not a session is recording, and outside `stopRecording`'s
+ * clear-down, because it is one entry per binding rather than a growing set
+ * per run — and because a panel opened after the page loaded is exactly the
+ * case the observed half cannot serve. A `WeakMap`, so a binding going away
+ * takes its entry and its node with it.
+ */
+const declaredNodes = new WeakMap<object, Node>();
 let observer: MutationObserver | null = null;
 const effects = new Map<object, EffectRecord>();
 /**
@@ -1300,11 +1327,15 @@ const listener: DevListener = {
     list.push(write);
   },
 
-  effectCreated(effect, phase) {
+  effectCreated(effect, phase, target) {
     // Ahead of the session check: where an effect came from can only be read
     // now, while the component that declared it is still on the stack.
     const owner = stack.length > 0 ? stack[stack.length - 1]!.name : null;
     if (owner) componentOfEffect.set(effect, owner);
+    // Also ahead of it, and for the same reason in a different key: a binding
+    // names its node once, when it is created, and a panel opened afterwards
+    // would never see it said. This is the half `nodesWrittenBy` cannot have.
+    if (target) declaredNodes.set(effect, target as Node);
     if (!recording) return;
     effectRecord(effect, phase);
   },
@@ -1414,8 +1445,9 @@ const listener: DevListener = {
 // ---------------------------------------------------------------------------
 
 const api: Devtools = {
-  // 2: `nodesWrittenBy`. An extension reads this to know the call is there.
-  version: 2,
+  // 2: `nodesWrittenBy`. 3: `nodesOwnedBy`, `timeline` and `replay`. An
+  // extension reads this to know which calls are there.
+  version: 3,
 
   componentTree: () => roots().map(toNode),
   componentFor: (instance) => {
@@ -1527,6 +1559,14 @@ const api: Devtools = {
       .sort((a, b) => b.runs - a.runs),
 
   flushes: () => [...flushLog],
+
+  nodesOwnedBy(effect) {
+    const node = typeof effect === 'number' ? effectById(effect) : effect;
+    const declared = node ? declaredNodes.get(node) : undefined;
+    // Same rule as the observed half: a node the page has removed cannot be
+    // highlighted, because a panel would draw its box nowhere.
+    return declared && declared.isConnected ? [declared] : [];
+  },
 
   nodesWrittenBy(effect) {
     const node = typeof effect === 'number' ? effectById(effect) : effect;

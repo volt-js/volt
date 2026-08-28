@@ -836,7 +836,12 @@ function createEffect(fn: EffectFn, watcher: WatcherNode, immediate: boolean): D
 
   markEffectComputed(computed as unknown as ComputedSignal<unknown>);
 
-  if (__VOLT_DEV__) devListener?.effectCreated(computed, phase);
+  if (__VOLT_DEV__) {
+    devListener?.effectCreated(computed, phase, pendingTarget);
+    // Cleared whether or not anything was listening, so a declared target
+    // cannot drift onto whichever effect happens to be created next.
+    pendingTarget = undefined;
+  }
 
   watcher.watch(computed as unknown as ComputedSignal<unknown>);
 
@@ -964,6 +969,33 @@ function callerFrame(): string {
     if (!line.includes('effect.ts') && !/\bat Error\b/.test(line)) return line.trim();
   }
   return '(unknown)';
+}
+
+/**
+ * The node the next effect created is being made for, or undefined.
+ *
+ * A slot rather than an argument threaded through `renderEffect`, because the
+ * only caller that has the answer is the binding layer in `@voltdev/core` and
+ * the only reader is the developer tools: putting it in the signature would
+ * put a parameter nothing else can supply on the hot path of every effect in
+ * the framework. It lives exactly as long as the call that follows it.
+ */
+let pendingTarget: object | undefined;
+
+/**
+ * Name the DOM node the next effect will write to.
+ *
+ * Attribution by declaration, which is what the observed kind cannot be: a
+ * binding that has not re-run since a panel opened has written nothing, and a
+ * write no `MutationObserver` records — `el.value`, a listener attached — is
+ * invisible however often it runs. The binding knows its target when it is
+ * created, and this is where it says so.
+ *
+ * Development only. In production the call site is inside `if (__VOLT_DEV__)`
+ * and goes with it.
+ */
+export function declareTarget(node: object | undefined): void {
+  if (__VOLT_DEV__) pendingTarget = node;
 }
 
 /**

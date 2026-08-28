@@ -81,7 +81,14 @@ const BUDGETS: Record<string, number> = {
   // that consumes it rather than here. What an application's production build
   // takes is nothing, and `reactivity/test/skipped.test.ts` asserts that on
   // bundled bytes rather than promising it.
-  'packages/reactivity/dist/index.js': 3_950,
+  //
+  // Raised again from 3950 by `declareTarget`, the slot a binding names its
+  // own node through: 30 B, 3922 B to 3952 B. It is the declared half of "which
+  // DOM does this binding own", and it costs a single assignment on a path the
+  // observed half cannot serve at all — a binding that has not re-run since a
+  // panel opened has written nothing and still has a target. Development only,
+  // like the record above it.
+  'packages/reactivity/dist/index.js': 4_000,
   // The rest of that seam: `wake` and `write` are called from the propagation
   // code, which ships as its own chunk. 60 B of this is the seam, by the same
   // measurement, and the chunk is budgeted at all because bytes moved out of

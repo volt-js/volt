@@ -26,7 +26,14 @@ export interface DevListener {
   /** The write currently propagating reached `effect` and will re-run it. */
   wake(effect: object): void;
 
-  effectCreated(effect: object, phase: EffectPhase): void;
+  /**
+   * A new effect. `target` is the DOM node a binding named as its own when it
+   * created this, which is attribution by declaration rather than by watching
+   * what changed — see `declareTarget`. Absent for every effect that is not a
+   * binding, and for a binding sharing a grouped effect with its neighbours,
+   * where one effect has several targets and naming one would be a lie.
+   */
+  effectCreated(effect: object, phase: EffectPhase, target?: object): void;
   effectDisposed(effect: object): void;
 
   /** Brackets one run. `runEnded` is called even if the effect threw. */

@@ -31,6 +31,7 @@ import {
   untrack,
 } from '@voltdev/reactivity/signals';
 import { createReuseMarks } from './reuse-marks.js';
+import { declareTarget } from '@voltdev/reactivity';
 import { voltError } from './diagnostics.js';
 
 /**
@@ -1429,7 +1430,12 @@ export function group(build: () => void): void {
   });
 }
 
-function bind<T>(accessor: MaybeAccessor<T>, apply: (value: T) => void): void {
+function bind<T>(
+  accessor: MaybeAccessor<T>,
+  apply: (value: T) => void,
+  /** The node this binding writes to, for the tools; see `declareTarget`. */
+  owner?: Node,
+): void {
   if (typeof accessor !== 'function') {
     apply(accessor as T);
     return;
@@ -1448,20 +1454,24 @@ function bind<T>(accessor: MaybeAccessor<T>, apply: (value: T) => void): void {
   };
 
   if (collecting) {
+    // A grouped row shares one effect between several bindings, so no single
+    // node owns it. Declaring one here would name the last binding's element
+    // for every binding in the row.
     collecting.push(update);
     return;
   }
+  if (__VOLT_DEV__) declareTarget(owner);
   renderEffect(update);
 }
 
 export function bindAttr(el: Element, name: string, accessor: MaybeAccessor<unknown>): void {
-  bind(accessor, (value) => setAttribute(el, name, value));
+  bind(accessor, (value) => setAttribute(el, name, value), el);
 }
 
 export function bindProp(el: Element, name: string, accessor: MaybeAccessor<unknown>): void {
   bind(accessor, (value) => {
     (el as unknown as Record<string, unknown>)[name] = value;
-  });
+  }, el);
 }
 
 /** Prefer the IDL property when the element actually has one. */
@@ -1472,7 +1482,7 @@ export function bindDynamic(el: Element, name: string, accessor: MaybeAccessor<u
     } else {
       setAttribute(el, name, value);
     }
-  });
+  }, el);
 }
 
 function setAttribute(el: Element, name: string, value: unknown): void {
@@ -1613,7 +1623,7 @@ export function bindClassToggle(
     if (next === applied) return;
     applied = next;
     el.classList.toggle(name, next);
-  });
+  }, el);
 }
 
 export function bindClass(el: Element, accessor: MaybeAccessor<unknown>): void {
@@ -1626,7 +1636,7 @@ export function bindClass(el: Element, accessor: MaybeAccessor<unknown>): void {
     for (const cls of applied) if (!next.includes(cls)) el.classList.remove(cls);
     for (const cls of next) if (!el.classList.contains(cls)) el.classList.add(cls);
     applied = next;
-  });
+  }, el);
 }
 
 /** Exported because a server composes the same string it would end up with. */
@@ -1654,7 +1664,7 @@ export function bindStyle(el: HTMLElement, accessor: MaybeAccessor<unknown>): vo
       if (applied[key] !== v) el.style.setProperty(key, v);
     }
     applied = next;
-  });
+  }, el);
 }
 
 /** Exported for the same reason as `normalizeClass`. */
@@ -1696,13 +1706,13 @@ export function bindText(el: Element, accessor: MaybeAccessor<unknown>): void {
     } else {
       el.textContent = text;
     }
-  });
+  }, el);
 }
 
 export function bindHtml(el: Element, accessor: MaybeAccessor<unknown>): void {
   bind(accessor, (value) => {
     el.innerHTML = value === null || value === undefined ? '' : String(value);
-  });
+  }, el);
 }
 
 export function spread(el: Element, accessor: MaybeAccessor<Record<string, unknown>>): void {
@@ -1721,7 +1731,7 @@ export function spread(el: Element, accessor: MaybeAccessor<Record<string, unkno
       else setAttribute(el, key, value);
     }
     applied = Object.keys(next);
-  });
+  }, el);
 }
 
 export function setRef(node: unknown, ctx: Record<string, unknown>, name: string): void {

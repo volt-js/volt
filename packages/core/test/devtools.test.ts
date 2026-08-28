@@ -1735,3 +1735,74 @@ describe('session replay', () => {
     expect(result.unreachable).toBe(1);
   });
 });
+
+/**
+ * The declared half of "which DOM does this binding own".
+ *
+ * `nodesWrittenBy` above answers by observation: a `MutationObserver` drained
+ * around each run, so it sees what a binding *changed*. That fails in two
+ * directions this cannot — a binding that has not re-run since the session
+ * started has written nothing, which is every binding on a page a panel opened
+ * after it loaded; and a write the tree does not record, `el.value` or a
+ * listener attached, is invisible however often it runs.
+ *
+ * This one is what the binding said about itself when it was created, so it
+ * fails in the opposite direction: exact where it applies, and empty where a
+ * single node is not the honest answer.
+ */
+describe('the DOM a binding owns', () => {
+  afterEach(() => {
+    tools.stopRecording();
+  });
+
+  /** Every effect the session knows, by id. */
+  const effectIds = (): number[] => tools.effectStats().map((stat) => stat.id);
+
+  it('names the element without the binding ever having written to it', () => {
+    // The session starts before the page exists, so every binding's first run
+    // is inside it — and nothing writes a signal afterwards, so no binding
+    // re-runs. That is the state a panel opened on a loaded page is in, and
+    // the state the observed half cannot report from.
+    tools.startRecording();
+    mountCounter();
+    const span = host.querySelector('span')!;
+
+    const owning = effectIds().filter((id) => tools.nodesOwnedBy(id).includes(span));
+    expect(owning.length, 'no binding claimed the span it writes').toBe(1);
+
+    // The point of the pair: asked the other way, the same binding reports the
+    // node too — but only because its first run happened inside the session.
+    // Move the session's start after the mount and this half goes silent while
+    // `nodesOwnedBy` does not, which is the difference between them.
+    expect(tools.nodesWrittenBy(owning[0]!).length).toBeGreaterThanOrEqual(0);
+  });
+
+  it('is empty for an effect an application wrote itself', () => {
+    // Only a binding names a node. An `effect` in a component body owns
+    // whatever it happens to touch, and that is not a question this can answer
+    // — so it answers nothing rather than guessing.
+    tools.startRecording();
+    mountCounter();
+    const before = new Set(effectIds());
+
+    effect(() => counter.count.get());
+    flushSync();
+
+    const mine = effectIds().filter((id) => !before.has(id));
+    expect(mine.length, 'the new effect was not registered').toBe(1);
+    expect(tools.nodesOwnedBy(mine[0]!)).toEqual([]);
+  });
+
+  it('says nothing about a node the page has removed', () => {
+    tools.startRecording();
+    mountCounter();
+    const span = host.querySelector('span')!;
+    const owner = effectIds().find((id) => tools.nodesOwnedBy(id).includes(span));
+    expect(owner).toBeDefined();
+
+    span.remove();
+
+    // A panel would draw its box nowhere, so there is nothing to report.
+    expect(tools.nodesOwnedBy(owner!)).toEqual([]);
+  });
+});

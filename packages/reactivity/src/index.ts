@@ -37,6 +37,7 @@ export {
   tick,
   getFlushMetrics,
   serverSkippedEffects,
+  declareTarget,
   resetFlushMetrics,
   createRoot,
   onCleanup,
