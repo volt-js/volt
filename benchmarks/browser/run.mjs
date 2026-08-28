@@ -34,6 +34,15 @@ const flag = (name, fallback) => {
 };
 const ITERATIONS = flag('iterations', 12);
 const ROWS = flag('rows', 1000);
+/**
+ * `--profile` swaps the comparison for a sampling profile of `create` alone.
+ *
+ * The comparison says which of two builds is faster; it cannot say what either
+ * one is spending its time on, and "close the create gap" is a question of the
+ * second kind. Chrome's own sampler answers it, over the same page, driven the
+ * same way.
+ */
+const PROFILE = args.includes('--profile');
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -70,7 +79,19 @@ async function build(grouped) {
   await rm(out, { recursive: true, force: true });
   const child = spawn(
     'pnpm',
-    ['exec', 'vite', 'build', '--config', join(ROOT, 'vite.config.ts'), '--outDir', out],
+    [
+      'exec',
+      'vite',
+      'build',
+      '--config',
+      join(ROOT, 'vite.config.ts'),
+      '--outDir',
+      out,
+      // A profile of minified code names every function `W`. The comparison
+      // runs minified because that is what ships; a profile does not, because
+      // the whole output of one is the names.
+      ...(PROFILE ? ['--minify', 'false'] : []),
+    ],
     {
       cwd: ROOT,
       env: { ...process.env, VOLT_GROUP_ROWS: grouped ? '1' : '0' },
@@ -146,6 +167,72 @@ async function chromeTarget(port) {
   throw new Error('chrome never answered on the debugging port');
 }
 
+/**
+ * Where `create` spends its time, by function, self time first.
+ *
+ * Self and not total: a profile ordered by total time reports the entry point
+ * at the top every time, which is true and useless. Self time is the line to
+ * go and look at.
+ */
+async function profile(session, origin) {
+  await ready(session, origin);
+  // Two warm creates before the sampler starts: the first pays for the JIT
+  // and the first layout, and a profile that includes them is a profile of
+  // starting Chrome.
+  for (let i = 0; i < 2; i++) {
+    await session.evaluate(`globalThis.__bench.create(${ROWS})`);
+    await session.evaluate('globalThis.__bench.clear()');
+  }
+
+  await session.send('Profiler.enable');
+  // 10µs, against the 1ms default: one create is ~200ms, and a default-rate
+  // profile of it is a few hundred samples spread over the whole framework.
+  await session.send('Profiler.setSamplingInterval', { interval: 10 });
+
+  const self = new Map();
+  let total = 0;
+
+  // Started and stopped around each create, with the clear outside it. A
+  // single profile over the whole loop is a profile of create *and* clear —
+  // and clear's `replaceContent` is large enough to come out on top of it,
+  // which is a true statement about a loop nobody runs.
+  for (let i = 0; i < ITERATIONS; i++) {
+    await session.evaluate('globalThis.__bench.clear()');
+    await session.send('Profiler.start');
+    await session.evaluate(`globalThis.__bench.create(${ROWS})`);
+    const { profile: cpu } = await session.send('Profiler.stop');
+
+    const byId = new Map(cpu.nodes.map((node) => [node.id, node]));
+    for (const id of cpu.samples ?? []) {
+      const node = byId.get(id);
+      if (!node) continue;
+      const { functionName, url, lineNumber } = node.callFrame;
+      const where = `${functionName || '(anonymous)'}  ${(url || '').split('/').pop()}:${lineNumber + 1}`;
+      self.set(where, (self.get(where) ?? 0) + 1);
+      total++;
+    }
+  }
+
+  return [...self]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 22)
+    .map(([where, count]) => `${((count / total) * 100).toFixed(1).padStart(5)}%  ${where}`);
+}
+
+/** Load the page and wait for the benchmark handle to be published. */
+async function ready(session, origin) {
+  await session.evaluate(`new Promise((done) => {
+    location.href = ${JSON.stringify(origin)};
+    done(true);
+  })`);
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const up = await session.evaluate('typeof globalThis.__bench === "object"').catch(() => false);
+    if (up) return;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error('the benchmark page never published its handle');
+}
+
 /** Middle value: one slow iteration is a machine hiccup, not a measurement. */
 function median(values) {
   const sorted = [...values].sort((a, b) => a - b);
@@ -154,20 +241,17 @@ function median(values) {
 }
 
 async function measure(session, origin) {
-  await session.evaluate(`new Promise((done) => {
-    location.href = ${JSON.stringify(origin)};
-    done(true);
-  })`);
-  // Wait for the module to have booted and published its handle.
-  for (let attempt = 0; attempt < 200; attempt++) {
-    const ready = await session.evaluate('typeof globalThis.__bench === "object"').catch(() => false);
-    if (ready) break;
-    await new Promise((r) => setTimeout(r, 100));
-  }
+  await ready(session, origin);
 
   const creates = [];
   const selects = [];
+  const vanillas = [];
   for (let i = 0; i < ITERATIONS; i++) {
+    // Hand-written first and cleared straight away, so the two never share a
+    // layout: whichever ran second would otherwise be charged for relaying out
+    // whatever the first had left on the page.
+    vanillas.push(await session.evaluate(`globalThis.__bench.vanilla(${ROWS})`));
+    await session.evaluate('globalThis.__bench.clearVanilla()');
     creates.push(await session.evaluate(`globalThis.__bench.create(${ROWS})`));
     // Five selects per create, each on a different row, so the number is not
     // one sample and not the same row's cached anything.
@@ -180,6 +264,7 @@ async function measure(session, origin) {
   // paint. Dropped from both sides equally.
   const c = creates.slice(1);
   const t = selects.slice(5);
+  const v = vanillas.slice(1);
   // Mean as well as median, because Chrome coarsens `performance.now` to 100µs
   // and a select of a thousand rows lands within a few ticks of that. Two
   // medians that read the same there are two numbers the clock could not
@@ -191,17 +276,19 @@ async function measure(session, origin) {
     select: median(t),
     createMean: mean(c),
     selectMean: mean(t),
+    vanilla: median(v),
+    vanillaMean: mean(v),
   };
 }
 
 const port = 9333 + (process.pid % 200);
-const profile = join(HERE, `.chrome-${process.pid}`);
+const profileDirectory = join(HERE, `.chrome-${process.pid}`);
 const chrome = spawn(
   '/usr/bin/google-chrome',
   [
     '--headless=new',
     `--remote-debugging-port=${port}`,
-    `--user-data-dir=${profile}`,
+    `--user-data-dir=${profileDirectory}`,
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-gpu',
@@ -220,6 +307,17 @@ try {
   const results = {};
   session = await Session.open(await chromeTarget(port));
   await session.send('Runtime.enable');
+
+  if (PROFILE) {
+    const server = serve(plainDir);
+    server.listen(0);
+    await once(server, 'listening');
+    servers.push(server);
+    const lines = await profile(session, `http://127.0.0.1:${server.address().port}/`);
+    console.log(`\nWhere \`create ${ROWS}\` spends its time, self time first:\n`);
+    for (const line of lines) console.log(line);
+    console.log('');
+  } else {
 
   for (const [name, directory] of [
     ['ungrouped', plainDir],
@@ -257,6 +355,16 @@ try {
       .padStart(8)} ms   ${ratio(grouped.selectMean, ungrouped.selectMean).toFixed(3)}`,
   );
   console.log('\nBelow 1.000 is grouping winning; above 1.000 is grouping costing.\n');
+
+  // The other comparison, and the one the `create` entry is actually about:
+  // the same table built by hand, on the same page, in the same browser.
+  console.log(
+    `create against hand-written DOM: ${ungrouped.create.toFixed(2)} ms vs ` +
+      `${ungrouped.vanilla.toFixed(2)} ms  (${ratio(ungrouped.create, ungrouped.vanilla).toFixed(3)}x), ` +
+      `means ${ungrouped.createMean.toFixed(2)} vs ${ungrouped.vanillaMean.toFixed(2)} ` +
+      `(${ratio(ungrouped.createMean, ungrouped.vanillaMean).toFixed(3)}x)\n`,
+  );
+  }
 } finally {
   session?.close();
   for (const server of servers) server.close();
@@ -264,5 +372,5 @@ try {
   // Chrome writes to its profile as it shuts down, so removing the directory
   // the moment `kill` returns races it and fails with ENOTEMPTY.
   await once(chrome, 'exit').catch(() => {});
-  await rm(profile, { recursive: true, force: true }).catch(() => {});
+  await rm(profileDirectory, { recursive: true, force: true }).catch(() => {});
 }

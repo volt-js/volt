@@ -55,22 +55,42 @@ No dependency is added for it. Chrome is driven over the DevTools protocol
 through Node's own `WebSocket`, and the built pages are served by a static
 handler in the file.
 
+It also builds the same table by hand, into a container of its own, so
+`create` has something to be a ratio *of*. Anything Volt costs above the
+hand-written version is Volt's to account for.
+
+```bash
+node benchmarks/browser/run.mjs --profile --rows 10000
+```
+
+swaps the comparison for a sampling profile of `create` alone — the `clear`
+taken out of the sampled region, because `clear`'s `replaceContent` otherwise
+comes out on top of a loop nobody runs — and builds unminified, because the
+whole output of a profile is the names.
+
 ### What it answered
 
-`groupRowBindings` stays off. On an idle machine, across four runs at 1,000 and
-10,000 rows:
+**`create` costs 1.06–1.13x hand-written DOM** at 10,000 rows, reproducible to
+within a few percent. The profile says where: under 6% of `create` is Volt's own
+JavaScript, against 68% layout and 17% browser internals, with GC, `cloneNode`
+and `insertBefore` after them — all of which hand-written code pays too. No
+function of Volt's is above about 1% of self time. There is no hot spot; the
+overhead is the per-row work itself, thinly spread.
 
-| | ungrouped | grouped | ratio |
-|---|---|---|---|
-| create 1,000 | 20.5 ms | 21.1 ms | 1.03 |
-| select row 1,000 | 0.33 ms | 0.42 ms | 1.27 |
-| create 10,000 | 207.6 ms | 208.8 ms | 1.01 |
-| select row 10,000 | 3.26 ms | 4.29 ms | 1.31 |
+**`groupRowBindings` stays off, and it is a trade rather than a loss.** At
+10,000 rows it wins 5–11% of `create` and costs 13–35% of `select row`. It stays
+off because `select row` is where the gap is concentrated and is paid on every
+selection, where `create` is paid once.
 
-Grouping was expected to trade `select row` for `create`. It does not: `create`
-is neutral to slightly worse and `select row` is 27–64% worse. The only thing it
-buys is the ~2.3 kB a row measured in `core/test/group-bindings-memory.test.ts`,
-which is not worth that regression on the operation the gap is concentrated in.
+An earlier version of this file said `create` was neutral to slightly worse
+under grouping. That was measured with a harness that ran `create` straight
+after a `clear`, where allocation and layout state differ run to run; building
+and discarding a hand-written table first settles it. The conclusion moved with
+the measurement.
+
+At 1,000 rows `select row` lands at 0.4 ms — four ticks of Chrome's coarsened
+`performance.now` — and its ratio swings from 0.80 to 1.20 between runs. That is
+the clock. Use 10,000 rows for anything about `select`.
 
 Two things to know before trusting a run. `performance.now` is coarsened to
 100µs in Chrome, and a select over a thousand rows lands within a few ticks of

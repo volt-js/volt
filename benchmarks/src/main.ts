@@ -9,7 +9,7 @@
  */
 
 import { Component, Signal, flushSync, mount } from '@voltdev/core';
-import { BenchApp } from './bench-app.js';
+import { BenchApp, buildRows } from './bench-app.js';
 
 interface Timing {
   name: string;
@@ -49,6 +49,48 @@ export class Harness {
 
   run(count: number): number {
     return this.measure(`create ${count}`, () => this.bench?.run(count));
+  }
+
+  /**
+   * The same table, built by hand, into a container of its own.
+   *
+   * The comparison the roadmap's `create` entry is against. Written the way
+   * the reference implementations are — one `createElement` per node, one
+   * append per row — so what it measures is the DOM work the markup requires
+   * and nothing else. Anything Volt costs above this is Volt's to account for.
+   */
+  vanilla(count: number): number {
+    const host = document.querySelector('#vanilla')!;
+    return this.measure(`vanilla ${count}`, () => {
+      const table = document.createElement('table');
+      const body = document.createElement('tbody');
+      for (const row of buildRows(count)) {
+        const tr = document.createElement('tr');
+        const id = document.createElement('td');
+        id.className = 'col-id';
+        id.textContent = String(row.id);
+        const label = document.createElement('td');
+        label.className = 'col-label';
+        const link = document.createElement('a');
+        link.textContent = row.label;
+        label.append(link);
+        const remove = document.createElement('td');
+        remove.className = 'col-remove';
+        const x = document.createElement('a');
+        x.textContent = 'x';
+        remove.append(x);
+        const spacer = document.createElement('td');
+        spacer.className = 'col-spacer';
+        tr.append(id, label, remove, spacer);
+        body.append(tr);
+      }
+      table.append(body);
+      host.replaceChildren(table);
+    });
+  }
+
+  clearVanilla(): void {
+    document.querySelector('#vanilla')!.replaceChildren();
   }
 
   /**
@@ -94,6 +136,8 @@ const harness = mount(Harness, '#app').instance as Harness;
  */
 (globalThis as Record<string, unknown>)['__bench'] = {
   create: (count: number) => harness.run(count),
+  vanilla: (count: number) => harness.vanilla(count),
+  clearVanilla: () => harness.clearVanilla(),
   select: (index: number) => harness.selectRow(index),
   update: () => harness.update(),
   swap: () => harness.swap(),

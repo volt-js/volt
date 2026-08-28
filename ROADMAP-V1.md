@@ -29,22 +29,50 @@ Solid's number, not native's.
       page twice and drives one headless Chrome through both, which is what
       makes the ratio about the codegen rather than about the machine.
 
-      Grouping costs `select row` 27–64% and does not pay for it anywhere. The
-      estimate had it helping `create` — coarser invalidation, one effect per
-      row instead of three — and that is the half that turned out to be wrong:
-      `create` measures 1.006–1.120, neutral to slightly worse, across four
-      runs at 1,000 and 10,000 rows on an idle machine. So it is not a
-      trade-off between two operations. It loses on both and wins only on
-      memory, and 2.3 kB a row does not buy a 40% regression on the operation
-      this section says the gap is concentrated in.
+      It is a genuine trade, which is what the estimate said and what a first
+      set of measurements here denied. Corrected: grouping helps `create` by
+      5–11% and costs `select row` 13–35%, at 10,000 rows where `select` is
+      above the clock's resolution. At 1,000 rows `select` lands at 0.4 ms —
+      four ticks of Chrome's coarsened `performance.now` — and the ratios there
+      swing from 0.80 to 1.20 between runs, which is the clock and not the
+      codegen.
 
-      The flag stays, because the memory saving is real and a list that never
-      selects can want it. It stays off.
-- [ ] `create`: 1.15–1.19x, the next largest gap after select. One lead is now
-      closed rather than open: grouping a row's bindings into a single effect
-      was expected to help here and measures neutral to slightly worse in a
-      real browser (see the entry above), so whatever the 15–19% is, it is not
-      per-effect overhead in the row body.
+      The earlier reading said `create` was neutral to slightly worse. That was
+      taken with a harness that measured `create` immediately after a `clear`,
+      where allocation and layout state differ from run to run; building and
+      discarding a hand-written table first settles it, and the numbers
+      reproduce to within a few percent across runs after that. The conclusion
+      moved with the measurement, which is the point of taking one.
+
+      So the default is a judgement rather than an arithmetic. It stays off,
+      because `select row` is where this section says the gap is concentrated
+      and because it is the interactive cost — paid on every selection, for as
+      long as the page is open — where `create` is paid once. The flag stays,
+      and a list that never selects can want it: 2.3 kB a row and 5–11% off
+      construction is a real offer to the right application.
+- [x] `create`: measured against hand-written DOM in a real browser rather than
+      against a remembered figure, and the overhead is **1.06–1.13x** at 10,000
+      rows, reproducible to within a few percent across runs.
+      `benchmarks/browser/run.mjs` builds the same table both ways on the same
+      page in the same browser, which is what makes the ratio about the
+      framework rather than about the afternoon.
+
+      Where it goes: a sampling profile of `create` alone — the clear taken out
+      of the sampled region, because `clear`'s `replaceContent` otherwise comes
+      out on top of a loop nobody runs — says **under 6% of `create` is Volt's
+      own JavaScript**. The rest is layout at 68%, browser internals at 17%,
+      then GC, `cloneNode` and `insertBefore`, all of which hand-written code
+      pays too. No function of Volt's is above about 1% of self time: `bind`,
+      `watch`, `track`, `bindText`, the scope. There is no hot spot here, and
+      that is the finding — the overhead is the per-row work itself, thinly
+      spread, and removing it means not doing it rather than doing it faster.
+
+      Which is exactly what `groupRowBindings` is, and it wins 5–11% of
+      `create` for 13–35% of `select row`. The lever exists, it is measured,
+      and it is priced. Taking it is the decision recorded above, and the
+      answer there is no — because `select row` is where this section says the
+      gap is concentrated, and because it is paid per interaction where
+      `create` is paid once.
 
 ### Bundle size
 
