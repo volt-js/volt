@@ -78,6 +78,8 @@ export {
   defineRoutes,
   flattenRoutes,
   matchRoutes,
+  routeMode,
+  type RenderMode,
   type LoaderArgs,
   type RevalidateArgs,
   type RouteBranch,

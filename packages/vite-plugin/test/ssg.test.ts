@@ -371,3 +371,43 @@ describe('reachability', () => {
     expect(typeof module.renderPath).toBe('function');
   });
 });
+
+describe('a table that says how each route renders', () => {
+  it('writes the static ones and says why it left the rest', () => {
+    const branches = flattenRoutes(
+      defineRoutes([
+        {
+          path: '/',
+          mode: 'ssg',
+          children: [
+            { index: true },
+            { path: 'about' },
+            { path: 'dashboard', mode: 'csr' },
+            { path: 'pricing', mode: 'ssr' },
+          ],
+        },
+      ]),
+    );
+    return enumerateRoutes(branches).then((enumeration) => {
+      expect(enumeration.routes.map((r) => r.pathname).sort()).toEqual(['/', '/about']);
+      // Named rather than silently missing: a route absent from a build output
+      // with no reason given is indistinguishable from one the enumerator
+      // failed to see.
+      expect(
+        enumeration.skipped.map((s) => `${s.pattern} ${s.reason}`).sort(),
+      ).toEqual(['/dashboard not-static', '/pricing not-static']);
+    });
+  });
+
+  it('takes a table with no modes in it as wholly static', () => {
+    // A caller handing over a plain table is asking for all of it, which is
+    // what a site with no server at all is.
+    const branches = flattenRoutes(
+      defineRoutes([{ path: '/', children: [{ index: true }, { path: 'about' }] }]),
+    );
+    return enumerateRoutes(branches).then((enumeration) => {
+      expect(enumeration.routes).toHaveLength(2);
+      expect(enumeration.skipped).toEqual([]);
+    });
+  });
+});

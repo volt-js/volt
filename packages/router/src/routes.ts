@@ -102,10 +102,45 @@ export interface RouteDefinition {
   readonly shouldRevalidate?: (args: RevalidateArgs) => boolean;
   /**
    * Anything the application wants to carry per route: a page title, a
-   * required permission, and later the per-route rendering mode.
+   * required permission.
    */
   readonly meta?: Readonly<Record<string, unknown>>;
+  /**
+   * How this route is rendered, when the application renders on a server at
+   * all. Inherited by children that do not say; see `routeMode`.
+   */
+  readonly mode?: RenderMode;
   readonly children?: readonly RouteDefinition[];
+}
+
+/**
+ * Where a route's markup is produced.
+ *
+ * Three, not six: the six in the roadmap's table are variations on two pieces
+ * of machinery and this is the axis an individual route can actually differ
+ * on. Streaming is how an `ssr` route is delivered rather than a fourth
+ * choice, and edge is a constraint on the whole build.
+ */
+export type RenderMode = 'csr' | 'ssr' | 'ssg';
+
+/**
+ * The mode this branch renders in: the nearest one declared, leaf to root.
+ *
+ * Leaf-first rather than root-first, because a layout says what its section
+ * does by default and a page inside it is the one that knows better — a
+ * marketing site prerendered whole with one live `/pricing` is the ordinary
+ * shape, and the opposite reading would make the layout unable to say
+ * anything.
+ *
+ * `fallback` is the application's own default and not this module's. Nothing
+ * here decides that server rendering happens at all.
+ */
+export function routeMode(branch: RouteBranch, fallback: RenderMode): RenderMode {
+  for (let i = branch.routes.length - 1; i >= 0; i--) {
+    const mode = branch.routes[i]!.mode;
+    if (mode !== undefined) return mode;
+  }
+  return fallback;
 }
 
 // ---------------------------------------------------------------------------

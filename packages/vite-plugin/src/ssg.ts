@@ -55,6 +55,14 @@ export interface RouteBranchLike {
   /** The full pattern of each route, root to leaf. */
   readonly patterns: readonly string[];
   readonly ids: readonly string[];
+  /**
+   * The routes themselves, root to leaf, for their declared mode.
+   *
+   * Optional because the whole enumerator works without it: a caller handing
+   * over a table with no modes in it is asking for every route, which is what
+   * a wholly static site is.
+   */
+  readonly routes?: readonly { readonly mode?: 'csr' | 'ssr' | 'ssg' }[];
 }
 
 /** Matched parameters. Always strings — a URL has no other type. */
@@ -74,8 +82,13 @@ export interface PrerenderRoute {
 export interface SkippedRoute {
   readonly pattern: string;
   readonly id: string;
-  /** No parameter values were offered for a pattern that needs some. */
-  readonly reason: 'no-params';
+  /**
+   * `no-params`: no parameter values were offered for a pattern that needs
+   * some. `not-static`: the route renders per request or in the browser, so
+   * there is nothing to write at build time — which is a decision the
+   * application made rather than a gap in what it told this.
+   */
+  readonly reason: 'no-params' | 'not-static';
 }
 
 export interface Enumeration {
@@ -199,6 +212,17 @@ function buildPathname(
  * the same URL the more specific one is the page that gets written — the same
  * precedence `matchRoutes` would apply to a request for it.
  */
+/** The nearest declared mode, leaf to root, or `ssg` if none says. */
+function effectiveMode(
+  routes: readonly { readonly mode?: 'csr' | 'ssr' | 'ssg' }[],
+): 'csr' | 'ssr' | 'ssg' {
+  for (let i = routes.length - 1; i >= 0; i--) {
+    const mode = routes[i]!.mode;
+    if (mode !== undefined) return mode;
+  }
+  return 'ssg';
+}
+
 export async function enumerateRoutes(
   branches: readonly RouteBranchLike[],
   params?: ParamsForPattern,
@@ -216,6 +240,15 @@ export async function enumerateRoutes(
   for (const branch of branches) {
     const pattern = branch.patterns.at(-1) ?? '/';
     const id = branch.ids.at(-1) ?? pattern;
+
+    // Leaf to root: a layout says what its section does by default and the
+    // page inside it is the one that knows better. A branch that declares
+    // nothing anywhere is static, because a caller handing over a table with
+    // no modes in it is asking for all of it.
+    if (branch.routes && effectiveMode(branch.routes) !== 'ssg') {
+      skipped.push({ pattern, id, reason: 'not-static' });
+      continue;
+    }
 
     if (!branch.segments.some(isDynamic)) {
       add({ pathname: buildPathname(branch.segments, {}, pattern), pattern, id, params: {} });

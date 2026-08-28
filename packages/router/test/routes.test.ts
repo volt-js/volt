@@ -9,7 +9,9 @@
 import { describe, expect, it } from 'vitest';
 import { Component } from '@voltdev/core';
 import { compileTemplate } from '@voltdev/core/jit';
-import { defineRoutes, flattenRoutes, matchRoutes, type RouteDefinition } from '../src/routes.js';
+import { defineRoutes, flattenRoutes, matchRoutes, type RouteDefinition,
+  routeMode,
+} from '../src/routes.js';
 
 @Component({ selector: 'v-blank', render: compileTemplate(`<div></div>`) })
 class Blank {}
@@ -125,5 +127,40 @@ describe('splitting a branch back up', () => {
       '/a/1/b/2',
     );
     expect(shadowed.map((match) => match.params)).toEqual([{ id: '1' }, { id: '2' }]);
+  });
+});
+
+describe('the mode a route renders in', () => {
+  it('takes the nearest one declared, leaf first', () => {
+    // A layout says what its section does by default; the page inside it is
+    // the one that knows better. A marketing site prerendered whole with one
+    // live `/pricing` is the ordinary shape, and root-first would make the
+    // layout unable to say anything at all.
+    const routes = defineRoutes([
+      {
+        path: '/',
+        mode: 'ssg',
+        children: [
+          { index: true },
+          { path: 'pricing', mode: 'ssr' },
+          { path: 'about' },
+        ],
+      },
+    ]);
+    const branches = flattenRoutes(routes);
+    const modeOf = (pattern: string) =>
+      routeMode(branches.find((b) => b.patterns.at(-1) === pattern)!, 'csr');
+
+    expect(modeOf('/pricing')).toBe('ssr');
+    // Inherited, not defaulted: the fallback would have said `csr`.
+    expect(modeOf('/about')).toBe('ssg');
+    expect(modeOf('/')).toBe('ssg');
+  });
+
+  it('falls back to the application’s default when nothing says', () => {
+    // Nothing in this module decides that server rendering happens at all.
+    const branches = flattenRoutes(defineRoutes([{ path: '/', children: [{ index: true }] }]));
+    expect(routeMode(branches[0]!, 'csr')).toBe('csr');
+    expect(routeMode(branches[0]!, 'ssr')).toBe('ssr');
   });
 });
