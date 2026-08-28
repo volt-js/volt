@@ -144,14 +144,16 @@ leaning it found nothing: removing a per-write allocation made writes slower
       until the element reports its exit animation finished. Keeping this out
       of the core is the better outcome — CSS stays the source of truth for
       duration, and a library that never animates pays nothing.
-- [x] **SSR** — decided, and built as far as markup: a server codegen target,
-      a markup writer, and request-scoped isolation. Hydration is not built at
-      all; the SSR section below says what that leaves.
+- [x] **SSR** — decided and built: a server codegen target, a markup writer,
+      request-scoped isolation, and the hydration that attaches to what it
+      wrote. The SSR section below is the detail, including what `start` does
+      with it and where each route's markup is made.
 - [x] **Error boundaries** — built, and specified below rather than left as a
       name. An error walks the scope chain to the nearest boundary; `onError`
-      swallows, replaces the subtree, or rethrows upward. Two of that section's
-      six bullets are still open: errors during server rendering, and
-      production diagnostics that survive the `__VOLT_DEV__` strip.
+      swallows, replaces the subtree, or rethrows upward. Its last two bullets
+      are closed too: errors during server rendering and after a flushed
+      shell, and production diagnostics that survive the `__VOLT_DEV__` strip
+      — which took splitting that flag in two.
 
 ## Track 2 — the component library
 
@@ -625,23 +627,32 @@ positional-id rework identity under an out-of-order flush would need.
       their isolation and lifecycle claims hold, but they are not evidence
       about bytes. The bytes are covered by `core/test/static-markup.test.ts`.
 
-Not yet, and the reason:
+Built, and each entry says what it cost:
 
 - [x] `renderToString` — a walk over the finished tree that emits the hole
       delimiters a hydrating client claims, and carries the state payload. It
       returns a result discriminated on `status`, with `html` typed `null` on
       the failure branch so a caller cannot forget to answer 500: the walk
       buffers, so a throw discards the writer rather than leaving a half-written
-      prefix. `renderToStream` is still open, and the design record ties it to
-      error boundaries rather than to this.
+      prefix. `renderToStream` is built too, in the streaming entry below —
+      the design record ties it to error boundaries rather than to this, and
+      that is where it landed.
 - [x] A hydration codegen mode reusing the existing path resolution. The server
       writes `<!--[-->` and `<!--]-->` where the client template punches a child
       marker, and the hydrate emit resolves each hole once — `hClose` per hole,
       a plain `.nextSibling` for everything that is not one. `hInsert` seeds
       `current` with the range it claimed, which the design record calls
       non-negotiable: without it the markerless path wipes what the server
-      wrote. Mismatch handling is tier four only — compare the node name, stall,
-      clone, report — and tiers one to three are still open below.
+      wrote. Of the SSR record's four failure tiers, one and four are built:
+      the compiler refuses markup a parser would rearrange
+      (`compiler/src/content-model.ts`), and a hole whose first node disagrees
+      stalls, clones and reports through `onHydrationMismatch`. Tier two is
+      half there — `__VOLT_BUILD__` identifies the compiler that produced a
+      page, and nothing yet writes it into the boot record or checks it on
+      arrival — and tier three, a whole-page checksum catching a
+      comment-stripping intermediary, is not built. Both are bounded failures
+      rather than silent ones today: a skewed build is caught per hole instead
+      of per page, which reports more times and recovers the same way.
       Reachable from a build: `volt({ hydrate: true })` compiles the client
       side to claim rather than clone, and the server side is chosen by its
       consumer as before. Opt-in deliberately — client rendering stays
@@ -1455,7 +1466,7 @@ project points it at a catalogue. The runtime catalogue is untouched.
       promising a `string`, which is the failure the whole pass exists to
       prevent, arriving through the one door the pass did not watch.
 
-Not yet, and the reason:
+Built, and each entry says how:
 
 - [x] **Messages follow the code split**, and not by writing per-chunk
       catalogues — by not writing one catalogue in the first place. The
@@ -1616,11 +1627,15 @@ need one.
       not. Collected whether or not a session is recording, because the same
       fact is what an effect that throws puts in its message. One mechanism,
       as the observability entry below asks for, but a development-build one:
-      the production half of that entry is not built and cannot be while a
-      single flag decides both. `__VOLT_DEV__` removes the calls that tell the
-      tools a write happened — which is what keeps a null check off every
-      signal write in production — so a production build has no attribution to
-      report. Shipping it would mean splitting the flag, which is the open
+      the production half of that entry is still not built, though the reason
+      has changed. `__VOLT_DEV__` removes the calls that tell the tools a write
+      happened — which is what keeps a null check off every signal write in
+      production — so a production build has no attribution to report. That
+      used to be unfixable while one flag decided both; the flag is now split,
+      and `__VOLT_DIAGNOSTICS__` carries an error's code and identity through
+      the strip. What a production build still does not carry is the *write
+      history* behind them, which is a cost on every signal write rather than a
+      string, and a different bargain from the one the split settled — see the
       "production diagnostics that survive the `__VOLT_DEV__` strip" item
       above, not this one.
 - [x] **Performance** — effect run counts and durations, flush timings, and
