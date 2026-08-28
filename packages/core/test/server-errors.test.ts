@@ -29,6 +29,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { compileTemplate } from '@voltdev/core/jit';
 import { Component, Signal, dataEffect, trackRequestData } from '@voltdev/core';
+import { hasSinks } from '@voltdev/reactivity/signals';
 import {
   MarkupWriter,
   errorBoundary,
@@ -413,5 +414,97 @@ describe('a boundary in a stream', () => {
     expect(html).toContain('<!--v0--><p>early</p><!--/v0-->');
     expect(html).not.toContain('<p>region</p>');
     expect(html).not.toContain('data-volt-b="0"');
+  });
+});
+
+/**
+ * A render that fails with nothing to catch it.
+ *
+ * Everything above puts a boundary in the way and asserts the page it
+ * produces. These are the paths with no boundary at all: the render has to
+ * become a 500 the caller can send, it has to become the *first* 500 rather
+ * than whichever error arrived last, and it has to let go of its effects on
+ * the way out. Each of the three lines that does one of those can be deleted
+ * without any other test in this file noticing.
+ */
+describe('a buffered render with no boundary over the failure', () => {
+  it('turns an effect that throws into a 500, not a page', async () => {
+    // Not a throw from the walk — that one lands in the `catch` directly. This
+    // is a `dataEffect` failing while the request settles, which arrives
+    // through the error channel after the markup has already been written.
+    @Component({
+      selector: 'v-throwing-effect',
+      render: compileTemplate(`<main><h1>written</h1></main>`),
+    })
+    class Page {
+      body = dataEffect(() => {
+        throw new Error('the query exploded');
+      });
+    }
+
+    const page = await renderToString(Page);
+
+    // 500 and not 200-with-markup: the page was half-built from data that
+    // never arrived, and sending it would serve a lie that hydration then
+    // silently corrects.
+    expect(page.status).toBe(500);
+    expect((page.error as Error).message).toBe('the query exploded');
+    expect(page.html).toBeNull();
+  });
+
+  it('answers with the first failure, not the last one to arrive', async () => {
+    @Component({
+      selector: 'v-two-failures',
+      render: compileTemplate(`<main><h1>written</h1></main>`),
+    })
+    class Page {
+      first = dataEffect(() => {
+        throw new Error('first');
+      });
+      second = dataEffect(() => {
+        throw new Error('second');
+      });
+    }
+
+    const page = await renderToString(Page);
+
+    expect(page.status).toBe(500);
+    // The first is the cause and the second is very often its consequence.
+    // Reporting the last would name the symptom and drop the cause.
+    expect((page.error as Error).message).toBe('first');
+  });
+
+  it('lets go of its effects even though it failed', async () => {
+    // The leak that only appears once something is already going wrong: a
+    // failed render still owns everything it created, and one that walks away
+    // leaves an effect observing per failed request.
+    const source = new Signal.State(0);
+    let runs = 0;
+
+    @Component({ selector: 'v-leaky', render: compileTemplate(`<main><h1>x</h1></main>`) })
+    class Page {
+      // The one that observes and does not fail. It has to be a different
+      // effect from the one that throws: an effect that failed may be torn
+      // down by the error channel on its own account, and then the assertion
+      // below would hold whether or not the request let go of anything.
+      watcher = dataEffect(() => {
+        runs++;
+        source.get();
+      });
+      failing = dataEffect(() => {
+        throw new Error('failed on the way up');
+      });
+    }
+
+    const page = await renderToString(Page);
+    expect(page.status).toBe(500);
+    expect(runs, 'the watcher never ran, so it never observed anything').toBe(1);
+
+    // Asked of the graph rather than by writing and watching for a re-run.
+    // Nothing outside the request can wake an effect inside it — a server
+    // never self-flushes — so a write here would prove nothing either way.
+    // Whether anything still observes the signal is the leak itself, and the
+    // graph answers that directly.
+    expect(hasSinks(source), 'an effect outlived the render that failed').toBe(false);
   });
 });

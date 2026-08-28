@@ -1059,9 +1059,27 @@ cannot be a `try`/`catch` bolted on later.
       needs, so it is designed once and read twice — a production error report
       that names the write which woke the failing effect is worth more than a
       stack trace into framework code.
-- [ ] Errors during server rendering, and after a streamed shell has flushed
+- [x] Errors during server rendering, and after a streamed shell has flushed
       and the headers are gone. A boundary that can still emit a fallback into
-      the stream is the only recovery available at that point.
+      the stream is the only recovery available at that point, and it is the
+      one taken: a region that fails after the shell has gone writes its
+      replacement as a chunk of its own on the same controller, and a failure
+      with no region left to blame writes the caller's fallback or the
+      framework's.
+
+      The buffered half was built and only half proved. Three of its lines
+      could be deleted with every test in the file still green: the throw that
+      turns a failed effect into a 500 rather than a page half-built from data
+      that never arrived, the guard that keeps the *first* error rather than
+      whichever arrived last — the first is the cause and the last is usually
+      its consequence — and the `finally` that lets go of the request's
+      effects, which is a leak of one live effect per failed request and so
+      the kind that only appears once something is already going wrong. Each
+      now has a test that reddens when the line goes. The last of them asks
+      the graph whether anything still observes the signal rather than writing
+      to it and watching: nothing outside a request can wake an effect inside
+      one, because a server never self-flushes, so the write would have proved
+      nothing either way.
 - [x] Production diagnostics that survive the `__VOLT_DEV__` strip: enough
       structure in the error to be actionable, without shipping the messages.
       The flag is split in two. `__VOLT_DEV__` gates the *words*, written at
