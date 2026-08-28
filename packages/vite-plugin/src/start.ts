@@ -97,6 +97,7 @@ export function resolveStart(options: StartOptions | true): ResolvedStart {
 export function serverModule(start: ResolvedStart): string {
   return `import { flattenRoutes, matchRoutes, routeMode } from '@voltdev/router';
 import { renderToString } from '@voltdev/core/server';
+import { needsHydration } from '@voltdev/core';
 import { createHandler } from '@voltdev/server';
 import { routes } from ${JSON.stringify(start.routes)};
 import App from ${JSON.stringify(start.root)};
@@ -112,12 +113,40 @@ export function setShell(html) {
 
 const MARKER = '<div id="app"></div>';
 
-function page(html, state, styles, status) {
+/** The module script, and the only JavaScript the shell asks for. */
+const SCRIPT = /<script\\b[^>]*\\btype=["']module["'][^>]*><\\/script>/;
+
+/**
+ * Has this route anything at all to attach in a browser?
+ *
+ * Every component on the branch is asked, because the outlet renders the
+ * leaf's markup inside the layout's and either can have a binding in it. Each
+ * component's answer already covers everything its own template reaches — a
+ * child component is constructed by a runtime call, so a layout that renders
+ * one is dynamic whatever its own markup looks like.
+ *
+ * A route with no components at all answers "yes". Unknown is not static.
+ */
+function interactive(branch) {
+  const components = branch.routes.map((route) => route.component).filter(Boolean);
+  return components.length === 0 || components.some((component) => needsHydration(component));
+}
+
+function page(html, state, styles, status, script = true) {
   // Replaced rather than appended: the shell is the application's own file and
   // the mount point is where it says the application goes.
-  const body = shell.includes(MARKER)
-    ? shell.replace(MARKER, '<div id="app">' + html + '</div>' + state)
-    : shell + html + state;
+  // The state payload exists so hydration can start from what the server
+  // settled on. A page that will not hydrate has nothing to read it, and on a
+  // page of prose it can easily be the larger half.
+  const carried = script ? state : '';
+  const filled = shell.includes(MARKER)
+    ? shell.replace(MARKER, '<div id="app">' + html + '</div>' + carried)
+    : shell + html + carried;
+  // Declining to ship the JavaScript, which is the whole of partial hydration
+  // once the boundary is known: a page of prose and links has nothing to
+  // attach, so it asks for neither the bundle that would attach it nor the
+  // values it would have attached.
+  const body = script ? filled : filled.replace(SCRIPT, '');
   return new Response(styles ? body.replace('</head>', styles + '</head>') : body, {
     status,
     headers: { 'content-type': 'text/html; charset=utf-8' },
@@ -140,7 +169,7 @@ export async function handler(request) {
     return new Response('Internal Server Error', { status: 500 });
   }
   const styles = [...rendered.styles.values()].map((css) => '<style>' + css + '</style>').join('');
-  return page(rendered.html, rendered.state ?? '', styles, 200);
+  return page(rendered.html, rendered.state ?? '', styles, 200, interactive(matched.branch));
 }
 
 export { branches, routes };

@@ -713,8 +713,32 @@ Not yet, and the reason:
       as `node:fs` and fails the same deploy, while `fs-extra` is a package and
       is left alone. Ordered `pre`, because the pass it reads the boundary from
       is the pass that erases it.
-- [ ] Per-route rendering mode, and partial hydration driven by the compiler's
-      existing static/dynamic split rather than an island annotation
+- [x] Per-route rendering mode, and partial hydration driven by the compiler's
+      existing static/dynamic split rather than an island annotation. The mode
+      is `RouteDefinition.mode`, resolved leaf to root; the split is
+      `needsHydration` on the compile result, and there is no annotation
+      anywhere.
+
+      The question is asked of the emit rather than of a list of features: does
+      the render body reach for the runtime at all? Every markup string is
+      hoisted out of the body, so a template that only clones one and hands it
+      back touches nothing — and a binding, a listener, a block, a child
+      component or a ref all call it. A dynamic construct added later is
+      therefore counted the day it is written, where a list of flags would have
+      to be remembered, and the failure of forgetting one is a page that ships
+      no JavaScript and does not work. That hoisting is an invariant this
+      depends on, so a test pins it across all 126 corpus entries in all three
+      emits.
+
+      The answer travels with the render the plugin writes, so a route can be
+      asked without anyone re-deriving it from markup, and `start` acts on it:
+      a route whose whole branch has nothing to attach is sent neither the
+      module script nor the state payload that hydration would have read. On a
+      page of prose the payload is easily the larger half.
+
+      What this is not: the chunk still exists in the build for the routes that
+      do need it. What a static route does is decline to ask for it, which is
+      the part a reader of the page experiences.
 
 ## Async in the graph, or async in a lane
 

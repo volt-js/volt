@@ -4,7 +4,9 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { compileTemplate } from '@voltdev/core/jit';
-import { Component, Prop, Signal, effect, flushSync, mount, onCleanup } from '@voltdev/core';
+import { Component, Prop, Signal, effect, flushSync, mount, onCleanup,
+  needsHydration,
+} from '@voltdev/core';
 
 let host: HTMLElement;
 
@@ -780,5 +782,30 @@ describe(':class object bindings', () => {
     (handle.instance as Str).cls.set('two three');
     flushSync();
     expect([...el.classList].sort()).toEqual(['three', 'two']);
+  });
+});
+
+describe('whether a component has anything to attach', () => {
+  it('says yes for a component the build never answered for', () => {
+    // A component compiled without the plugin — a test, a playground — has no
+    // answer recorded. Guessing "no" there would turn its page into markup
+    // that never wakes up, so unknown is treated as yes.
+    @Component({ selector: 'v-unanswered', render: compileTemplate(`<p>x</p>`) })
+    class Unanswered {}
+
+    expect(needsHydration(Unanswered)).toBe(true);
+  });
+
+  it('says no only when the build said so', () => {
+    // What `@voltdev/vite-plugin` writes beside `render`, from the compiler's
+    // own answer about the template.
+    @Component({
+      selector: 'v-static',
+      render: compileTemplate(`<p>x</p>`),
+      needsHydration: false,
+    })
+    class Static {}
+
+    expect(needsHydration(Static)).toBe(false);
   });
 });

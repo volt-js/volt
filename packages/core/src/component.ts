@@ -103,6 +103,20 @@ export interface ComponentConfig {
    */
   render?: RenderFn;
 
+  /**
+   * Whether this component's template has anything to attach in a browser.
+   *
+   * Filled in by `@voltdev/vite-plugin` beside `render`, from the compiler's
+   * own answer — a template that only clones a hoisted string and hands it
+   * back has no binding, no listener, no block and no child to construct, so
+   * a page made only of components like it needs no JavaScript at all.
+   *
+   * Absent means unknown, and unknown is treated as "yes". Reporting a
+   * dynamic component as static ships a page that does not work, which is a
+   * much worse failure than shipping JavaScript nobody needed.
+   */
+  needsHydration?: boolean;
+
   /** Path(s) to CSS files, relative to this file. Inlined at build time. */
   styleUrl?: string;
   styleUrls?: string[];
@@ -1056,6 +1070,17 @@ export function hydrate(
       host.textContent = '';
     },
   };
+}
+
+/**
+ * Does rendering this component in a browser have anything to do?
+ *
+ * `true` unless the build said otherwise. A component compiled without the
+ * plugin — a test, a playground — has no answer recorded, and guessing "no"
+ * there would turn every such page into markup that never wakes up.
+ */
+export function needsHydration(component: ComponentType<unknown>): boolean {
+  return CONFIGS.get(component)?.config.needsHydration !== false;
 }
 
 export { getScope, runWithScope, type Scope };

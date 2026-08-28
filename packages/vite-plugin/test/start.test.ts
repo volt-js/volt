@@ -147,6 +147,8 @@ async function handlerFor(
   overrides: {
     routes?: unknown;
     match?: (pathname: string) => unknown;
+    /** One entry per component on the branch, in order. */
+    interactive?: readonly boolean[];
     mode?: string;
     render?: () => unknown;
     functions?: (request: Request) => Response;
@@ -167,6 +169,9 @@ async function handlerFor(
     `,
     '@voltdev/core/server': `
       export const renderToString = async () => (globalThis.__render());
+    `,
+    '@voltdev/core': `
+      export const needsHydration = (component) => globalThis.__needsHydration(component);
     `,
     '@voltdev/server': `
       export const createHandler = () => (request) => globalThis.__functions(request);
@@ -203,7 +208,16 @@ async function handlerFor(
   const globals = globalThis as Record<string, unknown>;
   globals['__match'] = (pathname: string) => {
     calls.push(`match ${pathname}`);
-    return overrides.match ? overrides.match(pathname) : { branch: 'b' };
+    if (overrides.match) return overrides.match(pathname);
+    // One component per answer, each carrying its position so the stub can
+    // give a different answer for each — a branch where a static layout wraps
+    // a dynamic page is the case that matters.
+    const count = overrides.interactive?.length ?? 1;
+    return {
+      branch: {
+        routes: Array.from({ length: count }, (_, index) => ({ component: { index } })),
+      },
+    };
   };
   globals['__mode'] = overrides.mode ?? 'ssr';
   globals['__render'] = () => {
@@ -217,6 +231,9 @@ async function handlerFor(
       }
     );
   };
+  const answers = overrides.interactive;
+  globals['__needsHydration'] = (component: { index?: number }) =>
+    answers ? (answers[component.index ?? 0] ?? true) : true;
   globals['__functions'] = (request: Request) => {
     calls.push(`functions ${new URL(request.url).pathname}`);
     return overrides.functions?.(request) ?? new Response('fn', { status: 200 });
@@ -282,5 +299,91 @@ describe('the handler, running', () => {
     });
     const response = await handler(new Request('http://x/about'));
     expect(response.status).toBe(500);
+  });
+});
+
+describe('declining to ship the JavaScript', () => {
+  const SHELL =
+    '<!doctype html><html><head></head><body><div id="app"></div>' +
+    '<script type="module" src="/src/main.ts"></script></body></html>';
+
+  it('leaves the script out for a route with nothing to attach', async () => {
+    // Partial hydration, once the boundary is known. A page of prose and links
+    // has no binding, no listener, no block and no child component, so it does
+    // not ask for the bundle that would attach them.
+    const { handler, setShell } = await handlerFor({ interactive: [false] });
+    setShell(SHELL);
+    const html = await (await handler(new Request('http://x/about'))).text();
+
+    expect(html).not.toContain('<script type="module"');
+    // Nor the payload that hydration would have read: nothing is going to
+    // read it, and on a page of prose it is easily the larger half.
+    expect(html).not.toContain('<script>state</script>');
+    // And it is still the page: the markup is there, it simply does not wake.
+    expect(html).toContain('<p>rendered</p>');
+  });
+
+  it('keeps it for a route that has', async () => {
+    const { handler, setShell } = await handlerFor({ interactive: [true] });
+    setShell(SHELL);
+    const html = await (await handler(new Request('http://x/pricing'))).text();
+    expect(html).toContain('<script type="module" src="/src/main.ts"></script>');
+  });
+
+  it('keeps it for a csr route, which is nothing but JavaScript', async () => {
+    // The shell is all a `csr` route gets, and removing the script from it
+    // would leave a blank page for ever.
+    const { handler, setShell } = await handlerFor({ mode: 'csr', interactive: [false] });
+    setShell(SHELL);
+    const html = await (await handler(new Request('http://x/dashboard'))).text();
+    expect(html).toContain('<script type="module"');
+  });
+
+  it('keeps it for a url the table did not match', async () => {
+    // Nothing was matched, so nothing said the page is static — and the
+    // application's own not-found route still has to render.
+    const { handler, setShell } = await handlerFor({ match: () => null });
+    setShell(SHELL);
+    const html = await (await handler(new Request('http://x/nowhere'))).text();
+    expect(html).toContain('<script type="module"');
+  });
+});
+
+describe('what counts as having nothing to attach', () => {
+  const SHELL =
+    '<!doctype html><html><head></head><body><div id="app"></div>' +
+    '<script type="module" src="/src/main.ts"></script></body></html>';
+
+  it('is every component on the branch, not most of them', async () => {
+    // A static layout wrapping a dynamic page. The outlet renders the leaf's
+    // markup inside the layout's, so one binding anywhere on the branch is a
+    // page that has to wake up.
+    const { handler, setShell } = await handlerFor({ interactive: [false, true] });
+    setShell(SHELL);
+    const html = await (await handler(new Request('http://x/pricing'))).text();
+    expect(html).toContain('<script type="module"');
+  });
+
+  it('is still nothing when the dynamic one is the layout', async () => {
+    const { handler, setShell } = await handlerFor({ interactive: [true, false] });
+    setShell(SHELL);
+    const html = await (await handler(new Request('http://x/pricing'))).text();
+    expect(html).toContain('<script type="module"');
+  });
+
+  it('drops it only when the whole branch says so', async () => {
+    const { handler, setShell } = await handlerFor({ interactive: [false, false] });
+    setShell(SHELL);
+    const html = await (await handler(new Request('http://x/about'))).text();
+    expect(html).not.toContain('<script type="module"');
+  });
+
+  it('keeps it for a branch with no components to ask', async () => {
+    // Nothing said the page is static, and a route rendered by something other
+    // than a route component is not evidence that it is.
+    const { handler, setShell } = await handlerFor({ match: () => ({ branch: { routes: [] } }) });
+    setShell(SHELL);
+    const html = await (await handler(new Request('http://x/odd'))).text();
+    expect(html).toContain('<script type="module"');
   });
 });

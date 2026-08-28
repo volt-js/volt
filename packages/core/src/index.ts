@@ -18,6 +18,7 @@ export {
   defineComponent,
   mount,
   hydrate,
+  needsHydration,
   getComponentConfig,
   isComponent,
   createComponent,

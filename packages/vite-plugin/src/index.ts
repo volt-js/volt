@@ -1029,7 +1029,14 @@ async function compileTemplates(
     preamble.push(
       `function ${renderName}(${result.renderParams}) {\n${indentBody(result.renderBody)}\n}`,
     );
-    edits.push({ start: site.start, end: site.end, text: `render: ${renderName}` });
+    // The compiler's answer travels with the render it belongs to, so a
+    // route can be asked whether its page has anything to attach without
+    // anyone re-deriving it from the markup.
+    edits.push({
+      start: site.start,
+      end: site.end,
+      text: `render: ${renderName}, needsHydration: ${result.needsHydration}`,
+    });
   }
 
   for (const site of styles) {

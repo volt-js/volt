@@ -195,6 +195,18 @@ export interface CodegenResult {
    * difference between two comments and twenty thousand.
    */
   rowRootCounts: (number | null)[];
+  /**
+   * Whether anything in this template can change once it has been written.
+   *
+   * The question partial hydration turns on. A template that only clones a
+   * hoisted string and hands it back has nothing to attach: no binding, no
+   * listener, no block, no child component, no ref.
+   *
+   * Conservative in the direction that matters — something static reported as
+   * dynamic ships JavaScript nobody needed, and something dynamic reported as
+   * static ships a page that does not work.
+   */
+  needsHydration: boolean;
   /** What the compiler removed or folded before runtime ever sees it. */
   stats: CompileStats;
   /**
@@ -491,6 +503,7 @@ class Generator {
       blocks: this.blocks,
       delegatedEventNames: [...this.delegatedEventNames].sort(),
       rowRootCounts: this.rowRootCounts,
+      needsHydration: callsRuntime(renderBody, this.rt),
       stats: this.stats,
       messageKeys: [...new Set(this.messageSites.map((site) => site.key))].sort(),
       messageSites: this.messageSites,
@@ -2328,6 +2341,33 @@ const ATTRIBUTE_POSITION: Record<DirectiveKind, boolean> = {
  * The chunk as the server prints it: everything but the ranges the merge
  * writes itself. See `Block.serverOmit`.
  */
+/**
+ * Does this body reach for the runtime at all?
+ *
+ * Every markup string is hoisted out of the body, so `template()` — the one
+ * call a wholly static emit makes — is never in here. What is left is the
+ * entry points that exist because something can change: a binding, a
+ * listener, a block, a child component, a ref. Their presence is the answer
+ * and their absence is the other one.
+ *
+ * That hoisting is an invariant this depends on rather than an observation
+ * about it, so `hydration-need.test.ts` pins it across the whole corpus. If a
+ * template ever stayed in the body, everything with markup in it would read as
+ * dynamic — which is the safe direction, and still wrong.
+ *
+ * Asked of the emit rather than of a count of features, so a dynamic construct
+ * added later is counted the day it is written. A list of feature flags would
+ * have to be remembered, and the failure of forgetting one is a page that
+ * ships no JavaScript and does not work.
+ */
+function callsRuntime(body: string, runtime: string): boolean {
+  return new RegExp(`${escapeForRegExp(runtime)}\\.[A-Za-z_$]`).test(body);
+}
+
+function escapeForRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function omitRanges(chunk: string, ranges: [number, number][] | null): string {
   if (!ranges || ranges.length === 0) return chunk;
   let out = '';
