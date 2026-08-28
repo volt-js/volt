@@ -51,7 +51,7 @@ import {
   removeComponent,
 } from './devtools.js';
 import { voltError } from './diagnostics.js';
-import { insert } from './dom.js';
+import { hydrate as hydrateInto, insert } from './dom.js';
 import { enterPosition, exitPosition } from './ids.js';
 
 // `Symbol.metadata` is stage-3 and missing from current engines. Without it
@@ -972,15 +972,81 @@ export function mount(
     }
 
     // Capture the instance without a second construction.
-    const dom = instantiate(component, {
-      props: { __ref: (value: unknown) => (instance = value) },
-    });
-    insert(host, dom);
+    insert(
+      host,
+      instantiate(component, {
+        props: { __ref: (value: unknown) => (instance = value) },
+      }),
+    );
   });
 
   // Effects are deferred, so without this the tree handed back would not yet
   // reflect them — a component whose setup runs in a field effect would paint
   // its placeholder first.
+  flushSync();
+
+  return {
+    instance,
+    unmount() {
+      dispose();
+      host.textContent = '';
+    },
+  };
+}
+
+/**
+ * Attach a component to markup a server already wrote.
+ *
+ * `mount` and this are siblings rather than one function with a flag, and the
+ * bundle is the reason. A flag would put the hydration walk on `mount`'s own
+ * path, where no bundler can drop it — every client-only application would
+ * carry it, which measured at about 2 kB of the counter example's 24. Two
+ * entries let an application that never server-renders reference the one it
+ * uses and ship neither the walk nor the claim.
+ *
+ * Which one an application calls is decided by the same thing that decides
+ * whether its templates *claim* nodes or *create* them: how it was compiled.
+ * `hydrate` on the Vite plugin, which `start` turns on. A host that happens to
+ * have children is not evidence either way — a `csr` route's mount point is
+ * empty on a server-rendered site, and a shell with a spinner in it is not.
+ */
+export function hydrate(
+  component: ComponentType<unknown>,
+  target: Element | string,
+): MountHandle {
+  const host = typeof target === 'string' ? document.querySelector(target) : target;
+  if (!host) {
+    throw voltError(
+      'V0212',
+      { target: String(target) },
+      __VOLT_DEV__ && `Mount target not found: ${String(target)}`,
+    );
+  }
+
+  let dispose: Dispose = () => {};
+  let instance: unknown = null;
+
+  createRoot((disposeRoot) => {
+    dispose = disposeRoot;
+    const resolved = CONFIGS.get(component);
+    if (!resolved) {
+      throw voltError(
+        'V0207',
+        { cls: component.name },
+        __VOLT_DEV__ && `${component.name} is not decorated with @Component.`,
+      );
+    }
+
+    // The same entry a hole uses, given the whole host: the root of a page is
+    // a container whose children are the block's with no marker in front of
+    // them, which is the shape `hInsert` already handles.
+    hydrateInto(host, () =>
+      instantiate(component, {
+        props: { __ref: (value: unknown) => (instance = value) },
+      }),
+    );
+  });
+
   flushSync();
 
   return {

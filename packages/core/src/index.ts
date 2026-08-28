@@ -17,6 +17,7 @@ export {
   Prop,
   defineComponent,
   mount,
+  hydrate,
   getComponentConfig,
   isComponent,
   createComponent,

@@ -39,6 +39,14 @@ import {
   unusedMessages,
 } from '@voltdev/compiler';
 import type { A11ySeverity, CodegenTarget, MessageCatalog } from '@voltdev/compiler';
+import {
+  CLIENT_ID,
+  SERVER_ID,
+  clientModule as startClientModule,
+  resolveStart,
+  serverModule as startServerModule,
+  type StartOptions,
+} from './start.js';
 import type { Plugin } from 'vite';
 import { DecoratorError, planLowering } from './decorators.js';
 import { planServerFunctions, ServerFunctionError } from './server-functions.js';
@@ -77,6 +85,22 @@ export interface VoltPluginOptions {
    * then arrives as a bare code.
    */
   diagnostics?: boolean;
+
+  /**
+   * Wire the router, the query cache, server rendering and server functions
+   * together, so an application does not have to.
+   *
+   * Off, and that is the position rather than a default. CSR is first-class
+   * here and server rendering is something an application chooses; a turnkey
+   * mode that quietly made every project a server project would take the
+   * choice away. Turning it on also turns `hydrate` on, because a build that
+   * server-renders and a client that builds fresh nodes on top of the result
+   * are the two halves of one decision.
+   *
+   * See `StartOptions` for what an application supplies: a route table and a
+   * root component, both by path.
+   */
+  start?: StartOptions | boolean;
   /**
    * Rewrite `Signal.State` and friends to direct imports.
    *
@@ -265,7 +289,11 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
   const groupRowBindings = options.groupRowBindings ?? false;
   const lowerSignals = options.lowerSignals ?? true;
   const serverModule = options.serverModule ?? '@voltdev/server';
-  const hydrate = options.hydrate ?? false;
+  const start = options.start ? resolveStart(options.start === true ? true : options.start) : null;
+  // `start` implies it: the server writes the markup and the client attaches
+  // to it, and a client emit that built its own would be the second half of
+  // that pair contradicting the first.
+  const hydrate = options.hydrate ?? start !== null;
 
   const shouldProcess = (id: string): boolean => {
     const clean = id.split('?')[0] ?? id;
@@ -621,6 +649,7 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
     },
 
     resolveId(id) {
+      if (start && (id === SERVER_ID || id === CLIENT_ID)) return `\0${id}`;
       if (!messages) return null;
       if (id === messagesId) return resolvedMessagesId;
       // The parts, which only the module above imports — by the name a project
@@ -630,6 +659,8 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
     },
 
     async load(id) {
+      if (start && id === `\0${SERVER_ID}`) return startServerModule(start);
+      if (start && id === `\0${CLIENT_ID}`) return startClientModule(start);
       if (!messages || !id.startsWith(resolvedMessagesId)) return null;
       const loaded = await loadCatalog();
       if (!loaded) return null;
@@ -1252,3 +1283,12 @@ export { compile, CompilerError };
  * erases it.
  */
 export { renderPath, isNodeBuiltin, type RenderPathOptions } from './render-path.js';
+
+/**
+ * The two virtual modules `start` serves, by the names an application imports.
+ *
+ * Exported so a project can name them in its own entry — the server half in a
+ * deployment adapter, the client half in the shell's `<script>` — without
+ * hard-coding a string this file could change.
+ */
+export { SERVER_ID as START_SERVER, CLIENT_ID as START_CLIENT, type StartOptions } from './start.js';

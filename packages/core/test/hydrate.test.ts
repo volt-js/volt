@@ -16,7 +16,7 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { compile } from '@voltdev/compiler';
-import { Signal, flushSync } from '@voltdev/core';
+import { Component, Signal, flushSync, hydrate as hydrateComponent, mount } from '@voltdev/core';
 import type { RenderFn } from '@voltdev/core';
 import { createRoot } from '@voltdev/reactivity';
 import * as runtime from '@voltdev/core/runtime';
@@ -469,4 +469,84 @@ describe('every template in the corpus hydrates to the tree a client build rende
       }
     });
   }
+});
+
+/**
+ * Hydrating a component, rather than a template.
+ *
+ * Everything above drives the runtime's `hydrate` with a compiled render
+ * function, which is the layer the emit is tested at. An application does not
+ * have one of those: it has a component and a mount point the server already
+ * filled. Until `mount` could be told to attach rather than build, the two
+ * halves of a server-rendered page had no entry that joined them — the server
+ * could write the markup and nothing could claim it.
+ */
+describe('mounting onto markup a server wrote', () => {
+  it('claims the server’s nodes instead of building a second copy', () => {
+    const source = `<div><p>{ label.get() }</p></div>`;
+    const label = new Signal.State('from the server');
+
+    // The server's bytes, produced by the server emit rather than written by
+    // hand — markup written to match would prove the test and not the code.
+    const host = document.createElement('div');
+    host.innerHTML = serverMarkup(source, { label });
+    document.body.append(host);
+    const written = host.querySelector('p');
+    expect(written?.textContent).toBe('from the server');
+
+    // `renderFn(source, 'hydrate')` and not `compileTemplate`: the JIT helper
+    // chooses between the client and server emits from the build flag and has
+    // no third answer, which is right for it — a hydrating emit is something a
+    // build produces, not something a page compiles for itself.
+    @Component({ selector: 'v-claimed', render: renderFn(source, 'hydrate') })
+    class Claimed {
+      label = label;
+    }
+
+    const handle = hydrateComponent(Claimed, host);
+    flushSync();
+
+    // One paragraph, and the server's own node — not a copy built beside it.
+    expect(host.querySelectorAll('p')).toHaveLength(1);
+    expect(host.querySelector('p')).toBe(written);
+
+    // And it is live: the binding attached to the node it claimed.
+    label.set('from the browser');
+    flushSync();
+    expect(written!.textContent).toBe('from the browser');
+
+    handle.unmount();
+    host.remove();
+  });
+
+  it('leaves what it finds alone when it is `mount` and not `hydrate`', () => {
+    // The other side, and asserted against a host that is *not* empty. An
+    // empty one cannot tell the two apart — claiming nothing and building are
+    // the same thing there — so the discriminator is markup the render did not
+    // write: `mount` replaces it with nodes of its own, where `hydrate` would
+    // have claimed it and gone on writing to it.
+    const host = document.createElement('div');
+    host.innerHTML = '<p>stale</p>';
+    document.body.append(host);
+    const stale = host.querySelector('p');
+
+    @Component({
+      selector: 'v-built',
+      render: renderFn(`<div><p>{ label.get() }</p></div>`, 'client'),
+    })
+    class Built {
+      label = new Signal.State('built');
+    }
+
+    const handle = mount(Built, host);
+    flushSync();
+
+    expect([...host.querySelectorAll('p')].map((p) => p.textContent)).toEqual(['built']);
+    // A new node, not the old one rewritten — which is what claiming it would
+    // have produced, with the same text and the same count.
+    expect(host.querySelector('p')).not.toBe(stale);
+
+    handle.unmount();
+    host.remove();
+  });
 });

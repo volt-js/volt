@@ -779,13 +779,46 @@ Volt is unusually well placed to do the same, because its plugin is already
 mandatory — it lowers the decorators, so there is no build without it, and
 nothing is being added to a project that was not there.
 
-- [ ] A `start` mode in `@voltdev/vite-plugin` that wires the router, the query
+- [x] A `start` mode in `@voltdev/vite-plugin` that wires the router, the query
       cache, server rendering and server functions together, with the
-      per-route rendering mode the hybrid plan already describes.
-- [ ] It must stay opt-in. The roadmap's own position is that CSR is
+      per-route rendering mode the hybrid plan already describes. An
+      application supplies a route table and a root component, both by path;
+      it does not supply the request handler, the mode dispatch, the state
+      payload or the client bootstrap.
+
+      The wiring is *generated into the application's own module graph* as two
+      virtual modules rather than shipped as a package. `@voltdev/server` is
+      deliberately dependency-free — a `(Request) => Response` and nothing else
+      — and giving it the router and the renderer would end that; a sixth
+      package is the opposite of what this section is called; and generated
+      code importing `@voltdev/core/server` and `@voltdev/router` by name is
+      resolved by the *application's* build, at the versions it has, where a
+      package would have pinned its own.
+
+      The server half is one `(Request) => Promise<Response>`, which is what
+      makes the roadmap's edge mode fall out rather than be added. Its three
+      branches in order: a server-function call is answered before the table is
+      consulted, because the router knows nothing about that path and answering
+      it second would render a 404 page at every caller; a URL the table does
+      not match still gets the shell, with a 404, because the application's own
+      not-found route is a route; and a `csr` route gets the shell unrendered,
+      which is where the opt-out lands.
+- [x] It must stay opt-in. The roadmap's own position is that CSR is
       first-class and server rendering is something an application chooses,
       never the price of using the framework — a turnkey mode that quietly
-      makes every project a server project would contradict that.
+      makes every project a server project would contradict that. `start` is
+      off until a project writes it, and the test that says so fails the moment
+      anyone gives it a default. Turning it on turns the plugin's `hydrate` on
+      as well, because a server that writes the markup and a client that builds
+      its own on top are two halves of one decision and asking a project to
+      state it twice is asking it to get one of them wrong.
+
+      The bundle keeps the other half of the promise. `mount` and `hydrate` are
+      two entries rather than one function with a flag: a flag puts the
+      hydration walk on `mount`'s own path where no bundler can drop it, which
+      measured at about 2 kB of the counter example's 24 for every client-only
+      application. `bundle-composition.test.ts` caught that when it was tried,
+      which is what that file is for.
 - [ ] `create-volt` generates a project that uses it, so the wiring is
       demonstrated rather than described.
 
