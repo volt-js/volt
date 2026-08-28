@@ -819,8 +819,21 @@ nothing is being added to a project that was not there.
       measured at about 2 kB of the counter example's 24 for every client-only
       application. `bundle-composition.test.ts` caught that when it was tried,
       which is what that file is for.
-- [ ] `create-volt` generates a project that uses it, so the wiring is
-      demonstrated rather than described.
+- [x] `create-volt` generates a project that uses it, so the wiring is
+      demonstrated rather than described. The `start` template is one line of
+      configuration — `volt({ start: true })` — and three routes that between
+      them use all three modes: a home page built once, a pricing page rendered
+      per request with the value the server settled on carried across in the
+      payload rather than fetched again, and a dashboard the server does not
+      render at all. A template that demonstrated only server rendering would
+      demonstrate half of it; the point is that the choice survives per route,
+      and that deleting `start: true` leaves an ordinary client-rendered
+      project with nothing else to change.
+
+      Its `server.ts` is a `(Request) => Promise<Response>` with no `node:`
+      import, which is the shape a host expects and the constraint the edge
+      check enforces. It type-checks as generated, which is what caught the
+      three things wrong with it when it was written.
 
 ## Server functions
 

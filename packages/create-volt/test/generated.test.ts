@@ -41,6 +41,7 @@ const TYPES: Readonly<Record<string, string>> = {
   '@voltdev/reactivity': 'packages/reactivity/dist/index.d.ts',
   '@voltdev/router': 'packages/router/dist/index.d.ts',
   '@voltdev/query': 'packages/query/dist/index.d.ts',
+  '@voltdev/server': 'packages/server/dist/index.d.ts',
 };
 
 async function generate(id: string): Promise<string> {

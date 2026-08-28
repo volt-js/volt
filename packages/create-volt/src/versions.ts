@@ -21,6 +21,7 @@ export const VERSIONS = {
   '@voltdev/core': '^0.1.0-alpha.1',
   '@voltdev/query': '^0.1.0-alpha.1',
   '@voltdev/router': '^0.1.0-alpha.1',
+  '@voltdev/server': '^0.1.0-alpha.1',
   '@voltdev/vite-plugin': '^0.1.0-alpha.1',
   'happy-dom': '^20.11.2',
   sass: '^1.102.0',

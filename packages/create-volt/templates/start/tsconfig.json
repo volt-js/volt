@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "lib": ["ESNext", "DOM", "DOM.Iterable", "ESNext.Decorators"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+
+    // Standard TC39 decorators. The legacy experimental transform is a
+    // different feature with different semantics, and Volt does not use it.
+    "experimentalDecorators": false,
+    "useDefineForClassFields": true,
+
+    // What tells TypeScript that `import './styles.scss'` is a real thing.
+    "types": ["vite/client"]
+  },
+  "include": ["src", "server.ts", "vite.config.ts", "vitest.config.ts"]
+}

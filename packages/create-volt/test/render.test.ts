@@ -79,6 +79,50 @@ describe('the router-query template', () => {
   });
 });
 
+describe('the start template', () => {
+  it('turns the mode on in one line, and nothing else configures it', async () => {
+    const files = await render('start');
+    // The claim the template exists to make: the wiring is one option, not a
+    // page of setup a reader has to keep in their head.
+    expect(files.get('vite.config.ts')).toContain('volt({ start: true })');
+  });
+
+  it('says where each route is rendered, all three ways', async () => {
+    const routes = files_(await render('start'), 'src/routes.ts');
+    // A template that demonstrated only server rendering would demonstrate
+    // half of it. The point is that the choice survives per route.
+    expect(routes).toContain("mode: 'ssg'");
+    expect(routes).toContain("mode: 'ssr'");
+    expect(routes).toContain("mode: 'csr'");
+  });
+
+  it('ships a deployable entry that is a Request in and a Response out', async () => {
+    const files = await render('start');
+    const server = files_(files, 'server.ts');
+    expect(server).toContain("from 'virtual:volt-start/server'");
+    expect(server).toContain('export default { fetch: handler }');
+    // No `node:` *import* — the file says the words in a comment explaining
+    // why, so the assertion has to be about the import and not the string.
+    // This is what makes it deployable to an edge runtime, and it is the same
+    // claim `renderPath` enforces as the project grows.
+    expect(server).not.toMatch(/from\s+['"]node:/);
+    expect(server).not.toMatch(/import\s*\(\s*['"]node:/);
+  });
+
+  it('reaches the generated client through its own entry', async () => {
+    const files = await render('start');
+    expect(files.get('index.html')).toContain('/src/main.ts');
+    expect(files_(files, 'src/main.ts')).toContain("'virtual:volt-start/client'");
+  });
+
+  it('declares the virtual modules, so the project type-checks without the plugin running', async () => {
+    const files = await render('start');
+    const types = files_(files, 'src/volt-start.d.ts');
+    expect(types).toContain("declare module 'virtual:volt-start/server'");
+    expect(types).toContain("declare module 'virtual:volt-start/client'");
+  });
+});
+
 describe('every template', () => {
   it.each(TEMPLATES)('$id ships a test, an entry point and a page', async ({ id }) => {
     const files = await render(id);
@@ -141,3 +185,12 @@ describe('the generated manifest', () => {
     );
   });
 });
+
+/** A file the template must have, read out with a message when it does not. */
+function files_(files: Map<string, string>, path: string): string {
+  const contents = files.get(path);
+  if (contents === undefined) {
+    throw new Error(`the template has no ${path} — it has ${[...files.keys()].sort().join(', ')}`);
+  }
+  return contents;
+}

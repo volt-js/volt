@@ -38,6 +38,12 @@ export const TEMPLATES: readonly TemplateDefinition[] = [
     dependencies: ['@voltdev/core', '@voltdev/query', '@voltdev/router'],
     devDependencies: TOOLCHAIN,
   },
+  {
+    id: 'start',
+    summary: 'Server rendering, per-route modes and server functions, wired.',
+    dependencies: ['@voltdev/core', '@voltdev/query', '@voltdev/router', '@voltdev/server'],
+    devDependencies: TOOLCHAIN,
+  },
 ];
 
 export const DEFAULT_TEMPLATE = 'minimal';
