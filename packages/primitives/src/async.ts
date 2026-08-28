@@ -339,6 +339,24 @@ function isUpdater<T>(next: T | undefined | ResourceUpdater<T>): next is Resourc
   return typeof next === 'function';
 }
 
+/** What the race below resolves to when the request was given up on. */
+const ABANDONED = Symbol('abandoned');
+
+/**
+ * Resolves when this request is abandoned, and never otherwise.
+ *
+ * The other half of racing a fetcher: `stop` aborts the controller, so this is
+ * what turns "superseded" into something a caller can stop waiting on. `once`
+ * so the listener goes with the signal, and the aborted case is answered
+ * without one at all.
+ */
+function abandoned(signal: AbortSignal): Promise<typeof ABANDONED> {
+  if (signal.aborted) return Promise.resolve(ABANDONED);
+  return new Promise((resolve) => {
+    signal.addEventListener('abort', () => resolve(ABANDONED), { once: true });
+  });
+}
+
 export function createResource<T, S = undefined>(
   fetcher: ResourceFetcher<T, S>,
   options: ResourceOptions<T, S> = {},
@@ -463,13 +481,24 @@ export function createResource<T, S = undefined>(
       });
 
       try {
-        const value = await fetcher({
-          source,
-          signal: request.signal,
-          attempt: tries,
-          previous: peek(data),
-          push,
-        });
+        // Raced against the abort rather than simply awaited. Dropping a
+        // superseded response is not the same as not waiting for one: a
+        // fetcher that ignores its signal — or a promise nothing ever settles
+        // — would otherwise hold this call open for ever, and with it whoever
+        // awaited `refetch()`. The generation check below still decides what
+        // counts; this decides how long anyone waits to be told.
+        const value = await Promise.race([
+          fetcher({
+            source,
+            signal: request.signal,
+            attempt: tries,
+            previous: peek(data),
+            push,
+          }),
+          abandoned(request.signal),
+        ]);
+
+        if (value === ABANDONED) return undefined;
 
         // The whole point of the exercise: a response that is no longer the
         // newest is dropped here, resolved or not, aborted or not.

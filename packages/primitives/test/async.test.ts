@@ -214,6 +214,56 @@ describe('the shape of one call', () => {
 // Out-of-order responses
 // ---------------------------------------------------------------------------
 
+describe('a superseded request stops holding its caller', () => {
+  it('lets go of a fetcher that never answers, once something supersedes it', async () => {
+    // Dropping a superseded response and not waiting for one are different
+    // things. A fetcher that ignores its signal — or a promise nothing ever
+    // settles — used to hold `refetch()` open for ever, and with it anything
+    // that awaited it. Here the fetcher never settles at all.
+    const source = new Signal.State('a');
+    const resource = withScope(() =>
+      createResource(() => new Promise<string>(() => {}), { source: () => source.get() }),
+    );
+
+    const held = resource.refetch();
+    source.set('b');
+
+    // Resolves rather than hanging. The race is against a timer so a
+    // regression fails this test rather than the whole file.
+    const raced = await Promise.race([
+      held.then(() => 'let go'),
+      new Promise((resolve) => setTimeout(() => resolve('still holding'), 500)),
+    ]);
+    expect(raced).toBe('let go');
+  });
+
+  it('lets go when the fetcher supersedes itself before it returns', async () => {
+    // The signal is aborted *before* anything starts listening for the abort:
+    // `fetcher(...)` is evaluated before the listener is attached, and `mutate`
+    // stops the request synchronously. A listener added to an already-aborted
+    // signal never fires, so an `aborted` check is the only thing that answers
+    // this case — and a local mutation from inside a fetcher is the one way a
+    // caller can reach it.
+    let resource: { refetch(): Promise<unknown>; mutate(next: string): void } | null = null;
+    let calls = 0;
+
+    resource = withScope(() =>
+      createResource<string>(() => {
+        // Not on the first call: the resource fetches as it is created, and
+        // the binding below has not been assigned yet then.
+        if (++calls > 1) resource!.mutate('written locally');
+        return new Promise<string>(() => {});
+      }),
+    );
+
+    const raced = await Promise.race([
+      resource.refetch().then(() => 'let go'),
+      new Promise((resolve) => setTimeout(() => resolve('still holding'), 500)),
+    ]);
+    expect(raced).toBe('let go');
+  });
+});
+
 describe('a superseded response cannot win', () => {
   it('drops a slow earlier response that lands after a fast later one', async () => {
     const first = deferred<string>();

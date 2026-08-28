@@ -408,11 +408,7 @@ describe('refetching', () => {
     expect(query.hasNextPage()).toBe(false);
   });
 
-  // Skipped: this file was being written when the pass producing it was
-  // stopped, so infinite queries are landed unfinished on purpose — twelve of
-  // the fourteen cases pass. These two are the remaining work, not a
-  // regression, and they are the check that it was completed.
-  it.skip('refetches the whole list when something supersedes an append', async () => {
+  it('refetches the whole list when something supersedes an append', async () => {
     const client = makeClient({ staleTime: Number.POSITIVE_INFINITY });
     const asked: number[] = [];
     const stuck = deferred<Page>();
@@ -482,11 +478,7 @@ describe('sharing the entry', () => {
     expect(query.pages()).toEqual([{ rows: ['jobs 0'], next: 1 }]);
   });
 
-  // Skipped: this file was being written when the pass producing it was
-  // stopped, so infinite queries are landed unfinished on purpose — twelve of
-  // the fourteen cases pass. These two are the remaining work, not a
-  // regression, and they are the check that it was completed.
-  it.skip('shares one request and one list with another query on the same key', async () => {
+  it('shares one request and one list with another query on the same key', async () => {
     const client = makeClient();
     const server = pages(3);
     const build = () =>

@@ -1336,8 +1336,8 @@ deliverable.
 ### Shared server-state cache
 
 `createResource` owns its own state, which is right for a combobox search and
-wrong for data two components both want. What is missing is the layer TanStack
-Query is actually valued for:
+wrong for data two components both want. **Built**, in `@voltdev/query`: the
+layer TanStack Query is actually valued for, and all six of what follows —
 
 - One cache keyed by query, so two components asking the same question make one
   request
@@ -1347,6 +1347,18 @@ Query is actually valued for:
 - Paginated and infinite queries that keep previous data while the next page
   loads
 - Deduplication of in-flight requests, and garbage collection of unused entries
+
+Infinite queries were the last of it and were landed unfinished on purpose,
+with two of their fourteen cases skipped and a comment saying so. Both are
+closed now, and each was a defect rather than a missing feature. A
+`fetchNextPage()` whose page never answered held its caller for ever, because
+dropping a superseded response and declining to wait for one are different
+things — a request now races its own abort, so a fetcher that ignores its
+signal no longer holds whoever awaited it. And two queries on one key did not
+share an append: the entry has one fetcher, belonging to whichever call reached
+it first, so a cursor kept in the other call's closure was invisible to it and
+the second query asked for page one again. The cursor lives on the entry now,
+which is where the pages already were.
 
 It belongs beside `createResource`, not inside it: a resource is one request's
 lifecycle, a cache is the application's.

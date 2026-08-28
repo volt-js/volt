@@ -41,6 +41,7 @@ import {
   type QueryRetryOptions,
 } from './client.js';
 import { createQuery } from './query.js';
+import { hashQueryKey } from './key.js';
 
 const { untrack } = Signal.subtle;
 
@@ -92,15 +93,51 @@ export interface InfiniteQuery<T, P> extends Query<InfiniteData<T, P>> {
 
 const EMPTY: InfiniteData<never, never> = { pages: [], pageParams: [] };
 
+/**
+ * What an append in flight is asking for, per cache entry rather than per call.
+ *
+ * Two `createInfiniteQuery` calls on one key are one entry with one request,
+ * which is the whole point of a shared cache — and the entry's fetcher belongs
+ * to whichever of them reached it first. A cursor kept in a call's own closure
+ * is therefore invisible to the fetcher that will read it: the second query's
+ * `fetchNextPage` would find no cursor, take the refetch branch, and ask for
+ * page one again instead of page two.
+ *
+ * `appending` is what the request starting now wants. `running` is what the
+ * first attempt decided, so a retry repeats it — a retried append that read
+ * `appending` afresh would turn into a refetch of the whole list, and one
+ * page failing once would cost every other page a second request.
+ */
+interface AppendState<P> {
+  appending?: P;
+  running?: P;
+}
+
+const appendStates = new WeakMap<QueryClient, Map<string, AppendState<unknown>>>();
+
+function appendState<P>(client: QueryClient, key: QueryKey): AppendState<P> {
+  let byKey = appendStates.get(client);
+  if (!byKey) appendStates.set(client, (byKey = new Map()));
+  const hash = hashQueryKey(key);
+  let state = byKey.get(hash);
+  if (!state) byKey.set(hash, (state = {}));
+  return state as AppendState<P>;
+}
+
+/** Drop an entry's record once nothing is asking for anything through it. */
+function forgetAppendState(client: QueryClient, key: QueryKey): void {
+  const byKey = appendStates.get(client);
+  if (!byKey) return;
+  const hash = hashQueryKey(key);
+  const state = byKey.get(hash);
+  if (state && state.appending === undefined && state.running === undefined) byKey.delete(hash);
+}
+
 export function createInfiniteQuery<T, P>(
   options: InfiniteQueryOptions<T, P>,
 ): InfiniteQuery<T, P> {
   const client = options.client ?? useQueryClient();
 
-  /** The cursor the request being started right now is appending, or undefined. */
-  let appending: P | undefined;
-  /** What the request in flight decided on its first attempt, so a retry repeats it. */
-  let running: P | undefined;
   const appendingNow = new Signal.State(false);
   let inFlight: Promise<void> | null = null;
 
@@ -167,7 +204,9 @@ export function createInfiniteQuery<T, P>(
       // it. Read afresh each time, a retried append would turn into a refetch
       // of the whole list — a page that failed once costs every other page a
       // second request.
-      if (context.attempt === 0) running = appending;
+      const state = appendState<P>(client, context.key);
+      if (context.attempt === 0) state.running = state.appending;
+      const running = state.running;
       return running === undefined ? fetchEveryPage(context) : appendPage(context, running);
     },
   });
@@ -185,7 +224,14 @@ export function createInfiniteQuery<T, P>(
     const pageParam = untrack(nextParam);
     if (pageParam === undefined) return;
 
-    appending = pageParam;
+    const key = query.key();
+    // No entry yet means nothing to append to, and `nextParam` above would
+    // have said so — but the key is read again here because the append state
+    // belongs to the entry and this is the only place that knows which.
+    if (key === null) return;
+    const state = appendState<P>(client, key);
+
+    state.appending = pageParam;
     appendingNow.set(true);
     try {
       // The request starts synchronously, so the fetcher that reads `appending`
@@ -194,10 +240,12 @@ export function createInfiniteQuery<T, P>(
       // instead, which is the right answer, since a list being revalidated is
       // not the list this append was computed against.
       const done = query.refetch();
-      appending = undefined;
+      state.appending = undefined;
       await done;
     } finally {
-      appending = undefined;
+      state.appending = undefined;
+      state.running = undefined;
+      forgetAppendState(client, key);
       appendingNow.set(false);
     }
   };
