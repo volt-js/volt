@@ -1,11 +1,11 @@
 {
   "name": "@voltdev/create-volt",
   "version": "0.1.0-alpha.1",
-  "description": "Scaffold a Volt project — the Vite plugin configured, a component, a stylesheet and a test that passes.",
+  "description": "Scaffold a Volt project \u2014 the Vite plugin configured, a component, a stylesheet and a test that passes.",
   "type": "module",
   "license": "MIT",
   "bin": {
-    "create-volt": "./dist/cli.js"
+    "create-volt": "./bin/create-volt.js"
   },
   "exports": {
     ".": {
@@ -14,6 +14,7 @@
     }
   },
   "files": [
+    "bin",
     "dist",
     "templates",
     "README.md"
