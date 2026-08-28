@@ -23,7 +23,7 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { transformSync } from 'esbuild';
+import { build as esbuild, transformSync } from 'esbuild';
 import { build } from 'vite';
 import type { RollupOutput } from 'rollup';
 import { compile } from '@voltdev/compiler';
@@ -518,5 +518,68 @@ describe.skipIf(!built)('what an application bundle is made of', { timeout: 120_
     // is Vite's modulepreload polyfill and the chunk's own wrapper.
     expect(attributed).toBeGreaterThan(code.length - 200);
     expect(bytes.get('(module glue)') ?? 0).toBeLessThanOrEqual(900);
+  });
+});
+
+/**
+ * Whether the largest single thing in the runtime is a floor or a bill.
+ *
+ * The table above says `packages/core/src/` is two fifths of the bundle, and
+ * the largest block inside it is keyed lists — `each`, `reconcileArrays` and
+ * `createRow` together. That number only means something alongside its
+ * opposite: an application with no `:for` in it must not pay for any of them,
+ * and the way to know is to build one and look.
+ *
+ * Built with esbuild from a compiled template rather than as a second Vite
+ * project, because the question is about the module graph and not about the
+ * bundler — and a fixture app is a thing to maintain.
+ */
+describe('what an application does not use', { timeout: 120_000 }, () => {
+  const root = resolve(import.meta.dirname, '../../..');
+
+  /** An application entry whose whole template is `source`, bundled and minified. */
+  async function appFor(source: string): Promise<string> {
+    const { body } = compile(source, { runtime: '_rt', target: 'client' });
+    const result = await esbuild({
+      stdin: {
+        contents:
+          "import * as _rt from '@voltdev/core/runtime';\n" +
+          `const render = (function () {\n${body}\n})();\n` +
+          'globalThis.app = { render, mount: _rt.hydrate };',
+        resolveDir: root,
+        loader: 'ts',
+      },
+      bundle: true,
+      write: false,
+      format: 'esm',
+      target: 'esnext',
+      minify: true,
+      alias: {
+        '@voltdev/reactivity/signals': resolve(root, 'packages/reactivity/src/signals.ts'),
+        '@voltdev/reactivity': resolve(root, 'packages/reactivity/src/index.ts'),
+        '@voltdev/core/runtime': resolve(root, 'packages/core/src/runtime.ts'),
+        '@voltdev/core': resolve(root, 'packages/core/src/index.ts'),
+      },
+      define: { __VOLT_DEV__: 'false', __VOLT_SERVER__: 'false' },
+    });
+    return result.outputFiles[0]!.text;
+  }
+
+  it('leaves the list reconciler out of an application with no list in it', async () => {
+    const withList = await appFor(
+      `<ul><li :for="row in rows" :key="row.id">{ row.label }</li></ul>`,
+    );
+    const withoutList = await appFor(`<div><h1>{ title }</h1><p>{ body }</p></div>`);
+
+    // Asserted on the pair rather than on one of them. Local names are
+    // mangled, so no string proves the reconciler is present — but the
+    // difference between a bundle that reaches it and one that does not is
+    // thousands of bytes, and that is not something churn produces.
+    expect(withList.length - withoutList.length).toBeGreaterThan(1_500);
+
+    // And the small one is genuinely a working application, not an empty
+    // module that shrank because nothing survived: it still carries the
+    // binding layer the template asks for.
+    expect(withoutList.length).toBeGreaterThan(3_000);
   });
 });

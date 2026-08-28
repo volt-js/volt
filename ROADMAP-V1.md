@@ -53,9 +53,46 @@ package.
 
 - [x] Resolve `@Component`/`@Prop` at build time — no decorator runtime ships
 - [x] Keep developer diagnostics out of production builds
-- [ ] Component + DOM runtime — 41% of the bundle, not yet examined
-- [ ] Generated template code — 21% of the bundle for one small component,
-      the most promising untouched lead
+- [x] Component + DOM runtime — 41% of the bundle, and now examined rather
+      than quoted. Of a 24,424 B minified example chunk, `dom.ts` is 6,265 B
+      and `component.ts` 3,047 B. Inside `dom.ts` the largest single block is
+      keyed lists: `each` 1,099 B, `reconcileArrays` 781 B and `createRow`
+      185 B, a third of the file. Then the machinery every template uses —
+      `insertExpression` 532 B, `materializeBlock` 525 B, `guard` 368 B,
+      `template` 348 B. `component.ts` is `instantiate` 378 B,
+      `createCustomElement` 334 B, `mount` 293 B, `injectStyles` 292 B,
+      `applyProps` 277 B.
+
+      The share is a bill for what the application uses, not a floor it pays
+      regardless: an application with no `:for` in it is 11,220 B where one
+      with a keyed list is 14,520 B, so the reconciler's 3,300 B is simply
+      absent, and `bundle-composition.test.ts` now builds both and asserts the
+      gap. The same file already pins the symbol list, which is how the
+      hydration walk, the lazy boundary, the portal and three of the four
+      `:model` entries are known to be absent too. So there is no slack here
+      to reclaim — only features, each of which an application either asks for
+      or does not.
+- [x] Generated template code — measured, and the lead is closed rather than
+      taken. The three example templates emit 4,245 B minified of a 24,424 B
+      chunk (17%), and it is all per-component: a fourth component pays the
+      same again, so this scales rather than amortising, which is what made it
+      look promising.
+
+      What it is made of is why there is nothing to take. For `counter.html` —
+      596 B of template, 1,247 B minified and 519 B gzipped of emit — the
+      static markup strings are 126 B gzipped (24%), and they *are* the
+      markup. One call per binding plus the arrow around its expression is
+      another 358 B (69%), and the count of those is the count of bindings the
+      author wrote. The whole of the rest is path navigation — the
+      `firstChild`/`nextSibling` chain — at 78 B minified and **35 B gzipped**,
+      because seven near-identical lines is what gzip is for.
+
+      Replacing that chain with a runtime path-walk helper is the only change
+      available, and it would save 35 B a component in exchange for a loop per
+      construction — on `create`, which is the operation already 15–19%
+      behind. That is the wrong side of the trade, and it is the same finding
+      as the grouping measurement above: the emit is not where the bytes or
+      the milliseconds are.
 - [x] `Signal` is a TypeScript `namespace`, so it compiles to a runtime object
       and nothing reachable from it can tree-shake. Lowered to direct imports at
       build time, on by default, with the namespace in a module of its own so it

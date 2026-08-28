@@ -107,7 +107,12 @@ function lowest(grouped: boolean, n: number, samples = 3): number {
 describe('one effect per row against one per binding', () => {
   const ROWS = 500;
 
-  it('costs measurably less per row', () => {
+  // Three samples of two shapes at five hundred rows is three thousand row
+  // constructions, each with a heap measurement around it. The default five
+  // seconds was never a budget chosen for that: it holds when this file runs
+  // on its own and does not when the whole workspace runs beside it, which
+  // made a real gate look like a flaky one. Thirty is chosen for the work.
+  it('costs measurably less per row', { timeout: 30_000 }, () => {
     const perRow = (bytes: number): number => bytes / ROWS;
     const plain = perRow(lowest(false, ROWS));
     const grouped = perRow(lowest(true, ROWS));
