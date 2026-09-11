@@ -134,13 +134,34 @@ export type RenderMode = 'csr' | 'ssr' | 'ssg';
  *
  * `fallback` is the application's own default and not this module's. Nothing
  * here decides that server rendering happens at all.
+ *
+ * Takes either a branch from `flattenRoutes` or the matches `matchRoutes`
+ * returns for one URL, because those are the two things a caller holds: a
+ * build enumerating every route has branches, and a server answering one
+ * request has matches. Accepting only the first made every server write
+ * `{ routes: matches.map((m) => m.route) }` to get from one to the other — or,
+ * more likely, write `matches.branch` and find at runtime that an array has no
+ * such thing.
  */
-export function routeMode(branch: RouteBranch, fallback: RenderMode): RenderMode {
-  for (let i = branch.routes.length - 1; i >= 0; i--) {
-    const mode = branch.routes[i]!.mode;
+export function routeMode(
+  chain: Pick<RouteBranch, 'routes'> | readonly RouteMatch[],
+  fallback: RenderMode,
+): RenderMode {
+  const routes = routesOf(chain);
+  for (let i = routes.length - 1; i >= 0; i--) {
+    const mode = routes[i]!.mode;
     if (mode !== undefined) return mode;
   }
   return fallback;
+}
+
+/** The route definitions along a branch or a match, root to leaf. */
+function routesOf(
+  chain: Pick<RouteBranch, 'routes'> | readonly RouteMatch[],
+): readonly RouteDefinition[] {
+  return Array.isArray(chain)
+    ? (chain as readonly RouteMatch[]).map((match) => match.route)
+    : (chain as Pick<RouteBranch, 'routes'>).routes;
 }
 
 // ---------------------------------------------------------------------------

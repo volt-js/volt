@@ -164,3 +164,38 @@ describe('the mode a route renders in', () => {
     expect(routeMode(branches[0]!, 'ssr')).toBe('ssr');
   });
 });
+
+describe('the mode of the url a server is answering', () => {
+  const routes = defineRoutes([
+    {
+      path: '/',
+      mode: 'ssg',
+      children: [
+        { index: true },
+        { path: 'pricing', mode: 'ssr' },
+        { path: 'about' },
+      ],
+    },
+  ]);
+  const branches = flattenRoutes(routes);
+
+  it('takes the matches matchRoutes returns, which is what a server holds', () => {
+    // A server answering one request has matches, not a branch. Taking only a
+    // branch made the natural call — `routeMode(matches, …)` — impossible, and
+    // the one that looked right, `matches.branch`, is undefined on an array.
+    expect(routeMode(matchRoutes(branches, '/pricing'), 'csr')).toBe('ssr');
+    expect(routeMode(matchRoutes(branches, '/about'), 'csr')).toBe('ssg');
+  });
+
+  it('agrees with the branch it came from', () => {
+    for (const branch of branches) {
+      const pathname = branch.patterns.at(-1)!;
+      expect(routeMode(matchRoutes(branches, pathname), 'csr')).toBe(routeMode(branch, 'csr'));
+    }
+  });
+
+  it('falls back when nothing matched, since there is nothing to ask', () => {
+    expect(matchRoutes(branches, '/nowhere')).toEqual([]);
+    expect(routeMode(matchRoutes(branches, '/nowhere'), 'csr')).toBe('csr');
+  });
+});

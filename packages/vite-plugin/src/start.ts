@@ -119,7 +119,7 @@ const SCRIPT = /<script\\b[^>]*\\btype=["']module["'][^>]*><\\/script>/;
 /**
  * Has this route anything at all to attach in a browser?
  *
- * Every component on the branch is asked, because the outlet renders the
+ * Every component the URL matched is asked, because the outlet renders the
  * leaf's markup inside the layout's and either can have a binding in it. Each
  * component's answer already covers everything its own template reaches — a
  * child component is constructed by a runtime call, so a layout that renders
@@ -127,8 +127,8 @@ const SCRIPT = /<script\\b[^>]*\\btype=["']module["'][^>]*><\\/script>/;
  *
  * A route with no components at all answers "yes". Unknown is not static.
  */
-function interactive(branch) {
-  const components = branch.routes.map((route) => route.component).filter(Boolean);
+function interactive(matches) {
+  const components = matches.map((match) => match.route.component).filter(Boolean);
   return components.length === 0 || components.some((component) => needsHydration(component));
 }
 
@@ -158,10 +158,13 @@ export async function handler(request) {
 
   if (url.pathname.startsWith(${JSON.stringify(start.base)})) return functions(request);
 
-  const matched = matchRoutes(branches, url.pathname);
-  if (!matched) return page('', '', '', 404);
+  // Every route that renders for this URL, outermost first — and an empty list,
+  // not null, when nothing does. An empty array is truthy, so the test is on
+  // its length.
+  const matches = matchRoutes(branches, url.pathname);
+  if (matches.length === 0) return page('', '', '', 404);
 
-  const mode = routeMode(matched.branch, ${JSON.stringify(start.defaultMode)});
+  const mode = routeMode(matches, ${JSON.stringify(start.defaultMode)});
   if (mode === 'csr') return page('', '', '', 200);
 
   const rendered = await renderToString(App, { url: url.href });
@@ -169,7 +172,7 @@ export async function handler(request) {
     return new Response('Internal Server Error', { status: 500 });
   }
   const styles = [...rendered.styles.values()].map((css) => '<style>' + css + '</style>').join('');
-  return page(rendered.html, rendered.state ?? '', styles, 200, interactive(matched.branch));
+  return page(rendered.html, rendered.state ?? '', styles, 200, interactive(matches));
 }
 
 export { branches, routes };
