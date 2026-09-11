@@ -75,7 +75,7 @@ export function resolveStart(options: StartOptions | true): ResolvedStart {
     routes: given.routes ?? '/src/routes.js',
     root: given.root ?? '/src/app.js',
     defaultMode: given.defaultMode ?? 'ssr',
-    base: given.base ?? '/_volt',
+    base: given.base ?? '/_volt/',
   };
 }
 
@@ -98,7 +98,7 @@ export function serverModule(start: ResolvedStart): string {
   return `import { flattenRoutes, matchRoutes, routeMode } from '@voltdev/router';
 import { renderToString } from '@voltdev/core/server';
 import { needsHydration } from '@voltdev/core';
-import { createHandler } from '@voltdev/server';
+import { createHandler, isServerCall } from '@voltdev/server';
 import { routes } from ${JSON.stringify(start.routes)};
 import App from ${JSON.stringify(start.root)};
 
@@ -156,7 +156,11 @@ function page(html, state, styles, status, script = true) {
 export async function handler(request) {
   const url = new URL(request.url);
 
-  if (url.pathname.startsWith(${JSON.stringify(start.base)})) return functions(request);
+  // \`isServerCall\` rather than a prefix test: it requires a POST and compares
+  // against the base with its trailing slash, so a page at \`/_voltage\` — or a
+  // reader who typed a function URL into the address bar — is routed as a page
+  // instead of being handed to the function handler and answered 405.
+  if (isServerCall(request, ${JSON.stringify(start.base)})) return functions(request);
 
   // Every route that renders for this URL, outermost first — and an empty list,
   // not null, when nothing does. An empty array is truthy, so the test is on

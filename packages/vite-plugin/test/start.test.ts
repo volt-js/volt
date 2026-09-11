@@ -93,9 +93,9 @@ describe('what start generates', () => {
     // consulted — otherwise every server call renders a 404 page at the
     // caller and the application appears to have no server functions at all.
     const code = serverModule(start);
-    const base = code.indexOf(`url.pathname.startsWith(${JSON.stringify(start.base)})`);
-    const match = code.indexOf('matchRoutes(');
-    expect(base, 'the base check is not there').toBeGreaterThan(-1);
+    const base = code.indexOf('isServerCall(request');
+    const match = code.indexOf('matchRoutes(branches');
+    expect(base, 'the server-call check is not there').toBeGreaterThan(-1);
     expect(base, 'the table is consulted first').toBeLessThan(match);
     expect(code).toContain('return functions(request)');
   });
@@ -119,6 +119,7 @@ describe('what a project supplies', () => {
       routes: '/src/routes.js',
       root: '/src/app.js',
       defaultMode: 'ssr',
+      base: '/_volt/',
     });
     expect(resolveStart({ routes: '/app/table.js', defaultMode: 'csr' })).toMatchObject({
       routes: '/app/table.js',
@@ -148,6 +149,7 @@ describe('what a project supplies', () => {
  * are what is under test, and those three are its inputs.
  */
 const ROUTER = resolve(import.meta.dirname, '../../router/src/routes.ts');
+const SERVER_HANDLER = resolve(import.meta.dirname, '../../server/src/handler.ts');
 
 /** A route table that exercises every branch of the handler. */
 const TABLE = `
@@ -164,6 +166,7 @@ const TABLE = `
       ],
     },
     { path: '/bare' },
+    { path: '/_voltage', component: component(1) },
   ];
 `;
 
@@ -187,8 +190,12 @@ async function handlerFor(
       export const isComponent = (value) => typeof value === 'function';
       export const needsHydration = (component) => globalThis.__needsHydration(component);
     `,
-    '@voltdev/server':
-      'export const createHandler = () => (request) => globalThis.__functions(request);',
+    // The real predicate, and only the handler stubbed: whether a request is a
+    // server call is exactly the kind of decision the router stub got wrong.
+    '@voltdev/server': `
+      export { isServerCall } from ${JSON.stringify(SERVER_HANDLER)};
+      export const createHandler = () => (request) => globalThis.__functions(request);
+    `,
     [start.routes]: TABLE,
     [start.root]: 'export default class App {}',
   };
@@ -208,7 +215,11 @@ async function handlerFor(
         }) {
           build.onResolve({ filter: /.*/ }, (args) => {
             if (args.path === '@voltdev/router') return { path: ROUTER };
-            return stubs[args.path] ? { path: args.path, namespace: 'stub' } : undefined;
+            if (stubs[args.path]) return { path: args.path, namespace: 'stub' };
+            // A real file named from inside a stub. Resolution does not follow
+            // a module out of a non-file namespace on its own.
+            if (args.path.startsWith('/')) return { path: args.path };
+            return undefined;
           });
           build.onLoad({ filter: /.*/, namespace: 'stub' }, (args) => ({
             contents: stubs[args.path]!,
@@ -263,6 +274,29 @@ describe('the handler, running', () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toBe('fn');
     expect(calls).toEqual(['functions /_volt/save']);
+  });
+
+  it('routes a page whose path merely starts like the function base as a page', async () => {
+    // A prefix test on '/_volt' would hand this to the function handler, which
+    // answers 405 to a GET — so a route the application declared would not load.
+    const { handler, setShell, calls } = await handlerFor();
+    setShell(SHELL);
+    const response = await handler(new Request('http://x/_voltage'));
+
+    expect(response.status).toBe(200);
+    expect(calls).toContain('render');
+    expect(calls.some((call) => call.startsWith('functions'))).toBe(false);
+  });
+
+  it('does not treat a GET to the function base as a function call', async () => {
+    // A reader who types a function URL into the address bar is navigating, not
+    // calling — there is no such page, so the answer is the not-found one.
+    const { handler, setShell, calls } = await handlerFor();
+    setShell(SHELL);
+    const response = await handler(new Request('http://x/_volt/save'));
+
+    expect(response.status).toBe(404);
+    expect(calls.some((call) => call.startsWith('functions'))).toBe(false);
   });
 
   it('renders a route into the shell', async () => {
