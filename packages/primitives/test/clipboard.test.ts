@@ -8,6 +8,8 @@
  * refusal is reported instead of shown as success.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { compileTemplate } from '@voltdev/core/jit';
+import { defineComponent, flushSync, mount } from '@voltdev/core';
 import { createRoot } from '@voltdev/reactivity';
 import { createClipboard, type Clipboard } from '../src/clipboard.js';
 import { resetAnnouncer } from '../src/announcer.js';
@@ -175,5 +177,37 @@ describe('a copy that did not work', () => {
     expect(spoken('assertive')).toBe('Could not copy');
     expect(spoken('polite')).toBe('');
     dispose();
+  });
+});
+
+describe('the trigger, spread onto a button', () => {
+  // `triggerProps()` builds its `onclick` each time it is read, and the spread
+  // reads it again every time the status changes — twice a copy. Each of those
+  // stayed attached, so the third press copied five times. This goes through a
+  // real template so that it is `:spread` doing the attaching, which is where
+  // the fault was.
+  it('copies once a press, however many times the status has changed', async () => {
+    class CopyButton {
+      clip = createClipboard({ text: () => 'req_8f2c' });
+    }
+    defineComponent(CopyButton, {
+      selector: 'v-copy-button',
+      render: compileTemplate(`<button :spread="clip.triggerProps()">Copy</button>`),
+    });
+    const host = document.createElement('div');
+    document.body.append(host);
+    const handle = mount(CopyButton, host);
+    const button = host.querySelector('button')!;
+
+    for (let press = 1; press <= 3; press++) {
+      button.click();
+      await vi.advanceTimersByTimeAsync(0);
+      flushSync();
+      expect(written, `after press ${press}`).toHaveLength(press);
+      // Back to idle, so the next press starts from a rebuilt bag.
+      await vi.advanceTimersByTimeAsync(2000);
+      flushSync();
+    }
+    handle.unmount();
   });
 });

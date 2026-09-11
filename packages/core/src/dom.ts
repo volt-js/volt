@@ -1631,16 +1631,24 @@ export function bindClassToggle(
 }
 
 export function bindClass(el: Element, accessor: MaybeAccessor<unknown>): void {
-  // Only the classes this binding added are ever removed, so classes written
-  // literally in the template survive every update.
-  let applied: string[] = [];
+  bind(accessor, classWriter(el), el);
+}
 
-  bind(accessor, (value) => {
+/**
+ * Writes a class value, remembering what it wrote so the next value can take
+ * it back. Only the classes this writer added are ever removed, so classes
+ * written literally in the template survive every update. A writer rather
+ * than the body of `bindClass` because `:spread` needs the same memory across
+ * the objects it is handed, and a fresh binding per object has none.
+ */
+function classWriter(el: Element): (value: unknown) => void {
+  let applied: string[] = [];
+  return (value) => {
     const next = normalizeClass(value);
     for (const cls of applied) if (!next.includes(cls)) el.classList.remove(cls);
     for (const cls of next) if (!el.classList.contains(cls)) el.classList.add(cls);
     applied = next;
-  }, el);
+  };
 }
 
 /** Exported because a server composes the same string it would end up with. */
@@ -1657,9 +1665,13 @@ export function normalizeClass(value: unknown): string[] {
 }
 
 export function bindStyle(el: HTMLElement, accessor: MaybeAccessor<unknown>): void {
-  let applied: Record<string, string> = {};
+  bind(accessor, styleWriter(el), el);
+}
 
-  bind(accessor, (value) => {
+/** The same for a style value: only the properties it set are removed. */
+function styleWriter(el: HTMLElement): (value: unknown) => void {
+  let applied: Record<string, string> = {};
+  return (value) => {
     const next = normalizeStyle(value);
     for (const key of Object.keys(applied)) {
       if (!(key in next)) el.style.removeProperty(key);
@@ -1668,7 +1680,7 @@ export function bindStyle(el: HTMLElement, accessor: MaybeAccessor<unknown>): vo
       if (applied[key] !== v) el.style.setProperty(key, v);
     }
     applied = next;
-  }, el);
+  };
 }
 
 /** Exported for the same reason as `normalizeClass`. */
@@ -1720,21 +1732,48 @@ export function bindHtml(el: Element, accessor: MaybeAccessor<unknown>): void {
 }
 
 export function spread(el: Element, accessor: MaybeAccessor<Record<string, unknown>>): void {
+  // What each object wrote has to be remembered from one object to the next,
+  // because the object is rebuilt whenever the state beneath it changes and
+  // the next one may carry less. Three kinds of memory, for the three ways an
+  // entry is written: attributes by name, a class and a style by what they
+  // added — so a class the template wrote literally survives the object
+  // dropping its own — and listeners by the function attached, so a handler
+  // built afresh each time replaces the last rather than joining it, and one
+  // the object stops carrying stops running.
   let applied: string[] = [];
+  let writeClass: ((value: unknown) => void) | undefined;
+  let writeStyle: ((value: unknown) => void) | undefined;
+  let listeners: Map<string, EventListener> | undefined;
   bind(accessor, (props) => {
     const next = props ?? {};
-    for (const key of applied) if (!(key in next)) setAttribute(el, key, null);
+    if (listeners) {
+      for (const [key, listener] of listeners) {
+        if (next[key] === listener) continue;
+        el.removeEventListener(key.slice(2).toLowerCase(), listener);
+        listeners.delete(key);
+      }
+    }
+    for (const key of applied) {
+      if (key in next) continue;
+      if (key === 'class') writeClass!(null);
+      else if (key === 'style') writeStyle!(null);
+      else setAttribute(el, key, null);
+    }
+    applied = [];
     for (const [key, value] of Object.entries(next)) {
       if (key.startsWith('on') && typeof value === 'function') {
-        el.addEventListener(key.slice(2).toLowerCase(), value as EventListener);
+        if (listeners?.get(key) !== value) {
+          el.addEventListener(key.slice(2).toLowerCase(), value as EventListener);
+          (listeners ??= new Map()).set(key, value as EventListener);
+        }
         continue;
       }
-      if (key === 'class') bindClass(el, value);
-      else if (key === 'style') bindStyle(el as HTMLElement, value);
+      applied.push(key);
+      if (key === 'class') (writeClass ??= classWriter(el))(value);
+      else if (key === 'style') (writeStyle ??= styleWriter(el as HTMLElement))(value);
       else if (key in el) (el as unknown as Record<string, unknown>)[key] = value;
       else setAttribute(el, key, value);
     }
-    applied = Object.keys(next);
   }, el);
 }
 
