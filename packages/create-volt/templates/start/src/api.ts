@@ -9,8 +9,11 @@ import { Server, guard } from '@voltdev/server';
  * the wiring this template exists to demonstrate.
  */
 export class Api {
+  // An instance method, not a static one. The handler constructs the class
+  // once per call, so nothing a method assigns to `this` outlives the request
+  // that assigned it — and the build refuses a static member for that reason.
   @Server()
-  static async currentPlan(): Promise<string> {
+  async currentPlan(): Promise<string> {
     // First statement, and awaited. The request is reachable synchronously
     // only: once a body has awaited anything, another call may be the one in
     // flight, and a guard reading the request then would authorize against
@@ -32,4 +35,6 @@ function session(request: Request): { id: string } | null {
   return request.headers.has('cookie') ? { id: 'demo' } : { id: 'anonymous' };
 }
 
-export const currentPlan = (): Promise<string> => Api.currentPlan();
+const api = new Api();
+
+export const currentPlan = (): Promise<string> => api.currentPlan();
