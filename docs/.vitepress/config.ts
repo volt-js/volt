@@ -21,8 +21,12 @@ export default defineConfig({
     nav: [
       { text: 'Guide', link: '/guide/introduction' },
       { text: 'Reference', link: '/reference/template-syntax' },
+      { text: 'Components', link: '/reference/primitives' },
     ],
 
+    // Grouped by what a reader is trying to do rather than by package: a page
+    // about routing sits beside the cache and the server functions it is used
+    // with, not in an alphabetical list of fifteen names.
     sidebar: [
       {
         text: 'Guide',
@@ -37,14 +41,57 @@ export default defineConfig({
         ],
       },
       {
-        text: 'Reference',
+        text: 'Core',
         items: [
           { text: 'Template syntax', link: '/reference/template-syntax' },
           { text: 'Reactivity API', link: '/reference/reactivity' },
           { text: 'Component API', link: '/reference/component' },
-          { text: 'Server rendering', link: '/reference/server' },
-          { text: 'Vite plugin', link: '/reference/vite-plugin' },
           { text: 'Developer tools', link: '/reference/devtools' },
+        ],
+      },
+      {
+        text: 'Rendering',
+        items: [
+          { text: 'Server rendering', link: '/reference/server' },
+          { text: 'Start mode', link: '/reference/start' },
+        ],
+      },
+      {
+        text: 'Routing and data',
+        items: [
+          { text: 'Router', link: '/reference/router' },
+          { text: 'Query cache', link: '/reference/query' },
+          { text: 'Server functions', link: '/reference/server-functions' },
+        ],
+      },
+      {
+        text: 'Components',
+        items: [
+          {
+            text: 'Primitives',
+            link: '/reference/primitives',
+            items: [
+              { text: 'Overlays', link: '/reference/primitives-overlays' },
+              { text: 'Forms', link: '/reference/primitives-forms' },
+              { text: 'Selection and dates', link: '/reference/primitives-selection' },
+              { text: 'Collections and navigation', link: '/reference/primitives-collections' },
+              { text: 'Display and feedback', link: '/reference/primitives-display' },
+              { text: 'Data and locale', link: '/reference/primitives-data' },
+            ],
+          },
+          { text: 'Styled components', link: '/reference/ui' },
+          { text: 'Data grid', link: '/reference/grid' },
+          { text: 'Rich-text editor', link: '/reference/editor' },
+        ],
+      },
+      {
+        text: 'Tooling',
+        items: [
+          { text: 'Vite plugin', link: '/reference/vite-plugin' },
+          { text: 'create-volt', link: '/reference/create-volt' },
+          { text: 'The volt command', link: '/reference/cli' },
+          { text: 'Editor support', link: '/reference/volar' },
+          { text: 'Testing', link: '/reference/testing' },
         ],
       },
       {
@@ -52,6 +99,7 @@ export default defineConfig({
         items: [
           { text: 'How the compiler works', link: '/guide/compiler' },
           { text: 'Design decisions', link: '/guide/design-decisions' },
+          { text: 'Error codes', link: '/e/' },
         ],
       },
     ],

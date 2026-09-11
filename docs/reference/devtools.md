@@ -8,6 +8,10 @@ It answers four questions about a running application:
 - **Why did this update?** — which write woke which effect
 - **What did it cost?** — effect run counts, durations and flush timings
 
+And two that follow from those: which DOM a binding is responsible for, so a
+panel can draw a box around it, and what a session did — recorded as inputs
+and driven back through the application to reproduce a defect.
+
 All of it lives behind `__VOLT_DEV__`, so a production build contains none of
 it: the call sites go, then the module they call, then the listener it
 installs. That is asserted on built bytes in
@@ -23,8 +27,8 @@ const tools = devtools();
 
 The tools attach themselves as soon as `@voltdev/core` is loaded, so an
 extension with no access to the application's modules can reach the same
-object at `globalThis.__VOLT_DEVTOOLS__`. Its `version` field is bumped
-whenever a field below changes meaning.
+object at `globalThis.__VOLT_DEVTOOLS__`. Its `version` field — `3` today — is
+bumped whenever a field below changes meaning.
 
 ## Component tree
 
@@ -218,3 +222,108 @@ Two consequences worth knowing:
 `travelTo` returns `false` for a position that is not in the history, and
 restoring is not itself recorded — otherwise undoing a step would become a step
 to undo.
+
+## Which DOM a binding touches
+
+What a panel highlights when a binding is hovered. Two answers, because the two
+ways of knowing fail in opposite directions:
+
+```ts
+tools.nodesOwnedBy(update.effect);   // what the binding said it targets
+tools.nodesWrittenBy(update.effect); // what it was seen to change
+```
+
+Both take an effect or its id — the `effect` of an `UpdateRecord`, or the `id`
+of an `EffectStat`.
+
+`nodesOwnedBy` is declared: a binding names its element when it is created, so
+the answer is exact and available at once, including for a binding that has
+never re-run. It is empty for anything that is not a single-element binding —
+an effect the application wrote itself, a `:for` body, or a row whose bindings
+were grouped into one effect, where one effect genuinely has several targets
+and naming one would be a lie.
+
+`nodesWrittenBy` is observed: a `MutationObserver` drained around each effect
+run, so it collects only while a session is recording. It sees what an effect
+changed, which reaches the cases above, but it has two blind spots. A binding
+that has not re-run since recording started has written nothing yet — which is
+every binding on a page the panel opened after it loaded. And a write the DOM
+tree does not record — `el.value`, `.checked`, a listener — is invisible to any
+observer.
+
+A panel wanting the fullest answer takes the union.
+
+## Replaying a session
+
+Stepping back with `travelTo` restores the signals. Replaying restores the
+*inputs* and lets the application produce the state again, which is the only
+way to reproduce a defect that lived in the order two handlers ran, or in what
+a handler did with a response — because only replaying re-runs the handlers.
+
+```ts
+tools.startRecording({ session: true, history: 200 });
+// … reproduce the problem …
+tools.timeline();                      // everything, in the order it happened
+const result = await tools.replay();   // and again, through the handlers
+```
+
+`session: true` records four kinds of entry into one ordered log:
+
+| `kind` | What is kept |
+|---|---|
+| `write` | The `Write` — signal, previous, value |
+| `event` | The type, the target's position in the tree, and the field value, key, button or pointer position that event carries |
+| `navigation` | Where to, and whether it was a push, a replace or a pop |
+| `network` | Method, URL, status and body of a `fetch`, and how long it took |
+
+One log rather than one per kind, because the question a replay answers is what
+a write happened *after*, and a log that has to be re-interleaved has lost that.
+
+The events recorded are `pointerdown`, `pointerup`, `click`, `dblclick`,
+`keydown`, `keyup`, `input`, `change`, `submit`, `focusin` and `focusout` — the
+ones a replay can dispatch again. The log keeps the last 5,000 entries and a
+response body up to 64 KiB. It is the largest cost here — a capture-phase
+listener per event type, and `fetch` and `pushState` wrapped — so it is off
+unless asked for, and does nothing where there is no document.
+
+### What a replay reports
+
+```ts
+replay(options?: { until?: number; reset?: boolean }): Promise<ReplayResult>
+```
+
+`reset`, on by default, first puts every signal back where it stood before the
+first recorded write, so the replay starts where the recording did rather than
+adding a second set of clicks on top of the first. It needs the session to have
+been recorded with `history` — that is what holds the values to go back to.
+`until` stops after that many entries.
+
+| `ReplayResult` | Description |
+|---|---|
+| `dispatched` | Events re-dispatched into the page |
+| `unreachable` | Events whose recorded target no longer resolves to a node |
+| `navigations` | Navigations replayed |
+| `served` | Requests answered out of the recording rather than sent |
+| `missed` | Requests the recording had no answer for — these were let through |
+| `diverged` | Writes the replay produced that did not match the ones recorded |
+| `divergence` | The first mismatch, in words, or `null` if the replay tracked throughout |
+
+`divergence` is the finding. A replay that dispatches everything and stops
+matching at the third write has located the defect far better than one that
+only reports it finished.
+
+The network is served from the recording, so a replay neither posts an order a
+second time nor depends on a server still answering the same way. A request the
+recording has no answer for is allowed through and counted, because failing it
+would be inventing a result.
+
+Three things it cannot do, all worth knowing before trusting it:
+
+- **A dispatched event is not trusted.** A handler gated on `event.isTrusted`
+  will not run.
+- **A target is a position in the tree.** Once a replay has diverged
+  structurally, later targets may not be found; they are counted as
+  `unreachable` rather than skipped silently.
+- **It checks itself rather than promising.** The produced writes are compared
+  with the recorded ones, so the result says whether the replay arrived where
+  the recording did — which is the claim a reproduction has to make.

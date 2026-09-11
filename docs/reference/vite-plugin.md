@@ -121,16 +121,56 @@ interface VoltPluginOptions {
   lowerSignals?: boolean;        // default: true
   runtimeModule?: string;        // default: '@voltdev/core/runtime'
   debug?: boolean;               // default: false
+  start?: StartOptions | boolean;// default: false, see Start mode
+  hydrate?: boolean;             // default: whether `start` is on
+  serverModule?: string;         // default: '@voltdev/server'
+  groupRowBindings?: boolean;    // default: false
+  diagnostics?: boolean;         // default: true
   messages?: {                   // default: off, see Messages below
     catalog: string;
     locale?: string;             // default: the catalogue file's own name
     id?: string;                 // default: 'virtual:volt-messages'
+    translate?: readonly string[]; // default: every `t(...)` is the locale's
     typesFile?: string;          // default: none
     unused?: 'warn' | 'off';     // default: 'warn'
     ignore?: readonly string[];  // default: the library's own keys
   };
 }
 ```
+
+`start` wires the router, the query cache, server rendering and server
+functions together, and is the subject of [its own page](./start). It is off
+until a project writes it.
+
+`start` wires the router, the query cache, server rendering and server functions
+together, and is off until a project writes it. It has [a page of its
+own](./start), which also covers per-route rendering modes, static generation,
+partial hydration, and the `renderPath` build check that keeps a render off
+`node:` builtins.
+
+`hydrate` decides which of the three emits the client build gets: `false`
+clones a template into fresh nodes, `true` claims the ones a server already
+printed. It is not inferable — a project may render on a server for a crawler
+and ship a client build that never hydrates — so it is asked for rather than
+guessed at. Turning `start` on turns it on too, because a server that writes
+the markup and a client that builds its own on top of it are two halves of one
+decision; pass `hydrate: false` beside `start: true` to take it back.
+
+`diagnostics` keeps the structure around an error in a production build: its
+code, the identity of what failed, and a link to the sentence the build is not
+carrying. It is separate from the message text, which `__VOLT_DEV__` strips
+regardless, and it is on by default because a production failure that arrives
+as an unattributed throw is a failure nobody can act on. Turn it off only for a
+target counting every byte, and accept that a failure then arrives as a bare
+code. See [Errors](./component#errors) for what an error carries, and
+[Error codes](/e/) for every code there is.
+
+`groupRowBindings` drives a `:for` row's bindings from one effect rather than
+one each. It saves about 2.3 kB a row and costs 13–35% on updating a selection
+across a long list, while winning 5–11% on building one — measured in a real
+browser, not estimated. It is off because the selection cost is paid on every
+interaction where the construction saving is paid once, and a list that never
+selects is the case it is there for.
 
 `debug: true` logs what the compiler folded away per file:
 

@@ -7,16 +7,34 @@ Volt targets current engines and carries no legacy support. You need **Node
 
 ## Install
 
-```bash
 ::: warning Under active development
 Volt is pre-alpha. Nothing here is stable: APIs may change shape between
 versions without a deprecation path, and there is no support commitment.
 Pin an exact version if you build anything on it.
 :::
 
+```bash
 pnpm add @voltdev/core@alpha
 pnpm add -D @voltdev/vite-plugin@alpha vite
 ```
+
+### What is on npm
+
+The published alpha is the core. This site documents the repository, which is
+ahead of it, so a page describing something newer than the alpha — or a package
+that has not been released — says so at the top.
+
+| Package | On npm |
+|---|---|
+| `@voltdev/core`, `@voltdev/reactivity`, `@voltdev/compiler`, `@voltdev/vite-plugin` | Yes, as `alpha` |
+| [`router`](../reference/router), [`query`](../reference/query), [`server`](../reference/server-functions) | Not yet |
+| [`primitives`](../reference/primitives), [`ui`](../reference/ui), [`grid`](../reference/grid), [`editor`](../reference/editor) | Not yet |
+| [`testing`](../reference/testing), [`cli`](../reference/cli), [`create-volt`](../reference/create-volt), [`volar`](../reference/volar) | Not yet |
+
+Everything in the second half works from a checkout of the Volt repository,
+where the packages resolve from the workspace. A package reaches npm when its
+shape is meant to be permanent — a version published at `0.1.0` cannot be taken
+back, so nothing is released before that.
 
 ## Configure Vite
 
@@ -154,6 +172,21 @@ dependency.
 })
 export class App {}
 ```
+
+## Starting from a template
+
+`create-volt` generates a project with the toolchain, a component and a passing
+test. It is not on npm yet; from a checkout of the repository:
+
+```bash
+node packages/create-volt/bin/create-volt.js my-app --template minimal
+```
+
+`minimal` is the one template it can generate today. `router-query` and `start` —
+the second wiring server rendering, per-route modes and server functions through
+[start mode](../reference/start) — need packages that are not published yet, and a
+generated project installs from npm, so it refuses them rather than producing a
+project that cannot install. See [create-volt](../reference/create-volt).
 
 ## Next
 

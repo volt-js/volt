@@ -264,6 +264,26 @@ then not in the DOM, the accessibility tree, or the tab order at all.
 <div :spread="attrs.get()"></div>
 ```
 
+Applies every entry of an object, and applies it again whenever what the
+expression reads changes. It is how a [primitive](./primitives)'s part props
+reach an element.
+
+| Entry | Becomes |
+|---|---|
+| `class`, `style` | The same as `:class` and `:style` — a string, an object or an array |
+| a name the element has as a property — `value`, `checked`, `tabIndex` | That property |
+| `on` + an event name, holding a function — `onclick`, `onkeydown` | A listener for that event |
+| anything else | An attribute; `null`, `undefined` and `false` remove it |
+
+Each object is applied against what the last one wrote. An entry the next
+object does not carry is taken back — its attribute removed, its listener
+detached, the classes and style properties it added removed while the ones the
+template wrote itself stay. A listener whose function changed is swapped for
+the new one, so an object built with a fresh arrow each time is safe. Taking
+back a property removes the attribute of the same name, which resets a property
+that reflects its attribute, like `tabIndex`, and leaves one that does not, like
+a text field's current `value`, as it was.
+
 ## Slots
 
 ```html

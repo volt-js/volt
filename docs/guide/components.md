@@ -27,7 +27,6 @@ export class Greeting {
 |---|---|
 | `selector` | The tag this component answers to. Required. |
 | `templateUrl` | Path to an `.html` file, relative to this file |
-| `template` | Inline template source |
 | `render` | A pre-compiled render function (the Vite plugin fills this in) |
 | `styleUrl` / `styleUrls` | Path(s) to `.scss` files, relative to this file |
 | `styles` | Compiled CSS, filled in by the plugin from `styleUrl` |

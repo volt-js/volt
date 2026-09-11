@@ -161,7 +161,7 @@ What Volt took from each, and what it declined.
 | Angular | classes, decorators, opinionated structure | dependency injection |
 | Astro | islands | a separate authoring model for them |
 | Qwik | lazy execution | resumability |
-| TanStack | resource primitives | — (a shared query cache is planned) |
+| TanStack | a shared query cache keyed by value — [`@voltdev/query`](../reference/query) | a core that adapts to each framework's reactivity; this one is built on the signals directly |
 | Tailwind | design tokens | utility classes as the styling model |
 | React | the component model as an idea | hooks, and the re-render that requires them |
 
@@ -442,5 +442,5 @@ instead of in the type of every value in the system.
 proposal, the constraint above disappears and this should be reopened
 immediately — it is the only argument here that is about Volt's commitments
 rather than about the shape of the problem. Streaming SSR is the feature that
-would encode this decision deepest, and it is being built after it rather than
-before, which is the whole reason the decision was made now.
+encodes this decision deepest, and it was built after it rather than before,
+which is the whole reason the decision was made when it was.

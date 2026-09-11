@@ -142,6 +142,80 @@ renders — so what a missing nonce looks like is server rendering having quietl
 stopped paying for itself, on the deployment that has a CSP and not on the one
 that does not.
 
+## Streaming
+
+`renderToString` buffers: the response goes out when the slowest query has
+answered. `renderToStream` sends the shell first and fills the rest in as the
+data lands.
+
+```ts
+import { renderToStream, boundary } from '@voltdev/core/server';
+
+const stream = renderToStream(Page);
+return new Response(stream, { headers: { 'content-type': 'text/html' } });
+```
+
+```ts
+renderToStream(component: ComponentType, options?: StreamOptions): ReadableStream<Uint8Array>
+```
+
+`StreamOptions` is `RenderOptions` and the state-script options, plus
+`fallback: (error) => string` — markup for a failure the page can no longer
+answer with a status. Once the shell has gone the headers are gone with it, so
+the honest options are to say something and stop, or to stop silently; the
+default is an inert HTML comment, because the failure has already been reported
+through the error channel and an exception message does not belong in a page.
+
+### Boundaries
+
+A region whose data is not ready yet is a `boundary`. It writes a fallback
+between two markers immediately, and the real content follows in a later chunk.
+
+```ts
+import { boundary, type MarkupWriter } from '@voltdev/core/server';
+
+@Component({ selector: 'v-page', render: compileTemplate(`<main><h1>Orders</h1>{ orders }</main>`) })
+class Page {
+  orders = boundary(() => fetchOrders(), {
+    fallback: (out: MarkupWriter) => out.raw('<p>Loading…</p>'),
+    content: (rows: Row[], out: MarkupWriter) => out.child(renderRows(rows)),
+    failed: (error: unknown, out: MarkupWriter) => out.raw('<p>Could not load orders.</p>'),
+  });
+}
+```
+
+| Option | Description |
+|---|---|
+| `content` | The region, once the work settles. Required |
+| `fallback` | What stands in its place until then |
+| `failed` | What replaces it if the work rejects — the only recovery once headers are gone |
+
+Chunks go out in the order the work **settled**, not the order it was
+declared: a fast second boundary arrives before a slow first one, and each
+replaces its own placeholder by id. A render that waited for the slowest and
+sent them in document order would be the buffered render with extra steps.
+
+**A boundary needs a hole to come back to.** An element whose children are all
+text is emitted as one write, so there is nowhere for a late answer to land —
+give the boundary an element sibling, as in `<div><span></span>{ body }</div>`.
+Writing one as text throws and says so.
+
+`errorBoundary(children, options?)` is the same shape for a region that may
+throw rather than one that is waiting.
+
+### The client half
+
+Late chunks arrive as an inert `<template>` and a `__VOLT__` record saying
+where it belongs. `drainStream` reads those records and relocates the content
+into its placeholder — moving the server's own nodes rather than re-parsing
+them.
+
+You do not call it. [`hydrate`](#hydration) calls it before it claims anything,
+which is the right order: claiming first would bind the render to a fallback the
+drain is about to replace. Draining also swaps the boot array for a live sink,
+so records that have not arrived yet apply as they land rather than piling up
+behind a page that has already booted.
+
 ## Hydration
 
 Every dynamic child is written between `<!--[-->` and `<!--]-->`. The client's
@@ -154,14 +228,31 @@ Nothing else marks anything. Attributes and an element's own content are written
 where they stand and are found by the same build-time path a client build
 resolves, so they cost no bytes at all.
 
-A page is claimed by compiling the client's templates with `target: 'hydrate'`
-and starting the walk at the container the server's markup was parsed into:
+A page is claimed by compiling the client's templates to claim rather than
+clone — `hydrate: true` on [the Vite plugin](./vite-plugin) — and mounting the
+root with the entry that attaches instead of the one that builds:
 
 ```ts
-import { hydrate } from '@voltdev/core/runtime';
+import { hydrate } from '@voltdev/core';
 
-hydrate(document.getElementById('app')!, () => render(ctx));
+hydrate(App, '#app');
 ```
+
+`mount` and `hydrate` are two entries rather than one function with a flag, and
+the bundle is the reason: a flag puts the hydration walk on `mount`'s own path,
+where no bundler can drop it, and that measured at about 2 kB of a 24 kB example
+for every application that never server-renders. Two entries let an application
+reference only the one it uses.
+
+Which one to call is decided by how the build was compiled, not by looking at
+the page. A host that happens to have children is not evidence either way — a
+`csr` route's mount point is empty on a server-rendered site, and a shell with a
+spinner in it is not empty on any.
+
+There is also a lower-level `hydrate(host, build)` in `@voltdev/core/runtime`,
+taking a container and a render thunk. That is the entry generated code uses and
+the one a hole uses for its own range; an application wants the component-level
+one above.
 
 Blocks are claimed rather than cloned, so the nodes on the page after hydration
 are the nodes the server printed. What is compared is one name per block — the
@@ -305,3 +396,21 @@ Module-scope state is per process, not per request. A `Signal.State` at module
 scope is shared by every response the process is assembling at once; keep
 read-mostly configuration there and nothing else, and put request-derived state
 in a component or a `requestState` slot.
+
+An effect a server skips is correct code and also the one way a component
+behaves differently on the two sides with nothing to read that says why.
+`serverSkippedEffects()` from `@voltdev/reactivity` is the something to read:
+
+```ts
+import { serverSkippedEffects } from '@voltdev/reactivity';
+
+serverSkippedEffects();
+// [{ lane: 'user', site: 'at Counter (src/counter.ts:14:5)', count: 1 }]
+```
+
+Per request, and development only — a production build records nothing and gets
+an empty list. It is a record rather than a warning on purpose: every `effect`
+in every component would trip a warning on every server render, including all
+the ones whose authors know perfectly well that browser work waits for a
+browser, and a diagnostic that fires that often on correct code is one a project
+learns to filter. `onMount` is the hook that says "browser only" out loud.

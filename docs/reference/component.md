@@ -6,11 +6,12 @@
 interface ComponentConfig {
   selector: string;
   templateUrl?: string;
-  render?: (ctx: unknown) => unknown;
+  render?: RenderFn;
+  needsHydration?: boolean;
   styleUrl?: string;
   styleUrls?: string[];
   styles?: string | string[];
-  imports?: ComponentType[];
+  imports?: ComponentType[] | (() => ComponentType[]);
 }
 ```
 
@@ -19,9 +20,15 @@ interface ComponentConfig {
 | `selector` | Tag this component answers to. Required |
 | `templateUrl` | Path to an `.html` file, relative to this file |
 | `render` | Pre-compiled render function; the Vite plugin fills this in |
+| `needsHydration` | Whether the template has anything to attach in a browser; the Vite plugin fills this in. See [`needsHydration`](#needshydration-component) |
 | `styleUrl` / `styleUrls` | Path(s) to `.scss` files, relative to this file |
 | `styles` | Compiled CSS, filled in by the plugin from `styleUrl` |
-| `imports` | Components this template may reference |
+| `imports` | Components this template may reference, or a function returning them |
+
+`imports` takes a function for components that use each other: `imports: () =>
+[Other]` defers the read, where a plain array would read `Other` before its
+class exists. A component never lists itself — recursion into its own selector
+resolves on its own.
 
 `templateUrl`, `styleUrl` and `styleUrls` are resolved **at build time** by
 `@voltdev/vite-plugin`, which also registers each file with the watcher so
@@ -58,8 +65,7 @@ attributes, so a name matching no prop can only be a mistake — most often a
 kebab-cased spelling of a camelCase prop:
 
 ```
-[volt] <v-counter> has no prop "max-count". Did you mean "maxCount"?
-Declared props: maxCount, onChanged.
+[volt] V0208 <v-counter> has no prop "max-count". Did you mean "maxCount"? Declared props: maxCount, onChanged.
 ```
 
 There is one spelling: the declared one. Cannot be applied to static
@@ -119,6 +125,40 @@ app.instance;   // the component instance
 app.unmount();  // dispose every effect, then clear the host
 ```
 
+A target that matches nothing throws [V0212](/e/V0212).
+
+## `hydrate(component, target)`
+
+```ts
+import { hydrate } from '@voltdev/core';
+
+const app = hydrate(App, '#app');
+```
+
+The same as `mount`, and the same handle back, except that it attaches to
+markup a server already wrote instead of building it. The templates have to be
+compiled to claim nodes rather than create them — `hydrate: true` on
+[the Vite plugin](./vite-plugin), which [start mode](./start) turns on. See
+[Hydration](./server#hydration) for what is claimed and why this is a separate
+entry rather than a flag on `mount`.
+
+## `needsHydration(component)`
+
+```ts
+needsHydration(component: ComponentType): boolean
+```
+
+Whether rendering this component in a browser has anything to do. The Vite
+plugin records the compiler's answer beside the render function: a template
+that only clones fixed markup has no binding, listener, block or child to set
+up, and a page made only of components like that needs no JavaScript.
+[Start mode](./start#partial-hydration) reads it to leave the script off such a
+page.
+
+It is `true` unless the build said otherwise — a component compiled without the
+plugin, in a test or a playground, has no answer recorded, and treating unknown
+as static would ship a page that never wakes up.
+
 ## `compileTemplate(source, filename?)`
 
 From `@voltdev/core/jit`. Compiles template source into a render function at
@@ -170,6 +210,53 @@ is a new instance, not a resumed one.
 A component can be its own boundary by calling
 [`onError`](./reactivity.md#errors) in its constructor. It catches its own
 subtree and nothing wider, because a component owns a scope.
+
+## Errors
+
+Every refusal the framework makes throws a `VoltError`, exported from
+`@voltdev/core`:
+
+| Field | Description |
+|---|---|
+| `code` | `'V0208'` — stable across releases, and what a report should group by |
+| `detail` | What failed, named: `{ selector: 'v-counter', prop: 'max-count' }` |
+| `docs` | `'https://voltjs.dev/e/V0208'` — the page with the full sentence |
+| `message` | The sentence in development; the fields above, as text, in production |
+
+`detail` holds identities — a selector, a prop's name, a boundary's id — and
+never the data itself. A production error is read by whoever operates the
+application, and the row that failed is not theirs to see.
+
+**A production build leaves the sentence out.** Every message is written as
+`__VOLT_DEV__ && '…'`, which a production build folds to `false` and a minifier
+deletes along with the text, so an application does not ship the bytes of every
+message it might one day print. The throw itself is unchanged — same call, same
+line, same type — and what is left says what failed and where to read the rest:
+
+```
+[volt] V0212 target=#app https://voltjs.dev/e/V0212
+```
+
+The message repeats `code` and `detail` because a log that keeps only `message`
+is the common case. Every code has a page, generated from the source — see
+[Error codes](/e/).
+
+Two constants, deliberately separate, and both defined by the Vite plugin:
+
+| Constant | Gates | In production |
+|---|---|---|
+| `__VOLT_DEV__` | the sentence | `false` |
+| `__VOLT_DIAGNOSTICS__` | `detail`, `docs`, and the fields in `message` | `true` |
+
+A build counting every byte sets `diagnostics: false` on
+[the plugin](./vite-plugin) and gets a bare `[volt] V0212`. A build that
+defines neither constant keeps its diagnostics rather than crashing on an
+undefined name.
+
+Some codes are never seen in production at all: a prop that does not exist, a
+required prop left out, `:on-*` on a component. Those are authoring mistakes the
+framework checks only in development, and the check goes with its sentence. The
+[list of codes](/e/) marks which they are.
 
 ## Runtime helpers
 

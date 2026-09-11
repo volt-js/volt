@@ -127,6 +127,11 @@ const stop = effect(() => {
 });
 ```
 
+A server drains render and data effects and nothing else, so an `effect` or a
+`measureEffect` in a server render is declared and never runs. In development,
+`serverSkippedEffects()` lists the ones a request skipped and where they were
+registered — see [what a server does not run](./server#what-a-server-does-not-run).
+
 ## Scheduling
 
 | Function | Description |
@@ -237,3 +242,14 @@ setErrorReporter(({ error, component, props, scope, handled }) => {
 |---|---|
 | `isSignal(v)` | True for `Signal.State` or `Signal.Computed` |
 | `isWritableSignal(v)` | True for `Signal.State` |
+
+## Instrumentation
+
+`setDevListener` and `declareTarget` are exported for
+[the developer tools](./devtools), not for applications: the graph and the
+scheduler are the only places that know what a panel wants to show, and they
+are in this package. `declareTarget(node)` is how a binding names the element
+its next effect writes to, which is what `nodesOwnedBy` reads back. Every call
+into either is inside `if (__VOLT_DEV__)`, so a production build removes the
+calls and then the modules behind them. Import `@voltdev/core/devtools`
+instead.
