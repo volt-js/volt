@@ -325,6 +325,11 @@ not have. Test it with `.length` — an empty array is truthy.
 
 ## What it does not do
 
+- **It does not run on a server.** `createRouter` reads `window.location` when
+  it is created and navigates with the History API, so a server bundle that
+  creates one throws as it loads. A server decides what a URL resolves to with
+  [`matchRoutes`, `flattenRoutes` and `routeMode`](#without-a-browser),
+  which touch no DOM.
 - **No file-system routing.** The table is declared. A generator that writes one
   from a directory is a reasonable thing to build on top; it is not built here.
 - **No hash routing.** URLs are paths, handled with the History API.

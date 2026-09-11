@@ -23,9 +23,9 @@ features:
   - title: The compiler does the work
     details: Static markup is cloned, constant bindings are folded away, and identical templates are shared. What is left is one effect per binding that can actually change.
   - title: Server rendering is a choice
-    details: Off until you ask for it, and chosen per route when you do — built once, rendered per request, or left to the browser. A page with nothing to attach is sent no JavaScript, with no island annotation to write.
-    link: /reference/start
-    linkText: Start mode
+    details: Off until you ask for it. Render to a string or a stream, attach to it with hydrate, and let the compiler say which components have nothing to attach — no island annotation to write.
+    link: /reference/server
+    linkText: Server rendering
   - title: Behaviour, not markup
     details: Headless primitives held to the WAI-ARIA Authoring Practices — keyboard models, focus, roles and announcements — with a styled layer, a data grid and a rich-text editor built on them.
     link: /reference/primitives

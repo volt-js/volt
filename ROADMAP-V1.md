@@ -897,6 +897,32 @@ nothing is being added to a project that was not there.
       import, which is the shape a host expects and the constraint the edge
       check enforces. It type-checks as generated, which is what caught the
       three things wrong with it when it was written.
+- [ ] It runs end to end. Everything above was built and tested piece by
+      piece — the handler against the router's real matching, the template
+      through the server-function pass — and nothing built the template and
+      asked it for a page. Doing that finds four things missing, so the pricing
+      page above is the intent rather than what happens:
+
+      - The dev server does not route through the handler. Under `vite` every
+        page renders in the browser, and a server-function call is answered
+        404.
+      - `vite build` builds the client alone; the server entry is built only
+        by hand, with `vite build --ssr server.ts`.
+      - `createRouter` reads `window.location` when it is created, so the
+        template's module-scope router throws as the server bundle loads. A
+        router at module scope on a server would be shared by every request in
+        flight anyway, so the fix is a router made per request, not a guard
+        around `window`.
+      - Data a page fetches while rendering does not reach the page. `guard`
+        sees a request only when a function arrives as a call, so the pricing
+        page's call during a server render is refused; and the render waits
+        only for data it was told about, which a promise started from a
+        constructor is not.
+
+      A fifth was found on the way and fixed: `@voltdev/core/server` did not
+      export the `defineComponent` every lowered component imports in a server
+      build, so no server build of a decorated component could succeed.
+      `component-server-bundle.test.ts` builds one through the plugin now.
 
 ## Server functions
 

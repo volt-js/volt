@@ -4,6 +4,12 @@ A Volt project in `start` mode: the router, the query cache, server rendering
 and server functions wired together, with each route saying where its markup is
 made.
 
+> **Start mode does not run end to end yet.** `pnpm dev` renders every page in
+> the browser, `pnpm build` builds the client alone, and the server entry cannot
+> create the router on a server. The route table, the modes and the generated
+> handler are real; what runs them is not finished. See
+> [the status of start mode](https://voltjs.dev/reference/start).
+
 ## What is here, and what is not
 
 `vite.config.ts` is one line of configuration:
@@ -46,6 +52,6 @@ and it stays one.
 
 ```bash
 pnpm dev      # develop
-pnpm build    # build the client and the server entry
+pnpm build    # build the client (the server entry is not built yet)
 pnpm test     # run the tests
 ```

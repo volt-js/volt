@@ -87,6 +87,10 @@ declares the two virtual modules the plugin generates, so the project
 type-checks without the plugin running. Delete `start: true` and it becomes an
 ordinary client-rendered project with nothing else to change.
 
+**It does not run as a server yet.** Its dev server renders every page in the
+browser, its build produces the client alone, and its server entry cannot load
+its router on a server — see [the status of start mode](./start).
+
 ## Availability
 
 A template can only be generated if every Volt package it depends on is on npm.

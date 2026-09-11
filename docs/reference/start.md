@@ -14,12 +14,29 @@ export default defineConfig({
 });
 ```
 
-::: warning Not usable from npm yet
-Start mode is in the repository and not in a release. The code it generates
-imports `@voltdev/router`, `@voltdev/query` and `@voltdev/server`, none of which
-are published yet, and the option itself is newer than the `@voltdev/vite-plugin`
-alpha on npm. Everything on this page works from a checkout of the Volt
-repository.
+::: danger Not finished — it does not run end to end yet
+The pieces on this page are built and tested on their own: the handler's
+logic, per-route modes, the partial-hydration decision, static generation and
+the edge check. What is missing is what runs them, and building the `start`
+template and requesting its pages shows where:
+
+- **The dev server does not use it.** Under `vite`, every page is rendered in
+  the browser, and a server-function call is answered 404.
+- **`vite build` builds the client only.** The server entry has to be built
+  separately, with `vite build --ssr server.ts`.
+- **The router cannot be created on a server.** `createRouter` reads
+  `window.location` when it is created, so an application that makes its
+  router at module scope — as the template does — throws as its server bundle
+  loads, before any request arrives.
+- **Data a page fetches while rendering does not reach the page.** A server
+  function called during a server render is refused, because `guard` sees a
+  request only when the function arrived as a call; and a server render waits
+  only for data it was told about — see [one request](./server#one-request).
+
+Until those are done, server rendering works through
+[the renderers directly](./server), with a server entry you write yourself.
+Start mode also needs `@voltdev/router`, `@voltdev/query` and
+`@voltdev/server`, none of which are published yet.
 :::
 
 That is the whole configuration. What it gives the project is a request
@@ -288,11 +305,13 @@ the same deploy, while `fs-extra` is a package and is left alone.
 It is ordered `pre`, because the pass it reads the `@Server()` boundary from is
 the pass that erases it.
 
-## A working example
+## The example
 
 `create-volt` has a `start` template: three routes using all three modes, a
-deployable `server.ts`, and one line of configuration. It cannot be generated
-into a standalone project until the packages it needs are published — a project
-outside the repository installs from npm — so for now read it in the repository,
-under `packages/create-volt/templates/start/`. See [`create-volt`](./create-volt)
-for why the refusal is deliberate.
+`server.ts` in the shape a host expects, and one line of configuration. It is
+the example the status note at the top of this page was found with, and it does
+not run as a server yet for the reasons listed there. It also cannot be
+generated into a standalone project until the packages it needs are published —
+a project outside the repository installs from npm — so read it in the
+repository, under `packages/create-volt/templates/start/`. See
+[`create-volt`](./create-volt) for why that refusal is deliberate.
