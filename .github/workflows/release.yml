@@ -89,9 +89,13 @@ jobs:
           # registry before something that depends on it is published.
           PACKAGES="reactivity compiler core vite-plugin"
 
-          # Deliberately absent: primitives, ui, grid and editor. The first has
-          # components that have not passed review; the rest are a single file
-          # each. An empty package at 0.1.0 would be permanent.
+          # Deliberately absent: every other package. Each is built and tested
+          # by CI, but a version cannot be taken back (see above), so a package
+          # joins this list when it is decided to ship rather than when it
+          # compiles. Adding one here means adding it to PUBLISHED_PACKAGES in
+          # packages/create-volt/src/versions.ts as well: that list decides which
+          # templates create-volt will generate, and a template naming a package
+          # npm does not have produces a project that cannot install.
 
           for pkg in $PACKAGES; do
             cd "$GITHUB_WORKSPACE/packages/$pkg"

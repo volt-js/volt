@@ -10,12 +10,17 @@ pnpm install
 pnpm dev
 ```
 
+> **Not on npm yet.** The command above is what runs it once it is released.
+> Until then, from a checkout of the [Volt repository](https://github.com/volt-js/volt),
+> after `pnpm build`: `node packages/create-volt/bin/create-volt.js my-app`.
+
 ## Templates
 
 | Template | What you get |
 | --- | --- |
 | `minimal` | One component, its template, a stylesheet and a test. |
 | `router-query` | Nested routes and a shared server-state cache. |
+| `start` | Server rendering, per-route rendering modes and server functions, from `volt({ start: true })`. |
 
 Pick one up front with `--template`, or answer the prompt.
 
@@ -24,8 +29,9 @@ pnpm create @voltdev/volt my-app --template minimal
 ```
 
 A template is only offered when everything it installs is on npm. `router-query`
-needs `@voltdev/router` and `@voltdev/query`, which have not shipped yet — the
-CLI says so rather than generating a project that cannot install.
+needs `@voltdev/router` and `@voltdev/query`, and `start` needs those and
+`@voltdev/server`, none of which have shipped yet — the CLI says so rather than
+generating a project that cannot install.
 
 ## Options
 

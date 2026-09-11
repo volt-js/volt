@@ -8,6 +8,10 @@ anything on screen moves.
 pnpm add @voltdev/router@alpha
 ```
 
+> **Not on npm yet.** The command above is what installs it once it is released.
+> Until then it works from a checkout of the [Volt repository](https://github.com/volt-js/volt) —
+> see [what is on npm](https://voltjs.dev/guide/getting-started#what-is-on-npm).
+
 ```ts
 import { createRouter, defineRoutes, routeData, type LoaderArgs } from '@voltdev/router';
 
