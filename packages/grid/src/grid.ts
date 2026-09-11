@@ -74,11 +74,14 @@
  * and rows sit in the container in order at the height given here. A row must
  * therefore be a flex row (or any other layout that keeps its cells on one
  * line), the sizer must be positioned so it can be taller than the viewport,
- * and every cell must be `box-sizing: border-box` or its padding will push the
- * columns out of step with the header:
+ * every cell must be `box-sizing: border-box` or its padding will push the
+ * columns out of step with the header, and no cell may shrink — the header row
+ * is only as wide as the grid while the columns it renders are wider, so a
+ * flex item left to shrink narrows every header cell until it no longer lines
+ * up with the body:
  *
  *   [role='row'] { display: flex; }
- *   [role='gridcell'], [role='columnheader'] { box-sizing: border-box; }
+ *   [role='gridcell'], [role='columnheader'] { box-sizing: border-box; flex: none; }
  *
  * The keyboard map, which is the WAI-ARIA grid pattern:
  *

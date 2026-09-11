@@ -39,8 +39,9 @@
  * task timers while leaving the microtask queue — which is where Volt's flush
  * lives — completely alone.
  *
- * Not here, and deliberately: Playwright fixtures and axe assertions, both of
- * which want a real browser rather than a DOM emulation.
+ * Not here yet: Playwright fixtures and axe assertions. Both are on the
+ * roadmap, and both want a real browser rather than a DOM emulation, so they
+ * wait on the browser matrix rather than being built against this one.
  */
 
 export { cleanup, render, type RenderResult } from './render.js';

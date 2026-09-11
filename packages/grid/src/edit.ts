@@ -121,7 +121,11 @@ export interface GridEditChange<T> {
   /** The caller's own row object — not a copy, and not written to. */
   readonly item: T;
   readonly rowKey: GridRowKey;
-  /** Where the row was in the collection when the edit was committed. */
+  /**
+   * Where the row was in the collection when the edit session opened. A sort
+   * or a filter while the cell was open moves rows without moving this, so
+   * find the row by `rowKey` or `item`, not by this.
+   */
   readonly rowIndex: number;
   readonly columnId: string;
   readonly previous: unknown;

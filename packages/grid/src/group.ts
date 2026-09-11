@@ -191,10 +191,10 @@ export interface GridGroupingOptions<T> {
   /**
    * What identifies one of the caller's rows, for keyed rendering.
    *
-   * Defaults to the row's place in the flattened collection — which is the same
-   * footgun `createGrid` documents, one level down and sharper: collapsing a
-   * group moves every row below it, so a row identified by where it is changes
-   * identity when a group two thousand rows above it closes.
+   * Defaults to the row's place in the grouped collection, counted as though
+   * every group were open — so collapsing a group re-keys nothing below it.
+   * It is still the footgun `createGrid` documents: a sort or a filter moves
+   * rows, and a row identified by where it is changes identity when it moves.
    */
   getRowKey?: (row: T, index: number) => GridRowKey;
 
@@ -561,8 +561,8 @@ export function createGrouping<T>(options: GridGroupingOptions<T>): GridGrouping
 
         // A collapsed group's rows are not in the collection, which is the
         // whole reason `aria-rowcount` comes out right without anyone
-        // subtracting anything. The ordinals of the rows below it move, which
-        // is why a grouped grid wants `getRowKey` even more than a flat one.
+        // subtracting anything. Their ordinals are still counted, so the
+        // default key of every row below does not change when a group closes.
         if (collapsed.has(node.path)) {
           ordinal += node.count;
           continue;
