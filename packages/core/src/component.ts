@@ -238,7 +238,7 @@ export function defineComponent<T extends ComponentType<unknown>>(
     throw voltError(
       'V0201',
       { cls: target.name || '(anonymous)' },
-      `@Component on ${target.name || '(anonymous class)'} needs a selector.`,
+      __VOLT_DEV__ && `@Component on ${target.name || '(anonymous class)'} needs a selector.`,
     );
   }
 
@@ -491,9 +491,10 @@ function reportUnknownProp(key: string, resolved: ResolvedConfig): never {
   throw voltError(
     'V0208',
     { selector: resolved.config.selector, prop: key },
-    `<${resolved.config.selector}> has no prop "${key}".` +
-      (suggestion ? ` Did you mean "${suggestion}"?` : '') +
-      (declared.length ? ` Declared props: ${declared.join(', ')}.` : ' It declares no props.'),
+    __VOLT_DEV__ &&
+      `<${resolved.config.selector}> has no prop "${key}".` +
+        (suggestion ? ` Did you mean "${suggestion}"?` : '') +
+        (declared.length ? ` Declared props: ${declared.join(', ')}.` : ' It declares no props.'),
   );
 }
 
@@ -506,7 +507,7 @@ function checkRequiredProps(
       throw voltError(
         'V0209',
         { selector: resolved.config.selector, prop: def.alias },
-        `<${resolved.config.selector}> requires the prop "${def.alias}".`,
+        __VOLT_DEV__ && `<${resolved.config.selector}> requires the prop "${def.alias}".`,
       );
     }
   }
@@ -836,6 +837,7 @@ export function createComponent(
       throw voltError(
         'V0210',
         { tag, event: name },
+        __VOLT_DEV__ &&
         `<${tag}> is a component, so \`:on-${name}\` does not apply. ` +
           `Pass a callback instead: \`:on${name.charAt(0).toUpperCase()}${name.slice(1)}="..."\`, ` +
           `declared on the child as a @Prop.`,

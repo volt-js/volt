@@ -1591,8 +1591,12 @@ function resolvePortalTarget(target: unknown): Element {
     );
   }
 
+  // V06 is the DOM runtime's own family. This was V0401 once, which is the
+  // hydration state's — so a production report grouping by code filed a portal
+  // mistake under a serialisation failure, and the documentation link sent both
+  // to one page.
   throw voltError(
-    'V0401',
+    'V0601',
     {},
     __VOLT_DEV__ && ':portal expects an element, a selector string, or nothing.',
   );
