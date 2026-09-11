@@ -42,8 +42,10 @@ import { registeredState, STATE_ATTRIBUTE } from './state.js';
 // Everything generated code reaches that is not about writing bytes is the
 // client's own helper, imported rather than reimplemented: a second spelling
 // of `omit` is a second set of edge cases for one template to fall down
-// between.
-export { createComponent, slot } from './component.js';
+// between. `defineComponent` is what the plugin lowers every `@Component` to,
+// and in a server build it imports it from here — without it, no decorated
+// component could be built for the server at all.
+export { createComponent, slot, defineComponent } from './component.js';
 export { omit, setRef, toDisplayString, withDefault, writeModel } from './dom.js';
 
 // ---------------------------------------------------------------------------
