@@ -390,8 +390,9 @@ export interface Devtools {
    * Everything the session recorded, in one order: writes, events,
    * navigations and network answers.
    *
-   * Empty unless the session asked for `session: true`, except for the writes,
-   * which are here whenever `history` was asked for.
+   * Empty unless the session asked for `session: true` — writes included. A
+   * session that asked only for `history` keeps its writes in `history()`,
+   * which is the log for stepping; this one is the log for replaying.
    */
   timeline(): SessionEntry[];
 
