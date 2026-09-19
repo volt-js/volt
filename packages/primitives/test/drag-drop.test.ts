@@ -25,6 +25,7 @@ import {
   type DropEvent,
   type DropTarget,
 } from '../src/drag-drop.js';
+import { createLocaleProvider } from '../src/i18n.js';
 
 let host: HTMLElement;
 let mounted: { unmount(): void }[] = [];
@@ -321,6 +322,67 @@ describe('what assistive technology is told', () => {
     expect(host.querySelector('li')!.hasAttribute('aria-describedby')).toBe(false);
   });
 
+  it('points the items at instructions that are rendered after them, and away again', () => {
+    @Component({
+      selector: 'v-late-instructions',
+      render: compileTemplate(
+        `<div :ref="root"><ul :spread="dnd.containerProps({ id: 'l' })">` +
+          `<li :spread="dnd.itemProps({ id: 'x' })">x</li></ul>` +
+          `<p :if="shown.get()" :spread="dnd.instructionsProps()">{ dnd.instructions() }</p></div>`,
+      ),
+    })
+    class Late {
+      root = new Signal.State<Element | null>(null);
+      shown = new Signal.State(false);
+      dnd = createDragDrop({ root: () => this.root.get() });
+    }
+
+    const handle = track(mount(Late, host));
+    flushSync();
+    const li = host.querySelector('li')!;
+    expect(li.hasAttribute('aria-describedby')).toBe(false);
+
+    // Behind an `:if`, the instructions arrive long after the root did.
+    (handle.instance as Late).shown.set(true);
+    flushSync();
+    expect(li.getAttribute('aria-describedby')).toBe(host.querySelector('p')!.id);
+
+    // And a reference to an element that has gone is the dangling one this
+    // check exists to avoid.
+    (handle.instance as Late).shown.set(false);
+    flushSync();
+    expect(li.hasAttribute('aria-describedby')).toBe(false);
+  });
+
+  it('composes into a computed, like every other props getter', () => {
+    @Component({
+      selector: 'v-merged-instructions',
+      render: compileTemplate(
+        `<div :ref="root"><ul :spread="dnd.containerProps({ id: 'l' })">` +
+          `<li :spread="dnd.itemProps({ id: 'x' })">x</li></ul>` +
+          `<p :spread="described.get()">{ dnd.instructions() }</p></div>`,
+      ),
+    })
+    class Merged {
+      root = new Signal.State<Element | null>(null);
+      dnd = createDragDrop({ root: () => this.root.get() });
+      // Merging a class onto a set of props is the ordinary thing to do with
+      // them, and a computed has to stay pure — so a getter that wrote on the
+      // way past would throw here instead of describing anything.
+      described = new Signal.Computed(() => ({
+        ...this.dnd.instructionsProps(),
+        class: 'sr-only',
+      }));
+    }
+
+    track(mount(Merged, host));
+    flushSync();
+
+    const instructions = host.querySelector('p')!;
+    expect(instructions.className).toBe('sr-only');
+    expect(host.querySelector('li')!.getAttribute('aria-describedby')).toBe(instructions.id);
+  });
+
   it('lets every string be replaced, including the role description', () => {
     const { item, said, dnd } = board({
       labels: {
@@ -336,6 +398,70 @@ describe('what assistive technology is told', () => {
     dnd.lift('Kite');
     flushSync();
     expect(said()).toBe('Aufgenommen: Kite');
+  });
+
+  it('speaks the language of a catalogue that has translated the drag', () => {
+    @Component({
+      selector: 'v-german-list',
+      render: compileTemplate(`
+        <div :ref="root" :keydown="dnd.onKeyDown($event)">
+          <ul :spread="dnd.containerProps({ id: 'l', label: 'Liste' })">
+            <li :for="item in items" :key="item" tabindex="0"
+                :spread="dnd.itemProps({ id: item, dropsOn: item === 'b' })">
+              <span :spread="dnd.handleProps()">{ item }</span>
+            </li>
+          </ul>
+          <div class="live" :spread="dnd.liveRegionProps()">{ dnd.announcement() }</div>
+          <p class="instructions" :spread="dnd.instructionsProps()">{ dnd.instructions() }</p>
+        </div>
+      `),
+    })
+    class GermanList {
+      locale = createLocaleProvider({
+        defaultLocale: 'de-DE',
+        messages: {
+          draggable: 'verschiebbar',
+          dragHandle: 'Griff',
+          dragInstructions: 'Leertaste hebt an.',
+          dragLifted: '{item} aufgenommen. Element {position} von {total} in {container}.',
+          dragMoved: '{item} ist jetzt Element {position} von {total} in {container}.',
+          dragMovedOn: '{item} auf {target} ablegen.',
+          dragDroppedOn: '{item} auf {target} abgelegt.',
+          dragCancelled: 'Abgebrochen. {item} ist zurück.',
+        },
+      });
+      root = new Signal.State<Element | null>(null);
+      items = ['a', 'b', 'c'];
+      dnd = createDragDrop({ root: () => this.root.get() });
+    }
+
+    const handle = track(mount(GermanList, host));
+    flushSync();
+    const dnd = (handle.instance as GermanList).dnd;
+    const a = host.querySelector<HTMLElement>(`[${DRAG_ITEM_ATTRIBUTE}="a"]`)!;
+    const said = () => host.querySelector('.live')!.textContent;
+
+    expect(a.getAttribute('aria-roledescription')).toBe('verschiebbar');
+    expect(a.querySelector('span')!.getAttribute('aria-roledescription')).toBe('Griff');
+    expect(host.querySelector('.instructions')!.textContent).toBe('Leertaste hebt an.');
+
+    key(a, ' ');
+    expect(said()).toBe('a aufgenommen. Element 1 von 3 in Liste.');
+    key(a, 'ArrowDown');
+    expect(said()).toBe('a auf b ablegen.');
+    key(a, 'ArrowDown');
+    expect(said()).toBe('a ist jetzt Element 2 von 3 in Liste.');
+    key(a, 'ArrowUp');
+    key(a, ' ');
+    expect(said()).toBe('a auf b abgelegt.');
+
+    // A key the catalogue leaves out is still said, in English.
+    dnd.lift('a');
+    flushSync();
+    key(a, 'ArrowDown');
+    key(a, 'ArrowDown');
+    key(a, ' ');
+    expect(said()).toBe('Dropped a. Item 2 of 3 in Liste.');
   });
 
   it('announces through an assertive region that is read whole', () => {
@@ -642,6 +768,54 @@ describe('dropping onto an item', () => {
   });
 });
 
+describe('a collection that hides some of its items', () => {
+  /** Four items, the first of them kept in the DOM but not displayed. */
+  @Component({
+    selector: 'v-filtered',
+    render: compileTemplate(`
+      <div :ref="root" :keydown="dnd.onKeyDown($event)">
+        <ul class="list" :spread="dnd.containerProps({ id: 'list', label: 'List' })">
+          <li :for="item in items.get()" :key="item" tabindex="0"
+              :style="{ display: item === 'a' ? 'none' : undefined }"
+              :spread="dnd.itemProps({ id: item })">{ item }</li>
+        </ul>
+        <div class="live" :spread="dnd.liveRegionProps()">{ dnd.announcement() }</div>
+      </div>
+    `),
+  })
+  class Filtered {
+    root = new Signal.State<Element | null>(null);
+    items = new Signal.State(['a', 'b', 'c', 'd']);
+    dnd = createDragDrop({ root: () => this.root.get(), onDrop: (event) => drops.push(event) });
+  }
+
+  it('counts the hidden items in the target index, as it does in the source index', () => {
+    const handle = track(mount(Filtered, host));
+    flushSync();
+    const dnd = (handle.instance as Filtered).dnd;
+    const c = host.querySelector<HTMLElement>(`[${DRAG_ITEM_ATTRIBUTE}="c"]`)!;
+    const said = () => host.querySelector('.live')!.textContent;
+
+    key(c, ' ');
+    // c is third in the array, whatever is showing, and a lift starts in the
+    // gap it already occupies — so dropping straight away changes nothing.
+    expect(dnd.source()?.index).toBe(2);
+    expect(dnd.target()).toMatchObject({ itemId: 'd', position: 'before', index: 2 });
+    // What is said counts what a reader can see: b, c and d.
+    expect(said()).toBe('Picked up c. Item 2 of 3 in List.');
+
+    key(c, 'ArrowUp');
+    expect(dnd.target()).toMatchObject({ itemId: 'b', position: 'before', index: 1 });
+    expect(said()).toBe('c is now item 1 of 3 in List.');
+
+    // `splice(2, 1)` then `splice(1, 0, c)`: before b, which is where the line
+    // was drawn, and still after the hidden a.
+    key(c, ' ');
+    expect(drops[0]!.source.index).toBe(2);
+    expect(drops[0]!.target.index).toBe(1);
+  });
+});
+
 describe('validation and refusal', () => {
   it('skips rejected positions with the arrows rather than stopping on them', () => {
     const { item, dnd } = board({
@@ -782,19 +956,40 @@ describe('the pointer drag', () => {
     expect(dnd.target()).toMatchObject({ itemId: 'Grace', position: 'after', index: 1 });
   });
 
-  it('gives an item that takes children a middle third', () => {
+  it('gives an item that takes children its middle half', () => {
     const { dnd, node } = tree();
     const notes = node('.leaf');
-    // Home is the second row of the root list, y 50..100.
+    // Home is the second row of the root list, y 50..100, so its first
+    // quarter ends at 62.5 and its last begins at 87.5.
     startPointerDrag(notes, 150, 10);
 
     pointer('pointermove', notes, 50, 55);
     expect(dnd.target()).toMatchObject({ itemId: 'home', position: 'before' });
 
-    pointer('pointermove', notes, 50, 75);
+    pointer('pointermove', notes, 50, 65);
+    expect(dnd.target()).toMatchObject({ itemId: 'home', position: 'on', index: -1 });
+
+    pointer('pointermove', notes, 50, 85);
     expect(dnd.target()).toMatchObject({ itemId: 'home', position: 'on', index: -1 });
 
     pointer('pointermove', notes, 50, 95);
+    expect(dnd.target()).toMatchObject({ itemId: 'home', position: 'after' });
+  });
+
+  it('takes a different share for on when asked to', () => {
+    const { dnd, node } = tree({ onZoneRatio: 1 / 3 });
+    const notes = node('.leaf');
+    startPointerDrag(notes, 150, 10);
+
+    // A third at each end now means before or after, so the points that were
+    // on under the default are not.
+    pointer('pointermove', notes, 50, 65);
+    expect(dnd.target()).toMatchObject({ itemId: 'home', position: 'before' });
+
+    pointer('pointermove', notes, 50, 75);
+    expect(dnd.target()).toMatchObject({ itemId: 'home', position: 'on' });
+
+    pointer('pointermove', notes, 50, 85);
     expect(dnd.target()).toMatchObject({ itemId: 'home', position: 'after' });
   });
 
@@ -1029,6 +1224,68 @@ describe('auto-scroll', () => {
     pointer('pointermove', item(), 50, 99);
     await frames(2);
     expect(scroller.scrollTop).toBe(0);
+  });
+
+  it('scrolls the page near the bottom of the window, not of the document', async () => {
+    const { item } = board({ autoScrollThreshold: 30, autoScrollSpeed: 10 });
+    // Nothing around the lists scrolls, so the page does: a window 600 tall
+    // over a document of 3000, whose root element's box runs far below it.
+    const page = document.documentElement;
+    const stubbed = ['scrollHeight', 'clientHeight', 'clientWidth', 'getBoundingClientRect'];
+    Object.defineProperty(page, 'scrollHeight', { value: 3000, configurable: true });
+    Object.defineProperty(page, 'clientHeight', { value: 600, configurable: true });
+    Object.defineProperty(page, 'clientWidth', { value: 800, configurable: true });
+    setRect(page, 0, 0, 800, 3000);
+
+    try {
+      const kite = item('Kite');
+      startPointerDrag(kite, 50, 25);
+      pointer('pointermove', kite, 50, 590);
+      await frames(2);
+      expect(page.scrollTop).toBeGreaterThan(0);
+    } finally {
+      pointer('pointerup', item('Kite'), 50, 590);
+      for (const name of stubbed) delete (page as unknown as Record<string, unknown>)[name];
+      page.scrollTop = 0;
+    }
+  });
+
+  it('brings the target of a keyboard drag into view, which no pointer is there to do', () => {
+    const { dnd } = pane();
+    const items = [...host.querySelectorAll<HTMLElement>('li')];
+    const revealed: [string | null, ScrollIntoViewOptions][] = [];
+    for (const el of items) {
+      el.scrollIntoView = (options) => {
+        revealed.push([el.textContent, options as ScrollIntoViewOptions]);
+      };
+    }
+
+    key(items[0]!, ' ');
+    // Lifted where it already is, which is where the reader is looking.
+    expect(revealed).toEqual([]);
+
+    key(items[0]!, 'ArrowDown');
+    expect(dnd.target()).toMatchObject({ itemId: 'three', position: 'before' });
+    key(items[0]!, 'End');
+    expect(dnd.target()).toMatchObject({ itemId: 'three', position: 'after' });
+
+    // The smallest scroll that shows it, so a target already on screen moves
+    // nothing.
+    const nearest = { block: 'nearest', inline: 'nearest' };
+    expect(revealed).toEqual([
+      ['three', nearest],
+      ['three', nearest],
+    ]);
+  });
+
+  it('leaves the scrolling of a pointer drag to the pointer', () => {
+    const { item } = pane();
+    const revealed = vi.fn();
+    for (const el of host.querySelectorAll<HTMLElement>('li')) el.scrollIntoView = revealed;
+
+    startPointerDrag(item(), 50, 10);
+    pointer('pointermove', item(), 50, 120);
+    expect(revealed).not.toHaveBeenCalled();
   });
 });
 

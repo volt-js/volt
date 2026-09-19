@@ -127,34 +127,48 @@ describe('breadcrumb', () => {
     available: number;
     /** Each crumb's width. */
     crumb?: number;
-    /** Separators and gaps, all of them together. */
+    /** The gaps between the crumbs, all of them together. */
     chrome?: number;
+    /** The list's own padding, which is chrome that no gap ever holds. */
+    padding?: number;
     /** What the overflow trigger's slot costs once it appears. */
     slot?: number;
   }
 
   /**
-   * Give the trail a layout. happy-dom has none, so every width a measurement
-   * reads is stubbed here — which is also the only way to write a test whose
-   * arithmetic is checkable.
+   * Lay the trail out. happy-dom has no layout, so every box a measurement
+   * reads is stubbed here — positions included, because what the slot costs is
+   * worked out from where its neighbours sit. Elements are placed in a row, in
+   * the order they appear on screen: the slot sits where the collapse happens,
+   * which is after the crumbs that are always kept.
    */
-  function layout(list: HTMLElement, spec: Layout): void {
+  function layout(list: HTMLElement, spec: Layout, slotAfter: number): void {
     const crumb = spec.crumb ?? 100;
     const chrome = spec.chrome ?? 0;
+    const padding = spec.padding ?? 0;
     const slot = spec.slot ?? 60;
 
     const items = [...list.querySelectorAll<HTMLElement>(`[${CRUMB_ATTRIBUTE}]`)];
-    for (const el of items) {
-      el.getBoundingClientRect = () => new DOMRect(0, 0, crumb, 20);
-    }
     const overflow = list.querySelector<HTMLElement>(`[${CRUMB_OVERFLOW_ATTRIBUTE}]`);
-    if (overflow) overflow.getBoundingClientRect = () => new DOMRect(0, 0, slot, 20);
+    const gap = chrome / Math.max(items.length - 1, 1);
+
+    let x = padding / 2;
+    const place = (el: HTMLElement, width: number) => {
+      const rect = new DOMRect(x, 0, width, 20);
+      el.getBoundingClientRect = () => rect;
+      x += width + gap;
+    };
+    for (const [i, el] of items.entries()) {
+      if (i === slotAfter && overflow) place(overflow, slot);
+      place(el, crumb);
+    }
+    if (overflow && slotAfter >= items.length) place(overflow, slot);
 
     Object.defineProperty(list, 'clientWidth', { value: spec.available, configurable: true });
-    // What the trail wants with every crumb shown and the trigger gone, which
-    // is the state the measurement reads it in.
+    // What the trail wants with every crumb and the trigger's slot shown,
+    // which is the state the measurement reads it in.
     Object.defineProperty(list, 'scrollWidth', {
-      value: items.length * crumb + chrome,
+      value: x - gap + padding / 2,
       configurable: true,
     });
   }
@@ -177,7 +191,7 @@ describe('breadcrumb', () => {
       menu: (): HTMLElement | null => host.querySelector('[role="menu"]'),
       /** Lay the trail out and measure it, as a resize would. */
       resize(spec: Layout) {
-        layout(host.querySelector('ol')!, spec);
+        layout(host.querySelector('ol')!, spec, options.itemsBefore ?? 1);
         instance.crumbs.measure();
         flushSync();
       },
@@ -281,6 +295,19 @@ describe('breadcrumb', () => {
     expect(crumbs.collapsed().length).toBeGreaterThan(0);
   });
 
+  it('counts the padding no gap holds', () => {
+    const { crumbs, resize } = setup();
+
+    // 600 of crumbs inside 50 of list padding and no gaps at all, which is the
+    // trail of a consumer whose separators sit inside each crumb. It wants 650
+    // and has 645, and the 5 it is over is less than one crumb's share of the
+    // padding — so a measurement that took an average gap out of the reading
+    // instead of what the slot actually costs would call this a fit.
+    resize({ available: 645, padding: 50 });
+
+    expect(crumbs.collapsed()).toEqual([1]);
+  });
+
   it('never measures when collapsing is turned off', () => {
     const { crumbs, items, resize } = setup({ collapse: false });
 
@@ -359,6 +386,59 @@ describe('breadcrumb', () => {
     resize({ available: 600 });
     expect(crumbs.menu.isOpen()).toBe(false);
     expect(overflow().hidden).toBe(true);
+  });
+
+  it('reads every crumb shown, and hides them again when nothing changed', () => {
+    const { crumbs, items, overflow, resize } = setup();
+    resize({ available: 500 });
+    expect(crumbs.collapsed()).toEqual([1, 2]);
+
+    // A crumb read while it is hidden has no width, so each is read shown —
+    // the slot too, whose width decides what collapsing one crumb saves.
+    const shown: boolean[] = [];
+    for (const el of [...items(), overflow()]) {
+      const rect = el.getBoundingClientRect;
+      el.getBoundingClientRect = () => {
+        shown.push(!el.hidden);
+        return rect.call(el);
+      };
+    }
+    crumbs.measure();
+
+    expect(shown).toEqual([true, true, true, true, true, true, true]);
+    // The same answer as last time changes nothing the props read, and the
+    // crumbs still have to go back.
+    expect(crumbs.collapsed()).toEqual([1, 2]);
+    expect(items().map((el) => el.hidden)).toEqual([false, true, true, false, false, false]);
+    expect(overflow().hidden).toBe(false);
+  });
+
+  it('re-renders only the crumbs a measurement can change', () => {
+    const { crumbs, resize } = setup();
+    resize({ available: 500 });
+    expect(crumbs.collapsed()).toEqual([1, 2]);
+
+    // Showing a crumb for the measurement and hiding it again is two renders
+    // of it, and only the collapsed crumbs are ever hidden. A crumb that is on
+    // screen either way must not read what the measurement unfolds, or a
+    // resize drag re-renders the whole trail twice a frame.
+    const rendered: number[] = [];
+    const itemProps = crumbs.itemProps;
+    crumbs.itemProps = (index) => {
+      rendered.push(index);
+      return itemProps(index);
+    };
+    let slotRenders = 0;
+    const overflowProps = crumbs.overflowProps;
+    crumbs.overflowProps = () => {
+      slotRenders += 1;
+      return overflowProps();
+    };
+    resize({ available: 500 });
+
+    expect([...rendered].sort()).toEqual([1, 1, 2, 2]);
+    // The slot is showing and goes on showing, so it has nothing to unfold.
+    expect(slotRenders).toBe(0);
   });
 
   it('keeps collapsed crumbs in the document so they can be measured again', () => {

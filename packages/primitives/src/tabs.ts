@@ -95,10 +95,15 @@ export interface TabsOptions {
 
 export interface TabOptions {
   /**
-   * Marks the tab disabled without removing it from the tab order: the arrow
-   * keys skip it and it cannot be selected, but focus can still reach it. A
-   * natively `disabled` button cannot be focused at all, so a keyboard user
-   * never finds out the tab is there.
+   * Marks the tab `aria-disabled` rather than natively `disabled`, which means
+   * nothing on the `<div>` or `<a>` a tab is as often rendered as. It stays in
+   * the accessibility tree and is announced among the others, but the keyboard
+   * cannot reach it on its own: the arrow keys skip it, and it cannot be
+   * selected by keyboard or by click. A pointer press does put focus on it,
+   * and the list's one tab stop follows focus, so while focus is there the
+   * disabled tab holds it — as does a disabled tab the list was handed as its
+   * value, which is what keeps a list whose selected tab is disabled reachable
+   * by Tab at all.
    */
   disabled?: boolean;
 }

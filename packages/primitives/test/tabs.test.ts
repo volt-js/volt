@@ -156,13 +156,39 @@ describe('what assistive technology is told', () => {
     expect(tab('one').getAttribute('aria-selected')).toBe('false');
   });
 
-  it('marks a disabled tab without taking it out of the tab order', () => {
+  it('marks a disabled tab without taking it out of the accessibility tree', () => {
     const { tab } = setup({ defaultValue: 'one' });
 
-    // aria-disabled, not the native attribute: a natively disabled button
-    // cannot be focused, so a keyboard user never discovers the tab exists.
+    // aria-disabled, not the native attribute, which a tab rendered as a
+    // `<div>` or an `<a>` would ignore. The tab is still announced among the
+    // others; it is the keyboard that cannot reach it, since the arrows step
+    // over it and at rest the tab stop is on the tab that is showing.
     expect(tab('three').getAttribute('aria-disabled')).toBe('true');
     expect(tab('three').hasAttribute('disabled')).toBe(false);
+    expect(tab('three').getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('gives a disabled tab the tab stop while focus is on it', () => {
+    const { tab, tabStops, selection } = setup({ defaultValue: 'one' });
+
+    // The tab stop follows focus, and a pointer press does focus a disabled
+    // tab even though no key can reach it. Leaving the stop on another tab
+    // would send the next Tab press off from somewhere the user is not.
+    tab('three').focus();
+    tab('three').dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    flushSync();
+
+    expect(tabStops()).toEqual(['-1', '-1', '0', '-1']);
+    // Focused is not selected: the press was refused.
+    expect(selection()).toEqual(['one']);
+  });
+
+  it('keeps the tab stop on a disabled tab the list was told is selected', () => {
+    const { tabStops } = setup({ defaultValue: 'three' });
+
+    // A list whose selected tab is disabled would otherwise have no tab stop
+    // at all, and Tab would step straight over the whole list.
+    expect(tabStops()).toEqual(['-1', '-1', '0', '-1']);
   });
 
   it('names the list only when it is given a name', () => {

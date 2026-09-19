@@ -90,6 +90,7 @@
 import { Signal, effect, onCleanup } from '@voltdev/core';
 import { createCollection } from './collection.js';
 import { createId } from './id.js';
+import { useLocale, type MessageValues } from './i18n.js';
 
 const { untrack } = Signal.subtle;
 
@@ -137,7 +138,12 @@ export interface DragSource {
   readonly itemId: string;
   /** The collection it was picked up from. */
   readonly containerId: string;
-  /** Its index there when the drag started. */
+  /**
+   * Its index there when the drag started, among the collection's items in
+   * the DOM, displayed or not. That is an index into the consumer's array only
+   * while every item is rendered: in a windowed list it counts the window.
+   * `itemId` is what to resolve a move from there.
+   */
   readonly index: number;
   /** What a screen reader calls it. */
   readonly label: string;
@@ -156,6 +162,10 @@ export interface DropTarget {
    * correct with no adjustment, which is the off-by-one every sortable list
    * gets wrong. It is -1 for an `on` drop, which has no index: nothing was
    * inserted between two items.
+   *
+   * Counted as `DragSource.index` is, over the collection's items in the DOM,
+   * so the same caveat holds: in a windowed list it is an index into the
+   * window, and a move is resolved from `itemId` and `position` instead.
    */
   readonly index: number;
 }
@@ -196,21 +206,45 @@ export interface DragAnnouncement {
  *
  * All of them are overridable because the library is localised later, and a
  * hard-coded English sentence is not something a consumer can work around.
+ *
+ * One left out is looked for in the locale's message catalogue, under the key
+ * named beside it, before the English is used — so an application that
+ * translates its catalogue translates the drag along with everything else. A
+ * sentence in the catalogue is a template over `{item}`, `{target}`,
+ * `{container}`, `{position}` and `{total}`.
  */
 export interface DragDropLabels {
-  /** `aria-roledescription` for an item. Default `draggable`; '' leaves it off. */
+  /**
+   * `aria-roledescription` for an item. Catalogue key `draggable`, default
+   * `draggable`; '' leaves it off.
+   */
   item?: string;
-  /** `aria-roledescription` for a handle. Default `drag handle`; '' leaves it off. */
+  /**
+   * `aria-roledescription` for a handle. Catalogue key `dragHandle`, default
+   * `drag handle`; '' leaves it off.
+   */
   handle?: string;
-  /** What `instructions()` returns, for the element `instructionsProps` names. */
+  /**
+   * What `instructions()` returns, for the element `instructionsProps` names.
+   * Catalogue key `dragInstructions`.
+   */
   instructions?: string;
 
+  /** Catalogue key `dragLifted`. */
   lifted?: (drag: DragAnnouncement) => string;
-  /** Announced whenever the drop target changes. */
+  /**
+   * Announced whenever the drop target changes. Catalogue key `dragMoved`, or
+   * `dragMovedOn` when the target is an item rather than a gap.
+   */
   moved?: (drag: DragAnnouncement) => string;
-  /** Announced when the pointer or the arrows reach somewhere nothing can go. */
+  /**
+   * Announced when the pointer or the arrows reach somewhere nothing can go.
+   * Catalogue key `dragInvalid`.
+   */
   invalid?: (drag: DragAnnouncement) => string;
+  /** Catalogue key `dragDropped`, or `dragDroppedOn` for a drop onto an item. */
   dropped?: (drag: DragAnnouncement) => string;
+  /** Catalogue key `dragCancelled`. */
   cancelled?: (drag: DragAnnouncement) => string;
 }
 
@@ -359,6 +393,13 @@ export interface DragDrop {
   itemProps(options: DragItemOptions): DragDropProps;
   handleProps(options?: DragHandleOptions): DragDropProps;
   liveRegionProps(): DragDropProps;
+  /**
+   * The element every item's `aria-describedby` points at. The one getter here
+   * that is more than a read: applying it is how instructions rendered behind
+   * an `:if` are noticed, and tearing that render down is how they are noticed
+   * gone. So spread it from the element's own render — merging a class onto it
+   * is fine — rather than calling it once and keeping the result.
+   */
   instructionsProps(): DragDropProps;
 }
 
@@ -402,6 +443,15 @@ export function createDragDrop(options: DragDropOptions): DragDrop {
   const autoScrollSpeed = options.autoScrollSpeed ?? 12;
   const restoreFocus = options.restoreFocus ?? 'item';
   const labels = options.labels ?? {};
+  const locale = useLocale();
+
+  /**
+   * A default string: the locale's catalogue first, then English. Read when it
+   * is said rather than once here, so a catalogue that is swapped later is
+   * heard from then on.
+   */
+  const said = (key: string, fallback: string, values?: MessageValues): string =>
+    locale.has(key) ? locale.t(key, values) : fallback;
 
   const instructionsId = createId('drag-instructions');
 
@@ -418,6 +468,14 @@ export function createDragDrop(options: DragDropOptions): DragDrop {
    */
   const hasInstructions = new Signal.State(false);
 
+  /**
+   * Counts `instructionsProps()` being applied and taken down again, which is
+   * the instructions element being rendered and going. It is what tells the
+   * check above to look again: an element behind an `:if` arrives long after
+   * the root does, and nothing else here would notice it come or go.
+   */
+  const instructionRenders = new Signal.State(0);
+
   let pending: Pending | null = null;
   let session: Session | null = null;
 
@@ -430,10 +488,22 @@ export function createDragDrop(options: DragDropOptions): DragDrop {
 
   effect(() => {
     const root = options.root();
+    instructionRenders.get();
     // By id on the document, not within the root: a live region is often
     // portalled out to the end of the body.
     hasInstructions.set(Boolean(root?.ownerDocument?.getElementById(instructionsId)));
   });
+
+  /**
+   * Bumped through `untrack`, because this is reached from a props getter and
+   * a consumer is free to merge a class onto those props inside a
+   * `Signal.Computed`, which must stay pure and would otherwise throw on the
+   * write. Nothing computing can be reading this count, since only the effect
+   * below ever does.
+   */
+  const noteInstructionRender = (): void => {
+    untrack(() => instructionRenders.set(instructionRenders.get() + 1));
+  };
 
   // -------------------------------------------------------------------------
   // Reading the DOM
@@ -542,9 +612,26 @@ export function createDragDrop(options: DragDropOptions): DragDrop {
         el.checkVisibility({ contentVisibilityAuto: true, opacityProperty: false }),
     );
 
+  /** Where the dragged item lands among `items`, which it is not one of. */
+  const placeAmong = (
+    items: readonly HTMLElement[],
+    item: HTMLElement | null,
+    position: DropPosition,
+  ): number => {
+    if (!item) return 0;
+    const at = items.indexOf(item);
+    if (at === -1) return items.length;
+    return position === 'after' ? at + 1 : at;
+  };
+
   /**
    * The index the dragged item will hold once it is put here — see the note on
    * `DropTarget.index`.
+   *
+   * Counted over every item of the collection, displayed or not, because that
+   * is what `source.index` counts: the two are indices into the same array, or
+   * `splice(from, 1)` then `splice(index, 0, …)` moves the item somewhere the
+   * line was never drawn.
    */
   const indexFor = (
     container: HTMLElement,
@@ -553,11 +640,11 @@ export function createDragDrop(options: DragDropOptions): DragDrop {
     position: DropPosition,
   ): number => {
     if (position === 'on') return -1;
-    const items = openItems(container, source);
-    if (!item) return 0;
-    const at = items.indexOf(item);
-    if (at === -1) return items.length;
-    return position === 'after' ? at + 1 : at;
+    return placeAmong(
+      itemsOf(container).filter((el) => el !== source.element),
+      item,
+      position,
+    );
   };
 
   const makeTarget = (
@@ -681,7 +768,11 @@ export function createDragDrop(options: DragDropOptions): DragDrop {
       itemLabel: source.label,
       targetLabel: targetItem ? labelOf(targetItem) : null,
       containerLabel: container ? containerLabelOf(container) : '',
-      position: target && target.position !== 'on' ? target.index + 1 : 0,
+      // Among what can be seen, like `total`, rather than `target.index`,
+      // which counts hidden items too: "item 4 of 3" is what mixing the two
+      // would say.
+      position:
+        target && target.position !== 'on' ? placeAmong(items, targetItem, target.position) + 1 : 0,
       total: items.length + 1,
     };
   };
@@ -689,18 +780,40 @@ export function createDragDrop(options: DragDropOptions): DragDrop {
   const announce = (kind: keyof typeof DEFAULT_ANNOUNCEMENTS, target: DropTarget | null): void => {
     const source = session?.source;
     if (!source) return;
-    const say = labels[kind] ?? DEFAULT_ANNOUNCEMENTS[kind];
-    message.set(say(describe(source, target)));
+    const drag = describe(source, target);
+    const custom = labels[kind];
+    if (custom) {
+      message.set(custom(drag));
+      return;
+    }
+
+    // A drop onto an item is another sentence, not the same one with a word
+    // changed, so the two announcements that can be about one have a second
+    // key for it.
+    const onItem = target?.position === 'on' && (kind === 'moved' || kind === 'dropped');
+    const key = ANNOUNCEMENT_KEYS[kind] + (onItem ? 'On' : '');
+    message.set(
+      said(key, DEFAULT_ANNOUNCEMENTS[kind](drag), {
+        item: drag.itemLabel,
+        target: drag.targetLabel ?? '',
+        container: drag.containerLabel,
+        position: drag.position,
+        total: drag.total,
+      }),
+    );
   };
 
-  const sameTarget = (a: DropTarget | null, b: DropTarget | null): boolean =>
+  /** The same gap or the same item, whatever index that comes to. */
+  const samePlace = (a: DropTarget | null, b: DropTarget | null): boolean =>
     a === b ||
     (a !== null &&
       b !== null &&
       a.containerId === b.containerId &&
       a.itemId === b.itemId &&
-      a.position === b.position &&
-      a.index === b.index);
+      a.position === b.position);
+
+  const sameTarget = (a: DropTarget | null, b: DropTarget | null): boolean =>
+    samePlace(a, b) && a?.index === b?.index;
 
   const setTarget = (next: DropTarget | null, speak = true): void => {
     if (sameTarget(untrack(() => targetSignal.get()), next)) return;
@@ -761,9 +874,14 @@ export function createDragDrop(options: DragDropOptions): DragDrop {
     const placements = placementsIn(container, source);
     if (placements.length === 0) return null;
     // The place it already occupies, so the first arrow press moves it one
-    // step rather than teleporting it to the top of the list.
+    // step rather than teleporting it to the top of the list. Where that gap is
+    // refused — an open tree node is followed by its own children, and the gap
+    // above the first of them is inside it — the next one that is allowed is
+    // the same place in the data: past whatever the item takes with it.
+    const gaps = placements.filter((placement) => placement.position !== 'on');
     return (
-      placements.find((placement) => placement.position !== 'on' && placement.index === source.index) ??
+      gaps.find((placement) => placement.index >= source.index) ??
+      gaps[gaps.length - 1] ??
       placements[0] ??
       null
     );
@@ -980,7 +1098,14 @@ export function createDragDrop(options: DragDropOptions): DragDrop {
       const scroller = nearestScrollable(container);
       if (!scroller) return;
 
-      const rect = scroller.getBoundingClientRect();
+      // The page's own scroller is the one element whose box is not what is on
+      // screen: its box is the whole document, running far below the window,
+      // and its edges are the window's. Its client box is the window less the
+      // scrollbars, from the viewport's top-left corner.
+      const page = scroller === scroller.ownerDocument.scrollingElement;
+      const rect = page
+        ? new DOMRect(0, 0, scroller.clientWidth, scroller.clientHeight)
+        : scroller.getBoundingClientRect();
       const dx = edgeVelocity(live.point.x, rect.left, rect.right);
       const dy = edgeVelocity(live.point.y, rect.top, rect.bottom);
       if (dx === 0 && dy === 0) return;
@@ -1028,6 +1153,19 @@ export function createDragDrop(options: DragDropOptions): DragDrop {
   const activeContainer = (live: Session, current: DropTarget | null): HTMLElement | null =>
     (current ? containerById(current.containerId) : null) ?? containerOf(live.source.element);
 
+  /**
+   * Move the target, and bring it into view. Auto-scroll follows the pointer
+   * and a keyboard drag has none, so without this the arrows walk the target
+   * out of a list longer than its scroller and the item is dropped blind —
+   * and in a windowed list, never reach a row the window has not rendered.
+   * `nearest` is the smallest scroll that shows it, and none when it shows.
+   */
+  const stepTo = (next: DropTarget): void => {
+    setTarget(next, true);
+    const el = (next.itemId ? findItem(next.itemId) : null) ?? containerById(next.containerId);
+    el?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  };
+
   const move = (delta: number): void => {
     const live = session;
     if (!live) return;
@@ -1039,11 +1177,14 @@ export function createDragDrop(options: DragDropOptions): DragDrop {
     const placements = placementsIn(container, live.source);
     if (placements.length === 0) return;
 
-    const at = placements.findIndex((placement) => sameTarget(placement, current));
+    // Found by what it is placed against, not by index: in a windowed list the
+    // indices count the window, and the window moves as the target is brought
+    // into view.
+    const at = placements.findIndex((placement) => samePlace(placement, current));
     // No wrapping. A drag that jumps from the end of a list back to its start
     // moves the item much further than one arrow press has any right to.
     const next = placements[clamp(at + delta, 0, placements.length - 1)];
-    if (next) setTarget(next, true);
+    if (next) stepTo(next);
   };
 
   const moveToEdge = (end: boolean): void => {
@@ -1056,7 +1197,7 @@ export function createDragDrop(options: DragDropOptions): DragDrop {
 
     const placements = placementsIn(container, live.source);
     const next = end ? placements[placements.length - 1] : placements[0];
-    if (next) setTarget(next, true);
+    if (next) stepTo(next);
   };
 
   const moveToCollection = (delta: number): void => {
@@ -1081,7 +1222,7 @@ export function createDragDrop(options: DragDropOptions): DragDrop {
         ? clamp(current.index, 0, placements.length - 1)
         : 0;
       const next = placements[at];
-      if (next) setTarget(next, true);
+      if (next) stepTo(next);
       return;
     }
   };
@@ -1235,7 +1376,7 @@ export function createDragDrop(options: DragDropOptions): DragDrop {
     },
 
     announcement: () => message.get(),
-    instructions: () => labels.instructions ?? DEFAULT_INSTRUCTIONS,
+    instructions: () => labels.instructions ?? said('dragInstructions', DEFAULT_INSTRUCTIONS),
 
     lift,
     drop,
@@ -1308,7 +1449,7 @@ export function createDragDrop(options: DragDropOptions): DragDrop {
     itemProps: (item) => {
       const source = sourceSignal.get();
       const target = targetSignal.get();
-      const role = labels.item ?? 'draggable';
+      const role = labels.item ?? said('draggable', 'draggable');
 
       return {
         [DRAG_ITEM_ATTRIBUTE]: item.id,
@@ -1332,7 +1473,7 @@ export function createDragDrop(options: DragDropOptions): DragDrop {
     },
 
     handleProps: (handle = {}) => {
-      const role = labels.handle ?? 'drag handle';
+      const role = labels.handle ?? said('dragHandle', 'drag handle');
       return {
         [DRAG_HANDLE_ATTRIBUTE]: '',
         'aria-label': handle.label,
@@ -1351,7 +1492,13 @@ export function createDragDrop(options: DragDropOptions): DragDrop {
       'aria-atomic': 'true',
     }),
 
-    instructionsProps: () => ({ id: instructionsId }),
+    instructionsProps: () => {
+      // Applied by the render of the element these go on, and cleaned up with
+      // that render — so both its arrival and its removal reach the check.
+      noteInstructionRender();
+      onCleanup(noteInstructionRender);
+      return { id: instructionsId };
+    },
   };
 }
 
@@ -1377,6 +1524,15 @@ const DEFAULT_ANNOUNCEMENTS = {
       : `Dropped ${drag.itemLabel}. Item ${drag.position} of ${drag.total} in ${drag.containerLabel}.`,
   cancelled: (drag: DragAnnouncement) => `Cancelled. ${drag.itemLabel} is back where it started.`,
 } satisfies Required<Pick<DragDropLabels, 'lifted' | 'moved' | 'invalid' | 'dropped' | 'cancelled'>>;
+
+/** Where the catalogue keeps each of those; `moved` and `dropped` add `On`. */
+const ANNOUNCEMENT_KEYS = {
+  lifted: 'dragLifted',
+  moved: 'dragMoved',
+  invalid: 'dragInvalid',
+  dropped: 'dragDropped',
+  cancelled: 'dragCancelled',
+} satisfies Record<keyof typeof DEFAULT_ANNOUNCEMENTS, string>;
 
 // ---------------------------------------------------------------------------
 // Geometry and the page

@@ -495,6 +495,35 @@ describe('the keyboard map', () => {
     expect(list.scroller.scrollTop).toBe(500);
   });
 
+  it('leaves a key alone that something inside it has already handled', () => {
+    const list = mountList();
+    userScroll(list.scroller, 500);
+
+    // A toolbar in a row takes Home and End for its own buttons, and says so.
+    // Scrolling the whole list to the top as well would be two answers to one
+    // key.
+    const toolbar = list.row(26)!.appendChild(document.createElement('div'));
+    toolbar.addEventListener('keydown', (event) => event.preventDefault());
+    press(toolbar, 'Home');
+
+    expect(list.instance.handled).toBe(false);
+    expect(list.scroller.scrollTop).toBe(500);
+  });
+
+  it('answers only keys pressed on the scroller itself', () => {
+    const list = mountList();
+    userScroll(list.scroller, 500);
+
+    // Home in a text field inside a row moves the caret, and nobody has to
+    // prevent anything for that to be what it means.
+    const field = list.row(26)!.appendChild(document.createElement('input'));
+    expect(press(field, 'Home')).toBe(false);
+    expect(press(field, 'ArrowDown')).toBe(false);
+
+    expect(list.instance.handled).toBe(false);
+    expect(list.scroller.scrollTop).toBe(500);
+  });
+
   it('does not claim keys it has no use for', () => {
     const list = mountList();
     expect(press(list.scroller, 'a')).toBe(false);
@@ -744,6 +773,91 @@ describe('measurements and item identity', () => {
     expect(list.v.sizeOf(0)).toBe(20);
     expect(list.v.sizeOf(1)).toBe(40);
     expect(list.v.totalSize()).toBe(140);
+  });
+
+  it('moves measurements with their keys when the collection is reordered', () => {
+    const ids = new Signal.State(['a', 'b', 'c']);
+    listOptions = {
+      count: () => ids.get().length,
+      itemSize: () => 20,
+      getItemKey: (index) => ids.get()[index] ?? index,
+    };
+    const list = mountList();
+    list.observer.deliver([{ target: list.row(0)!, block: 50, inline: 999 }]);
+    expect(list.v.sizeOf(0)).toBe(50);
+
+    // The same three items in another order. Nothing about the count says
+    // anything moved, and a is second now.
+    ids.set(['b', 'a', 'c']);
+    flushSync();
+
+    expect(list.v.sizeOf(0)).toBe(20);
+    expect(list.v.sizeOf(1)).toBe(50);
+    expect(list.v.offsetOf(2)).toBe(70);
+    expect(list.v.items()[1]!.measured).toBe(true);
+  });
+
+  it('follows an estimate that changes, as it follows the keys', () => {
+    const rowHeight = new Signal.State(20);
+    listOptions = { count: () => 3, itemSize: () => rowHeight.get() };
+    const list = mountList();
+    expect(list.v.totalSize()).toBe(60);
+
+    // Rebuilding asks every item for its size, so the collection is subscribed
+    // to whatever a function `itemSize` reads. An estimate narrowed as the page
+    // learns — a chat working out what an average message costs — moves the
+    // scrollbar without anybody having to call `remeasure()`.
+    rowHeight.set(30);
+    flushSync();
+
+    expect(list.v.totalSize()).toBe(90);
+  });
+
+  it('keeps the size of an item that leaves and comes back', () => {
+    const ids = new Signal.State(['a', 'b', 'c']);
+    listOptions = {
+      count: () => ids.get().length,
+      itemSize: () => 20,
+      getItemKey: (index) => ids.get()[index] ?? index,
+    };
+    const list = mountList();
+    list.observer.deliver([{ target: list.row(0)!, block: 50, inline: 999 }]);
+
+    // A filter narrowing the list, then cleared.
+    ids.set(['c']);
+    flushSync();
+    ids.set(['a', 'b', 'c']);
+    flushSync();
+    expect(list.v.sizeOf(0)).toBe(50);
+  });
+
+  it('lets go of the sizes of items that are gone once they far outnumber the rest', () => {
+    const ids = new Signal.State(['a0', 'a1', 'a2']);
+    listOptions = {
+      count: () => ids.get().length,
+      itemSize: () => 20,
+      getItemKey: (index) => ids.get()[index] ?? index,
+    };
+    const list = mountList();
+    const measureAll = () =>
+      list.observer.deliver(list.rows().map((target) => ({ target, block: 50, inline: 999 })));
+
+    // One conversation after another, each one measured as it is read. Every
+    // switch leaves three sizes behind for ids that are not coming back.
+    measureAll();
+    for (const prefix of ['b', 'c', 'd']) {
+      ids.set([0, 1, 2].map((i) => `${prefix}${i}`));
+      flushSync();
+      measureAll();
+    }
+    ids.set(['a0', 'a1', 'a2']);
+    flushSync();
+
+    // Four conversations' worth of sizes, for a collection that has never held
+    // more than three items: the cache let go of the ids that had gone rather
+    // than only ever growing, so the first conversation is estimates again.
+    expect(list.v.sizeOf(0)).toBe(20);
+    expect(list.v.items()[0]!.measured).toBe(false);
   });
 
   it('keys by index without one, which is right for appending', () => {

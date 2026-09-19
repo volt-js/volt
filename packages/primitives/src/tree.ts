@@ -324,7 +324,11 @@ export interface TreeOptions<T = unknown> {
 
   onExpandedChange?: (expanded: ReadonlySet<string>) => void;
   onSelectionChange?: (selected: ReadonlySet<string>) => void;
-  /** Enter, or a double-press: open the file, follow the link. */
+  /**
+   * Enter, or a double press on the node itself: open the file, follow the
+   * link. Not a double press on the twisty or the checkbox, which mean
+   * something narrower, and never on a disabled node.
+   */
   onActivate?: (row: TreeRow<T>) => void;
   /**
    * Where a dragged node landed. Supplying it is what turns dragging on: a
@@ -1773,21 +1777,30 @@ export function createTree<T = unknown>(options: TreeOptions<T>): Tree<T> {
         case 'none':
           // With nothing to choose, a press on a folder can only mean open it.
           if (row.expandable) toggleExpanded(row.id);
-          return;
+          break;
         case 'single':
           select(row.id);
-          return;
+          break;
         case 'multiple':
           select(row.id, {
             additive: event.ctrlKey || event.metaKey,
             range: event.shiftKey,
           });
-          return;
+          break;
         case 'checkbox':
           setChecked(row.id, wouldCheck(row.id));
-          return;
+          break;
         default:
-          return;
+          break;
+      }
+
+      // The second press of a double press activates, as Enter does. Each
+      // press has already done what a single one does, which is what a native
+      // list makes of the two clicks a double click is. The row is read again
+      // because the first of them may have opened or closed it.
+      if (event.detail === 2) {
+        const pressed = untrack(() => rowOf(row.id));
+        if (pressed) activate(pressed);
       }
     },
 

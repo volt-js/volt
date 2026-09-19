@@ -20,9 +20,11 @@ import {
   TREE_ITEM_ATTRIBUTE,
   createTree,
   type Tree,
+  type TreeDrop,
   type TreeNode,
   type TreeOptions,
 } from '../src/tree.ts';
+import type { DragMode } from '../src/drag-drop.ts';
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -124,6 +126,7 @@ const TEMPLATE = `
   <div class="tree" :ref="root" :spread="tree.treeProps()"
        :keydown="tree.onKeyDown($event)"
        :click="tree.onItemClick($event)"
+       :pointerdown="tree.onPointerDown($event)"
        :focusin="tree.onFocusIn($event)">
     <div class="row" :for="row in tree.rendered()" :key="row.id" :spread="tree.itemProps(row)">
       <span class="twisty" :spread="tree.toggleProps()">t</span>
@@ -288,7 +291,7 @@ function manyNodes(count: number): TreeNode[] {
 }
 
 /** The same tree, windowed: only a handful of its rows are ever in the DOM. */
-function setupVirtual({ height = 120, itemSize = 24 } = {}): Harness {
+function setupVirtual({ height = 120, itemSize = 24, measure = false } = {}): Harness {
   @Component({ selector: `v-tree-${++selectors}`, render: compileTemplate(VIRTUAL_TEMPLATE) })
   class VirtualTreeComponent {
     root = new Signal.State<Element | null>(null);
@@ -301,6 +304,7 @@ function setupVirtual({ height = 120, itemSize = 24 } = {}): Harness {
         scroller: () => this.root.get(),
         container: () => this.box.get(),
         itemSize,
+        measure,
       },
     });
   }
@@ -492,6 +496,30 @@ describe('the tab stop', () => {
     // And it goes back to the active node once that is on screen again.
     userScroll(root, 150 * 24);
     expect(tabStops()).toEqual(['n150']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rows whose heights are measured
+// ---------------------------------------------------------------------------
+
+describe('a windowed tree whose rows are measured', () => {
+  it('keeps every row its own height when a drop reorders them', () => {
+    nodes.set(manyNodes(5));
+    const { tree } = setupVirtual({ measure: true });
+    FakeResizeObserver.live.at(-1)!.deliver(rowEl('n0'), 50, 300);
+    expect(tree.virtualizer!.sizeOf(0)).toBe(50);
+
+    // The consumer applies a drop: the same five nodes, the first moved last.
+    // The row count has not changed, and nothing is measured again.
+    const [first, ...rest] = manyNodes(5);
+    nodes.set([...rest, first!]);
+    flushSync();
+
+    expect(tree.rows().map((row) => row.id)).toEqual(['n1', 'n2', 'n3', 'n4', 'n0']);
+    expect(tree.virtualizer!.sizeOf(0)).toBe(24);
+    expect(tree.virtualizer!.sizeOf(4)).toBe(50);
+    expect(tree.virtualizer!.totalSize()).toBe(4 * 24 + 50);
   });
 });
 
@@ -957,6 +985,33 @@ describe('choosing one node', () => {
     expect(chosen(tree)).toEqual(['readme']);
     expect(onActivate).toHaveBeenCalledTimes(1);
     expect(onActivate.mock.calls[0]![0].id).toBe('readme');
+  });
+
+  it('activates on a double press as well as on Enter', () => {
+    const onActivate = vi.fn();
+    treeOptions = { ...treeOptions, onActivate };
+    const { tree } = setup();
+
+    // A double click is two clicks, the second carrying a detail of two, and
+    // the first of them is an ordinary press.
+    click(rowEl('readme'), { detail: 1 });
+    expect(onActivate).not.toHaveBeenCalled();
+    click(rowEl('readme'), { detail: 2 });
+
+    expect(onActivate).toHaveBeenCalledTimes(1);
+    expect(onActivate.mock.calls[0]![0].id).toBe('readme');
+    expect(chosen(tree)).toEqual(['readme']);
+  });
+
+  it('does not activate from the twisty, or on a node that is disabled', () => {
+    const onActivate = vi.fn();
+    treeOptions = { ...treeOptions, onActivate, defaultExpanded: ['docs', 'src'] };
+    setup();
+
+    // The twisty means open or close, which is narrower than the node.
+    click(rowEl('guide').querySelector<HTMLElement>('.twisty')!, { detail: 2 });
+    click(rowEl('util'), { detail: 2 });
+    expect(onActivate).not.toHaveBeenCalled();
   });
 
   it('does not let Space leave nothing chosen', () => {
@@ -1899,5 +1954,323 @@ describe('filtering', () => {
     tree.setFilter('faq');
     flushSync();
     expect(visible()).toEqual(['docs', 'guide', 'faq']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dragging nodes
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply a drop to the data the way a consumer would: take the node out, then
+ * splice it in at the index it was given, with no adjustment.
+ */
+function moveNode(list: readonly TreeNode[], drop: TreeDrop): TreeNode[] {
+  let moved: TreeNode | undefined;
+  const without = (items: readonly TreeNode[]): TreeNode[] =>
+    items.flatMap((node) => {
+      if (node.id === drop.sourceId) {
+        moved = node;
+        return [];
+      }
+      return [node.children ? { ...node, children: without(node.children) } : node];
+    });
+  const spliced = (items: readonly TreeNode[]): TreeNode[] => {
+    const next = [...items];
+    next.splice(drop.index, 0, moved!);
+    return next;
+  };
+  const into = (items: readonly TreeNode[]): TreeNode[] =>
+    items.map((node) => {
+      if (node.id === drop.parentId) return { ...node, children: spliced(node.children ?? []) };
+      return node.children ? { ...node, children: into(node.children) } : node;
+    });
+
+  const rest = without(list);
+  return drop.parentId === null ? spliced(rest) : into(rest);
+}
+
+function pointer(
+  type: 'pointerdown' | 'pointermove' | 'pointerup',
+  el: Element,
+  x: number,
+  y: number,
+): void {
+  el.dispatchEvent(
+    new PointerEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      isPrimary: true,
+      button: 0,
+      pointerId: 1,
+      pointerType: 'mouse',
+      clientX: x,
+      clientY: y,
+    }),
+  );
+  flushSync();
+}
+
+/** Every rendered row twenty pixels tall, one under the other. */
+function layoutRows(root: HTMLElement): void {
+  const rows = [...root.querySelectorAll<HTMLElement>('.row')];
+  root.getBoundingClientRect = () => new DOMRect(0, 0, 200, rows.length * 20);
+  rows.forEach((row, index) => {
+    row.getBoundingClientRect = () => new DOMRect(0, index * 20, 200, 20);
+  });
+}
+
+describe('dragging nodes', () => {
+  let drops: [TreeDrop, DragMode][];
+
+  beforeEach(() => {
+    drops = [];
+    treeOptions = {
+      defaultExpanded: ['docs'],
+      onDrop: (drop, mode) => {
+        drops.push([drop, mode]);
+        nodes.set(moveNode(nodes.get(), drop));
+      },
+    };
+  });
+
+  it('turns a place in the flat list into a parent and an index among its children', () => {
+    const { tree, root } = setup();
+    // docs, readme, guide, changelog, src, notes — docs open, guide closed.
+    expect(tree.lift('readme')).toBe(true);
+    flushSync();
+
+    // A lift starts in the gap the node is already in, so a drop straight
+    // away puts it back where it was.
+    expect(tree.dropTarget()).toEqual({
+      sourceId: 'readme',
+      targetId: 'guide',
+      position: 'before',
+      parentId: 'docs',
+      index: 0,
+    });
+
+    press(root, 'ArrowDown');
+    // On a folder is last among its children: guide holds three.
+    expect(tree.dropTarget()).toMatchObject({
+      targetId: 'guide',
+      position: 'on',
+      parentId: 'guide',
+      index: 3,
+    });
+
+    press(root, 'ArrowDown');
+    // Counted with readme already out of docs, so guide is 0 and this is 1.
+    expect(tree.dropTarget()).toMatchObject({
+      targetId: 'changelog',
+      position: 'before',
+      parentId: 'docs',
+      index: 1,
+    });
+
+    press(root, ' ');
+    expect(drops).toHaveLength(1);
+    expect(drops[0]![1]).toBe('keyboard');
+    // Out, then spliced in at the index as given: between guide and changelog.
+    expect(visible()).toEqual(['docs', 'guide', 'readme', 'changelog', 'src', 'notes']);
+  });
+
+  it('puts a node dropped on a folder last among that folder’s children', () => {
+    const { tree, root } = setup();
+    tree.lift('notes');
+    flushSync();
+
+    press(root, 'ArrowUp');
+    expect(tree.dropTarget()).toMatchObject({
+      targetId: 'src',
+      position: 'on',
+      parentId: 'src',
+      index: 2,
+    });
+    press(root, ' ');
+
+    tree.expand('src');
+    flushSync();
+    expect(visible()).toEqual([
+      'docs',
+      'readme',
+      'guide',
+      'changelog',
+      'src',
+      'index',
+      'util',
+      'notes',
+    ]);
+  });
+
+  it('reads a line drawn under an open folder as the top of that folder', () => {
+    const { tree, root } = setup();
+    layoutRows(root);
+    const notes = rowEl('notes');
+
+    pointer('pointerdown', notes, 50, 105);
+    pointer('pointermove', notes, 50, 115);
+    expect(tree.drag!.isDragging()).toBe(true);
+
+    // The foot of docs. Docs is open, so the row under that line is readme,
+    // its first child: a sibling after everything docs contains is not what
+    // the line shows.
+    pointer('pointermove', notes, 50, 18);
+    expect(tree.dropTarget()).toEqual({
+      sourceId: 'notes',
+      targetId: 'docs',
+      position: 'after',
+      parentId: 'docs',
+      index: 0,
+    });
+    expect(tree.indicator()).toMatchObject({ position: 'after', y: 20, height: 0 });
+
+    pointer('pointerup', notes, 50, 18);
+    expect(drops[0]![1]).toBe('pointer');
+    expect(visible()).toEqual(['docs', 'notes', 'readme', 'guide', 'changelog', 'src']);
+  });
+
+  it('will not carry a node into its own subtree', () => {
+    const { tree, root } = setup();
+    tree.lift('docs');
+    flushSync();
+
+    const reached: (string | null)[] = [];
+    for (let i = 0; i < 12; i++) {
+      const target = tree.dropTarget();
+      reached.push(target?.parentId ?? null, target?.targetId ?? null);
+      press(root, 'ArrowDown');
+    }
+
+    // Nothing inside docs, as a place to go or as the parent it would go under.
+    for (const inside of ['docs', 'readme', 'guide', 'changelog', 'install', 'usage', 'faq']) {
+      expect(reached).not.toContain(inside);
+    }
+    expect(reached).toContain('src');
+  });
+
+  it('starts an open node’s drag where the node is, past its own subtree', () => {
+    treeOptions = { ...treeOptions, defaultExpanded: ['src'] };
+    const { tree, root } = setup();
+    // docs, src, index, util, notes. The gap just under src is inside it, and
+    // refused; the one where src already sits is the one past its children.
+    tree.lift('src');
+    flushSync();
+    expect(tree.dropTarget()).toEqual({
+      sourceId: 'src',
+      targetId: 'notes',
+      position: 'before',
+      parentId: null,
+      index: 1,
+    });
+
+    press(root, ' ');
+    expect(visible()).toEqual(['docs', 'src', 'index', 'util', 'notes']);
+  });
+
+  it('lifts with Space only where Space has nothing to select', () => {
+    const plain = setup();
+    plain.tree.focusNode('readme');
+    flushSync();
+    // On the node holding focus, which is where a key lands: the node to lift
+    // is the one the press came from.
+    press(rowEl('readme'), ' ');
+    expect(plain.tree.drag!.isDragging()).toBe(true);
+    expect(plain.tree.drag!.source()?.itemId).toBe('readme');
+    press(rowEl('readme'), 'Escape');
+    expect(plain.tree.drag!.isDragging()).toBe(false);
+
+    host.innerHTML = '';
+    treeOptions = { ...treeOptions, selectionMode: 'single' };
+    const choosing = setup();
+    choosing.tree.focusNode('readme');
+    flushSync();
+    press(rowEl('readme'), ' ');
+    expect(choosing.tree.drag!.isDragging()).toBe(false);
+    expect(chosen(choosing.tree)).toEqual(['readme']);
+
+    // The door a selectable tree has to open some other way.
+    expect(choosing.tree.lift('readme')).toBe(true);
+  });
+
+  it('carries a keyboard drag past the rows the window held when it began', () => {
+    nodes.set(manyNodes(40));
+    const { tree, root } = setupVirtual();
+    expect(visible()).toEqual(['n0', 'n1', 'n2', 'n3', 'n4', 'n5', 'n6']);
+
+    // happy-dom lays nothing out, so bringing a row into view is done by hand:
+    // the smallest scroll that puts the whole row inside the 120px viewport.
+    const reveal = vi.spyOn(HTMLElement.prototype, 'scrollIntoView');
+    reveal.mockImplementation(function (this: HTMLElement) {
+      const row = tree.rowOf(this.getAttribute(TREE_ITEM_ATTRIBUTE) ?? '');
+      if (!row) return;
+      const top = row.index * 24;
+      if (top < root.scrollTop) userScroll(root, top);
+      else if (top + 24 > root.scrollTop + 120) userScroll(root, top + 24 - 120);
+    });
+
+    try {
+      tree.lift('n0');
+      flushSync();
+      for (let i = 0; i < 20; i++) press(root, 'ArrowDown');
+
+      // Twenty gaps down, which is far below anything rendered at the lift.
+      expect(tree.dropTarget()).toEqual({
+        sourceId: 'n0',
+        targetId: 'n21',
+        position: 'before',
+        parentId: null,
+        index: 20,
+      });
+      expect(visible()).toContain('n21');
+
+      press(root, ' ');
+      expect(drops[0]![0]).toMatchObject({ sourceId: 'n0', targetId: 'n21', index: 20 });
+    } finally {
+      reveal.mockRestore();
+    }
+  });
+
+  it('will not pick up a disabled node', () => {
+    treeOptions = { ...treeOptions, defaultExpanded: ['src'] };
+    const { tree } = setup();
+    expect(tree.lift('util')).toBe(false);
+    expect(tree.drag!.isDragging()).toBe(false);
+  });
+
+  it('opens a closed folder that a drag rests on, and not one it passes over', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { tree, root } = setup();
+    tree.lift('notes');
+    flushSync();
+
+    // On src, and away again before the delay is up.
+    press(root, 'ArrowUp');
+    vi.advanceTimersByTime(300);
+    press(root, 'ArrowUp');
+    vi.advanceTimersByTime(600);
+    flushSync();
+    expect(tree.isExpanded('src')).toBe(false);
+
+    // On src, and staying there.
+    press(root, 'ArrowDown');
+    expect(tree.dropTarget()).toMatchObject({ targetId: 'src', position: 'on' });
+    vi.advanceTimersByTime(599);
+    flushSync();
+    expect(tree.isExpanded('src')).toBe(false);
+    vi.advanceTimersByTime(1);
+    flushSync();
+    expect(tree.isExpanded('src')).toBe(true);
+    // Its children are places the drag can go now.
+    expect(visible()).toEqual([
+      'docs',
+      'readme',
+      'guide',
+      'changelog',
+      'src',
+      'index',
+      'util',
+      'notes',
+    ]);
   });
 });

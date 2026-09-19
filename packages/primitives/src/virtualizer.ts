@@ -129,14 +129,14 @@ export interface VirtualizerOptions {
 
   /**
    * What identifies an item. Measurements are cached against this, so a list
-   * that grows at the front keeps the sizes it already knows. Without it an
-   * item is identified by its index, which is right for appending and wrong
-   * for prepending.
+   * that grows at the front, or is reordered, keeps the sizes it already
+   * knows. Without it an item is identified by its index, which is right for
+   * appending and wrong for prepending.
    *
-   * Keys are re-read when the count changes, and only then: re-keying every
-   * item on every frame would be the one O(n) step this otherwise avoids. A
-   * collection whose items are replaced without its length changing should
-   * say so with `remeasure()`.
+   * Keys are re-read whenever the collection changes — whenever anything
+   * `count`, this, or a function `itemSize` reads changes, whatever happens to
+   * the length — and never on a scroll: re-keying every item on every frame
+   * would be the one O(n) step this otherwise avoids.
    */
   getItemKey?: (index: number) => string | number;
 
@@ -229,7 +229,10 @@ export interface Virtualizer {
   /** Forget measurements — one item's, or all of them — and take them again. */
   remeasure(index?: number): void;
 
-  /** Handle a keydown. Returns true when it was consumed. */
+  /**
+   * Handle a keydown. Returns true when it was consumed, which it only is for
+   * a key pressed on the scroller itself that nothing has already prevented.
+   */
   onKeyDown(event: KeyboardEvent): boolean;
 
   scrollerProps(): VirtualizerProps;
@@ -292,12 +295,18 @@ export function createVirtualizer(options: VirtualizerOptions): Virtualizer {
    * Measured sizes, by key rather than by index, so that inserting an item
    * does not shift every measurement onto the wrong row.
    *
-   * Nothing is ever evicted. A million rows scrolled past leave a million
-   * numbers here, which is the price of scrolling back through them without
-   * the list rearranging itself on the way.
+   * Nothing still in the collection is evicted. A million rows scrolled past
+   * leave a million numbers here, which is the price of scrolling back through
+   * them without the list rearranging itself on the way. An item that leaves
+   * keeps its size as well, so one that comes back — a filter cleared, a
+   * folder opened again — is not an estimate; `collection` is where the sizes
+   * of items that are gone are finally let go.
    */
-  const measurements = new Map<string | number, number>();
+  let measurements = new Map<string | number, number>();
   const sizeFor = (index: number): number => measurements.get(keyOf(index)) ?? estimate(index);
+
+  /** The most items the collection has held, which bounds what is kept for the rest. */
+  let largest = 0;
 
   const geometry =
     fixedSize !== null && !measuring
@@ -334,17 +343,21 @@ export function createVirtualizer(options: VirtualizerOptions): Virtualizer {
   /** The last offset asked for, so a scroll we did not cause can be spotted. */
   let commanded = 0;
 
-  const commandScroll = (el: Element, offset: number, behavior: ScrollBehavior): void => {
+  /**
+   * Move the scroller along this axis. Only this axis is named: the other is
+   * specified to stay where it is, and naming it would mean reading it first,
+   * which is a layout wherever the DOM has just been written.
+   */
+  const writeScroll = (el: Element, offset: number, behavior: ScrollBehavior): void => {
     commanded = offset;
     // Back into the DOM's signed form on the way out.
-    const signed = rtl.get() ? -offset : offset;
-    // Both axes every time: passing one and omitting the other is specified to
-    // leave the omitted one alone, but relying on that costs nothing to avoid.
-    el.scrollTo({
-      top: vertical ? offset : el.scrollTop,
-      left: vertical ? el.scrollLeft : signed,
-      behavior,
-    });
+    el.scrollTo(
+      vertical ? { top: offset, behavior } : { left: rtl.get() ? -offset : offset, behavior },
+    );
+  };
+
+  const commandScroll = (el: Element, offset: number, behavior: ScrollBehavior): void => {
+    writeScroll(el, offset, behavior);
     // Read back rather than assume: the browser clamps, and a smooth scroll
     // has not moved yet — its own scroll events fill in the rest.
     scrollOffset.set(readScroll(el));
@@ -352,16 +365,52 @@ export function createVirtualizer(options: VirtualizerOptions): Virtualizer {
 
   // --- The window ----------------------------------------------------------
 
-  const frame = new Signal.Computed<Frame>(() => {
-    const count = itemCount();
-    measurementVersion.get();
+  /**
+   * The collection as the geometry knows it, rebuilt whenever anything
+   * `count`, `getItemKey` or a function `itemSize` reads changes — whether or
+   * not the length did, because a reorder leaves the count where it was and
+   * moves every measurement, and only reading the keys again can find that
+   * out. Estimates come along because rebuilding asks for every item's size,
+   * so a function that narrows as the page learns is followed too. Never by a
+   * scroll, which is why this is a computed of its own rather than a step in
+   * the window. The rebuild is O(n), and the one linear cost left.
+   *
+   * Sized here rather than in an effect. An effect runs after render, so the
+   * first window following a change would be computed against the old
+   * geometry and then corrected a frame later — a visible flash of the wrong
+   * rows. Filling a cache inside a computed is still pure: the same collection
+   * always gives the same geometry.
+   */
+  const collection = new Signal.Computed<number>(
+    () => {
+      const count = itemCount();
+      largest = Math.max(largest, count);
 
-    // Sized here rather than in an effect. An effect runs after render, so the
-    // first window following a count change would be computed against the old
-    // geometry and then corrected a frame later — a visible flash of the wrong
-    // rows. Filling a cache inside a computed is still pure: the same count
-    // always gives the same geometry.
-    geometry.sync(count);
+      // The sizes of items that have gone are kept until they would outnumber
+      // twice the largest collection this has held. That keeps an item that
+      // comes back measured, and still stops a transcript swapped for another,
+      // and another, from growing the cache for as long as the page is open.
+      if (measurements.size > 2 * largest) {
+        const kept = new Map<string | number, number>();
+        for (let index = 0; index < count; index++) {
+          const key = keyOf(index);
+          const size = measurements.get(key);
+          if (size !== undefined) kept.set(key, size);
+        }
+        measurements = kept;
+      }
+
+      geometry.rebuild(count);
+      return count;
+    },
+    // The same count is not the same collection: the window has to be worked
+    // out again against whatever the rebuild moved.
+    { equals: () => false },
+  );
+
+  const frame = new Signal.Computed<Frame>(() => {
+    const count = collection.get();
+    measurementVersion.get();
 
     const totalSize = geometry.total();
     if (count === 0) {
@@ -696,7 +745,13 @@ export function createVirtualizer(options: VirtualizerOptions): Virtualizer {
         pending = null;
         return;
       }
-      commandScroll(scroller, target, 'auto');
+      // Written and not read back. This runs inside a flush, where a read
+      // would force a layout of its own outside the measure phase; the target
+      // is already clamped to the collection the sizer was just sized to, so
+      // it is where the scroller comes to rest, and the scroll event that
+      // follows says so anyway.
+      writeScroll(scroller, target, 'auto');
+      scrollOffset.set(target);
     });
   }
 
@@ -760,6 +815,13 @@ export function createVirtualizer(options: VirtualizerOptions): Virtualizer {
     onKeyDown(event) {
       // A modified key is a shortcut, not navigation.
       if (event.ctrlKey || event.metaKey || event.altKey) return false;
+      // Only a key pressed on the scroller itself, and one nothing else has
+      // answered. A row can hold a toolbar, a field or a link, each with its
+      // own meaning for Home, End and the arrows, and scrolling the whole
+      // collection as well would be two answers to one key. Focus inside a row
+      // still scrolls, by the browser's own keys.
+      if (event.defaultPrevented) return false;
+      if (event.target !== untrack(() => options.scroller())) return false;
 
       const count = untrack(itemCount);
       if (count === 0) return false;
@@ -921,9 +983,7 @@ const EMPTY_RANGE: VirtualRange = {
  * so neither implementation has to special-case the last item.
  */
 interface Geometry {
-  /** Resize to `count`, keeping what is still known. Idempotent. */
-  sync(count: number): void;
-  /** Resize and re-read every size from scratch. */
+  /** Resize to `count` and read every size again: measured by key, else estimated. */
   rebuild(count: number): void;
   sizeAt(index: number): number;
   /** Where item `index` starts. */
@@ -943,9 +1003,6 @@ function createFixedGeometry(size: number, gap: number): Geometry {
   let count = 0;
 
   return {
-    sync: (next) => {
-      count = next;
-    },
     rebuild: (next) => {
       count = next;
     },
@@ -970,8 +1027,11 @@ function createFixedGeometry(size: number, gap: number): Geometry {
  * the first two in O(1) and O(log n) but costs O(n) per measurement, which for
  * a grid of a million rows is a million additions each time a row settles. A
  * Fenwick tree makes all three O(log n) for one array of numbers and about
- * thirty lines. Resizing rebuilds in O(n), which is the one cost left, and
- * counts change far less often than sizes do.
+ * thirty lines. A change to the collection rebuilds it in O(n), which is the
+ * one cost left, and collections change far less often than sizes do. The
+ * rebuild asks for every item's size, so a collection counts as changed when a
+ * function `itemSize` would now answer differently, and not only when the
+ * count or the keys move.
  */
 function createMeasuredGeometry(sizeFor: (index: number) => number, gap: number): Geometry {
   let count = 0;
@@ -1008,9 +1068,6 @@ function createMeasuredGeometry(sizeFor: (index: number) => number, gap: number)
   };
 
   return {
-    sync: (next) => {
-      if (next !== count) rebuild(next);
-    },
     rebuild,
 
     sizeAt: (index) => {

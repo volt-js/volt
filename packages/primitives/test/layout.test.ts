@@ -1401,14 +1401,20 @@ describe('resizable: styling hooks', () => {
 
     expect(panel(0).style.getPropertyValue('--volt-resizable-size')).toBe('50%');
     // Interleaved with `auto` for the handles, so a grid group needs nothing
-    // but `grid-template-columns: var(--volt-resizable-template)`.
-    expect(group.style.getPropertyValue('--volt-resizable-template')).toBe('50% auto 50%');
+    // but `grid-template-columns: var(--volt-resizable-template)`. The shares
+    // are `fr`, not percentages: `50% auto 50%` already fills the group before
+    // the handle takes its width, so the grid overflows by exactly that much.
+    expect(group.style.getPropertyValue('--volt-resizable-template')).toBe(
+      'minmax(0, 50fr) auto minmax(0, 50fr)',
+    );
     expect(group.getAttribute('data-orientation')).toBe('horizontal');
 
     split.resize(0, 10);
     flushSync();
     expect(panel(0).style.getPropertyValue('--volt-resizable-size')).toBe('60%');
-    expect(group.style.getPropertyValue('--volt-resizable-template')).toBe('60% auto 40%');
+    expect(group.style.getPropertyValue('--volt-resizable-template')).toBe(
+      'minmax(0, 60fr) auto minmax(0, 40fr)',
+    );
   });
 
   it('puts touch-action on the handle, or a touch drag never starts', () => {
@@ -1499,6 +1505,42 @@ describe('resizable: persistence', () => {
     expect(() => split.resize(0, 10)).not.toThrow();
     flushSync();
     expect(split.size(0)).toBe(60);
+  });
+
+  it('reads a stored layout back into a signal handed in from outside', () => {
+    const storage = fakeStorage({ panes: '[70,30]' });
+    const sizes = new Signal.State([50, 50]);
+    const onSizesChange = vi.fn();
+    const split = inScope(() =>
+      createResizable({
+        panels: [{}, {}],
+        group: () => null,
+        sizes,
+        storage,
+        storageKey: 'panes',
+        onSizesChange,
+      }),
+    );
+
+    // A controlled group is written under its key like any other, so a reload
+    // that did not restore it would save a layout nobody ever gets back.
+    expect(sizes.get()).toEqual([70, 30]);
+    expect(split.sizes()).toEqual([70, 30]);
+    // Restoring is not somebody moving a boundary.
+    expect(onSizesChange).not.toHaveBeenCalled();
+
+    split.resize(0, -20);
+    flushSync();
+    expect(storage.map.get('panes')).toBe('[50,50]');
+  });
+
+  it('leaves a controlled signal alone when nothing usable is stored', () => {
+    const storage = fakeStorage({ panes: 'not json' });
+    const sizes = new Signal.State([20, 80]);
+    inScope(() =>
+      createResizable({ panels: [{}, {}], group: () => null, sizes, storage, storageKey: 'panes' }),
+    );
+    expect(sizes.get()).toEqual([20, 80]);
   });
 
   it('stores nothing without a key', () => {

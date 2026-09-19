@@ -261,8 +261,8 @@ arithmetic is only true while it holds; a row whose size should come from CSS
 belongs on the measured path instead.
 
 **Otherwise sizes live in a Fenwick tree**, so an item's offset, the item at an
-offset and recording a new size are each O(log n). Changing the item count
-rebuilds it in O(n), which is the one linear cost left.
+offset and recording a new size are each O(log n). A change to the collection
+rebuilds it in O(n), which is the one linear cost left; a scroll never does.
 
 What the measured path can see, and what it cannot:
 
@@ -293,15 +293,27 @@ What the measured path can see, and what it cannot:
   overscan after it, because something has to render before anything can be
   measured.
 
-**Measurements are cached by key and never evicted.** Without `getItemKey` an
-item is its index, which is right for a list that grows at the end and wrong
-for one that grows at the front. Keys are read across the whole collection only
-when `count` changes, because re-keying every item on every frame would be the
-one O(n) step the primitive otherwise avoids — so a collection whose items move
-or are replaced without its length changing has to say so with `remeasure()`.
-Nothing is dropped from the cache: a million rows scrolled past leave a million
-numbers behind, which is the price of scrolling back through them without the
-list rearranging itself.
+**Measurements are cached by key.** Without `getItemKey` an item is its index,
+which is right for a list that grows at the end and wrong for one that grows at
+the front or is reordered. Keys are read again across the whole collection
+whenever anything `count`, `getItemKey` or a function `itemSize` reads changes,
+whether or not the length did, so a sort or a drop that leaves the count alone
+still carries every size along with its item. An estimate is in that list
+because rebuilding asks every item for its size, so a function that narrows as
+the page learns is followed too. They are never re-read on a scroll, because
+re-keying every item on every frame would be the one O(n) step the primitive
+otherwise avoids. A collection that changes through something none of those
+three reads has nothing to be noticed by; that is what `remeasure()` is left
+for.
+
+Nothing still in the collection is dropped from the cache: a million rows
+scrolled past leave a million numbers behind, which is the price of scrolling
+back through them without the list rearranging itself. An item that leaves
+keeps its size too, so one that comes back — a filter cleared, a folder opened
+again — is not an estimate. The sizes of items that are gone are let go once
+they outnumber twice the largest collection the list has held, which is what
+stops one transcript swapped for another, and another, from growing the cache
+for as long as the page is open.
 
 **The view is held still for you.** When an item above the viewport turns out
 taller or shorter than its estimate, the scroll offset moves by the difference,
@@ -320,10 +332,16 @@ fixed size has nothing to correct.
 
 The scroller's viewport and offset are first read from
 [`measureEffect`](./reactivity#effects); after that they arrive through scroll
-events and the observer, which fire outside any flush. The one exception is the
-jump correction above: it re-aims from an ordinary effect, writing the scroll
-position and reading it back there, so a flush that corrects a jump pays a
-layout of its own and, in development, counts it in `strayReads`.
+events and the observer, which fire outside any flush. The jump correction
+above re-aims from an ordinary effect, but it only writes: the target is
+already clamped to the collection, so it is taken as where the scroller comes
+to rest, and the scroll event that follows confirms it. Nothing the virtualizer
+runs on its own reads geometry from the wrong phase, so nothing it does adds to
+`strayReads`. `scrollToIndex()` and `scrollToOffset()` are the exception, and
+they are the caller's: both read the landing position back, because the browser
+clamps and a smooth scroll has not moved yet, so calling either from an ordinary
+effect is a read charged to that effect. Chat's follow does, and so does a tree
+moving its active row after the model took the old one away.
 
 ### What a screen reader is told
 
@@ -357,7 +375,11 @@ For a plain scrolling region only. A listbox, grid or tree should **not** wire
 
 The arrows step by item rather than by a fixed number of pixels: where rows
 differ in height, a fixed step leaves a different sliver showing every time. A
-key with Ctrl, Alt or Meta held is left alone.
+key with Ctrl, Alt or Meta held is left alone. So is a key pressed anywhere but
+on the scroller itself, and one another handler has already prevented: a row
+can hold a toolbar, a field or a link with its own meaning for Home, End and
+the arrows, and scrolling the whole collection as well would be two answers to
+one key. With focus inside a row the browser's own keys still scroll.
 
 Unlike the other handlers on this page, `onKeyDown` does not prevent the
 default itself; it returns whether it consumed the key, and the caller prevents
@@ -476,7 +498,7 @@ the filter walks everything loaded whether it is open or not.
 | `autoExpandDelay` | `600` | Hover time over a closed node during a drag before it opens, in ms |
 | `labels` | — | `tree`, `loading`, `empty`, `error`, and `drag` for the drag primitive |
 | `onExpandedChange` / `onSelectionChange` | — | Called with the new set |
-| `onActivate` | — | Called with the row when Enter is pressed on it |
+| `onActivate` | — | Called with the row on Enter, or on a double press of the node |
 | `onDrop` | — | `(drop, mode)`. Supplying it is what turns dragging on |
 
 `labels.tree` has no default, because a tree is nearly always named by a
@@ -513,10 +535,11 @@ The default `match` folds case with the locale's rules rather than
 | `sizerProps()` / `contentProps()` | Virtualized trees only |
 | `status()` / `statusProps()` | An optional live region: the `loading` label while fetching, the `empty` label when a filter matches nothing, otherwise `''` |
 
-`onActivate` is documented in the package's own types as "Enter, or a
-double-press", but nothing in the tree listens for a double press. Only Enter
-calls it. To open a file on a double click, bind `:dblclick` on the row
-yourself.
+`onActivate` runs on Enter and on the second press of a double press, which
+arrives through `onItemClick` — there is no `:dblclick` to bind. Each of the two
+presses still does what a single press does, as the two clicks of a double
+click do in a native list. A double press on the twisty or the checkbox does
+not activate, and neither does one on a disabled node.
 
 ### Choosing nodes
 
@@ -674,13 +697,6 @@ to open the drag some other way, and `lift(id)` is that way — wire it to a
 discoverable than an undocumented chord. Once lifted, the keyboard belongs to
 [the drag keyboard map](#drag-keyboard).
 
-**This layer has no tests yet.** The tree's own tests drive none of it:
-nothing in the suite exercises `onDrop`, `lift`, the drop resolution or the
-auto-expansion through a tree. The drag
-primitive underneath is tested on its own, including collections nested the way
-a tree nests them; what the tree adds on top — turning a flat drop into a
-parent and an index — is not yet.
-
 ### Windowing a tree
 
 ```ts
@@ -737,14 +753,10 @@ scroller. The sizer and content wrappers carry `role="none"`, because a
 relationship. The tree keys measurements by node id, so opening a folder keeps
 the sizes already known for the rows below it.
 
-What a windowed tree can measure is what [the virtualizer](#long-lists) can,
-with one consequence worth spelling out: a move between rows that are already
-showing keeps the row count the same, and the virtualizer re-reads keys only
-when the count changes. After applying such a drop in a *measured* windowed
-tree, call `files.virtualizer?.remeasure()`, or rows of different heights keep
-each other's sizes. It forgets every measurement and takes the rendered rows
-again, so the rows off screen go back to their estimates. A fixed `itemSize` is
-not affected.
+What a windowed tree can measure is what [the virtualizer](#long-lists) can.
+A drop that moves a node between rows already showing leaves the row count
+where it was; the sizes still move with their nodes, because the keys are read
+again whenever the rows change and not only when their number does.
 
 Focus follows the window. Moving to a row that is not rendered scrolls to it
 first and focuses it once it has been rendered, a frame later — unless the
@@ -805,9 +817,12 @@ region is assertive, unlike a toast's: a polite queue would read out where the
 item was three arrow presses ago. Items are pointed at the instructions with
 `aria-describedby` only if that element is in the document, so forgetting to
 render it costs the description rather than leaving a dangling reference. The
-check is made when the root element arrives and again only if the root changes,
-so an instructions element rendered later — behind an `:if`, say — is never
-picked up.
+check is made when the root element arrives and again whenever
+`instructionsProps()` is applied or taken down, so an instructions element
+behind an `:if` is picked up when it renders and let go of when it leaves. That
+makes it the one getter here that is more than a read: spread it from the
+element's own render — merging a class onto it is fine — rather than calling it
+once and keeping the result, which would never be noticed gone.
 
 `itemProps` gives an item no `role` and no `tabindex`. The component it is
 composed into owns both — a tree item, a grid row and a tab are all draggable
@@ -845,13 +860,13 @@ where it was, so `splice(from, 1)` then `splice(index, 0, item)` is correct
 with no adjustment. It is `-1` for an `on` drop, which inserts nothing.
 
 **Both indices count what is in the DOM.** `source.index` and `target.index`
-are positions among the rendered items of a collection, so they are indices
-into your array only while every item is rendered. In a windowed list they
-index the window. They do not even count the same things: `source.index`
-counts every item element, while `target.index` leaves out items with no box —
-`hidden` or `display: none` — and items inside a region `content-visibility`
-is skipping. A list that hides some rows rather than removing them gets two
-indices into two different arrays. In either case, resolve the move
+are positions among a collection's item elements, displayed or not, so a list
+that hides some rows rather than removing them still gets two indices into the
+one array. An item with no box — `hidden`, `display: none`, or inside a region
+`content-visibility` is skipping — is never a place to drop and is not counted
+in what is announced, which is about what a reader can see; it is counted in
+the indices. What the indices cannot know about is an item that is not in the
+DOM at all: in a windowed list they index the window. Resolve the move there
 from `source.itemId`, `target.itemId` and `target.position` instead, which is
 what the tree does.
 
@@ -867,7 +882,7 @@ what the tree does.
 | `activationDistance` | `4` | Pointer travel in px before a mouse or pen press becomes a drag |
 | `touchDelay` | `250` | How long a touch is held before it becomes a drag, in ms |
 | `touchTolerance` | `5` | How far a touch may drift during that delay before it counts as a scroll, in px |
-| `autoScroll` | `true` | During a pointer drag, scroll the nearest scrollable ancestor near its edges |
+| `autoScroll` | `true` | During a pointer drag, scroll the nearest scrollable ancestor near its edges — the page itself, when nothing nearer scrolls |
 | `autoScrollThreshold` | `48` | Distance from the edge, in px, where scrolling starts |
 | `autoScrollSpeed` | `12` | Top speed, in px per frame, reached right at the edge |
 | `onZoneRatio` | `0.25` | For items that take an `on` drop, the share at each end meaning before or after; the default leaves the middle half for `on` |
@@ -890,14 +905,31 @@ the user is.
 
 The default role descriptions are "draggable" and "drag handle", and the
 default instructions and announcements are English sentences ("Picked up Kite.
-Item 1 of 3 in Playlist."). They are not taken from the message catalogue, so
-a localised application replaces them through `labels`. An empty string for
-`item` or `handle` leaves the role description off. Each announcement is a
-function of a `DragAnnouncement`: the `source` and `target`, `itemLabel`,
-`targetLabel`, `containerLabel`, `position` (1-based, or 0 for an `on` drop)
-and `total` (how many items the destination will hold, the dragged one
-included). A collection's label falls back to its `aria-label`, then its id; an
-item's to its text.
+Item 1 of 3 in Playlist."). An empty string for `item` or `handle` leaves the
+role description off. Each announcement is a function of a `DragAnnouncement`:
+the `source` and `target`, `itemLabel`, `targetLabel`, `containerLabel`,
+`position` (1-based, or 0 for an `on` drop) and `total` (how many items the
+destination will hold, the dragged one included). A collection's label falls
+back to its `aria-label`, then its id; an item's to its text.
+
+A label left out falls back to the locale's
+[message catalogue](./primitives-data#messages) before the English, so an application
+that translates its catalogue translates the drag with it. None of these keys
+is in the default catalogue; one that adds them is read.
+
+| Label | Catalogue key |
+|---|---|
+| `item` / `handle` | `draggable` / `dragHandle` |
+| `instructions` | `dragInstructions` |
+| `lifted` | `dragLifted` |
+| `moved` | `dragMoved`, or `dragMovedOn` when the target is an item rather than a gap |
+| `invalid` | `dragInvalid` |
+| `dropped` | `dragDropped`, or `dragDroppedOn` |
+| `cancelled` | `dragCancelled` |
+
+A sentence in the catalogue is a template over `{item}`, `{target}`,
+`{container}`, `{position}` and `{total}`: "`{item} aufgenommen. Element
+{position} von {total} in {container}.`"
 
 ### Drag members
 
@@ -947,12 +979,22 @@ Space lifts, not Enter, because Enter already means "open this" on a tree node,
 a row or a tab, and taking it would break the component this is composed into.
 
 The positions a keyboard drag steps through are before each item, `on` each
-item that takes it, and after the last. The arrows do not wrap: a drag that
+item that takes it, and after the last. A lift starts in the gap the item is
+already in, so dropping at once changes nothing; where `canDrop` refuses that
+gap — an open tree node is followed by its own children — it starts in the next
+one that is allowed, which is past whatever the item takes with it. The arrows
+do not wrap: a drag that
 jumps from the end of a list to its start moves the item much further than one
 press has any right to. Moving to another collection enters it at the same
 depth, and skips a collection with nowhere valid to put the item. A pointer
 press anywhere during a keyboard drag cancels it, so reaching for the mouse
 does not leave an item lifted.
+
+Auto-scroll follows the pointer, and a keyboard drag has none, so each step
+brings its target into view itself, with `scrollIntoView` at `nearest` — the
+smallest scroll that shows it, and none when it already shows. In a windowed
+tree that is also what lets a drag go past the rows that were rendered when it
+began.
 
 While a drag is live the keys are taken on `window` in the capture phase and
 stopped there. Dismissal listens on `document`, also capturing, so without this
@@ -972,18 +1014,6 @@ keyboard. Sorting the files once they are in is this.
 drag start at once but takes scrolling away from that finger; leaving the
 default keeps scrolling and relies on `touchDelay` to tell a press-and-hold
 from a swipe. Neither is right for every list, so it is not decided here.
-
-**Scrolling during a keyboard drag.** Auto-scroll follows the pointer and
-nothing else. A keyboard drag steps its target through a list longer than its
-scroller without bringing it into view, so the indicator can leave the screen;
-where that matters, watch `target()` and scroll its item into view yourself.
-
-**Auto-scrolling the page.** When no ancestor of the collection scrolls, the
-page's own scroller is used instead, but its edges are read from the root
-element's box rather than from the window. On a page taller than the window
-that box runs off screen, so the page does not scroll when the pointer reaches
-the bottom of the window. A long sortable list belongs inside a scroller of its
-own, which is the case the tests cover.
 
 ## Where the reader is
 
@@ -1062,7 +1092,7 @@ export class Trail {
 |---|---|
 | `count()` `collapsed()` `isCollapsed(i)` `isCurrent(i)` | The trail's state |
 | `menu` | The overflow menu, from [`createMenu`](./primitives-overlays), for `isOpen`, `isPresent` and `close` |
-| `measure()` | Decide again what fits |
+| `measure()` | Decide again what fits, before returning |
 | `navProps()` `listProps()` `itemProps(i)` `linkProps(i)` `separatorProps()` | The trail |
 | `overflowProps()` `overflowTriggerProps()` `overflowContentProps()` `overflowLinkProps(i)` | The overflow menu |
 
@@ -1085,15 +1115,15 @@ What that costs:
   whether it comes back — so the trail holds them all and the menu holds the
   collapsed ones again. `hidden` keeps the trail's copies out of the
   accessibility tree, so nothing is announced twice.
-- **Each measure is a forced layout, outside the measure lane.** It runs from an
-  ordinary effect on mount and from a `ResizeObserver` on the list, and it has
-  to un-hide the collapsed crumbs to read them — a DOM write the read-only
-  [measure phase](./reactivity#effects) does not allow. So it pays for a layout
-  of its own, and in development the reads made from that effect — on mount,
-  and whenever `count` changes — count towards `strayReads`. A test asserting
-  `strayReads` is zero across those flushes will not hold on a page with a
-  collapsing breadcrumb. The re-measures a resize triggers happen outside any
-  flush and are not counted.
+- **Each measure is one layout, taken from the measure lane.** The collapsed
+  crumbs have to be shown to be read, and showing them is a DOM write the
+  read-only [measure phase](./reactivity#effects) does not allow. So a
+  measurement is three steps of one flush: a render that shows every crumb and
+  the overflow slot, a read from `measureEffect`, and a render that hides what
+  does not fit. The read shares its layout with everything else measuring in
+  that flush, nothing is painted in between, and `strayReads` stays at zero —
+  on mount, when `count` changes, and on the re-measures a `ResizeObserver` on
+  the list or a call to `measure()` asks for, which flush before they return.
 - **The list needs a width of its own.** It measures against the list's client
   width, so a list that shrink-wraps its crumbs changes size as they collapse,
   and the measurement chases itself.
@@ -1609,11 +1639,21 @@ become a percentage the application computes for the width it has.
 
 **Nothing is sized until your stylesheet says so.** Each panel gets its share
 as `--volt-resizable-size` ("25%"), and the group gets
-`--volt-resizable-template`, every share with an `auto` track between each pair
-("25% auto 75%"). The handles take room of their own on top of shares that
-already add up to 100%, so the group overflows by their width unless something
-gives. In a flex group, let the panels shrink: flex shrinking is weighted by the
-basis, so the proportions survive.
+`--volt-resizable-template`, every share as an `fr` track with an `auto` track
+for the handle between each pair ("minmax(0, 25fr) auto minmax(0, 75fr)").
+
+A grid group needs nothing else. The handles take whatever width they have, and
+the `fr` tracks share out what is left in proportion, so nothing overflows; the
+zero minimum lets a panel shrink below its content's width.
+
+```css
+.workspace { display: grid; grid-template-columns: var(--volt-resizable-template); }
+.handle    { inline-size: 6px; }
+```
+
+In a flex group the percentages already add up to 100% before the handles take
+their room, so let the panels shrink: flex shrinking is weighted by the basis,
+so the proportions survive.
 
 ```css
 .workspace { display: flex; }
@@ -1621,9 +1661,7 @@ basis, so the proportions survive.
 .handle    { flex: none; inline-size: 6px; }
 ```
 
-A grid group written as `grid-template-columns: var(--volt-resizable-template)`
-overflows by the handle widths, unless the handles take no width of their own —
-a zero-width track with the visible grip drawn over the edge.
+A vertical group uses the same template for `grid-template-rows`.
 
 The one style the handles do carry is `touch-action: none`, because without it
 the browser takes a touch on the handle as the start of a scroll and the drag
@@ -1637,7 +1675,7 @@ never gets a second event.
 | `sizes` | — | A `Signal.State<number[]>` to control the sizes |
 | `step` / `largeStep` | `1` / `10` | Percentage points per arrow press, and per shifted press |
 | `collapseThreshold` | half the gap between `min` and `collapsedSize` | How far past its minimum a collapsible panel is pushed before it snaps shut |
-| `storageKey` | — | Remember the sizes under this key. Nothing is stored without one |
+| `storageKey` | — | Remember the sizes under this key, and read them back when the group is created. Nothing is stored without one |
 | `storage` | `localStorage` | Anything with `getItem` and `setItem` |
 | `dir` | read from the DOM | |
 | `labels` | — | `handle(index)` (default "Resize panel N"), `valueText(size, index)` (default "N percent") |
@@ -1694,13 +1732,13 @@ announced as unavailable, and refuses keys, drags and double clicks alike.
 written whenever they change and read back when the group is created. A stored
 layout of the wrong length, or anything that is not a list of sizes, is
 ignored rather than mapped onto the wrong panels, and storage that refuses to
-answer is survived. Three limits:
+answer is survived. A group given a `sizes` signal is restored like any other:
+the stored layout is written into your signal when the group is created, and
+`onSizesChange` is not called for it, because nobody moved a boundary. Two
+limits:
 
 - The size a collapsed panel will expand back to is not stored, so after a
   reload an expand goes to the panel's minimum.
-- Stored sizes are read only when the group owns its state. Pass a `sizes`
-  signal and they are still written under the key but never read back; restore
-  them into your signal yourself.
 - Node has no `localStorage` by default, so a server-rendered group is written
   at its defaults and the stored sizes arrive with the client. The default is
   whatever global `localStorage` exists, though: on a server runtime that
@@ -1844,7 +1882,7 @@ without spelling the string.
 | `SCROLL_THUMB_OFFSET_PROPERTY` | `--volt-scroll-thumb-offset` | The thumb's distance from the track's start |
 | `RESIZABLE_HANDLE_ATTRIBUTE` | `data-volt-resizable-handle` | A splitter handle, carrying its index |
 | `RESIZABLE_SIZE_PROPERTY` | `--volt-resizable-size` | One panel's share, as a percentage |
-| `RESIZABLE_TEMPLATE_PROPERTY` | `--volt-resizable-template` | Every share, with an `auto` track between each pair |
+| `RESIZABLE_TEMPLATE_PROPERTY` | `--volt-resizable-template` | Every share as an `fr` track, with an `auto` track between each pair |
 | `SPACE_PREFIX` / `SIZE_PREFIX` | `--volt-space-` / `--volt-size-` | What a spacing or size token is appended to |
 
 ## Exported types

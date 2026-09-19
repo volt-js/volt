@@ -4,9 +4,10 @@
  *
  * Most of this file computes props and styles rather than behaviour, which is
  * unusual for a headless library and worth saying plainly: `stack`, `flex`,
- * `grid`, `container`, `center` and `createAspectRatio` own no state and
- * listen to nothing. They exist so that spacing is expressed as tokens the
- * theme resolves, instead of raw pixels scattered through templates.
+ * `grid`, `container` and `center` are pure functions, and `createAspectRatio`
+ * holds a ratio and nothing more. None of them registers an effect or listens
+ * to anything. They exist so that spacing is expressed as tokens the theme
+ * resolves, instead of raw pixels scattered through templates.
  *
  * Two of them do carry real interaction:
  *
@@ -1023,7 +1024,7 @@ export const RESIZABLE_HANDLE_ATTRIBUTE = 'data-volt-resizable-handle';
 /** One panel's share of the group, as a percentage. */
 export const RESIZABLE_SIZE_PROPERTY = '--volt-resizable-size';
 
-/** Every panel's share, with an `auto` track between each pair, for a grid. */
+/** Every panel's share as an `fr` track, with an `auto` track between each pair, for a grid. */
 export const RESIZABLE_TEMPLATE_PROPERTY = '--volt-resizable-template';
 
 /** Percentage points below which two sizes are the same size. */
@@ -1082,7 +1083,11 @@ export interface ResizableOptions {
    */
   collapseThreshold?: number;
 
-  /** Remember the sizes under this key. Nothing is stored without one. */
+  /**
+   * Remember the sizes under this key. Nothing is stored without one. A usable
+   * stored layout is read back when the group is created — into the `sizes`
+   * signal, when one was handed in.
+   */
   storageKey?: string;
   /** Default `localStorage`. */
   storage?: ResizableStorage;
@@ -1211,6 +1216,11 @@ export function createResizable(options: ResizableOptions): Resizable {
   const storage = resolveStorage(options);
   const stored = loadSizes(storage, options.storageKey, limits);
   const state = options.sizes ?? new Signal.State<number[]>(stored ?? defaults);
+  // A controlled group is stored like any other, so it is restored like any
+  // other: otherwise it saves a layout that nothing ever reads back. Not
+  // reported through `onSizesChange`, any more than an owned group's restored
+  // layout is — nobody moved a boundary.
+  if (options.sizes && stored) options.sizes.set(stored);
 
   const dragging = new Signal.State<number | null>(null);
 
@@ -1416,9 +1426,14 @@ export function createResizable(options: ResizableOptions): Resizable {
       style: {
         // Interleaved with `auto` for the handles, so a grid group can be
         // written as `grid-template-columns: var(--volt-resizable-template)`
-        // and needs nothing else. A flex group uses the per-panel property.
+        // and needs nothing else. Shares are `fr` rather than percentages:
+        // percentages already add up to the whole group, so every handle
+        // would be overflow, where `fr` tracks share out whatever the handles
+        // leave, in proportion. The zero minimum lets a panel shrink below its
+        // content's width, as `min-inline-size: 0` does in a flex group, which
+        // uses the per-panel property instead.
         [RESIZABLE_TEMPLATE_PROPERTY]: sizes()
-          .map((size) => `${round(size, 4)}%`)
+          .map((size) => `minmax(0, ${round(size, 4)}fr)`)
           .join(' auto '),
       },
     }),

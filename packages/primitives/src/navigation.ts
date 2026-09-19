@@ -20,7 +20,7 @@
  * navigation menu quietly breaks middle-click, ⌘-click and Enter all at once.
  */
 
-import { Signal, effect, onCleanup } from '@voltdev/core';
+import { Signal, effect, flushSync, measureEffect, onCleanup } from '@voltdev/core';
 import { createCollection } from './collection.js';
 import { createRovingFocus } from './roving-focus.js';
 import { createDismiss, type DismissReason } from './dismiss.js';
@@ -120,11 +120,12 @@ export interface Breadcrumb {
   readonly menu: Menu;
 
   /**
-   * Measure the trail again and decide what fits.
+   * Measure the trail again and decide what fits, before returning.
    *
-   * Called on mount and on every resize of the list. Worth calling by hand
-   * after something changes width without resizing the list: a web font
-   * arriving, or the trail's text being translated.
+   * Done on mount, whenever the number of crumbs changes, and on every resize
+   * of the list. Worth calling by hand after something changes width without
+   * resizing the list: a web font arriving, or the trail's text being
+   * translated.
    */
   measure(): void;
 
@@ -192,16 +193,31 @@ export interface Breadcrumb {
  * which is the cheaper of the two and is styling either way.
  *
  * Measurement reads layout, which forces the browser to compute it: one
- * synchronous reflow per resize, which is the price of not guessing. It is
- * measured against the list's own client width, so give the list a width that
- * does not depend on its contents — a list that shrink-wraps its crumbs
- * changes size as they collapse, and the measurement will chase itself.
+ * layout per measurement, which is the price of not guessing. It is taken in
+ * three steps of one flush — a render that shows every crumb and the slot, a
+ * read from the measure phase, and a render that hides what no longer fits —
+ * so the read shares its layout with everything else measuring in that flush,
+ * and nothing is painted in between. It is measured against the list's own
+ * client width, so give the list a width that does not depend on its contents
+ * — a list that shrink-wraps its crumbs changes size as they collapse, and the
+ * measurement will chase itself.
  */
 export function createBreadcrumb(options: BreadcrumbOptions): Breadcrumb {
   const labels = options.labels ?? {};
   const overflowLabel = labels.overflow ?? 'Show the rest of the path';
 
   const collapsedCount = new Signal.State(0);
+  /**
+   * Whether the trail is laid out in full for a measurement: every crumb and
+   * the overflow slot shown, which is the only state in which each of them
+   * has a width to read.
+   *
+   * A signal the props read, rather than attributes this writes, because the
+   * props are what write `hidden`. Crumbs shown here behind their backs would
+   * stay shown whenever a measurement came out the same as the last one,
+   * since nothing the props read would have changed to hide them again.
+   */
+  const unfolded = new Signal.State(false);
   const collection = createCollection(() => options.list(), { attribute: CRUMB_ATTRIBUTE });
 
   const menu = createMenu({
@@ -221,103 +237,112 @@ export function createBreadcrumb(options: BreadcrumbOptions): Breadcrumb {
   const isCollapsed = (index: number): boolean =>
     index >= itemsBefore && index < itemsBefore + collapsedCount.get();
 
-  const setCollapsed = (next: number) => {
-    if (untrack(() => collapsedCount.get()) === next) return;
-    collapsedCount.set(next);
-
-    // Untracked: this runs inside the measuring effect, which must not come to
-    // depend on the menu's own state or on whatever the consumer's callback
-    // happens to read — either would re-measure the trail every time the menu
-    // opened.
-    untrack(() => {
-      // A menu whose items have just gone back into the trail is a menu with
-      // nothing in it, and its trigger is about to disappear from under the
-      // pointer.
-      if (next === 0) menu.close();
-      options.onCollapseChange?.(collapsedIndices());
-    });
-  };
-
   const measure = () => {
-    if (options.collapse === false) {
-      setCollapsed(0);
-      return;
-    }
-
-    const list = options.list();
-    if (!list) return;
-
-    const items = collection.all();
-    const total = items.length;
-    const collapsible = total - itemsBefore - itemsAfter;
-    if (collapsible <= 0) {
-      setCollapsed(0);
-      return;
-    }
-
-    const slot = list.querySelector<HTMLElement>(`[${CRUMB_OVERFLOW_ATTRIBUTE}]`);
-
-    // Measure the trail as it would be with nothing collapsed and no trigger:
-    // that is the width it actually wants, and it is the only state in which
-    // every crumb has a width to read.
-    const wasHidden = items.map((el) => el.hidden);
-    const slotWasHidden = slot?.hidden ?? false;
-    for (const el of items) el.hidden = false;
-    if (slot) slot.hidden = false;
-
-    const slotWidth = slot ? widthOf(slot) : 0;
-    if (slot) slot.hidden = true;
-
-    const available = list.clientWidth;
-    const required = list.scrollWidth;
-    const widths = items.map(widthOf);
-
-    for (const [i, el] of items.entries()) el.hidden = wasHidden[i] ?? false;
-    if (slot) slot.hidden = slotWasHidden;
-
-    // No layout — a server, a test environment, or a list that has not been
-    // painted yet. The last measurement stands, which is better than reading
-    // zero and collapsing a trail that may well fit.
-    if (available <= 0) return;
-
-    // Whatever sits between the crumbs — separators, gaps, padding — shared
-    // out evenly across the gaps. Assuming the separators are alike is what
-    // lets this work without knowing how the consumer renders them; a trail
-    // with one enormous separator in it will collapse one crumb too few.
-    const chrome = Math.max(0, required - sum(widths));
-    const perGap = chrome / Math.max(total - 1, 1);
-
-    const widthWith = (collapsed: number): number => {
-      let shown = 0;
-      for (const [i, width] of widths.entries()) {
-        if (i >= itemsBefore && i < itemsBefore + collapsed) continue;
-        shown += width;
-      }
-      // The trigger takes a slot of its own the moment anything is in it, so
-      // collapsing a single crumb only saves the difference between the two.
-      const parts = total - collapsed + (collapsed > 0 ? 1 : 0);
-      return shown + (collapsed > 0 ? slotWidth : 0) + perGap * Math.max(parts - 1, 0);
-    };
-
-    // Collapse from just after the kept start, forwards. That keeps the
-    // collapsed run contiguous — the menu sits in one place in the trail — and
-    // it drops the shallowest ancestors first, which are the ones furthest
-    // from where the user is.
-    let collapsed = 0;
-    while (collapsed < collapsible && widthWith(collapsed) > available) collapsed += 1;
-    setCollapsed(collapsed);
+    if (options.collapse === false) return;
+    unfolded.set(true);
+    // Asked for by hand or by the observer, and either way wanted now; neither
+    // caller is inside a flush that would drain it for them.
+    flushSync();
   };
 
-  effect(() => {
-    const list = options.list();
-    // Read so that adding or removing a crumb re-measures; the widths cannot
-    // tell us the trail changed.
-    options.count();
-    if (!list) return;
+  if (options.collapse !== false) {
+    // Adding or removing a crumb measures again, since no width can say the
+    // trail changed; so does the list changing size. Showing every crumb is a
+    // write, so it is asked for here and done by the props, in the render that
+    // comes before the measure phase.
+    effect(() => {
+      const list = options.list();
+      options.count();
+      if (!list) return;
+      unfolded.set(true);
+      observeSize(list, measure);
+    });
 
-    measure();
-    observeSize(list, measure);
-  });
+    // The trail read in full, from the measure lane: one layout, shared with
+    // everything else measuring in the same flush, and nothing written. What
+    // was decided goes back through signals, and the render after this puts
+    // the crumbs away again before anything is painted.
+    measureEffect(() => {
+      if (!unfolded.get()) return;
+      const list = options.list();
+      if (!list) return;
+      // Whatever this decides, the trail goes back to what the props say once
+      // it is done; the DOM does not change until the render after it.
+      unfolded.set(false);
+
+      const items = collection.all();
+      const total = items.length;
+      const collapsible = total - itemsBefore - itemsAfter;
+      if (collapsible <= 0) {
+        collapsedCount.set(0);
+        return;
+      }
+
+      const slot = list.querySelector<HTMLElement>(`[${CRUMB_OVERFLOW_ATTRIBUTE}]`);
+      const rects = items.map((el) => el.getBoundingClientRect());
+      const widths = rects.map((rect) => rect.width);
+      const slotRect = slot?.getBoundingClientRect() ?? null;
+      const slotWidth = slotRect?.width ?? 0;
+      const available = list.clientWidth;
+
+      // No layout — a server, a test environment, or a list that has not been
+      // painted yet. The last measurement stands, which is better than reading
+      // zero and collapsing a trail that may well fit.
+      if (available <= 0) return;
+
+      // What the trail wants with nothing collapsed. The slot is on screen for
+      // the measurement, so what it costs has to come back out of the reading,
+      // and it is taken from where its neighbours sit rather than assumed to be
+      // an average gap: the space between crumbs is not always gaps, and one
+      // that is all list padding would be underestimated by a whole crumb's
+      // worth of it.
+      const required = list.scrollWidth - (slotRect ? footprintOf(slotRect, rects) : 0);
+
+      // Whatever sits between the crumbs — separators, gaps, padding — shared
+      // out evenly across the gaps. Assuming the separators are alike is what
+      // lets this work without knowing how the consumer renders them; a trail
+      // with one enormous separator in it will collapse one crumb too few.
+      const chrome = Math.max(0, required - sum(widths));
+      const perGap = chrome / Math.max(total - 1, 1);
+
+      const widthWith = (collapsed: number): number => {
+        let shown = 0;
+        for (const [i, width] of widths.entries()) {
+          if (i >= itemsBefore && i < itemsBefore + collapsed) continue;
+          shown += width;
+        }
+        // The trigger takes a slot of its own the moment anything is in it, so
+        // collapsing a single crumb only saves the difference between the two.
+        const showing = total - collapsed + (collapsed > 0 ? 1 : 0);
+        return shown + (collapsed > 0 ? slotWidth : 0) + perGap * Math.max(showing - 1, 0);
+      };
+
+      // Collapse from just after the kept start, forwards. That keeps the
+      // collapsed run contiguous — the menu sits in one place in the trail —
+      // and it drops the shallowest ancestors first, which are the ones
+      // furthest from where the user is.
+      let collapsed = 0;
+      while (collapsed < collapsible && widthWith(collapsed) > available) collapsed += 1;
+      collapsedCount.set(collapsed);
+    });
+
+    // Reported from an ordinary effect rather than from the measurement: the
+    // consumer's callback, and the menu closing, are both free to write to the
+    // DOM, which the measure phase is not.
+    let reported = 0;
+    effect(() => {
+      const next = collapsedCount.get();
+      if (next === reported) return;
+      reported = next;
+      untrack(() => {
+        // A menu whose items have just gone back into the trail is a menu with
+        // nothing in it, and its trigger is about to disappear from under the
+        // pointer.
+        if (next === 0) menu.close();
+        options.onCollapseChange?.(collapsedIndices());
+      });
+    });
+  }
 
   const onOverflowClick = () => menu.toggle();
   const onOverflowKeyDown = (event: Event) => {
@@ -369,7 +394,7 @@ export function createBreadcrumb(options: BreadcrumbOptions): Breadcrumb {
     itemProps: (index) => ({
       [CRUMB_ATTRIBUTE]: String(index),
       // Hidden rather than unmounted: see the note above about measuring.
-      hidden: isCollapsed(index),
+      hidden: isCollapsed(index) && !unfolded.get(),
     }),
 
     linkProps: (index) => ({
@@ -387,7 +412,7 @@ export function createBreadcrumb(options: BreadcrumbOptions): Breadcrumb {
 
     overflowProps: () => ({
       [CRUMB_OVERFLOW_ATTRIBUTE]: '',
-      hidden: collapsedCount.get() === 0,
+      hidden: collapsedCount.get() === 0 && !unfolded.get(),
     }),
 
     overflowTriggerProps: () => ({
@@ -1762,8 +1787,22 @@ function isDisabledElement(el: Element): boolean {
   return el.hasAttribute('data-disabled') || el.hasAttribute('disabled');
 }
 
-function widthOf(el: Element): number {
-  return el.getBoundingClientRect().width;
+/**
+ * What the overflow slot costs the trail: its own width, and the one gap that
+ * comes with it. Taken from where its nearest neighbour sits, because the space
+ * between crumbs is not always gaps — a trail whose separators live inside each
+ * crumb spends all of it on the list's padding — and an average gap subtracted
+ * from a reading taken with the slot on screen would leave the trail looking
+ * narrower than it is, so one that overflows by a few pixels would never
+ * collapse.
+ */
+function footprintOf(slot: DOMRect, crumbs: readonly DOMRect[]): number {
+  let gap = Infinity;
+  for (const rect of crumbs) {
+    if (rect.left >= slot.right) gap = Math.min(gap, rect.left - slot.right);
+    else if (rect.right <= slot.left) gap = Math.min(gap, slot.left - rect.right);
+  }
+  return slot.width + (gap === Infinity ? 0 : gap);
 }
 
 function sum(values: readonly number[]): number {
