@@ -71,11 +71,12 @@ export function deleteSelection(tr: EditorTransaction): boolean {
  * that filter can never actually drop anything — the marks come from nodes
  * already in this block, and no document can hold a node carrying a mark its
  * parent forbids, since every constructor and every step checks. It is kept
- * because `Schema.text` is the one place that does *not* check: it will build
- * a text node with any marks it is handed, and the replacement would then be
- * refused several frames later by `validContent` with a message about content
- * rather than about marks. The filter states the requirement where the node is
- * made instead of relying on an invariant enforced three files away.
+ * because `Schema.text` cannot check that: it holds the marks to each other,
+ * but it does not know the parent the text is going into, and the replacement
+ * would then be refused several frames later by `validContent` with a message
+ * about content rather than about marks. The filter states the requirement
+ * where the node is made instead of relying on an invariant enforced three
+ * files away.
  */
 export function insertText(tr: EditorTransaction, text: string): boolean {
   const { from, to, empty } = tr.selection;
@@ -104,22 +105,27 @@ export function insertText(tr: EditorTransaction, text: string): boolean {
  * heading starts a paragraph" is a real expectation and deliberately not here:
  * it is a policy about which type follows which, it differs per schema, and it
  * belongs to a keymap or a schema-level rule rather than to the operation.
+ *
+ * A selection goes in the same step as the split: the first half is what comes
+ * before it and the second what comes after. Deleting it as a step of its own
+ * and then finding the split illegal — in a parent that cannot hold two of the
+ * block — would leave the deletion in a transaction this reports as unchanged.
  */
 export function insertParagraph(tr: EditorTransaction): boolean {
-  if (!tr.selection.empty && !deleteSelection(tr)) return false;
+  const { from, to, empty } = tr.selection;
+  const $from = resolve(tr.doc, from);
+  const $to = empty ? $from : resolve(tr.doc, to);
+  const depth = $from.depth;
+  if (depth === 0 || !$from.parent.isTextblock || !$from.sameParent($to)) return false;
 
-  const $pos = resolve(tr.doc, tr.selection.from);
-  const depth = $pos.depth;
-  if (depth === 0 || !$pos.parent.isTextblock) return false;
-
-  const block = $pos.parent;
-  const before = $pos.before(depth);
-  const after = $pos.after(depth);
+  const block = $from.parent;
+  const before = $from.before(depth);
+  const after = $from.after(depth);
 
   // `createAndFill` rather than `create`: a block whose content expression
   // requires something an empty half would not have gets it filled in.
-  const first = block.type.createAndFill(block.attrs, block.content.cut(0, $pos.parentOffset), block.marks);
-  const second = block.type.createAndFill(block.attrs, block.content.cut($pos.parentOffset), block.marks);
+  const first = block.type.createAndFill(block.attrs, block.content.cut(0, $from.parentOffset), block.marks);
+  const second = block.type.createAndFill(block.attrs, block.content.cut($to.parentOffset), block.marks);
   if (!first || !second) return false;
 
   if (!tr.replace(before, after, new Slice(Fragment.from([first, second]), 0, 0)).ok) return false;
@@ -252,8 +258,8 @@ function textBefore($pos: ResolvedPos): string {
   return text;
 }
 
-const wordChar = /[\p{L}\p{N}_]/u;
-const space = /\s/;
+const wordChar = /^[\p{L}\p{N}_]/u;
+const space = /^\s/u;
 
 /**
  * How much of `text` a word-delete takes off its end.
@@ -261,14 +267,28 @@ const space = /\s/;
  * Trailing whitespace first, then a run of one kind: word characters, or
  * punctuation. Deleting the space and then the word is what makes repeated
  * word-deletes move a word at a time rather than alternating between the two.
+ *
+ * The run is walked a grapheme at a time, as backspace walks it, and each is
+ * classed by the character it starts with. A code unit at a time, the accent
+ * of a decomposed "é" and each half of a letter outside the basic plane are
+ * punctuation, and a word delete stops inside the word.
  */
 function wordLengthAtEnd(text: string): number {
+  const segments = graphemes.segment(text);
   let at = text.length;
-  while (at > 0 && space.test(text[at - 1]!)) at--;
+  // Step back over graphemes for as long as `keep` holds for the one before.
+  const back = (keep: (grapheme: string) => boolean): void => {
+    while (at > 0) {
+      const { segment, index } = segments.containing(at - 1)!;
+      if (!keep(segment)) return;
+      at = index;
+    }
+  };
 
+  back((grapheme) => space.test(grapheme));
   if (at > 0) {
-    const word = wordChar.test(text[at - 1]!);
-    while (at > 0 && !space.test(text[at - 1]!) && wordChar.test(text[at - 1]!) === word) at--;
+    const word = wordChar.test(segments.containing(at - 1)!.segment);
+    back((grapheme) => !space.test(grapheme) && wordChar.test(grapheme) === word);
   }
 
   return text.length - at;

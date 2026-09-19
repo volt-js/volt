@@ -112,6 +112,16 @@ describe('rendering a document', () => {
     const editing = view(doc(p(t('a'))));
     expect(editing.dom.contentEditable).toBe('true');
     expect(editing.dom.getAttribute('role')).toBe('textbox');
+    expect(editing.dom.hasAttribute('aria-readonly')).toBe(false);
+  });
+
+  it('announces a view that cannot be edited as read-only', () => {
+    // A text box that refuses input without saying so is announced as one to
+    // type into.
+    const editing = view(doc(p(t('a'))), undefined, undefined, { editable: false });
+    expect(editing.dom.contentEditable).toBe('false');
+    expect(editing.dom.getAttribute('role')).toBe('textbox');
+    expect(editing.dom.getAttribute('aria-readonly')).toBe('true');
   });
 
   it('renders a type no renderer knows as a tagged element rather than failing', () => {
@@ -354,6 +364,81 @@ describe('typing, end to end', () => {
   });
 });
 
+describe('composition, end to end', () => {
+  /**
+   * happy-dom, like every browser, will not take `data` through the
+   * constructor for a `CompositionEvent`, so it is assigned afterwards.
+   */
+  function composition(view_: EditorView, type: string, data?: string): void {
+    const event = new CompositionEvent(type, { bubbles: true });
+    if (data !== undefined) (event as { data: string }).data = data;
+    view_.dom.dispatchEvent(event);
+  }
+
+  it('shows composed text once in a paragraph that was empty', () => {
+    // There is no text node in an empty paragraph for the input method to
+    // write into, so it makes one. The view draws its own text node for the
+    // same text when the model catches up, and the input method's has to go.
+    const editing = view(doc(p()));
+    editing.focus();
+    const paragraph = editing.dom.firstChild!;
+
+    composition(editing, 'compositionstart');
+    paragraph.insertBefore(window.document.createTextNode('日本'), paragraph.firstChild);
+    expect(beforeInput(editing, 'insertCompositionText', { data: '日本' }).defaultPrevented).toBe(false);
+    composition(editing, 'compositionend', '日本');
+
+    expect(String(editing.state.doc)).toBe('doc(paragraph("日本"))');
+    expect(editing.dom.innerHTML).toBe('<p>日本</p>');
+    expect(selection().anchorNode).toBe(paragraph.firstChild);
+    expect(selection().anchorOffset).toBe(2);
+  });
+
+  it('shows composed text once when the input method wrote beside the text it was in', () => {
+    const editing = view(doc(p(t('ab'))), 3);
+    editing.focus();
+    const paragraph = editing.dom.firstChild!;
+
+    composition(editing, 'compositionstart');
+    paragraph.appendChild(window.document.createTextNode('に'));
+    composition(editing, 'compositionend', 'に');
+
+    expect(String(editing.state.doc)).toBe('doc(paragraph("abに"))');
+    expect(editing.dom.innerHTML).toBe('<p>abに</p>');
+  });
+
+  it('takes back what a composition wrote when it ends with nothing', () => {
+    // Nothing is dispatched for a composition that produced no text, so
+    // nothing would redraw the paragraph the input method wrote into.
+    const editing = view(doc(p(t('ab'))), 3);
+    editing.focus();
+    const text = editing.dom.firstChild!.firstChild as Text;
+
+    composition(editing, 'compositionstart');
+    text.data = 'abに';
+    composition(editing, 'compositionend', '');
+
+    expect(String(editing.state.doc)).toBe('doc(paragraph("ab"))');
+    expect(editing.dom.innerHTML).toBe('<p>ab</p>');
+    expect(selection().anchorNode).toBe(editing.dom.firstChild!.firstChild);
+    expect(selection().anchorOffset).toBe(2);
+  });
+
+  it('leaves the blocks around the composition alone', () => {
+    const editing = view(doc(p(t('one')), p(t('two'))), 5);
+    editing.focus();
+    const first = editing.dom.children[0]!;
+    const second = editing.dom.children[1]!;
+
+    composition(editing, 'compositionstart');
+    composition(editing, 'compositionend', 'X');
+
+    expect(editing.dom.innerHTML).toBe('<p>one</p><p>Xtwo</p>');
+    expect(editing.dom.children[0]).toBe(first);
+    expect(editing.dom.children[1]).toBe(second);
+  });
+});
+
 describe('updating from the range a transaction changed', () => {
   it('keeps the element of the block that was typed into, and its siblings', () => {
     const editing = view(doc(p(t('one')), p(t('two'))), 2);
@@ -401,6 +486,34 @@ describe('updating from the range a transaction changed', () => {
 
     expect(editing.dom.innerHTML).toBe('<p>a</p><p>b</p><p>cd</p>');
     expect(editing.dom.children[2]).toBe(untouched);
+  });
+
+  it('draws a mark taken in the same transaction as a replacement somewhere else', () => {
+    // The range the view redraws has to cover the mark's text as well as the
+    // typing, or the model gains the bold and the screen never shows it.
+    const editing = view(doc(p(t('one')), p(t('two'))), 2);
+
+    const tr = editing.state.tr();
+    expect(insertText(tr, 'X')).toBe(true);
+    expect(tr.addMark(7, 10, s.mark('strong')).ok).toBe(true);
+    editing.dispatch(tr);
+
+    expect(String(editing.state.doc)).toBe('doc(paragraph("oXne"), paragraph(strong("two")))');
+    expect(editing.dom.innerHTML).toBe('<p>oXne</p><p><strong>two</strong></p>');
+  });
+
+  it('redraws only the block a transaction of nothing but a mark rewrote', () => {
+    const editing = view(doc(p(t('one')), p(t('two'))), 2);
+    const first = editing.dom.children[0]!;
+    const second = editing.dom.children[1]!;
+
+    const tr = editing.state.tr();
+    expect(tr.addMark(1, 3, s.mark('em')).ok).toBe(true);
+    editing.dispatch(tr);
+
+    expect(editing.dom.innerHTML).toBe('<p><em>on</em>e</p><p>two</p>');
+    expect(editing.dom.children[0]).toBe(first);
+    expect(editing.dom.children[1]).toBe(second);
   });
 
   it('redraws the whole document when no transaction says what moved', () => {

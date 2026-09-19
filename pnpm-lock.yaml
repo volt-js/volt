@@ -107,11 +107,7 @@ importers:
         specifier: ^26.2.0
         version: 26.2.0
 
-  packages/editor:
-    dependencies:
-      '@voltdev/core':
-        specifier: workspace:*
-        version: link:../core
+  packages/editor: {}
 
   packages/grid:
     dependencies:

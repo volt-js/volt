@@ -10,8 +10,9 @@
  * promise worth a test per way of breaking it.
  */
 
+import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { Fragment, Mark, Schema, basicSchema, resolve } from '../src/index.ts';
+import { Fragment, Mark, Schema, VERSION, basicSchema, resolve } from '../src/index.ts';
 
 const s = basicSchema;
 
@@ -113,6 +114,24 @@ describe('marks', () => {
     const set = Mark.setFrom([em, strong]);
     expect(s.mark('em').removeFromSet(set).length).toBe(1);
   });
+
+  it('refuses a set whose marks exclude each other, as adding them one at a time would', () => {
+    // `code` excludes every other mark, and a link excludes a second link.
+    // Handed over whole rather than added one by one, the same set would be
+    // text that is code and emphasised, or one link going to two places.
+    const code = s.mark('code');
+    const linkA = s.mark('link', { href: 'a' });
+    const linkB = s.mark('link', { href: 'b' });
+
+    expect(() => Mark.setFrom([code, em])).toThrow(RangeError);
+    expect(() => s.text('x', [code, em])).toThrow(RangeError);
+    expect(() => s.text('x', [linkA, linkB])).toThrow(RangeError);
+    expect(() => s.node('paragraph', null, [s.text('x', [em, code])])).toThrow(RangeError);
+  });
+
+  it('takes the same mark twice as the mark once', () => {
+    expect(Mark.setFrom([em, s.mark('em')])).toEqual([em]);
+  });
 });
 
 describe('schema refusal at construction', () => {
@@ -143,6 +162,30 @@ describe('schema refusal at construction', () => {
 
   it('refuses a schema with no text node', () => {
     expect(() => new Schema({ nodes: { doc: { content: 'doc*' } } })).toThrow(/must declare a "text" node/);
+  });
+
+  it('refuses a schema whose top node type is not declared, rather than picking another', () => {
+    expect(() => new Schema({ nodes: { page: { content: 'text*' }, text: {} } })).toThrow(/top node type 'doc'/);
+    expect(new Schema({ nodes: { page: { content: 'text*' }, text: {} }, topNode: 'page' }).topNodeType.name).toBe('page');
+  });
+
+  it('does not let the rules of a type be changed once the schema is built', () => {
+    // Every document made from a schema was checked against these. A type that
+    // could be given other rules afterwards would make all of them documents
+    // nothing had checked.
+    const schema = new Schema({
+      nodes: { doc: { content: 'paragraph+' }, paragraph: { content: 'text*', marks: '' }, text: {} },
+      marks: { em: {}, code: { excludes: '_' } },
+    });
+    const paragraph = schema.nodes['paragraph']! as { markSet: unknown; contentMatch: unknown };
+    const code = schema.marks['code']! as { excluded: unknown };
+
+    expect(() => void (paragraph.markSet = null)).toThrow(TypeError);
+    expect(() => void (paragraph.contentMatch = schema.nodes['doc']!.contentMatch)).toThrow(TypeError);
+    expect(() => void (code.excluded = [])).toThrow(TypeError);
+
+    const marked = schema.text('x', [schema.mark('em')]);
+    expect(() => schema.node('paragraph', null, [marked])).toThrow(/Invalid content/);
   });
 });
 
@@ -209,6 +252,36 @@ describe('normalisation by filling', () => {
     const empty = s.topNodeType.createAndFill();
     expect(empty!.childCount).toBe(1);
     expect(empty!.child(0).type.name).toBe('paragraph');
+  });
+
+  it('fills with the shortest run that works, not the first one found', () => {
+    // Searching deep along the first alternative before trying the next finds
+    // `a b c` and stops, when `d` alone would do.
+    const schema = new Schema({
+      nodes: {
+        doc: { content: '(a b c) | d' },
+        a: {},
+        b: {},
+        c: {},
+        d: {},
+        text: {},
+      },
+    });
+    expect(String(schema.topNodeType.createAndFill())).toBe('doc(d)');
+  });
+
+  it('fills with the run that comes first, among runs of the same length', () => {
+    const schema = new Schema({
+      nodes: {
+        doc: { content: '(a b) | (c d)' },
+        a: {},
+        b: {},
+        c: {},
+        d: {},
+        text: {},
+      },
+    });
+    expect(String(schema.topNodeType.createAndFill())).toBe('doc(a, b)');
   });
 
   it('refuses to conjure a type with a required attribute', () => {
@@ -312,5 +385,42 @@ describe('reading text back out', () => {
   it('cuts partial text at both ends of a range', () => {
     const document = doc(p(t('hello')));
     expect(document.textBetween(2, 5)).toBe('ell');
+  });
+});
+
+describe('the package', () => {
+  it('reports the version it is published as', () => {
+    // A constant nothing compares against the manifest drifts from it at the
+    // first release, and then says the wrong thing to everything that asks.
+    const pkg = JSON.parse(readFileSync(`${import.meta.dirname}/../package.json`, 'utf8')) as { version: string };
+    expect(VERSION).toBe(pkg.version);
+  });
+
+  it('declares no dependency its source never imports', () => {
+    // A dependency nothing imports is still installed by everyone who installs
+    // this, and here it would be the whole of the framework for an editor that
+    // runs without it.
+    const pkg = JSON.parse(readFileSync(`${import.meta.dirname}/../package.json`, 'utf8')) as {
+      dependencies?: Record<string, string>;
+    };
+    const src = `${import.meta.dirname}/../src`;
+    const source = readdirSync(src)
+      .map((file) => readFileSync(`${src}/${file}`, 'utf8'))
+      .join('\n');
+
+    const unused = Object.keys(pkg.dependencies ?? {}).filter((name) => !source.includes(`from '${name}`));
+    expect(unused).toEqual([]);
+  });
+
+  it('exports no type under a name the DOM has for something else', () => {
+    // A file that imports such a type can no longer name the DOM's own, and a
+    // view's host is the file most likely to want both. `Node` is shared on
+    // purpose — the document's node is what this package is about — and it is
+    // a class, so it is not among these.
+    const index = readFileSync(`${import.meta.dirname}/../src/index.ts`, 'utf8');
+    const types = [...index.matchAll(/\btype (\w+)(?=,| \})/g)].map((match) => match[1]!);
+
+    expect(types).toContain('EditorViewOptions');
+    expect(types.filter((name) => name in globalThis)).toEqual([]);
   });
 });

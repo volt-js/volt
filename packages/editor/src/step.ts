@@ -85,19 +85,21 @@ export class StepMap {
    * replacement, chosen by `assoc`.
    */
   map(pos: number, assoc: Assoc = 1): number {
+    // A range's start is counted in the document the map applies to, as `pos`
+    // is, so the two compare as they are; `shift` is what the ranges already
+    // passed did to everything after them, and only the answer needs it.
     let shift = 0;
     for (const range of this.ranges) {
-      const start = range.start + shift;
-      if (pos < start) break;
-      const end = start + range.oldSize;
+      if (pos < range.start) break;
+      const end = range.start + range.oldSize;
       if (pos <= end) {
         // On an edge the answer is the edge, whatever was asked for: a
         // position at the start of what was replaced was never inside it, and
         // one at the end was not either. Association only decides when there
         // is a genuine choice — which is a pure insertion, where the range has
         // no interior and both answers are defensible.
-        const side = range.oldSize === 0 ? assoc : pos === start ? -1 : pos === end ? 1 : assoc;
-        return start + (side < 0 ? 0 : range.newSize);
+        const side = range.oldSize === 0 ? assoc : pos === range.start ? -1 : pos === end ? 1 : assoc;
+        return range.start + shift + (side < 0 ? 0 : range.newSize);
       }
       shift += range.newSize - range.oldSize;
     }
@@ -106,16 +108,46 @@ export class StepMap {
 
   /** Whether `pos` fell inside something this map replaced. */
   deletedAt(pos: number): boolean {
-    let shift = 0;
     for (const range of this.ranges) {
-      const start = range.start + shift;
-      if (pos < start) return false;
+      if (pos < range.start) return false;
       // Strictly inside. A position on either edge survived the replacement —
       // it is where the change happened, not something the change removed.
-      if (pos > start && pos < start + range.oldSize) return true;
-      shift += range.newSize - range.oldSize;
+      if (pos > range.start && pos < range.start + range.oldSize) return true;
     }
     return false;
+  }
+
+  /**
+   * @internal Where a position `deleting` took out comes back, in this map
+   * that undoes it — or null when going through both maps is already right.
+   *
+   * It comes back the same distance into what this map puts back as it was
+   * into what `deleting` removed. This map was written after everything that
+   * happened between the two, so where it puts the content back already
+   * accounts for whatever those moved — which is why `Mapping` can jump from
+   * one to the other without losing them.
+   *
+   * An edge of what was removed counts as taken out when `assoc` leans across
+   * it. The deletion leaves such a position where it was, but this map then
+   * inserts at exactly that point, and would carry the position to the far
+   * side of everything it puts back. The other edge leans away from the
+   * insertion and needs no help — and an insertion, whose edges are one
+   * point, removed nothing to come back into.
+   */
+  recover(deleting: StepMap, pos: number, assoc: Assoc): number | null {
+    let shift = 0;
+    for (let i = 0; i < deleting.ranges.length; i++) {
+      const range = deleting.ranges[i]!;
+      if (pos < range.start) return null;
+      const restoring = this.ranges[i];
+      if (!restoring) return null;
+      const end = range.start + range.oldSize;
+      if (pos <= end) {
+        return pos === (assoc < 0 ? range.start : end) ? null : restoring.start + shift + (pos - range.start);
+      }
+      shift += restoring.newSize - restoring.oldSize;
+    }
+    return null;
   }
 
   /** The map that undoes this one, for the document this one produced. */
@@ -142,7 +174,8 @@ export class StepMap {
  * give the position back unchanged, and it will not if the two maps are
  * treated as unrelated — the position collapses to an edge on the way through
  * the first and never recovers. Recording that map *i* is the inverse of map
- * *j* is what lets a position skip the pair.
+ * *j* is what lets a position the first deleted be found again in what the
+ * second put back.
  */
 export class Mapping {
   private readonly maps: StepMap[] = [];
@@ -178,12 +211,19 @@ export class Mapping {
     for (let i = from; i < this.maps.length; i++) {
       const map = this.maps[i]!;
       // A position deleted by this map and restored by its mirror is not
-      // really deleted: skipping the pair is what keeps a caret where it was
-      // when a collaborator's change is undone underneath it.
+      // really deleted: it is found again inside what the mirror put back,
+      // which is what keeps a caret where it was when a collaborator's change
+      // is undone underneath it. Keeping the position it had before this map
+      // instead would be right only with nothing in between, and would lose
+      // every map recorded between the two.
       const mirror = this.mirror.get(i);
-      if (mirror !== undefined && mirror > i && map.deletedAt(result)) {
-        i = mirror;
-        continue;
+      if (mirror !== undefined && mirror > i) {
+        const recovered = this.maps[mirror]!.recover(map, result, assoc);
+        if (recovered !== null) {
+          result = recovered;
+          i = mirror;
+          continue;
+        }
       }
       result = map.map(result, assoc);
     }
@@ -204,7 +244,15 @@ export class Mapping {
   }
 }
 
-/** What applying a step produced, or why it could not be applied. */
+/**
+ * What applying a step produced, or why it could not be applied.
+ *
+ * A failure is a step this document refuses: content its schema forbids, ends
+ * in different parents, a mark with nothing to change. A position outside the
+ * document is not one. `resolve` throws a `RangeError` for it, as it does
+ * everywhere else, since the step was not written for this document at all —
+ * which a caller trying something else instead would only hide.
+ */
 export type StepResult =
   | { readonly ok: true; readonly doc: Node }
   | { readonly ok: false; readonly reason: string };
@@ -291,15 +339,20 @@ export class ReplaceStep extends Step {
 
   map(mapping: Mapping): Step | null {
     const from = mapping.map(this.from, 1);
-    const to = mapping.map(this.to, -1);
+    // The end maps with the other association, so where someone else inserted
+    // at exactly this point the two cross: the start goes after their text and
+    // the end stays before it. Their text is outside the range either way, so
+    // the range is the point after it.
+    const to = Math.max(from, mapping.map(this.to, -1));
     // The range closed up entirely under someone else's change, and an
     // insertion into nothing is still an insertion — but a deletion of a range
     // that is already gone has nothing to do.
-    if (to < from) return null;
     if (from === to && this.slice.size === 0) return null;
     return new ReplaceStep(from, to, this.slice);
   }
 }
+
+const acrossParents = 'a mark across parents is not applied in one step yet';
 
 /** Add or remove one mark across a range, without moving anything. */
 abstract class MarkStep extends Step {
@@ -309,6 +362,7 @@ abstract class MarkStep extends Step {
 
   constructor(from: number, to: number, mark: Mark) {
     super();
+    if (from > to) throw new RangeError(`[volt] a mark's range cannot end before it starts`);
     this.from = from;
     this.to = to;
     this.mark = mark;
@@ -320,36 +374,73 @@ abstract class MarkStep extends Step {
     return StepMap.empty;
   }
 
-  protected abstract rewrite(node: Node): Node;
+  /** The marks text carrying `marks` has once this step has applied. */
+  protected abstract after(marks: readonly Mark[]): readonly Mark[];
+  /** What the opposite step makes of `marks` — the way back `apply` checks. */
+  protected abstract before(marks: readonly Mark[]): readonly Mark[];
 
+  /**
+   * Rewrite the text in the range, refusing what the step cannot stand behind.
+   *
+   * The parent's content is checked as a replacement checks it, so bold in a
+   * code block is refused here rather than becoming a code block its own
+   * schema would refuse at construction. A step that would change nothing is
+   * refused too, because a step is what a transaction counts as a change and
+   * what a history keeps as something to undo. And so is a step whose
+   * opposite would not give the text back — bold laid over text that is
+   * partly bold already, or code throwing off emphasis — because `invert` is
+   * that opposite step, and an undo that takes bold off text that had it is
+   * not an undo. `Transaction.addMark` and `removeMark` split a range into
+   * steps that are none of these.
+   */
   apply(doc: Node): StepResult {
     const $from = resolve(doc, this.from);
     const $to = resolve(doc, this.to);
-    if (!$from.sameParent($to)) {
-      return { ok: false, reason: 'a mark across parents is not applied in one step yet' };
-    }
+    if (!$from.sameParent($to)) return { ok: false, reason: acrossParents };
 
     const parent = $from.parent;
     const run: Node[] = [];
-    parent.content
-      .cut($from.parentOffset, $to.parentOffset)
-      .forEach((child) => run.push(child.isText ? this.rewrite(child) : child));
-    const middle = Fragment.from(run);
+    let changed = false;
+    let exact = true;
+    parent.content.cut($from.parentOffset, $to.parentOffset).forEach((child) => {
+      if (!child.isText) {
+        run.push(child);
+        return;
+      }
+      const marks = this.after(child.marks);
+      if (marks !== child.marks) changed = true;
+      if (!Mark.sameSet(this.before(marks), child.marks)) exact = false;
+      run.push(child.mark(marks));
+    });
+
+    if (!changed) {
+      return { ok: false, reason: `there is no text in that range the ${this.mark.type.name} mark would change` };
+    }
+    if (!exact) {
+      return { ok: false, reason: `the opposite step would not give back the marks this one changes` };
+    }
 
     const rewritten = parent.content
       .cut(0, $from.parentOffset)
-      .append(middle)
+      .append(Fragment.from(run))
       .append(parent.content.cut($to.parentOffset));
+
+    if (!parent.type.validContent(rewritten)) {
+      return { ok: false, reason: `${parent.type.name} cannot hold that content` };
+    }
 
     return { ok: true, doc: replaceAt(doc, containerOf($from), parent.copy(rewritten)) };
   }
 }
 
 export class AddMarkStep extends MarkStep {
-  protected rewrite(node: Node): Node {
-    return node.mark(this.mark.addToSet(node.marks));
+  protected after(marks: readonly Mark[]): readonly Mark[] {
+    return this.mark.addToSet(marks);
   }
-  invert(): Step {
+  protected before(marks: readonly Mark[]): readonly Mark[] {
+    return this.mark.removeFromSet(marks);
+  }
+  invert(): MarkStep {
     return new RemoveMarkStep(this.from, this.to, this.mark);
   }
   map(mapping: Mapping): Step | null {
@@ -360,10 +451,13 @@ export class AddMarkStep extends MarkStep {
 }
 
 export class RemoveMarkStep extends MarkStep {
-  protected rewrite(node: Node): Node {
-    return node.mark(this.mark.removeFromSet(node.marks));
+  protected after(marks: readonly Mark[]): readonly Mark[] {
+    return this.mark.removeFromSet(marks);
   }
-  invert(): Step {
+  protected before(marks: readonly Mark[]): readonly Mark[] {
+    return this.mark.addToSet(marks);
+  }
+  invert(): MarkStep {
     return new AddMarkStep(this.from, this.to, this.mark);
   }
   map(mapping: Mapping): Step | null {
@@ -371,6 +465,20 @@ export class RemoveMarkStep extends MarkStep {
     const to = mapping.map(this.to, -1);
     return to <= from ? null : new RemoveMarkStep(from, to, this.mark);
   }
+}
+
+/** A stretch of text one mark step covers. */
+interface MarkRun {
+  readonly mark: Mark;
+  readonly from: number;
+  to: number;
+}
+
+/** Carry the last run of `mark` on to `to` when it ends at `from`, or start another. */
+function extendRun(runs: MarkRun[], mark: Mark, from: number, to: number): void {
+  const last = runs.findLast((run) => run.mark.eq(mark));
+  if (last && last.to === from) last.to = to;
+  else runs.push({ mark, from, to });
 }
 
 /**
@@ -464,12 +572,89 @@ export class Transaction {
     return this.replace(pos, pos, new Slice(Fragment.from(node), 0, 0));
   }
 
+  /**
+   * Add a mark across a range, as steps that each undo exactly.
+   *
+   * One step over the whole range is refused wherever some of the text already
+   * has the mark, or has one the mark throws off, since its opposite could not
+   * give that text back. So the range is taken in runs: the marks the new one
+   * excludes come off first, one step per run of text carrying each, and then
+   * the mark goes onto each run that lacks it. Text that has it already, or
+   * carries a mark that refuses it, is left as it is.
+   */
   addMark(from: number, to: number, mark: Mark): StepResult {
-    return this.step(new AddMarkStep(from, to, mark));
+    const removals: MarkRun[] = [];
+    const additions: MarkRun[] = [];
+    const refused = this.eachText(from, to, (text, start, end) => {
+      const marked = mark.addToSet(text.marks);
+      if (marked === text.marks) return;
+      for (const other of text.marks) if (!other.isInSet(marked)) extendRun(removals, other, start, end);
+      extendRun(additions, mark, start, end);
+    });
+    if (refused) return refused;
+
+    return this.takeAll(
+      [
+        ...removals.map((run) => new RemoveMarkStep(run.from, run.to, run.mark)),
+        ...additions.map((run) => new AddMarkStep(run.from, run.to, run.mark)),
+      ],
+      `there is no text in that range the ${mark.type.name} mark would change`,
+    );
   }
 
+  /** Take a mark off a range, one step per run of text that carries it. */
   removeMark(from: number, to: number, mark: Mark): StepResult {
-    return this.step(new RemoveMarkStep(from, to, mark));
+    const runs: MarkRun[] = [];
+    const refused = this.eachText(from, to, (text, start, end) => {
+      if (mark.isInSet(text.marks)) extendRun(runs, mark, start, end);
+    });
+    if (refused) return refused;
+
+    return this.takeAll(
+      runs.map((run) => new RemoveMarkStep(run.from, run.to, run.mark)),
+      `there is no text in that range carrying the ${mark.type.name} mark`,
+    );
+  }
+
+  /**
+   * Visit each piece of text a range covers, with where the range covers it —
+   * or say why the range is refused before anything is visited.
+   */
+  private eachText(from: number, to: number, f: (text: Node, start: number, end: number) => void): StepResult | null {
+    if (from > to) throw new RangeError(`[volt] a mark's range cannot end before it starts`);
+    const $from = resolve(this.current, from);
+    if (!$from.sameParent(resolve(this.current, to))) return { ok: false, reason: acrossParents };
+
+    const parent = $from.parent;
+    let start = $from.start();
+    for (let i = 0; i < parent.childCount && start < to; i++) {
+      const child = parent.child(i);
+      const end = start + child.nodeSize;
+      const covered = { from: Math.max(start, from), to: Math.min(end, to) };
+      if (child.isText && covered.from < covered.to) f(child, covered.from, covered.to);
+      start = end;
+    }
+    return null;
+  }
+
+  /**
+   * Take every step or none of them.
+   *
+   * A mark across a range can be several steps, and a transaction that took
+   * the first and was refused the next would hold half an edit. So they are
+   * tried against a scratch document first, and taken only once every one of
+   * them has applied.
+   */
+  private takeAll(steps: readonly Step[], nothing: string): StepResult {
+    if (steps.length === 0) return { ok: false, reason: nothing };
+    let doc = this.current;
+    for (const step of steps) {
+      const result = step.apply(doc);
+      if (!result.ok) return result;
+      doc = result.doc;
+    }
+    for (const step of steps) this.step(step);
+    return { ok: true, doc: this.current };
   }
 
   /** Where a position from the document this began with is now. */

@@ -100,35 +100,40 @@ export class ContentMatch {
    * The shortest run of nodes that lets `after` follow this state legally.
    *
    * This is the normalisation engine. Breadth-first over the automaton, so the
-   * result is the fewest nodes that work rather than the first path found;
-   * `toEnd` additionally demands that the content be complete afterwards,
-   * which is what a caller closing off a node wants and what a caller
-   * inserting into the middle of one does not.
+   * result is the fewest nodes that work rather than the first path found —
+   * for `(a b c) | d`, `d` rather than `a b c` — and among runs of the same
+   * length, the one whose types come first in the expression. `toEnd`
+   * additionally demands that the content be complete afterwards, which is
+   * what a caller closing off a node wants and what a caller inserting into
+   * the middle of one does not.
    *
    * Returns `null` when no run of default-createable nodes bridges the gap,
    * which is a legitimate answer: the caller then knows the edit is impossible
    * rather than producing something invalid.
    */
   fillBefore(after: Fragment, toEnd = false, startIndex = 0): Fragment | null {
+    // Every state reached, with the types that lead to it from here, in the
+    // order they were reached. Each is reached once, by the shortest run that
+    // gets there, and that is also what stops a `*` from looping.
     const seen: ContentMatch[] = [this];
+    const reached: { match: ContentMatch; via: NodeType[] }[] = [{ match: this, via: [] }];
 
-    const search = (match: ContentMatch, index: number): Fragment | null => {
-      const finished = match.matchFragment(after, index);
-      if (finished && (!toEnd || finished.validEnd)) return Fragment.empty;
+    for (let i = 0; i < reached.length; i++) {
+      const { match, via } = reached[i]!;
+      const finished = match.matchFragment(after, startIndex);
+      if (finished && (!toEnd || finished.validEnd)) {
+        const filled = via.map((type) => type.createAndFill());
+        if (filled.every((node): node is Node => node !== null)) return Fragment.from(filled);
+        continue;
+      }
 
       for (const { type, next } of match.next) {
         if (type.isText || type.hasRequiredAttrs || seen.includes(next)) continue;
         seen.push(next);
-        const inner = search(next, index);
-        if (inner) {
-          const filled = type.createAndFill();
-          if (filled) return Fragment.from(filled).append(inner);
-        }
+        reached.push({ match: next, via: [...via, type] });
       }
-      return null;
-    };
-
-    return search(this, startIndex);
+    }
+    return null;
   }
 
   /**

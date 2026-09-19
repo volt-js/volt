@@ -226,10 +226,26 @@ describe('a transaction carrying its selection', () => {
     const tr = EditorState.create(d).tr();
     expect(tr.firstReplacedRange).toBe(null);
     expect(tr.changedRange).toBe(null);
+  });
 
-    // A mark moves nothing, so it is not a replacement and not a range.
-    tr.addMark(1, 3, em);
-    expect(tr.changedRange).toBe(null);
+  it('counts the text a mark rewrote as changed, though not as replaced', () => {
+    // A mark moves nothing, so there is no replacement for a history to
+    // compare. It does rewrite the text it covers, and a view drawing from
+    // this range that left it out would show the text without the mark.
+    const d = doc(p(t('abcdef')));
+    const tr = EditorState.create(d).tr();
+
+    tr.insertText(2, 'X');
+    tr.addMark(5, 7, em);
+
+    expect(String(tr.doc)).toBe('doc(paragraph("aXbc", em("de"), "f"))');
+    expect(tr.firstReplacedRange).toEqual({ from: 2, to: 2 });
+    expect(tr.changedRange).toEqual({ from: 2, to: 7 });
+
+    const marked = EditorState.create(d).tr();
+    marked.addMark(1, 3, em);
+    expect(marked.firstReplacedRange).toBe(null);
+    expect(marked.changedRange).toEqual({ from: 1, to: 3 });
   });
 
   it('refuses to be grouped with what came before it only when asked', () => {
@@ -286,6 +302,26 @@ describe('an editor state', () => {
     expect(next).not.toBe(state);
     expect(next.doc).toBe(state.doc);
     expect(next.selection.anchor).toBe(4);
+  });
+
+  it('refuses a selection made for a different document', () => {
+    // A selection is two numbers with nothing to say which document they were
+    // counted in. Kept as given, one from a longer document points past the
+    // end of this one, and one from a differently shaped document can sit on a
+    // block boundary — where backspace takes the whole block before it.
+    const long = doc(p(t('abcdefgh')));
+    const short = doc(p(t('ab')));
+    expect(() => EditorState.create(short, TextSelection.create(long, 7))).toThrow(RangeError);
+
+    const flat = doc(p(t('abcdef')));
+    const blocks = doc(p(t('ab')), p(t('cd')));
+    expect(() => EditorState.create(blocks, TextSelection.create(flat, 4))).toThrow(RangeError);
+  });
+
+  it('keeps a selection made for the same document as it was given', () => {
+    const d = doc(p(t('abcd')), p(t('ef')));
+    const selection = TextSelection.create(d, 8, 2);
+    expect(EditorState.create(d, selection).selection).toBe(selection);
   });
 
   it('refuses a transaction started from a different document', () => {

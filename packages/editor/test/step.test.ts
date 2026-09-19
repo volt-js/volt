@@ -29,6 +29,7 @@ const doc = (...content: any[]) => s.node('doc', null, content);
 const p = (...content: any[]) => s.node('paragraph', null, content);
 const t = (text: string, ...marks: Mark[]) => s.text(text, marks);
 const em = s.mark('em');
+const strong = s.mark('strong');
 
 const sliceOf = (...nodes: any[]) => new Slice(Fragment.from(nodes), 0, 0);
 const textOf = (node: any) => node.textBetween(0, node.content.size, '');
@@ -66,6 +67,34 @@ describe('a step map', () => {
     expect(map.map(10)).toBe(13);
     expect(back.map(13)).toBe(10);
   });
+
+  it('reads every range of a map in the coordinates of the document it applies to', () => {
+    // Three inserted at 2 and one at 10, both counted in the document before
+    // the change. Comparing a position with a later range's start shifted by
+    // the earlier ranges compares two coordinate systems with each other, and
+    // 11 comes out as though it were still before the second insertion.
+    const map = new StepMap([
+      { start: 2, oldSize: 0, newSize: 3 },
+      { start: 10, oldSize: 4, newSize: 1 },
+    ]);
+    expect(map.map(9)).toBe(12);
+    expect(map.map(12, -1)).toBe(13);
+    expect(map.map(12, 1)).toBe(14);
+    expect(map.map(15)).toBe(15);
+    expect(map.deletedAt(12)).toBe(true);
+    expect(map.deletedAt(16)).toBe(false);
+
+    const back = map.invert();
+    expect(back.map(15)).toBe(15);
+    expect(back.map(3, -1)).toBe(2);
+
+    // And a position the second range took out is found again in what the
+    // inverse puts back, the same distance in.
+    const mapping = new Mapping();
+    mapping.appendMap(map);
+    mapping.appendMap(back, 0);
+    expect(mapping.map(12)).toBe(12);
+  });
 });
 
 describe('a mapping', () => {
@@ -84,6 +113,52 @@ describe('a mapping', () => {
     mapping.appendMap(StepMap.replace(2, 4, 0));
     mapping.appendMap(StepMap.replace(2, 0, 4), 0);
     expect(mapping.map(4)).toBe(4);
+  });
+
+  it('gives back a position on the edge of what was deleted and put back, as well', () => {
+    // An edge survives the deletion, and then the undo inserts at exactly that
+    // point — and would push a position that leans towards the insertion to
+    // the far side of text it was never on the far side of.
+    const mapping = new Mapping();
+    mapping.appendMap(StepMap.replace(2, 4, 0));
+    mapping.appendMap(StepMap.replace(2, 0, 4), 0);
+
+    expect(mapping.map(2, 1)).toBe(2);
+    expect(mapping.map(6, -1)).toBe(6);
+    // Leaning away from the insertion, either edge stays where it is anyway.
+    expect(mapping.map(2, -1)).toBe(2);
+    expect(mapping.map(6, 1)).toBe(6);
+  });
+
+  it('does not move a position off an insertion for the sake of its undo', () => {
+    // An insertion deletes nothing, so there is nothing of it to find again
+    // in the deletion that undoes it — here after someone else typed three
+    // characters at the same point, which a position leaning back from both
+    // insertions stays in front of.
+    const mapping = new Mapping();
+    mapping.appendMap(StepMap.replace(2, 0, 4));
+    mapping.appendMap(StepMap.replace(2, 0, 3));
+    mapping.appendMap(StepMap.replace(5, 4, 0), 0);
+
+    expect(mapping.map(2, -1)).toBe(2);
+    expect(mapping.map(2, 1)).toBe(5);
+  });
+
+  it('keeps what was mapped between a change and its undo', () => {
+    // A deletion, someone else's insertion before it, then the deletion undone
+    // after that insertion. Skipping from the deletion straight to its undo
+    // would skip the insertion too, and the position would come out as if the
+    // three characters in front of it had never been typed.
+    const mapping = new Mapping();
+    mapping.appendMap(StepMap.replace(2, 4, 0));
+    mapping.appendMap(StepMap.replace(0, 0, 3));
+    mapping.appendMap(StepMap.replace(5, 0, 4), 0);
+
+    // Position 4 was two into what the deletion took, and the undo puts that
+    // back at 5 — so it is two into that.
+    expect(mapping.map(4)).toBe(7);
+    // A position the deletion never touched maps through all three as usual.
+    expect(mapping.map(8)).toBe(11);
   });
 
   it('inverts in the opposite order, mirrors included', () => {
@@ -160,6 +235,22 @@ describe('replacing content', () => {
     mapping.appendMap(StepMap.replace(2, 10, 0));
     expect(step.map(mapping)).toBe(null);
   });
+
+  it('keeps an insertion that lands where someone else inserted first', () => {
+    // Two people typing at the same place. The start of an insertion goes
+    // after the other text and its end, asked for with the other association,
+    // stays before it — so the two ends cross, and taking that for a range
+    // that closed up drops one person's text.
+    const step = new ReplaceStep(5, 5, sliceOf(t('Z')));
+    const mapping = new Mapping();
+    mapping.appendMap(StepMap.replace(5, 0, 3));
+
+    const moved = step.map(mapping) as ReplaceStep | null;
+    expect(moved).not.toBe(null);
+    expect(moved!.from).toBe(8);
+    expect(moved!.to).toBe(8);
+    expect(moved!.slice.eq(step.slice)).toBe(true);
+  });
 });
 
 describe('marks', () => {
@@ -183,6 +274,97 @@ describe('marks', () => {
   it('inverts to the opposite step', () => {
     expect(new AddMarkStep(1, 3, em).invert()).toBeInstanceOf(RemoveMarkStep);
     expect(new RemoveMarkStep(1, 3, em).invert()).toBeInstanceOf(AddMarkStep);
+  });
+
+  it('refuses a mark the parent does not allow, as a replacement would', () => {
+    // A code block declares `marks: ""`. Rewriting its text with bold in it
+    // builds a code block its own schema refuses at construction.
+    const before = doc(s.node('code_block', null, [t('let x')]));
+    const tr = new Transaction(before);
+
+    const result = tr.addMark(1, 4, strong);
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toMatch(/code_block/);
+    expect(tr.changed).toBe(false);
+    expect(tr.doc).toBe(before);
+
+    expect(new AddMarkStep(1, 4, strong).apply(before).ok).toBe(false);
+  });
+
+  it('throws for a range that ends before it starts, as a replacement does', () => {
+    // Taken as given, 4..2 is two cuts that overlap, and the text between them
+    // comes out twice.
+    expect(() => new AddMarkStep(4, 2, em)).toThrow(RangeError);
+    expect(() => new RemoveMarkStep(4, 2, em)).toThrow(RangeError);
+    expect(() => new Transaction(doc(p(t('abcd')))).addMark(4, 2, em)).toThrow(RangeError);
+    expect(() => new Transaction(doc(p(t('abcd', em)))).removeMark(4, 2, em)).toThrow(RangeError);
+  });
+
+  it('takes no step for a mark that would change nothing', () => {
+    // A step is what `changed` counts and what a history records, so a step
+    // that did nothing is an undo unit that undoes nothing.
+    const already = new Transaction(doc(p(t('ab', em))));
+    expect(already.addMark(1, 3, em).ok).toBe(false);
+    expect(already.changed).toBe(false);
+
+    const empty = new Transaction(doc(p(t('ab'))));
+    expect(empty.addMark(2, 2, em).ok).toBe(false);
+    expect(empty.changed).toBe(false);
+
+    const absent = new Transaction(doc(p(t('ab'))));
+    expect(absent.removeMark(1, 3, em).ok).toBe(false);
+    expect(absent.changed).toBe(false);
+
+    expect(new AddMarkStep(1, 3, em).apply(doc(p(t('ab', em)))).ok).toBe(false);
+    expect(new RemoveMarkStep(1, 3, em).apply(doc(p(t('ab')))).ok).toBe(false);
+  });
+});
+
+describe('undoing a mark', () => {
+  /** Write a transaction over `before`, then apply its inverse, and return what comes back. */
+  function roundTrip(before: any, write: (tr: Transaction) => { ok: boolean }): any {
+    const tr = new Transaction(before);
+    expect(write(tr).ok).toBe(true);
+    let current = tr.doc;
+    for (const step of tr.invert(before)) {
+      const result = step.apply(current);
+      if (!result.ok) throw new Error(result.reason);
+      current = result.doc;
+    }
+    return current;
+  }
+
+  it('leaves the bold that was there before bold was laid across it', () => {
+    const before = doc(p(t('ab'), t('cd', strong), t('ef')));
+    const after = roundTrip(before, (tr) => tr.addMark(1, 7, strong));
+    expect(String(after)).toBe('doc(paragraph("ab", strong("cd"), "ef"))');
+  });
+
+  it('gives back the link a new link replaced', () => {
+    const before = doc(p(t('abcd', s.mark('link', { href: 'a' }))));
+    const after = roundTrip(before, (tr) => tr.addMark(2, 4, s.mark('link', { href: 'b' })));
+    expect(after.eq(before)).toBe(true);
+  });
+
+  it('gives back the emphasis code threw off', () => {
+    const before = doc(p(t('ab'), t('cd', em)));
+    const after = roundTrip(before, (tr) => tr.addMark(1, 5, s.mark('code')));
+    expect(String(after)).toBe('doc(paragraph("ab", em("cd")))');
+  });
+
+  it('marks only what was marked when a removal is undone', () => {
+    const before = doc(p(t('ab'), t('cd', em), t('ef')));
+    const after = roundTrip(before, (tr) => tr.removeMark(1, 7, em));
+    expect(String(after)).toBe('doc(paragraph("ab", em("cd"), "ef"))');
+  });
+
+  it('refuses a hand-built step whose opposite would not give the text back', () => {
+    // Bold laid over text that is partly bold already: the opposite step takes
+    // bold off all of it, so the step is refused rather than taken with an
+    // undo that is wrong. `Transaction.addMark` splits the range instead.
+    const before = doc(p(t('ab'), t('cd', strong)));
+    expect(new AddMarkStep(1, 5, strong).apply(before).ok).toBe(false);
+    expect(new RemoveMarkStep(1, 5, strong).apply(before).ok).toBe(false);
   });
 });
 

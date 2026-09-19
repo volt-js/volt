@@ -43,8 +43,10 @@
  * already carries, and it is a different piece of work from this one.
  */
 
+import type { Node } from './node.js';
 import { TextSelection } from './state.js';
 import type { ChangedRange, EditorState, EditorTransaction } from './state.js';
+import { ReplaceStep } from './step.js';
 import type { Step } from './step.js';
 
 /** How this history decides what belongs together, and how much it keeps. */
@@ -107,6 +109,17 @@ export class EditorHistory {
    */
   private readonly mine = new WeakMap<EditorTransaction, Direction>();
 
+  /**
+   * The document the last recorded transaction produced.
+   *
+   * The recorded steps are applied at the positions they were written at, not
+   * mapped through anything that happened since, so they are right for this
+   * document and for no other. A change the history never saw moves the text
+   * under them, and after that they either fail to apply or — when their
+   * positions still happen to be valid — take back the wrong characters.
+   */
+  private last: Node | null = null;
+
   constructor(options: HistoryOptions = {}) {
     this.now = options.now ?? Date.now;
     this.newGroupDelay = options.newGroupDelay ?? 500;
@@ -128,6 +141,7 @@ export class EditorHistory {
     this.done.length = 0;
     this.undone.length = 0;
     this.open = null;
+    this.last = null;
   }
 
   /**
@@ -136,9 +150,18 @@ export class EditorHistory {
    * Called for every transaction, including the ones `undo` and `redo` handed
    * out — those move a unit from one stack to the other instead of being
    * recorded as new edits.
+   *
+   * A transaction that starts from some other document than the last one
+   * recorded means something changed in between that this history never saw.
+   * Everything it holds was written against the document before that change,
+   * and with no rebase here to carry it across, all it could do is take back
+   * the wrong text — so it is forgotten, and the history starts again here.
    */
   record(tr: EditorTransaction): void {
     const at = this.now();
+
+    if (this.last && !tr.startDoc.eq(this.last)) this.clear();
+    this.last = tr.doc;
 
     const direction = this.mine.get(tr);
     if (direction !== undefined) {
@@ -204,6 +227,16 @@ export class EditorHistory {
     const event = stack[stack.length - 1];
     if (!event) return null;
 
+    // Checked before a step is tried, not left to the steps: a step at a
+    // position that is still valid applies without complaint, and takes back
+    // whatever is there now.
+    if (!this.last || !state.doc.eq(this.last)) {
+      throw new Error(
+        '[volt] this history did not record the document it was handed, so what it recorded no longer applies — ' +
+          'every transaction that is applied has to be recorded',
+      );
+    }
+
     const tr = state.tr();
     for (const step of event.steps) {
       const result = tr.step(step);
@@ -226,7 +259,11 @@ export class EditorHistory {
     return {
       steps: tr.invert(tr.startDoc),
       selection: tr.selectionBefore,
-      range: tr.changedRange,
+      // Only a transaction of nothing but replacements leaves a range to carry
+      // on typing from. `changedRange` takes in the text a mark step rewrote as
+      // well, which is a range to redraw: a unit holding it would be joined by
+      // a keystroke anywhere in the marked text, beside nothing that was typed.
+      range: tr.steps.every((step) => step instanceof ReplaceStep) ? tr.changedRange : null,
       time: at,
     };
   }
@@ -237,7 +274,9 @@ export class EditorHistory {
    * A transaction that replaced nothing in the starting document's coordinates
    * — a mark toggled across a range, or a transaction whose first step was not
    * a replacement — has no range to compare, and takes a unit of its own rather
-   * than being merged on a guess.
+   * than being merged on a guess. In the other direction `eventFor` gives a
+   * unit no range once any step in it was not a replacement, so nothing typed
+   * after a marking-up joins it, wherever in the transaction the mark was.
    */
   private groupsWith(open: HistoryEvent, tr: EditorTransaction, at: number): boolean {
     if (at > open.time + this.newGroupDelay) return false;

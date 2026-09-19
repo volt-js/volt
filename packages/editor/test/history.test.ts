@@ -71,6 +71,12 @@ function session(document: Node, anchor?: number, options: HistoryOptions = {}) 
       write(tr);
       this.apply(tr);
     },
+    /** An edit the history is never told about — the host breaking the rule. */
+    editUnseen(write: (tr: EditorTransaction) => void): void {
+      const tr = state.tr();
+      write(tr);
+      state = state.apply(tr);
+    },
     undo(): boolean {
       const tr = history.undo(state);
       if (tr) this.apply(tr);
@@ -199,6 +205,70 @@ describe('grouping adjacent typing', () => {
     expect(editor.state.doc.child(0).child(0).marks).toHaveLength(0);
     // Only the mark came off: the keystroke under it is a unit of its own.
     expect(editor.text).toBe('Xabcdef');
+  });
+
+  it('does not let the typing after a marking-up join it', () => {
+    // The forwards half of the rule above: the mark is its own unit, and a
+    // keystroke right at its end, inside the delay, is another.
+    const editor = session(doc(p(t('abcdef'))), 4);
+
+    editor.at(0);
+    editor.edit((tr) => void tr.addMark(1, 4, s.mark('em')));
+    editor.at(1);
+    editor.edit((tr) => void tr.insertText(4, 'X'));
+
+    expect(editor.history.undoDepth).toBe(2);
+    editor.undo();
+    expect(editor.text).toBe('abcdef');
+    expect(editor.state.doc.child(0).child(0).marks).toHaveLength(1);
+  });
+
+  it('does not take the text a transaction marked for somewhere it typed', () => {
+    // The transaction types at one end of the paragraph and marks text at the
+    // other, so the range it has for a redraw runs from the one to the other.
+    // A keystroke between the two is beside neither, and is its own unit.
+    const editor = session(doc(p(t('abcdefghijklmnop'))), 1);
+
+    editor.at(0);
+    editor.edit((tr) => {
+      tr.insertText(1, 'X');
+      tr.addMark(10, 14, s.mark('strong'));
+    });
+    editor.at(10);
+    editor.edit((tr) => void tr.insertText(7, 'Y'));
+
+    expect(editor.history.undoDepth).toBe(2);
+    editor.undo();
+    expect(String(editor.state.doc)).toBe('doc(paragraph("Xabcdefgh", strong("ijkl"), "mnop"))');
+  });
+
+  it('lets a transaction that also marked text join the typing it carried on', () => {
+    // The other direction of the rule above. What closes a unit to joiners is
+    // a mark step anywhere in it; what stops a transaction joining one is a
+    // first step that was not a replacement, and this one's first step was.
+    const editor = session(doc(p(t('abcdefghijklmnop'))), 1);
+
+    editor.at(0);
+    editor.edit((tr) => void tr.insertText(1, 'X'));
+    editor.at(10);
+    editor.edit((tr) => {
+      tr.insertText(2, 'Y');
+      tr.addMark(10, 14, s.mark('strong'));
+    });
+
+    expect(editor.history.undoDepth).toBe(1);
+  });
+
+  it('undoes bold laid over partly bold text back to what was bold before', () => {
+    const strong = s.mark('strong');
+    const editor = session(doc(p(t('ab'), s.text('cd', [strong]), t('ef'))), 1);
+
+    editor.at(0);
+    editor.edit((tr) => void tr.addMark(1, 7, strong));
+    expect(String(editor.state.doc)).toBe('doc(paragraph(strong("abcdef")))');
+
+    editor.undo();
+    expect(String(editor.state.doc)).toBe('doc(paragraph("ab", strong("cd"), "ef"))');
   });
 
   it('forgets the oldest unit once the stack is full', () => {
@@ -457,6 +527,50 @@ describe('the stack itself', () => {
 
     const elsewhere = EditorState.create(doc(code(t('ab'))));
     expect(() => editor.history.undo(elsewhere)).toThrow(/no longer applies/);
+  });
+
+  it('refuses to take anything back once the document has changed without it', () => {
+    // The recorded undo is "delete what was typed at 3". Two characters typed
+    // in front of it that the history never saw move that text to 5, and
+    // taking back position 3 would delete the "a" instead, without complaint.
+    const editor = session(doc(p(t('abcd'))), 3);
+    editor.at(0);
+    editor.edit((tr) => void tr.insertText(3, 'Z'));
+    editor.editUnseen((tr) => void tr.insertText(1, 'XY'));
+    expect(editor.text).toBe('XYabZcd');
+
+    expect(() => editor.history.undo(editor.state)).toThrow(/no longer applies/);
+    expect(editor.text).toBe('XYabZcd');
+  });
+
+  it('says so in its own words when the change it never saw moved the text out of reach', () => {
+    // Here the recorded positions are past the end of the document the unseen
+    // deletion left — which is the same mistake, not an out-of-range position
+    // somewhere in the step layer.
+    const editor = session(doc(p(t('ab'))), 3);
+    editor.at(0);
+    editor.edit((tr) => void tr.insertText(3, 'XY'));
+    editor.editUnseen((tr) => void tr.delete(1, 5));
+
+    expect(() => editor.history.undo(editor.state)).toThrow(/no longer applies/);
+  });
+
+  it('starts afresh from the first change it records after one it never saw', () => {
+    // What it held was written against a document before the unseen change,
+    // and with no rebase to move it across that change it could only take back
+    // the wrong text. The edit recorded afterwards is still undoable.
+    const editor = session(doc(p(t('abcd'))), 3);
+    editor.at(0);
+    editor.edit((tr) => void tr.insertText(3, 'Z'));
+    editor.editUnseen((tr) => void tr.insertText(1, 'XY'));
+    editor.at(1000);
+    editor.edit((tr) => void tr.insertText(8, '!'));
+
+    expect(editor.history.undoDepth).toBe(1);
+    expect(editor.undo()).toBe(true);
+    expect(editor.text).toBe('XYabZcd');
+    expect(editor.undo()).toBe(false);
+    expect(editor.text).toBe('XYabZcd');
   });
 
   it('ignores a transaction that did nothing at all', () => {

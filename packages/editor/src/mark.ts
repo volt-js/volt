@@ -114,13 +114,35 @@ export class Mark {
     return a.every((mark, i) => mark.eq(b[i]!));
   }
 
-  /** Normalise the several things a caller may hand us as "the marks here". */
+  /**
+   * Normalise the several things a caller may hand us as "the marks here".
+   *
+   * The set is built the way `addToSet` builds one, so it comes out sorted and
+   * held to `excludes`. A set handed over whole is refused where adding its
+   * marks one by one would have dropped or refused one of them — code with
+   * emphasis, a link to two places — since that is a mistake in whatever built
+   * it, and taken as given it would put text in a document that no edit could
+   * have produced. The same mark twice is the mark once.
+   */
   static setFrom(marks: Mark | readonly Mark[] | null | undefined): readonly Mark[] {
     if (!marks) return Mark.none;
     if (marks instanceof Mark) return [marks];
     if (marks.length === 0) return Mark.none;
-    const sorted = marks.slice();
-    sorted.sort((a, b) => a.type.rank - b.type.rank);
-    return sorted;
+
+    let set = Mark.none;
+    for (const mark of marks) {
+      if (mark.isInSet(set)) continue;
+      const next = mark.addToSet(set);
+      if (next.length !== set.length + 1) {
+        const other = set.find((held) => mark.type.excludes(held.type) || held.type.excludes(mark.type))!;
+        throw new RangeError(
+          other.type === mark.type
+            ? `No node can carry two ${mark.type.name} marks`
+            : `No node can carry both ${other.type.name} and ${mark.type.name}, since one excludes the other`,
+        );
+      }
+      set = next;
+    }
+    return set;
   }
 }

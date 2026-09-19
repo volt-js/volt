@@ -89,7 +89,7 @@ export {
   EditorView,
   basicMarkRenderers,
   basicNodeRenderers,
-  type DOMPoint,
+  type DOMBoundaryPoint,
   type EditorRenderers,
   type EditorViewOptions,
   type MarkRenderer,
@@ -97,4 +97,5 @@ export {
   type NodeRendering,
 } from './view.js';
 
-export const VERSION = '0.1.0';
+/** Must match the `version` field of this package's `package.json`; a test asserts it. */
+export const VERSION = '0.1.0-alpha.1';

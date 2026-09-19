@@ -13,15 +13,13 @@ selection across every change, the commands typing is made of, `beforeinput`
 translated into those commands, an undo history, and a view that renders a
 document, maps positions across the DOM boundary in both directions and keeps
 the two selections in step. Typing, backspace, delete, return and paste as
-plain text work, and so does undo once a host binds it to a key. It also has
-faults, recorded below where they bite: composed text shown twice in an empty
-paragraph, and mark changes that neither undo exactly nor always redraw.
+plain text work, and so does undo once a host binds it to a key.
 
 What does not exist yet is most of what makes it a product: no formatting
 commands, no keymap, no rich clipboard, no DOM parser, no serialisation, no node
 selection, and no edit that crosses a block boundary. [What an editor still
 needs](#what-an-editor-still-needs) is the full list. The package is
-`0.1.0-alpha.1` — its exported `VERSION` still says `'0.1.0'` — and its view is
+`0.1.0-alpha.1`, which is what its exported `VERSION` says, and its view is
 tested against happy-dom with events built by hand: nothing in its suite runs
 in a real browser.
 
@@ -56,7 +54,7 @@ new EditorView(place: HTMLElement, options: EditorViewOptions)
 | `state` | The `EditorState` to show. Required |
 | `renderers` | `{ nodes?, marks? }`, merged over the starter renderers. See [rendering](#rendering) |
 | `dispatchTransaction` | `(tr, view) => void`. The default applies the transaction and redraws |
-| `editable` | Default `true`. `false` sets `contenteditable="false"`: the view still renders and maps positions, and still reads a selection made in it |
+| `editable` | Default `true`. `false` sets `contenteditable="false"` and `aria-readonly="true"`: the view still renders and maps positions, and still reads a selection made in it |
 
 | Member | Description |
 |---|---|
@@ -67,24 +65,21 @@ new EditorView(place: HTMLElement, options: EditorViewOptions)
 | `update(state, tr?)` | Show a new state |
 | `focus()` | Focus `dom` and put the caret where the model says |
 | `posAtDOM(node, offset)` | The document position a DOM point names, or `null` |
-| `domAtPos(pos)` | The DOM point a position names, as a `DOMPoint` — `{ node, offset }` — or `null` |
+| `domAtPos(pos)` | The DOM point a position names, as a `DOMBoundaryPoint` — `{ node, offset }` — or `null` |
 | `destroy()` | Remove the listeners and take `dom` out of the page |
 
 The view appends its element to `place` rather than taking `place` over, and
 marks it `contenteditable`, `role="textbox"`, `aria-multiline="true"` and the
-class `volt-editor`. With the starter renderers that element is a `div`. The
-exported `DOMPoint` type has the same name as the DOM's own geometry
-`DOMPoint`, so importing it hides that one in the importing file — alias it if
-both are needed.
+class `volt-editor`. With the starter renderers that element is a `div`.
 
 `editable` is read once. There is no way to switch a view between editable and
 read-only after it is built, and `update` takes a state, not new options — a
-host that needs either builds a second view. A read-only view is only
-`contenteditable="false"`: it keeps `role="textbox"` with no `aria-readonly`,
-so a screen reader announces a text box that refuses input, and its input
-listener stays attached — a browser sends a non-editable element no
-`beforeinput`, but a selection made in it still arrives as a transaction.
-Nothing in the suite builds one.
+host that needs either builds a second view. A read-only view is
+`contenteditable="false"` and keeps `role="textbox"`, with
+`aria-readonly="true"` beside it so a screen reader announces a text box that
+cannot be typed into rather than one that silently refuses. Its input listener
+stays attached — a browser sends a non-editable element no `beforeinput`, but a
+selection made in it still arrives as a transaction.
 
 ## Owning the state
 
@@ -112,9 +107,8 @@ moved, and without one the whole document is drawn again. A transaction that did
 not produce the state being shown — one from a different starting document —
 gets the full redraw too, rather than a range that means nothing here. The same
 full redraw is how a host loads a different document into an existing view:
-`view.update(EditorState.create(next))`. The range counts replacements only,
-which has a cost and a fault — see [what an update
-redraws](#what-an-update-redraws).
+`view.update(EditorState.create(next))`. [What an update
+redraws](#what-an-update-redraws) says how the range is used.
 
 Three consequences of the view not owning its state:
 
@@ -143,7 +137,7 @@ interface HistoryOptions {
 | Member | Description |
 |---|---|
 | `record(tr)` | Take note of a transaction that has been applied — every one, undo's own included |
-| `undo(state)` | A transaction taking back the latest unit, or `null`. Throws if the recorded steps no longer apply |
+| `undo(state)` | A transaction taking back the latest unit, or `null`. Throws if `state` does not hold the document this history last recorded |
 | `redo(state)` | A transaction putting back the latest undone unit, or `null`. Throws likewise |
 | `undoDepth`, `redoDepth` | How many of each are available |
 | `clear()` | Forget everything, in both directions |
@@ -168,14 +162,22 @@ ends the unit, so two runs of typing in different places are two undos. Return,
 a paste and a finished composition each close the unit before them and refuse
 to be joined by what follows. A transaction that replaced nothing — a mark
 added across a range — takes a unit of its own rather than being merged on a
-guess, and nothing typed after it joins it either. A transaction whose first
-step is a mark step never joins the unit before it, whatever it does
-afterwards, because only a first step is in coordinates the history can
-compare.
+guess, and nothing typed after it joins it either.
 
-Undoing a mark change is not exact. A mark step's inverse is the opposite step
-across the whole range, so undoing bold laid over partly bold text leaves none
-of it bold — see [adding and removing marks](#adding-and-removing-marks).
+A mark step is no place to carry on typing from, and the two directions rule it
+out differently. A transaction joins the unit before it only when its own first
+step was a replacement, since only a first step is in coordinates the history
+can compare. A unit takes joiners only when every step it holds was one, since
+the range it carries forward covers the text its mark steps rewrote as well,
+and that is a range to redraw rather than a place typing left off. So a
+transaction that types at one end of a paragraph and marks text at the other
+still joins typing beside where it typed, and nothing joins it afterwards — a
+keystroke between its two ends is a unit of its own.
+
+Undoing a mark change gives back the marks that were there. Bold laid over
+partly bold text is recorded as steps over the text that was not bold, so
+undoing it leaves the rest as it was — see [adding and removing
+marks](#adding-and-removing-marks).
 
 The stacks move only in `record`. A transaction `undo` handed out that the
 caller then did not apply changes nothing, and an undo cannot be recorded as a
@@ -183,11 +185,15 @@ fresh edit and empty the redo stack it was meant to fill.
 
 **Every applied transaction has to be recorded.** The recorded steps are
 applied at the positions they were written at, not mapped through anything that
-happened since. A change the history never saw moves the text under them, and
-the next undo then either throws — out of range, or refused by the schema — or,
-when the positions still happen to be valid, takes back the wrong characters
-without complaint. It does not compare the state it is handed with the last
-document it recorded, so the rule is the caller's to keep.
+happened since, so they are right for the document the last recorded
+transaction produced and for no other. The history keeps that document and
+holds the caller to it. `undo` and `redo` throw, saying that what was recorded
+no longer applies, when the state they are handed holds a different document —
+compared with `eq`, so a rebuilt copy of the same document passes — rather than
+take back whatever now sits at the recorded positions. And `record`, handed a
+transaction that starts from some other document, forgets both stacks and
+starts again from that transaction, which is also what happens when a host
+loads a different document into the view and carries on recording.
 
 **Nothing binds it to a key.** The `historyUndo` and `historyRedo` input types
 are cancelled like any other the input layer has no command for, because which
@@ -279,16 +285,17 @@ The model is behind the DOM for the length of a composition, on purpose. While
 it runs, the view neither writes the selection nor reads it back, since moving
 it abandons the composition.
 
-**The view does not yet remove what the input method wrote.** When the
-composition ends it redraws the nodes it rendered, and a node the input method
-created on its own is left where it is. Composing into an empty paragraph, where
-there is no text node to write into and the input method has to make one, leaves
-the composed text on screen twice while the model holds it once. On a keyboard
-that composes every word, as many phone keyboards do, that is the first word
-typed into any empty paragraph. A composition that ends with no text dispatches
-nothing and so redraws nothing: whatever the input method did to the page on
-the way stays there, with the model unaware of it. Composition has only been
-exercised with hand-built events, never with a real input method.
+**When a composition ends, the view takes back what the input method wrote.**
+Once the model has caught up, the node around the selection has its content
+emptied and drawn again from the model, so a text node the input method made
+for itself — in an empty paragraph there is none to write into, and it has to —
+does not stay beside the view's rendering of the same text. That happens for a
+composition that ends with no text as well, where nothing is dispatched and
+nothing else would redraw what was left on the page. The blocks around that node
+keep their elements. The redraw shows the view's state, so a host that owns
+dispatch and has not yet called `update` sees the composed text go and come
+back with the update. Composition has only been exercised with hand-built
+events, never with a real input method.
 
 ```ts
 applyInputType(tr: EditorTransaction, inputType: string, event?: InputEvent): boolean
@@ -297,8 +304,9 @@ applyInputType(tr: EditorTransaction, inputType: string, event?: InputEvent): bo
 The translation without the listener, exported so it can be tested without an
 event loop and so a keymap can reach the same commands by the same names. It
 returns `false` for every type not in the table. Two in the table read their
-event: `insertFromPaste` declines without one, and `insertText` without one
-types nothing — which over a range still deletes the range.
+event, `insertText` and `insertFromPaste`, and both decline without one.
+`insertText` declines for an event carrying no text as well, since typing
+nothing over a range would delete the range.
 
 ```ts
 new EditorInput(dom: HTMLElement, host: EditorInputHost)
@@ -331,20 +339,18 @@ what makes it testable without an event.
 |---|---|
 | `insertText(tr, text)` | Replace the selection with text carrying the marks of the position |
 | `insertPlainText(tr, text)` | The same, with line breaks as paragraph breaks — what a paste is reduced to |
-| `insertParagraph(tr)` | Split the textblock at the cursor, deleting the selection first |
+| `insertParagraph(tr)` | Split the textblock at the cursor. A selection goes in the same step: the first half is what came before it, the second what came after |
 | `deleteSelection(tr)` | Delete the selection, if there is one |
 | `deleteBackward(tr)` | The selection, else the grapheme or inline leaf before the cursor, else a join with the textblock before or the removal of a block leaf there |
 | `deleteForward(tr)` | The same, forwards |
 | `deleteWordBackward(tr)` | The selection, else any whitespace before the cursor and then the word or run of punctuation before that, else what backspace would do |
 
-Every command declines rather than taking a step that changes nothing, so the
-return value is the answer to "did anything happen" — with one exception.
-`insertParagraph` over a selection deletes it first, and can then find that the
-split is illegal — in a schema whose parent cannot hold two of that block — and
-return `false` over a transaction that already holds the deletion. The input
-layer throws such a transaction away, so on screen nothing happens; a caller
-chaining commands on one transaction should check `tr.changed` as well. The
-starter schema never reaches that case.
+Every command declines rather than taking a step that changes nothing, and a
+command that declines has taken no step at all, so the return value is the
+answer to "did anything happen". `insertParagraph` over a selection is one
+replacement for that reason: deleting first and then finding the split illegal —
+in a schema whose parent cannot hold two of that block — would leave the
+deletion behind in a transaction reported as unchanged.
 
 ```ts
 import { EditorState, TextSelection, basicSchema, insertParagraph, insertText } from '@voltdev/editor';
@@ -361,9 +367,9 @@ String(state.doc); // 'doc(paragraph("Hello"), paragraph("world"))'
 
 Backspace deletes a grapheme cluster rather than a code unit, so a family emoji
 goes in one press rather than leaving half a surrogate pair on screen. A word
-delete does not: it classes characters one code unit at a time as letters,
-digits and `_` or not, so a combining accent is punctuation to it, and
-word-deleting a decomposed `café` takes only the accent. Typed text takes its
+delete walks the same clusters, classing each by the character it starts with
+as a letter, digit or `_`, or not — so the accent of a decomposed `café` and a
+letter outside the basic plane are part of their word. Typed text takes its
 marks from `ResolvedPos.marks()`, filtered by what the block allows: typing at
 the end of a bold run stays bold, typing at the end of a link does not extend
 it.
@@ -467,14 +473,12 @@ first mark outermost; two adjacent runs sharing a mark therefore get an element
 each rather than sharing one. That is a slightly redundant tree and an exactly
 predictable one.
 
-The range is built from replacement steps only; a mark step adds nothing to it.
-That has two effects. A transaction of nothing but mark steps — the
-[`makeBold`](#adding-and-removing-marks) below — has no range, so the whole
-document is drawn again. And **a transaction that mixes a replacement with a
-mark step elsewhere draws only the replacement**: the model gains the mark,
-the screen does not show it, and the block keeps its stale rendering until
-something rebuilds it. Until the range counts mark steps, keep mark steps in a
-transaction of their own. Nothing the package itself dispatches mixes the two.
+The range covers what every replacement wrote and the text every mark step
+rewrote. A transaction of nothing but mark steps — the
+[`makeBold`](#adding-and-removing-marks) below — redraws the text it marked and
+leaves the other blocks the elements they were, and a transaction that mixes a
+replacement with a mark somewhere else redraws from the first of them to the
+last, the blocks in between included.
 
 There are no decorations and no node views. A renderer is called when a node is
 first drawn and again whenever the node is rebuilt, and there is no hook for
@@ -594,10 +598,11 @@ saved document.
 | `excludes(other)` | Whether it cannot share text with `other` |
 | `isInSet(set)` | The mark of this type in a set, or `null` |
 
-`contentMatch`, `markSet` and `excluded` are writable fields rather than
-getters, because the constructor can only fill them in once every type exists.
-Nothing stops a caller assigning to them afterwards, and doing so changes the
-rules for every document already built from the schema.
+`contentMatch`, `markSet` and `excluded` are fields the `Schema` constructor
+fills in, because what they refer to can only be resolved once every type
+exists. They are `readonly` to everything else, and every type is frozen before
+the constructor returns, so an assignment afterwards throws a `TypeError`
+rather than changing the rules under the documents already built.
 
 `createAndFill` is the other half of the same idea. Rather than refusing a list
 item that holds nothing, it asks the content expression what would make the
@@ -627,7 +632,7 @@ the package outside the schema calls them yet.
 | `next` | The types that may come next, each with the state it leads to |
 | `matchType(type)`, `matchFragment(fragment, start?, end?)` | The state after one type or a run of children, or `null` if they are illegal here |
 | `defaultType` | A type that could be created here with no arguments, or `null` |
-| `fillBefore(after, toEnd?, startIndex?)` | A run of default nodes that lets `after` follow legally — ending the content if `toEnd` — or `null` |
+| `fillBefore(after, toEnd?, startIndex?)` | The shortest run of default nodes that lets `after` follow legally — ending the content if `toEnd` — or `null` |
 | `matchFragmentOrFill(fragment)` | The state after a run of children, with filling allowed before them |
 | `ContentMatch.empty` | The state of a type that holds nothing — a leaf |
 
@@ -635,29 +640,28 @@ the package outside the schema calls them yet.
 children. It is recomputed on every call rather than cached, and throws if the
 node's own content is illegal, which a checked node never is.
 
-The filler is the first run the search finds, not the shortest: it goes deep
-along the first alternative before trying the next, so for `'(a b c) | d'`
-`createAndFill` builds `a, b, c` where `d` alone would do. In the starter schema
-the first alternative is always the shortest — `block` begins with `paragraph` —
-so it never shows there; a schema whose alternatives differ in length should
-put the short one first, in the expression or, for a group, in declaration
-order.
+The filler is the shortest run that works: the search goes breadth-first over
+the automaton, so for `'(a b c) | d'` `createAndFill` builds `d`. Among runs of
+the same length it takes the one whose types come first — in the expression or,
+for a group, in declaration order — which is why an empty `block+` is filled
+with a `paragraph`.
 
 ### Where the check does not reach
 
 The refusal is enforced by `Schema.node`, `NodeType.create`, `createAndFill`
-and `withAttrs`, and by `ReplaceStep`. These routes around it are public:
+and `withAttrs`, and by every step, which checks the node it rebuilds before it
+returns a document. Marks are held to `excludes` wherever a set is made:
+`Schema.text` and the node constructors above build theirs with
+`Mark.setFrom`, which throws a `RangeError` for text marked both `code` and
+`em`, or carrying two links, and a mark step adds with `Mark.addToSet`.
+`Schema.text` cannot know the parent its text is going into, so whether that
+parent allows the marks is checked when the text is put in a node.
 
-- `new Node(...)`, `node.copy(content)`, `node.mark(marks)` and
-  `node.withText(text)` build a node without looking at the schema, and
-  `new Mark(type, attrs)` builds a mark without checking its attributes. They
-  are the unchecked paths a step uses internally; build documents with
-  `Schema.node` and marks with `Schema.mark`.
-- `Schema.text` sorts the marks it is given but does not apply `excludes`, and
-  nothing downstream does either, so text marked both `code` and `em`, or with
-  two links, is accepted. `excludes` is enforced only when a mark is added to a
-  set with `Mark.addToSet`, which is what a mark step uses.
-- A mark step does not check the parent's `marks` — see [marks](#adding-and-removing-marks).
+One route around the check is public. `new Node(...)`, `node.copy(content)`,
+`node.mark(marks)` and `node.withText(text)` build a node without looking at
+the schema, and `new Mark(type, attrs)` builds a mark without checking its
+attributes. They are the unchecked paths a step uses internally; build
+documents with `Schema.node` and marks with `Schema.mark`.
 
 `withAttrs(attrs)` is checked, and replaces the attribute set rather than merging
 into it: an attribute left out goes back to its default.
@@ -752,7 +756,7 @@ sets with the same marks are the same array in the same order.
 | `eq(other)` | Same type and shallowly equal attributes |
 | `addToSet(set)` | A new sorted set with this mark in, dropping what it excludes — by default another mark of its own type — or the set unchanged if something in it excludes this one |
 | `removeFromSet(set)`, `isInSet(set)` | By value, not by identity |
-| `Mark.sameSet(a, b)`, `Mark.setFrom(marks)`, `Mark.none` | Comparing sets, sorting a mark or array into one, and the empty set |
+| `Mark.sameSet(a, b)`, `Mark.setFrom(marks)`, `Mark.none` | Comparing sets; making one from a mark or an array — sorted, the same mark kept once, and a `RangeError` for two that exclude each other; and the empty set |
 
 `MarkType.isInSet(set)` finds a mark by type rather than value, which is how a
 link's `href` is read back.
@@ -820,8 +824,9 @@ indirection buys three things a mutating model cannot have afterwards: undo
 without snapshots, since a step inverts itself; positions that survive a change,
 since every step produces a map; and a step that can be moved onto a document it
 was not written against, which is what a collaborative rebase consists of. A
-replacement inverts itself exactly; a mark step, today, only approximately — see
-[adding and removing marks](#adding-and-removing-marks).
+replacement inverts itself exactly, and so does a mark step, because one whose
+opposite would not give the text back is refused — see [adding and removing
+marks](#adding-and-removing-marks).
 
 Steps are taken through a `Transaction` — `new Transaction(doc)` works over a
 bare document, with no selection — and in an editor that is an
@@ -848,7 +853,7 @@ String(state.apply(tr).doc); // 'doc(paragraph(strong("Hello"), " world"))'
 | `step(step)` | Take a step, or say why not |
 | `replace(from, to, slice?)`, `delete(from, to)` | Replace a range |
 | `insertText(pos, text, marks?)` | Insert text. Empty text succeeds and takes no step |
-| `addMark(from, to, mark)`, `removeMark(from, to, mark)` | Mark a range |
+| `addMark(from, to, mark)`, `removeMark(from, to, mark)` | Mark a range, as one step for each run of text that changes — all of them or none |
 | `map(pos, assoc?)` | Where a position in the starting document is now |
 | `invert(startDoc)` | The steps that undo it, newest first. Replays every step from `startDoc` to find what each one removed |
 
@@ -857,7 +862,7 @@ Every method that takes a step returns a `StepResult`: `{ ok: true, doc }`, or
 transaction exactly as it was, so a caller can try something else, and every
 caller has to look. A position outside the document is not a refusal — it
 throws a `RangeError` from `resolve`, like any other out-of-range position, and
-so does a `ReplaceStep` whose `from` is after its `to`.
+so does any step, or `addMark` or `removeMark`, whose `from` is after its `to`.
 
 | Step | Description |
 |---|---|
@@ -888,47 +893,48 @@ two blocks cannot be deleted; a paste cannot keep its structure.
 
 A mark step is refused across parents too: bolding a selection that spans two
 paragraphs is one step per paragraph, each a range inside one textblock. Past
-that, a mark step checks less than a replacement does, and each gap is the
-caller's to cover:
+that, a mark step is held to what a replacement is, and to one thing more:
 
-- **It does not check what the parent allows.** `addMark` of `strong` inside a
-  `code_block` succeeds and produces a code block its own schema would refuse
-  at construction.
-- **It does not check the range is the right way round.** `addMark(4, 2, …)` is
-  not refused: it succeeds and writes the text between the two positions twice.
-  A selection's `from` and `to` are always ordered; a range worked out by hand
-  has to be.
-- **It is not refused for doing nothing.** A mark over a range with no text in
-  it, or over text that already has it, is still a step, so `tr.changed` is
-  `true` and a history records a unit that undoes nothing.
-- **Its inverse is not exact.** `AddMarkStep` inverts to a `RemoveMarkStep`
-  over the same range and the other way about, without remembering what was
-  there. Undoing bold laid over partly bold text leaves none of it bold;
-  undoing a link laid over another link leaves no link; undoing `code` over
-  emphasised text loses the emphasis `code` threw off. Undoing the removal of a
-  mark from partly marked text marks all of it.
+- **It checks what the parent allows.** `strong` inside a `code_block` is
+  refused, naming the block, rather than producing a code block its own schema
+  would refuse at construction.
+- **A range the wrong way round throws.** `new AddMarkStep(4, 2, …)` and
+  `addMark(4, 2, …)` throw a `RangeError`, as a replacement does.
+- **A step that would change nothing is refused.** A mark over a range with no
+  text in it, or over text that already has it, takes no step, so `tr.changed`
+  stays `false` and a history records nothing that undoes nothing.
+- **A step whose opposite would not give the text back is refused.**
+  `AddMarkStep` inverts to a `RemoveMarkStep` over the same range and the other
+  way about, so a step is only taken where that is an undo: an addition over
+  text none of which has the mark or one the mark throws off, a removal over
+  text all of which has it.
 
-Until the step checks, check first:
+`addMark` and `removeMark` are what make that last rule livable. They split the
+range into steps that each pass it: `addMark` first takes off the marks the new
+one excludes, one step for each run of text carrying one, then adds the mark to
+each run that lacks it, and leaves alone text that has it already or carries a
+mark that refuses it; `removeMark` takes one step for each run that carries the
+mark. The steps are tried first and taken only if every one applies, so a
+refusal leaves the transaction as it was. Undoing bold laid over partly bold
+text leaves what was bold; undoing a link laid over another gives the first
+back; undoing `code` gives back the emphasis it threw off. Build the steps by
+hand only for a range already known to be one run.
 
 ```ts
-import { EditorView, basicSchema, resolve } from '@voltdev/editor';
+import { EditorView, basicSchema } from '@voltdev/editor';
 
 function makeBold(view: EditorView): boolean {
-  const { from, to, empty } = view.state.selection;
-  const strong = basicSchema.marks['strong']!;
-  if (empty || !resolve(view.state.doc, from).parent.type.allowsMarkType(strong)) return false;
-
+  const { from, to } = view.state.selection;
   const tr = view.state.tr();
-  if (!tr.addMark(from, to, strong.create()).ok) return false; // the selection crosses blocks
+  // Refused for a selection that crosses blocks, a block that does not allow
+  // bold, and a range with nothing left to make bold — an empty one included.
+  if (!tr.addMark(from, to, basicSchema.mark('strong')).ok) return false;
   view.dispatch(tr);
   return true;
 }
 ```
 
-The transaction holds nothing but the mark step, which keeps it clear of the
-[redraw fault](#what-an-update-redraws) and costs a full redraw. It is not a
-toggle — it only adds — and undoing it over a selection that was already partly
-bold takes that bold away too.
+It is not a toggle — it only adds.
 
 ### Position maps
 
@@ -943,6 +949,10 @@ StepMap.replace(start: number, oldSize: number, newSize: number): StepMap
 | `invert()` | The map that undoes this one |
 | `StepMap.empty` | The map of a step that moves nothing — every mark step's |
 
+Every step here replaces one range, so `StepMap.replace` is all the package
+calls. `new StepMap(ranges)` takes several, each `{ start, oldSize, newSize }`
+in order, with every `start` counted in the document the map applies to.
+
 `Assoc` is `-1 | 1`, and it decides two cases, the two where a position has no
 single answer. A position exactly where something was inserted into nothing
 stays before the insertion with `-1` and moves after it with `1`, the default —
@@ -955,7 +965,13 @@ a replacement stays on that edge whatever `assoc` says.
 other. Carrying a position through "a change, then its own undo" must give it
 back unchanged, and it does not if the two are treated as unrelated — it
 collapses to an edge on the way through the first and never recovers. Recording
-the pair lets a position skip both.
+the pair lets a position the first took out be found again in what the second
+put back, the same distance in. An edge of what the first map removed counts as
+taken out when `assoc` leans across it: the deletion leaves such a position
+where it was, and the second map then inserts at exactly that point and would
+otherwise carry it past everything it put back. The second map was written after
+everything between the two, so where it puts the content back already accounts
+for them, and a position neither map removed goes through every map as usual.
 
 | `Mapping` member | Description |
 |---|---|
@@ -967,17 +983,11 @@ the pair lets a position skip both.
 
 The mirror bookkeeping and `Step.map` are there for a rebase, and nothing in the
 package uses either yet: a transaction appends its maps with no mirrors, and the
-history applies its steps where they were recorded. Both have a fault a rebase
-would meet at once:
-
-- `ReplaceStep.map` maps an insertion at the exact point another insertion
-  landed to `null`, so of two people typing at the same place, one person's
-  text is dropped.
-- `Mapping.map` skips from a map straight past its mirror, and every map
-  recorded between the two is skipped with it. That is right only when the pair
-  is adjacent, which is the only case the tests cover; a position carried
-  through "delete, someone else's insertion, undo the delete" comes out as if
-  the insertion had never happened.
+history applies its steps where they were recorded. `ReplaceStep.map` returns
+`null` only for a deletion whose range is already gone. An insertion at the
+exact point someone else inserted is kept and goes after their text, so of two
+people typing at the same place neither loses anything, and a replacement whose
+range closed up becomes an insertion of its slice.
 
 ## State and selection
 
@@ -995,10 +1005,10 @@ A state is immutable. Applying a transaction returns a new one, so anyone
 holding the old state still holds a consistent pair — which is what a history
 entry holds. A transaction that changed nothing gives back the same state.
 `apply` throws for a transaction started from a different document, because its
-positions mean nothing here. `create` does not make the same check of the
-selection it is handed: it is kept as given, so a selection made for another
-document can point outside this one, and the first command to resolve it
-throws.
+positions mean nothing here. `create` holds the selection it is handed to the
+same rule as far as two numbers allow: one that `TextSelection.create` would
+not have made for this document — past its end, or on a block boundary where no
+cursor belongs — was made for another, and throws a `RangeError`.
 
 **A selection is mapped, never recomputed.** Asking the DOM where the caret is,
 or re-deriving it from the new document, is how an editor loses the cursor when
@@ -1031,7 +1041,7 @@ and gets a clamped position rather than an exception.
 | `setSelection(sel)` | Replace the mapped selection. Later steps map the new one on |
 | `closeHistory()`, `historyClosed` | Refuse to be grouped with the change before, or joined by the one after |
 | `firstReplacedRange` | The range the first step replaced, in the starting document's coordinates — `null` unless that first step was a replacement |
-| `changedRange` | Everything the replacement steps wrote, in the produced document's coordinates — mark steps are not counted, and it is `null` without a replacement |
+| `changedRange` | Everything the steps wrote, in the produced document's coordinates: what each replacement put in and the text each mark step rewrote. `null` for a transaction with no steps |
 
 Both ranges are a `ChangedRange`, `{ from, to }`. `new EditorTransaction(state)`
 is what `state.tr()` returns.
@@ -1101,17 +1111,13 @@ front of a writer is large. In roughly the order a product meets them:
 - **Block commands.** Turning a paragraph into a heading, wrapping in a list or a
   blockquote, starting a new list item, lifting out of one, a line break inside
   a block — none exist.
-- **Mark steps that hold up.** An inverse that remembers what was there before,
-  a check of what the parent allows, a refusal for a reversed range, and a
-  redraw range that counts them.
 - **The rest of `beforeinput`.** Line breaks, cut, drag and drop, spelling
   replacements, forward and line-wise deletion are all cancelled today, and no
   event's target ranges are read.
-- **Input-method composition, properly.** The view needs to take back the DOM
-  an input method wrote before it redraws, and composition needs testing in real
-  browsers.
-- **A read-only mode.** One that can be switched on a live view and says so to
-  a screen reader.
+- **Input-method composition, proven.** It has only met hand-built events, and
+  needs testing in real browsers with real input methods.
+- **A read-only mode that can be switched.** `editable` is fixed when the view
+  is built.
 - **A rich clipboard and a DOM parser.** A paste is flattened to text, and the
   view renders a document but cannot read one back out of HTML, so there is no
   loading from markup either. Both need slices with open ends.
@@ -1121,6 +1127,6 @@ front of a writer is large. In roughly the order a product meets them:
   them can be added convincingly before there is something to decorate.
 - **Collaboration.** The model can accept it: documents are immutable, steps
   invert and map, and `Mapping` records mirrors. What is missing is a rebase
-  function, a transport and an authority to order changes — and a correct
-  `ReplaceStep.map` and `Mapping.map` — rather than a different document model.
+  function, a transport and an authority to order changes, rather than a
+  different document model.
 - **A component**, with the state as a signal, so a toolbar can be a template.

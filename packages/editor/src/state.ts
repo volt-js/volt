@@ -20,14 +20,14 @@
  * commands.ts explains it where it happens.
  *
  * Only text selections exist here. A node selection — the whole image
- * highlighted as one object — is a view-level affordance, and there is no view
- * yet; adding the class now would mean a second selection type that nothing
- * constructs and no command handles.
+ * highlighted as one object — is a view-level affordance the view does not
+ * offer yet; adding the class before it does would mean a second selection
+ * type that nothing constructs and no command handles.
  */
 
 import type { Node } from './node.js';
 import { resolve } from './position.js';
-import { ReplaceStep, Transaction } from './step.js';
+import { AddMarkStep, RemoveMarkStep, ReplaceStep, Transaction } from './step.js';
 import type { Assoc, Mapping, Step, StepResult } from './step.js';
 
 /** Whether a cursor can sit at `pos` — that is, whether it is in inline content. */
@@ -140,7 +140,9 @@ export interface ChangedRange {
  * transaction did; `changedRange` is in the coordinates of the document it
  * *produced*, which is the space the next transaction will be compared in.
  * history.ts uses one for the adjacency test and the other to move the group's
- * range forward.
+ * range forward, and view.ts redraws from the second — which is why it covers
+ * the text a mark step rewrote as well as what was replaced, and why history.ts
+ * takes it only from a transaction whose every step was a replacement.
  */
 export class EditorTransaction extends Transaction {
   /** The document this began from — what `EditorState.apply` checks itself against. */
@@ -203,14 +205,21 @@ export class EditorTransaction extends Transaction {
 
     this.selectionNow = this.selectionNow.map(this.doc, this.mapping, at);
 
-    if (step instanceof ReplaceStep) {
-      // Only a step taken first is in the starting document's coordinates. A
-      // transaction whose replacement is not its first step simply declines to
-      // be grouped, which costs one extra undo unit and never merges two
-      // changes that were not adjacent.
-      if (at === 0) this.first = { from: step.from, to: step.to };
+    // Only a step taken first is in the starting document's coordinates. A
+    // transaction whose replacement is not its first step simply declines to
+    // be grouped, which costs one extra undo unit and never merges two changes
+    // that were not adjacent.
+    if (at === 0 && step instanceof ReplaceStep) this.first = { from: step.from, to: step.to };
 
-      const written = { from: step.from, to: step.from + step.slice.size };
+    // A mark step replaces nothing, but it rewrites the text it covers, and a
+    // view that redraws from this range has to redraw that text too.
+    const written =
+      step instanceof ReplaceStep
+        ? { from: step.from, to: step.from + step.slice.size }
+        : step instanceof AddMarkStep || step instanceof RemoveMarkStep
+          ? { from: step.from, to: step.to }
+          : null;
+    if (written) {
       const map = step.getMap();
       this.range = this.range
         ? {
@@ -242,8 +251,22 @@ export class EditorState {
     Object.freeze(this);
   }
 
+  /**
+   * A state for `doc`, with a cursor at its start unless a selection is given.
+   *
+   * A selection is two numbers with nothing to say which document they were
+   * counted in, so one that `TextSelection.create` would not have made for
+   * this document was made for another, and is refused for the reason `apply`
+   * refuses a transaction. Kept as given, it could point past the end of this
+   * document, or sit on a block boundary where no cursor belongs, and the
+   * first command to use it would go wrong far from the mistake.
+   */
   static create(doc: Node, selection?: TextSelection): EditorState {
-    return new EditorState(doc, selection ?? TextSelection.atStart(doc));
+    if (!selection) return new EditorState(doc, TextSelection.atStart(doc));
+    if (!TextSelection.create(doc, selection.anchor, selection.head).eq(selection)) {
+      throw new RangeError(`[volt] ${selection} was made for a different document`);
+    }
+    return new EditorState(doc, selection);
   }
 
   /** A transaction starting from this state. Each call makes a new one. */

@@ -38,8 +38,9 @@
  *
  * Because the model is the source of positions, this layer never asks the DOM
  * where the selection is: it reads it from the state. Keeping the DOM selection
- * and the model selection in step is a view's job, and the view is the piece
- * that does not exist yet.
+ * and the model selection in step is the view's job — view.ts writes the one
+ * into the other and reads a selection the browser moved back as a
+ * transaction — and so is taking back the DOM a composition wrote.
  */
 
 import {
@@ -74,8 +75,8 @@ const composed = new Set(['insertCompositionText', 'deleteCompositionText', 'ins
  * The text a paste carries.
  *
  * `dataTransfer` is where a real paste puts it and `data` is null; a synthetic
- * event, and some engines' `insertReplacementText`, do the opposite. Reading
- * both is one line and removes a whole class of "works everywhere but there".
+ * event does the opposite. Reading both is one line and removes a whole class
+ * of "works everywhere but there".
  */
 function pastedText(event: InputEvent): string {
   const transferred = event.dataTransfer?.getData('text/plain');
@@ -91,8 +92,13 @@ function pastedText(event: InputEvent): string {
  */
 export function applyInputType(tr: EditorTransaction, inputType: string, event?: InputEvent): boolean {
   switch (inputType) {
-    case 'insertText':
-      return insertText(tr, event?.data ?? '');
+    case 'insertText': {
+      // The text is the event's `data`, so with no event, or one carrying
+      // none, there is nothing to type — and typing nothing over a range
+      // would delete the range.
+      const text = event?.data;
+      return text ? insertText(tr, text) : false;
+    }
     case 'insertParagraph':
       return insertParagraph(tr);
     case 'deleteContentBackward':

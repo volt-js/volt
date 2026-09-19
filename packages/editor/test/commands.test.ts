@@ -14,7 +14,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { Mark, basicSchema } from '../src/index.ts';
+import { Mark, Schema, basicSchema } from '../src/index.ts';
 import { EditorState, TextSelection } from '../src/state.ts';
 import type { EditorTransaction } from '../src/state.ts';
 import {
@@ -186,6 +186,21 @@ describe('splitting a block', () => {
     expect(insertParagraph(tr)).toBe(false);
     expect(String(tr.doc)).toBe('doc(horizontal_rule)');
   });
+
+  it('declines over a selection without deleting it, when the split is not allowed', () => {
+    // A document that holds exactly one paragraph cannot hold two. Taking the
+    // selection out first and only then finding that out would leave the
+    // deletion in a transaction the command says it did not change.
+    const single = new Schema({
+      nodes: { doc: { content: 'paragraph' }, paragraph: { content: 'text*' }, text: {} },
+    });
+    const document = single.node('doc', null, [single.node('paragraph', null, [single.text('abcd')])]);
+    const tr = EditorState.create(document, TextSelection.create(document, 2, 4)).tr();
+
+    expect(insertParagraph(tr)).toBe(false);
+    expect(tr.changed).toBe(false);
+    expect(tr.doc).toBe(document);
+  });
 });
 
 describe('deleting backwards', () => {
@@ -314,6 +329,24 @@ describe('deleting a word backwards', () => {
     const tr = at(doc(p(t('a...'))), 5);
     expect(deleteWordBackward(tr)).toBe(true);
     expect(textOf(tr.doc)).toBe('a');
+  });
+
+  it('takes a letter with a combining accent as one letter of the word', () => {
+    // A decomposed "café" ends in U+0301, which is not a letter on its own.
+    // Classed a code unit at a time it is punctuation, and the word delete
+    // takes the accent and leaves "cafe" behind.
+    const text = 'au cafe\u0301';
+    const tr = at(doc(p(t(text))), 1 + text.length);
+    expect(deleteWordBackward(tr)).toBe(true);
+    expect(textOf(tr.doc)).toBe('au ');
+  });
+
+  it('takes a letter outside the basic plane as one letter of the word', () => {
+    // 𝒜 is one letter and two code units, neither of which is a letter alone.
+    const text = 'x ab\u{1D49C}';
+    const tr = at(doc(p(t(text))), 1 + text.length);
+    expect(deleteWordBackward(tr)).toBe(true);
+    expect(textOf(tr.doc)).toBe('x ');
   });
 
   it('walks across a mark boundary, since a styled word is still one word', () => {

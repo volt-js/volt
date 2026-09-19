@@ -278,6 +278,25 @@ describe('translating an input type on its own', () => {
     expect(tr.changed).toBe(false);
   });
 
+  it('says no to typing with no event to read the text from', () => {
+    // With no text to type, typing over a range would be a deletion under
+    // another name.
+    const d = doc(p(t('abcd')));
+    const tr = EditorState.create(d, TextSelection.create(d, 2, 4)).tr();
+    expect(applyInputType(tr, 'insertText')).toBe(false);
+    expect(tr.changed).toBe(false);
+  });
+
+  it('says no to typing when the event carries no text', () => {
+    // The same deletion by the other road: an event is there, and its `data`
+    // is null.
+    const d = doc(p(t('abcd')));
+    const tr = EditorState.create(d, TextSelection.create(d, 2, 4)).tr();
+    const event = new InputEvent('beforeinput', { inputType: 'insertText', data: null });
+    expect(applyInputType(tr, 'insertText', event)).toBe(false);
+    expect(tr.changed).toBe(false);
+  });
+
   it('says no to a paste with no event to read the text from', () => {
     const state = EditorState.create(doc(p(t('abcd'))));
     const tr = state.tr();

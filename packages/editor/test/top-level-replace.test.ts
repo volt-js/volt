@@ -18,7 +18,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { Fragment, Slice, basicSchema } from '../src/index.ts';
+import { Fragment, Schema, Slice, basicSchema } from '../src/index.ts';
 import { AddMarkStep, ReplaceStep, Transaction } from '../src/step.ts';
 import type { Node } from '../src/node.ts';
 
@@ -88,10 +88,18 @@ describe('a replacement in the document itself', () => {
   });
 
   it('applies a mark step whose ends are in the document too', () => {
-    // Nothing directly in a document is text, so this rewrites nothing — but
-    // it has to come back with a document rather than throw on the way.
-    const before = doc(p(t('ab')));
-    const after = ok(new AddMarkStep(0, 4, em).apply(before));
-    expect(String(after)).toBe('doc(paragraph("ab"))');
+    // A document whose own content is text, so the mark step rewrites the
+    // document itself — the node with no position before it.
+    const flat = new Schema({ nodes: { doc: { content: 'text*' }, text: {} }, marks: { em: {} } });
+    const before = flat.node('doc', null, [flat.text('abcd')]);
+    const after = ok(new AddMarkStep(1, 3, flat.mark('em')).apply(before));
+    expect(String(after)).toBe('doc("a", em("bc"), "d")');
+  });
+
+  it('refuses, rather than throws, a mark step over blocks directly in the document', () => {
+    // Nothing directly in this document is text, so there is nothing for the
+    // mark to change — which is an answer, not an exception on the way.
+    const result = new AddMarkStep(0, 4, em).apply(doc(p(t('ab'))));
+    expect(result.ok).toBe(false);
   });
 });

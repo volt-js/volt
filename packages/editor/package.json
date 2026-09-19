@@ -21,9 +21,6 @@
   "scripts": {
     "build": "vite build && tsc -p tsconfig.build.json"
   },
-  "dependencies": {
-    "@voltdev/core": "workspace:*"
-  },
   "keywords": [
     "volt",
     "editor",

@@ -195,8 +195,13 @@ interface ViewDesc {
   trailingBreak: ChildNode | null;
 }
 
-/** A DOM point, in the shape `Range` and `Selection` take. */
-export interface DOMPoint {
+/**
+ * A DOM point, in the shape `Range` and `Selection` take.
+ *
+ * Named as the DOM standard names that pair, a boundary point. `DOMPoint` is
+ * the DOM's own geometry type, and an import of that name would hide it.
+ */
+export interface DOMBoundaryPoint {
   readonly node: Node;
   readonly offset: number;
 }
@@ -245,7 +250,10 @@ export interface EditorViewOptions {
    * can be a slave to a state it does not own.
    */
   readonly dispatchTransaction?: (tr: EditorTransaction, view: EditorView) => void;
-  /** Defaults to true. A false view renders and maps positions but is read-only. */
+  /**
+   * Defaults to true. A false view renders and maps positions but is read-only,
+   * and is marked `aria-readonly` so it is announced as one.
+   */
   readonly editable?: boolean;
 }
 
@@ -292,6 +300,9 @@ export class EditorView {
     this.dom.contentEditable = options.editable === false ? 'false' : 'true';
     this.dom.setAttribute('role', 'textbox');
     this.dom.setAttribute('aria-multiline', 'true');
+    // A text box that refuses input has to say so, or it is announced as one
+    // to type into.
+    if (options.editable === false) this.dom.setAttribute('aria-readonly', 'true');
     this.dom.classList.add('volt-editor');
     place.appendChild(this.dom);
 
@@ -301,6 +312,9 @@ export class EditorView {
       state: () => this.stateNow,
       dispatch: (tr) => this.dispatch(tr),
     });
+    // Added after the input layer's own listener, so it runs after the model
+    // has caught up with the composition.
+    this.dom.addEventListener('compositionend', this.onCompositionEnd);
     this.document.addEventListener('selectionchange', this.onSelectionChange);
     this.syncSelection();
   }
@@ -358,6 +372,7 @@ export class EditorView {
 
   destroy(): void {
     this.input.destroy();
+    this.dom.removeEventListener('compositionend', this.onCompositionEnd);
     this.document.removeEventListener('selectionchange', this.onSelectionChange);
     this.descs.clear();
     this.dom.remove();
@@ -392,7 +407,7 @@ export class EditorView {
   }
 
   /** The DOM point a document position names, or null if it is out of range. */
-  domAtPos(pos: number): DOMPoint | null {
+  domAtPos(pos: number): DOMBoundaryPoint | null {
     if (pos < 0 || pos > this.stateNow.doc.content.size) return null;
 
     let desc = this.docDesc;
@@ -502,6 +517,52 @@ export class EditorView {
     if (next.eq(this.stateNow.selection)) return;
     this.dispatch(this.stateNow.tr().setSelection(next));
   };
+
+  /**
+   * Take back the DOM an input method wrote.
+   *
+   * For the length of a composition the browser edits the page itself, and
+   * what it wrote reaches the model only as the text `compositionend` carries.
+   * By the time the model has caught up, the input method's own nodes are
+   * still on the page beside the view's rendering of the same text — in an
+   * empty paragraph, where there is no text node to write into and the input
+   * method has to make one, the composed text shows twice. A composition that
+   * ends with no text changes nothing in the model, so nothing redraws what it
+   * left behind at all.
+   *
+   * It wrote where the selection is, which the model has kept since the
+   * composition began, so the node around the selection has its content drawn
+   * again from the model, and whatever else is in it goes.
+   */
+  private readonly onCompositionEnd = (): void => {
+    const desc = this.descAround(this.stateNow.selection.from, this.stateNow.selection.to);
+    desc.contentDOM?.replaceChildren();
+    this.replaceChildren(desc, 0, desc.children.length, desc.node, 0, desc.node.childCount);
+    this.syncSelection();
+  };
+
+  /** The deepest rendered node whose content holds the whole of a range. */
+  private descAround(from: number, to: number): ViewDesc {
+    let desc = this.docDesc;
+    let start = 0;
+    for (;;) {
+      let offset = start;
+      let inner: ViewDesc | null = null;
+      for (const child of desc.children) {
+        const end = offset + child.node.nodeSize;
+        if (end > from) {
+          // Strictly inside at both ends: a range touching the child's own
+          // opening or closing token is not in its content.
+          if (child.contentDOM && from > offset && to < end) inner = child;
+          break;
+        }
+        offset = end;
+      }
+      if (!inner) return desc;
+      desc = inner;
+      start = offset + 1;
+    }
+  }
 
   /**
    * Redraw what changed.

@@ -12,11 +12,12 @@
  * and everything downstream may assume it.
  *
  * The two entry points that enforce it are `NodeType.create`, for documents a
- * caller builds by hand, and `NodeType.validContent`, which `replace` calls on
- * every node it rebuilds while applying a step. Between them there is no way
- * to obtain an invalid node: `Node.copy` bypasses the check, but it is only
- * reachable from inside a replace, whose result is checked before it is
- * returned.
+ * caller builds by hand, and `NodeType.validContent`, which every step calls
+ * on the node it rebuilds before returning a document. `Mark.setFrom` holds a
+ * node's marks to `excludes` as it is built. What goes around them is the
+ * unchecked construction steps use internally — the `Node` constructor,
+ * `node.copy`, `node.mark` and `node.withText`, and the `Mark` constructor —
+ * which are public, and which a document built by hand should not use.
  *
  * Normalisation is the other half of the same idea. Rather than rejecting a
  * list item because it holds bare text where the schema wants a paragraph,
@@ -51,13 +52,17 @@ export interface NodeSpec {
   /** Space-separated group names, usable in other types' content expressions. */
   group?: string;
   inline?: boolean;
-  /** A node with content that should nonetheless be treated as one unit. */
+  /**
+   * A node with content that should nonetheless be treated as one unit. Read
+   * by `NodeType.isAtom`, which nothing in the package consults yet.
+   */
   atom?: boolean;
   attrs?: Record<string, AttributeSpec>;
   /**
    * A node whose identity a paste should preserve — a list item or a
    * blockquote, as opposed to a paragraph, which a paste happily merges into
-   * its surroundings. Read by the replace algorithm's slice fitting.
+   * its surroundings. Recorded for a paste that keeps its structure, which
+   * needs slices with open ends; nothing reads it yet.
    */
   defining?: boolean;
 }
@@ -84,7 +89,7 @@ export interface MarkSpec {
 export interface SchemaSpec {
   nodes: Record<string, NodeSpec>;
   marks?: Record<string, MarkSpec>;
-  /** Defaults to `"doc"`, or to the first declared node type if there is none. */
+  /** Defaults to `"doc"`. The constructor throws if the type named is not declared. */
   topNode?: string;
 }
 
@@ -143,9 +148,9 @@ export class NodeType {
   readonly isText: boolean;
 
   /** Assigned once every type exists, since expressions refer to each other. */
-  contentMatch: ContentMatch = ContentMatch.empty;
+  readonly contentMatch: ContentMatch = ContentMatch.empty;
   /** `null` means every mark is allowed on this node's children. */
-  markSet: readonly MarkType[] | null = null;
+  readonly markSet: readonly MarkType[] | null = null;
 
   private readonly attrDefs: Attribute[];
 
@@ -291,7 +296,7 @@ export class MarkType {
   readonly inclusive: boolean;
 
   /** Resolved after all mark types exist, since `excludes` names them. */
-  excluded: readonly MarkType[] = [];
+  readonly excluded: readonly MarkType[] = [];
 
   private readonly attrDefs: Attribute[];
 
@@ -322,6 +327,15 @@ export class MarkType {
     return set.find((mark) => mark.type === this) ?? null;
   }
 }
+
+/**
+ * A type while its schema is still being built.
+ *
+ * What a type's content and marks refer to can only be resolved once every
+ * type exists, which is after its own constructor has returned, so the schema
+ * fills those fields in — and that is the one place they are written.
+ */
+type Unfinished<T> = { -readonly [K in keyof T]: T[K] };
 
 export class Schema {
   readonly spec: SchemaSpec;
@@ -356,16 +370,16 @@ export class Schema {
     // Content expressions and mark exclusions both refer to types by name, so
     // they can only be resolved once every type object exists.
     for (const type of Object.values(nodes)) {
-      type.contentMatch = parseContentExpression(type.spec.content ?? '', type.name, (name) =>
+      (type as Unfinished<NodeType>).contentMatch = parseContentExpression(type.spec.content ?? '', type.name, (name) =>
         this.typesMatching(name),
       );
     }
     for (const type of Object.values(nodes)) {
-      type.markSet = this.resolveMarkSet(type);
+      (type as Unfinished<NodeType>).markSet = this.resolveMarkSet(type);
     }
     for (const mark of Object.values(marks)) {
       const excludes = mark.spec.excludes;
-      mark.excluded =
+      (mark as Unfinished<MarkType>).excluded =
         excludes === undefined
           ? [mark]
           : excludes === ''
@@ -374,6 +388,11 @@ export class Schema {
               ? Object.values(marks)
               : this.marksMatching(excludes, mark.name);
     }
+
+    // Those were the last things a type is given. Every document made from
+    // here on is checked against them, so they do not change again.
+    for (const type of Object.values(nodes)) Object.freeze(type);
+    for (const mark of Object.values(marks)) Object.freeze(mark);
   }
 
   /** Node types named directly, or every member of a group of that name. */

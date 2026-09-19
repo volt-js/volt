@@ -18,8 +18,8 @@
  * So a position is a single integer, counted as a walk through the document's
  * token stream:
  *
- *   0   1 2 3 4    5     6   7 8 9 10  11
- *    <p> a b c </p>       <p> d e f </p>
+ *   0   1 2 3 4    5   6 7 8 9    10
+ *    <p> a b c </p> <p> d e f </p>
  *
  * Entering or leaving a non-leaf node costs one, each character of text costs
  * one, and a leaf node — an image, a horizontal rule — costs one for the whole
