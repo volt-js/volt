@@ -225,6 +225,16 @@ cache, which it must: a module-level cache on a server is shared by every
 response the process is assembling at once, and one reader's data ends up in
 another's page.
 
+A query asks for its data during a server render, as a resource does: it
+follows its key from a [data effect](./reactivity#effects), which a server's
+flush drains, and [`settleRequest`](./server#settlerequest) waits for the
+request before the page is written.
+
+Nothing is collected on a server. The cache is that one request's and is
+dropped whole once the response is written, so `gcTime` starts no clock there —
+a timer for it would outlive the response, and a process that renders a page
+and exits would wait on the event loop until it fired.
+
 `useQueryClient` **throws** when there is no cache in scope rather than making
 one. The alternative is a second cache nobody can see, holding the answers the
 first one is missing.

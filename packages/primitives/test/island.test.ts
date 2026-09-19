@@ -8,7 +8,7 @@
  * count calls rather than reading the DOM.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { Signal, flushSync } from '@voltdev/core';
+import { Signal, flushSync, onCleanup } from '@voltdev/core';
 import { createRoot } from '@voltdev/reactivity';
 import { ISLAND_ATTRIBUTE, createIsland, type Island } from '../src/island.js';
 
@@ -92,6 +92,45 @@ describe('what the island owns', () => {
   it('marks the element, so what is not the framework’s is visible', () => {
     const island = inRoot(() => createIsland({ host: () => host, setup: () => undefined }));
     expect(island.hostProps()[ISLAND_ATTRIBUTE]).toBe('');
+  });
+
+  it('is drawn once however many signals setup happens to read', () => {
+    // A scene reads its initial state as it is built. Tracking that would make
+    // every later change to it tear the scene down and draw it again — the
+    // redraw the island exists to rule out, and what `sync` is for instead.
+    const zoom = new Signal.State(4);
+    let calls = 0;
+    const island = inRoot(() =>
+      createIsland({
+        host: () => host,
+        setup: (el) => {
+          calls++;
+          const scene = new Scene(el);
+          scene.goTo(zoom.get());
+          return scene;
+        },
+      }),
+    );
+    const first = island.instance();
+
+    zoom.set(5);
+    flushSync();
+
+    expect(calls).toBe(1);
+    expect(island.instance()).toBe(first);
+  });
+
+  it('is ready once drawn, whatever setup returned', () => {
+    const tornDown = inRoot(() => createIsland({ host: () => host, setup: () => () => {} }));
+    const nothing = inRoot(() => createIsland({ host: () => host, setup: () => undefined }));
+
+    // Drawn is drawn: an island that hands back only its teardown, or nothing
+    // at all, has still put its content in the host.
+    expect(tornDown.isReady()).toBe(true);
+    expect(nothing.isReady()).toBe(true);
+    // There is still no object to hand an applier.
+    expect(tornDown.instance()).toBe(null);
+    expect(nothing.instance()).toBe(null);
   });
 });
 
@@ -188,13 +227,16 @@ describe('synchronising into it', () => {
 describe('teardown nobody has to remember', () => {
   it('runs the disposer setup returned', () => {
     let torn = 0;
+    let island!: Island<unknown>;
     createRoot((dispose) => {
-      createIsland({ host: () => host, setup: () => () => void torn++ });
+      island = createIsland({ host: () => host, setup: () => () => void torn++ });
       flushSync();
       expect(torn).toBe(0);
+      expect(island.isReady()).toBe(true);
       dispose();
     });
     expect(torn).toBe(1);
+    expect(island.isReady()).toBe(false);
   });
 
   it('runs cleanup registered from inside setup, and forgets the instance', () => {
@@ -206,14 +248,14 @@ describe('teardown nobody has to remember', () => {
         setup: (el) => {
           const scene = new Scene(el);
           // The scope's cleanup is the island's; nothing else has to know.
-          queueMicrotask(() => void 0);
+          onCleanup(() => void torn++);
           return scene;
         },
       });
       flushSync();
       expect(island.isReady()).toBe(true);
+      expect(torn).toBe(0);
       dispose();
-      torn++;
     });
     expect(torn).toBe(1);
     expect(island.instance()).toBe(null);

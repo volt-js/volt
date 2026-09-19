@@ -25,7 +25,10 @@
  *
  *   class Search {
  *     query = new Signal.State('');
- *     results = createResource(
+ *     // Both type arguments, because the fetcher reads its request: `T` is in
+ *     // the request as well as the return, and TypeScript settles it from the
+ *     // parameter — to `unknown` — before it ever reads what comes back.
+ *     results = createResource<Item[], string>(
  *       async ({ source, signal }) => {
  *         const response = await fetch(`/search?q=${source}`, { signal });
  *         return (await response.json()) as Item[];
@@ -123,6 +126,9 @@ export type ResourceFetcher<T, S> = (request: ResourceRequest<T, S>) => T | Prom
  *
  * All of them are overridable because the library is localised later, and a
  * hard-coded English message is not something a consumer can work around.
+ * Each is read from this object when it is spoken, so a label written as a
+ * getter — `get loading() { return locale.t('loading'); }` — follows a change
+ * of language.
  */
 export interface ResourceLabels {
   /** Announced while the first attempt is in flight. Default `Loading…`. */
@@ -186,7 +192,14 @@ export interface ResourceOptions<T, S> {
    * or a cache that outlives this component. Without one the resource owns it.
    */
   data?: Signal.State<T | undefined>;
-  /** Likewise for the status, for a shell that shows one spinner for many resources. */
+  /**
+   * Likewise for the status. It is a signal to write into and nothing more:
+   * shared between several resources it holds whichever wrote last, so a shell
+   * that shows one spinner for many derives it from each one's `isLoading()`
+   * rather than sharing this. A cancel — `abort()`, or the scope going — takes
+   * back only a `loading` this resource wrote; with nothing in flight it
+   * writes nothing.
+   */
   status?: Signal.State<ResourceStatus>;
 
   /**
@@ -357,6 +370,16 @@ function abandoned(signal: AbortSignal): Promise<typeof ABANDONED> {
   });
 }
 
+/**
+ * A resource, owned by the reactive scope it is created in.
+ *
+ * Give both type arguments when the fetcher reads its request. `T` is in the
+ * request — `previous`, `push` — as well as in what comes back, and TypeScript
+ * settles it from the parameter first: a fetcher written
+ * `({ source, signal }) => …` makes a `Resource<unknown>` whatever it returns,
+ * and a cast on the returned expression does not change that. An annotated
+ * return type does, and a fetcher that takes no parameter infers as expected.
+ */
 export function createResource<T, S = undefined>(
   fetcher: ResourceFetcher<T, S>,
   options: ResourceOptions<T, S> = {},
@@ -368,6 +391,9 @@ export function createResource<T, S = undefined>(
   const failure = new Signal.State<unknown>(undefined);
   const attempt = new Signal.State(0);
 
+  // Kept as the object rather than copied out of it, so each label is read
+  // when it is spoken: one written as a getter over `locale.t(…)` subscribes
+  // whatever speaks it to the locale, and follows a change of language.
   const labels = options.labels ?? {};
   const debounce = Math.max(0, options.debounce ?? 0);
   const throttle = Math.max(0, options.throttle ?? 0);
@@ -586,15 +612,22 @@ export function createResource<T, S = undefined>(
   let requested: { source: S } | null = null;
   let started = false;
 
-  const abort = (): void => {
-    const wasLoading = peek(status) === 'loading';
-    stop('Aborted by the consumer');
+  /** Give up on everything, as `abort` and disposal both do, with the reason why. */
+  const cancel = (reason: string): void => {
+    // Only a `loading` this resource wrote is its to take back, and it wrote
+    // one exactly when an attempt of its own is still open. A `status` signal
+    // supplied from outside may be shared, and a resource that sat idle must
+    // not take down the spinner another one put up.
+    const wasLoading = controller !== null && peek(status) === 'loading';
+    stop(reason);
     // Forgotten rather than remembered, so the same source can be asked for
     // again — a cancelled upload retried against the same file is the case.
     requested = null;
     // A spinner left up after a cancel is the bug this exists to prevent.
     if (wasLoading) status.set(peek(data) === undefined ? 'idle' : 'success');
   };
+
+  const abort = (): void => cancel('Aborted by the consumer');
 
   /**
    * What `enabled` last said, so that only the change to false cancels.
@@ -646,7 +679,10 @@ export function createResource<T, S = undefined>(
 
   onCleanup(() => {
     disposed = true;
-    stop('The owning scope was disposed');
+    // A cancel like any other, status included: a `status` signal supplied
+    // from outside outlives this scope, and one left at `loading` would be a
+    // spinner nothing is ever going to take down.
+    cancel('The owning scope was disposed');
   });
 
   return {
@@ -684,7 +720,13 @@ export function createResource<T, S = undefined>(
       // treat it as a change and ask again.
       requested = { source };
       started = true;
-      return execute(source);
+      // Handed to the request like a run the resource started itself: asking
+      // by hand is still asking for data the page needs, and a cache that
+      // drives every request through here would otherwise be one a server
+      // never waits for.
+      const run = execute(source);
+      trackRequestData(run);
+      return run;
     },
 
     mutate: (next) => {

@@ -38,7 +38,7 @@
  * flicker.
  */
 
-import { Signal, effect, onCleanup } from '@voltdev/core';
+import { Signal, dataEffect, effect, onCleanup } from '@voltdev/core';
 import { hashQueryKey, type QueryKey } from './key.js';
 import {
   useQueryClient,
@@ -116,7 +116,11 @@ export function createQuery<T>(options: QueryOptions<T>): Query<T> {
     return typeof options.key === 'function' ? options.key() : options.key;
   };
 
-  effect(() => {
+  // The data lane, as a resource's own fetches are: still deferred, so a key
+  // read from a prop sees the value assigned after construction, but drained
+  // by a server's flush as well as a browser's — subscribing is what asks for
+  // the data, and a server that never subscribed would render the skeleton.
+  dataEffect(() => {
     const key = readKey();
 
     // The key and `enabled` above are tracked; everything below reads and

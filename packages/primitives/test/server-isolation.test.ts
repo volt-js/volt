@@ -220,7 +220,7 @@ let asked: string[] = [];
 })
 class Loader {
   @Prop() query = 'unset';
-  answer = createResource(
+  answer = createResource<string, string>(
     async ({ source }) => {
       asked.push(source);
       return `answered ${source}`;
@@ -256,7 +256,7 @@ class Typeahead {
   render: compileTemplate(`<p>{ answer.data() ?? 'waiting' }</p>`),
 })
 class Flaky {
-  answer = createResource(
+  answer = createResource<string>(
     async ({ attempt }) => {
       asked.push(`attempt ${attempt}`);
       if (attempt === 0) throw new Error('the gateway hiccuped');
@@ -277,7 +277,7 @@ class Profile {
     asked.push('user');
     return 'ada';
   });
-  profile = createResource(
+  profile = createResource<string, string | undefined>(
     async ({ source }) => {
       asked.push(`profile of ${source}`);
       return `${source}'s profile`;
@@ -286,9 +286,30 @@ class Profile {
   );
 }
 
+@Component({
+  selector: 'v-asked-by-hand',
+  render: compileTemplate(`<p>{ answer.status() }: { answer.data() ?? 'waiting' }</p>`),
+})
+class AskedByHand {
+  answer = createResource(() => answerable('by hand'), { immediate: false });
+  // Asked for during construction rather than left to the resource's own
+  // effect — which is how a submit-driven resource, or a cache entry, fetches.
+  started = this.answer.refetch();
+}
+
 describe('a resource declared as a class field', () => {
   beforeEach(() => {
     asked = [];
+  });
+
+  it('makes the render wait for a refetch it was asked for by hand', async () => {
+    // An explicit fetch is still one the page needs: a render that finished
+    // without it would ship the spinner in place of the answer.
+    const html = renderRequest(AskedByHand);
+    await turn();
+    answer('by hand', 'answered by hand');
+
+    expect(await html).toContain('<p>success: answered by hand</p>');
   });
 
   it('fetches exactly once on a server, and the render waits for the answer', async () => {

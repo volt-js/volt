@@ -22,6 +22,7 @@ import {
   getCollator,
   getDateTimeFormat,
   getNumberFormat,
+  relativeTimeParts,
   resetLocaleCaches,
   resolveDirection,
   useLocale,
@@ -160,10 +161,11 @@ describe('flowing through the reactive scope', () => {
       locale = createLocaleProvider({ defaultLocale: 'fr-FR' });
     }
 
-    // The inner provider is behind a `:if` on purpose. A provider lands in the
-    // scope that created it, and in Volt a component only gets a scope of its
-    // own when something structural gives it one — so this is what scoping a
-    // provider to part of a page actually looks like.
+    // Every component instance has a scope of its own, and a provider lands in
+    // the scope of the component that creates it — so the inner one reaches its
+    // own children and nothing beside or above it. The `:if` puts a structural
+    // scope between the two providers as well, which is the other way a page
+    // ends up nesting them.
     @Component({
       selector: 'v-i18n-outer',
       imports: [Inner, Reader],
@@ -282,6 +284,24 @@ describe('what the catalogue says', () => {
     expect(locale.t('somethingNobodyDefined')).toBe('somethingNobodyDefined');
     expect(locale.has('somethingNobodyDefined')).toBe(false);
     expect(locale.has('close')).toBe(true);
+  });
+
+  it('does not mistake what every object inherits for a message', () => {
+    const locale = createLocale({ defaultLocale: 'en-GB' });
+
+    // Both the catalogue and the defaults are plain objects, and a key is any
+    // string: one that happens to name something on `Object.prototype` is
+    // still a key nobody defined.
+    for (const key of ['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__']) {
+      expect(locale.has(key)).toBe(false);
+      expect(locale.t(key)).toBe(key);
+      expect(locale.t(key, { n: 1 })).toBe(key);
+    }
+
+    // And a catalogue that does define one gets it.
+    const own = createLocale({ defaultLocale: 'en-GB', messages: { constructor: 'Builder' } });
+    expect(own.has('constructor')).toBe(true);
+    expect(own.t('constructor')).toBe('Builder');
   });
 
   it('interpolates, tolerating spaces inside the braces', () => {
@@ -473,6 +493,147 @@ describe('direction', () => {
     // watching for it.
     expect(app.locale.direction()).toBe('rtl');
     expect(app.root().getAttribute('dir')).toBe('rtl');
+  });
+
+  describe('when one provider is nested inside another', () => {
+    /** An outer provider on its element, and an inner one on an element inside it. */
+    function mountNested(outer: LocaleOptions, inner: LocaleOptions, between = '') {
+      sequence += 1;
+
+      @Component({
+        selector: `v-i18n-nested-inner-${sequence}`,
+        render: compileTemplate(
+          `<section class="inner" :ref="root" :spread="locale.providerProps()"></section>`,
+        ),
+      })
+      class Inner {
+        root = new Signal.State<Element | null>(null);
+        locale = createLocaleProvider({ element: () => this.root.get(), ...inner });
+      }
+
+      const tag = `v-i18n-nested-inner-${sequence}`;
+      const body = between ? `<div dir="${between}"><${tag}></${tag}></div>` : `<${tag}></${tag}>`;
+
+      @Component({
+        selector: `v-i18n-nested-outer-${sequence}`,
+        imports: [Inner],
+        render: compileTemplate(
+          `<div class="outer" :ref="root" :spread="locale.providerProps()">${body}</div>`,
+        ),
+      })
+      class Outer {
+        root = new Signal.State<Element | null>(null);
+        locale = createLocaleProvider({ element: () => this.root.get(), ...outer });
+      }
+
+      const handle = track(mount(Outer, host));
+      flushSync();
+      return {
+        locale: (handle.instance as Outer).locale,
+        outer: () => host.querySelector('.outer')!,
+        inner: () => host.querySelector('.inner')!,
+      };
+    }
+
+    it('takes its direction from its own language, not the dir its parent wrote', () => {
+      // The outer provider always writes an explicit `dir`. Read as though an
+      // author had written it, an Arabic section inside an English page would
+      // come out left to right, and setting the tag would not be enough.
+      const page = mountNested({ defaultLocale: 'en-GB' }, { defaultLocale: 'ar-EG' });
+
+      expect(page.outer().getAttribute('dir')).toBe('ltr');
+      expect(page.inner().getAttribute('dir')).toBe('rtl');
+    });
+
+    it('is not overruled by the direction the parent’s dir computes to either', () => {
+      // What a browser's own stylesheet does with `dir`, which the test DOM
+      // does not do by itself: below the Arabic provider's element, every
+      // element computes `rtl`.
+      const sheet = document.createElement('style');
+      sheet.textContent = '[dir="rtl"] { direction: rtl } [dir="ltr"] { direction: ltr }';
+      document.head.append(sheet);
+      try {
+        const page = mountNested({ defaultLocale: 'ar-EG' }, { defaultLocale: 'en-GB' });
+        expect(getComputedStyle(page.inner().parentElement!).direction).toBe('rtl');
+
+        expect(page.outer().getAttribute('dir')).toBe('rtl');
+        expect(page.inner().getAttribute('dir')).toBe('ltr');
+      } finally {
+        sheet.remove();
+      }
+    });
+
+    it('needs nothing of the parent but its providerProps', () => {
+      // A root provider has nothing above it to inherit from, and so no reason
+      // to be given its element. Its `dir` still has to be known for its own.
+      const page = mountNested(
+        { defaultLocale: 'en-GB', element: undefined },
+        { defaultLocale: 'ar-EG' },
+      );
+
+      expect(page.outer().getAttribute('dir')).toBe('ltr');
+      expect(page.inner().getAttribute('dir')).toBe('rtl');
+    });
+
+    it('answers to a direction forced on the parent, as to a dir written by hand', async () => {
+      // Forcing `rtl` on an English page is how a right-to-left layout gets
+      // tried out, and a section with a locale of its own is part of the page.
+      const page = mountNested(
+        { defaultLocale: 'en-GB', defaultDirection: 'rtl' },
+        { defaultLocale: 'en-GB' },
+      );
+      expect(page.outer().getAttribute('dir')).toBe('rtl');
+      expect(page.inner().getAttribute('dir')).toBe('rtl');
+
+      page.locale.setDirection('auto');
+      await settle();
+      expect(page.outer().getAttribute('dir')).toBe('ltr');
+      expect(page.inner().getAttribute('dir')).toBe('ltr');
+    });
+
+    it('notices the parent’s direction being forced to the value it already had', async () => {
+      const page = mountNested({ defaultLocale: 'en-GB' }, { defaultLocale: 'ar-EG' });
+      expect(page.inner().getAttribute('dir')).toBe('rtl');
+
+      // The parent's `dir` reads `ltr` before and after. What changed is whose
+      // it is: the language's a moment ago, and now the author's.
+      page.locale.setDirection('ltr');
+      await settle();
+      expect(page.outer().getAttribute('dir')).toBe('ltr');
+      expect(page.inner().getAttribute('dir')).toBe('ltr');
+
+      page.locale.setDirection('auto');
+      await settle();
+      expect(page.inner().getAttribute('dir')).toBe('rtl');
+    });
+
+    it('watches the mark on a resolved dir, not only the dir beside it', async () => {
+      // A parent's element as a server wrote it, so that nothing here rewrites
+      // `dir` in passing: the mark going is the only thing that happens.
+      host.innerHTML = '<div dir="ltr" data-volt-dir="auto"><div class="slot"></div></div>';
+      const slot = host.querySelector<HTMLElement>('.slot')!;
+      track(mount(defineApp('', { defaultLocale: 'ar-EG' }), slot));
+      flushSync();
+      expect(slot.firstElementChild!.getAttribute('dir')).toBe('rtl');
+
+      host.firstElementChild!.removeAttribute('data-volt-dir');
+      await settle();
+      expect(slot.firstElementChild!.getAttribute('dir')).toBe('ltr');
+    });
+
+    it('still answers to a dir an author wrote, inside the parent or above it', async () => {
+      const between = mountNested({ defaultLocale: 'en-GB' }, { defaultLocale: 'en-GB' }, 'rtl');
+      await settle();
+      expect(between.inner().getAttribute('dir')).toBe('rtl');
+
+      for (const handle of mounted) handle.unmount();
+      mounted = [];
+      host.setAttribute('dir', 'rtl');
+      const above = mountNested({ defaultLocale: 'en-GB' }, { defaultLocale: 'en-GB' });
+      await settle();
+      expect(above.outer().getAttribute('dir')).toBe('rtl');
+      expect(above.inner().getAttribute('dir')).toBe('rtl');
+    });
   });
 
   it('stops watching the document once the component goes', async () => {
@@ -771,6 +932,108 @@ describe('formatting', () => {
         now: new Date(2026, 7, 16, 0, 30),
       }),
     ).toBe('2 days ago');
+  });
+
+  it('says weeks until a whole month has passed, wherever the month boundary falls', () => {
+    const locale = en();
+
+    // Eight days back from the 8th crosses into last month, and is still only
+    // eight days: "last month" would rank it with something from the 1st of
+    // that month, while 28 days back from the 30th is "4 weeks ago".
+    const eighth = new Date(2026, 8, 8, 12, 0);
+    expect(locale.format.relativeTime(new Date(2026, 7, 31, 12, 0), { now: eighth })).toBe(
+      'last week',
+    );
+    const thirtieth = new Date(2026, 8, 30, 12, 0);
+    expect(locale.format.relativeTime(new Date(2026, 8, 2, 12, 0), { now: thirtieth })).toBe(
+      '4 weeks ago',
+    );
+    expect(locale.format.relativeTime(new Date(2026, 9, 1, 12, 0), { now: eighth })).toBe(
+      'in 3 weeks',
+    );
+
+    expect(locale.format.relativeTime(new Date(2026, 7, 8, 12, 0), { now: eighth })).toBe(
+      'last month',
+    );
+  });
+
+  it('counts the months that have gone by, not the month boundaries crossed', () => {
+    const locale = en();
+    const firstOfMarch = new Date(2026, 2, 1, 12, 0);
+
+    // February is the whole of the gap between these, and crossing both its
+    // ends does not make 29 days two months — one day more than "4 weeks ago".
+    expect(
+      locale.format.relativeTime(new Date(2026, 0, 31, 12, 0), {
+        now: new Date(2026, 1, 28, 12, 0),
+      }),
+    ).toBe('4 weeks ago');
+    expect(locale.format.relativeTime(new Date(2026, 0, 31, 12, 0), { now: firstOfMarch })).toBe(
+      'last month',
+    );
+    expect(locale.format.relativeTime(new Date(2026, 0, 1, 12, 0), { now: firstOfMarch })).toBe(
+      '2 months ago',
+    );
+    expect(
+      locale.format.relativeTime(firstOfMarch, { now: new Date(2026, 0, 31, 12, 0) }),
+    ).toBe('next month');
+
+    // Eleven whole months is still months, though the year has changed.
+    expect(
+      locale.format.relativeTime(new Date(2025, 2, 15, 12, 0), { now: firstOfMarch }),
+    ).toBe('11 months ago');
+  });
+
+  it('counts years by the calendar, as it counts days', () => {
+    const locale = en();
+    const january = new Date(2026, 0, 10, 12, 0);
+
+    // "Last year" names the calendar year before this one, and December 2024
+    // is two before January 2026 however few months lie between them.
+    expect(locale.format.relativeTime(new Date(2024, 11, 15, 12, 0), { now: january })).toBe(
+      '2 years ago',
+    );
+    expect(locale.format.relativeTime(new Date(2025, 0, 5, 12, 0), { now: january })).toBe(
+      'last year',
+    );
+
+    // A forced unit counts the same way, rather than calling yesterday this
+    // year because twelve months have not gone by.
+    const newYear = new Date(2026, 0, 1, 12, 0);
+    const newYearsEve = new Date(2025, 11, 31, 12, 0);
+    expect(locale.format.relativeTime(newYearsEve, { now: newYear, unit: 'year' })).toBe(
+      'last year',
+    );
+    expect(locale.format.relativeTime(newYearsEve, { now: newYear, unit: 'quarter' })).toBe(
+      'last quarter',
+    );
+    expect(locale.format.relativeTime(new Date(2026, 2, 31), { now: newYear, unit: 'quarter' })).toBe(
+      'this quarter',
+    );
+  });
+
+  it('hands the amount and the unit to code that is not a formatter', () => {
+    const locale = en();
+    const now = new Date(2026, 8, 8, 12, 0);
+
+    // What a self-updating timestamp needs: the unit to pace its clock by, and
+    // the same arithmetic as the formatter so the two never disagree.
+    const cases: [Date, [number, string]][] = [
+      [new Date(2026, 8, 8, 12, 1, 30), [2, 'minute']],
+      [new Date(2026, 8, 7, 23, 0), [-13, 'hour']],
+      [new Date(2026, 7, 31, 12, 0), [-1, 'week']],
+      [new Date(2026, 6, 31, 12, 0), [-1, 'month']],
+      [new Date(2024, 11, 15, 12, 0), [-2, 'year']],
+    ];
+    for (const [target, [amount, unit]] of cases) {
+      expect(relativeTimeParts(target, now)).toEqual([amount, unit]);
+      expect(locale.format.relativeTime(target, { now })).toBe(
+        new Intl.RelativeTimeFormat('en-GB', { numeric: 'auto' }).format(
+          amount,
+          unit as Intl.RelativeTimeFormatUnit,
+        ),
+      );
+    }
   });
 
   it('takes a forced unit, and a numeric style for a live countdown', () => {

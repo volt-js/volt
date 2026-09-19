@@ -60,7 +60,9 @@ export interface IslandOptions<T> {
   /** The element the island owns. Everything inside it is the author's. */
   host: () => Element | null | undefined;
   /**
-   * Draw it. Called once, on the client, with the host element.
+   * Draw it. Called once, on the client, with the host element — and again
+   * only if `host` changes to another element. Signals it reads are not
+   * tracked; `sync` is how a change reaches the island.
    *
    * Return the object the island is *about* — the scene, the player, the
    * editor — and `sync` will hand it to every applier. Return a function
@@ -80,7 +82,11 @@ export interface IslandProps {
 }
 
 export interface Island<T> {
-  /** What `setup` returned, or null before it has run — and on a server. */
+  /**
+   * What `setup` returned, or null before it has run, on a server, and when it
+   * returned a teardown or nothing — in which case `sync` has nothing to apply
+   * to.
+   */
   instance(): T | null;
   /** Whether the island has been drawn. False on a server, always. */
   isReady(): boolean;
@@ -96,7 +102,15 @@ export interface Island<T> {
 }
 
 export function createIsland<T>(options: IslandOptions<T>): Island<T> {
-  const instance = new Signal.State<T | null>(null);
+  /**
+   * What the island drew, or null while it has drawn nothing.
+   *
+   * Boxed, because being drawn and having an object to show for it are two
+   * facts: a `setup` that returns only its teardown, or nothing, has still put
+   * its content in the host.
+   */
+  const drawn = new Signal.State<{ readonly instance: T | null } | null>(null);
+  const instance = (): T | null => drawn.get()?.instance ?? null;
 
   effect(() => {
     const host = options.host();
@@ -105,30 +119,36 @@ export function createIsland<T>(options: IslandOptions<T>): Island<T> {
     if (!host?.isConnected) return;
 
     let teardown: IslandTeardown | undefined;
+    let made: T | null = null;
     try {
-      const created = options.setup(host);
+      // Untracked, so the island is drawn once. A scene reads its initial
+      // state as it is built, and tracking that would make every later change
+      // to it tear the scene down and draw it again — which is what `sync` is
+      // for instead. Only `host` above is a reason to draw again.
+      const created = Signal.subtle.untrack(() => options.setup(host));
       if (typeof created === 'function') {
         teardown = created as IslandTeardown;
       } else if (created !== undefined) {
-        instance.set(created as T);
+        made = created as T;
       }
     } catch (error) {
       if (options.onError === undefined) throw error;
       options.onError(error);
       return;
     }
+    drawn.set({ instance: made });
 
     onCleanup(() => {
       teardown?.();
       // Cleared after the teardown rather than before, so an applier that runs
       // during it still has the object it is applying to.
-      instance.set(null);
+      drawn.set(null);
     });
   });
 
   return {
-    instance: () => instance.get(),
-    isReady: () => instance.get() !== null,
+    instance,
+    isReady: () => drawn.get() !== null,
 
     sync(read, apply) {
       effect(() => {
@@ -136,7 +156,7 @@ export function createIsland<T>(options: IslandOptions<T>): Island<T> {
         // island without reading would leave this effect with no dependency on
         // the signal, and it would never run again once the island appeared.
         const value = read();
-        const current = instance.get();
+        const current = instance();
         if (current === null) return;
         // Untracked, so an applier reaching into the scene — which may well
         // read signals of its own — does not enrol them as reasons to run

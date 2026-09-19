@@ -12,7 +12,15 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { compileTemplate } from '@voltdev/core/jit';
-import { Component, Signal, createRoot, flushSync, mount } from '@voltdev/core';
+import {
+  Component,
+  Signal,
+  createRequestScope,
+  createRoot,
+  flushSync,
+  mount,
+  settleRequest,
+} from '@voltdev/core';
 import {
   createQueryClient,
   provideQueryClient,
@@ -817,5 +825,52 @@ describe('through a mounted component', () => {
     // any more, so it is not asked for any more.
     expect(signal.aborted).toBe(true);
     expect(client.size()).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// On a server
+// ---------------------------------------------------------------------------
+
+describe('on a server', () => {
+  /**
+   * The build flag, which the test config compiles to a live read of this
+   * global so one file can render both sides.
+   */
+  function serverBuild(on: boolean): void {
+    (globalThis as { __VOLT_SERVER__?: boolean }).__VOLT_SERVER__ = on;
+  }
+
+  afterEach(() => serverBuild(false));
+
+  it('asks during the render, and the render waits for the answer', async () => {
+    const client = makeClient();
+    const gate = deferred<string>();
+    const fetcher = vi.fn(() => gate.promise);
+
+    // Defined before the flag goes up, so the template is compiled for the DOM
+    // host below; it is the flush, not the template, that is the server's.
+    @Component({
+      selector: 'v-user-server',
+      render: compileTemplate(`<p>{ user.status() }: { user.data() ?? 'waiting' }</p>`),
+    })
+    class ServerUser {
+      user = createQuery({ key: ['users', 1], fetcher, client });
+    }
+
+    // A server flush drains the data lane and never the user lane, so a query
+    // that subscribed from a user effect would never ask here — and one whose
+    // request the render did not wait for would ship its skeleton.
+    serverBuild(true);
+    const scope = createRequestScope();
+    const rendered = settleRequest(scope, () => {
+      track(mount(ServerUser, host));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    gate.resolve('Ada');
+    await rendered;
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(host.innerHTML).toContain('<p>success: Ada</p>');
   });
 });

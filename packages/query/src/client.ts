@@ -417,6 +417,12 @@ function createEntry<T>(
   };
 
   const scheduleGc = (): void => {
+    // A cache on a server is one request's and is dropped whole when the
+    // response is written, so there is nothing here worth collecting — while
+    // a timer armed for `gcTime` outlives the response, holding the entry and
+    // the cache behind it, and keeps a prerender process on the event loop
+    // until it fires. A client build drops this branch outright.
+    if (__VOLT_SERVER__) return;
     if (gcTimer !== null) clearTimeout(gcTimer);
     gcTimer = null;
     if (config.gcTime === Number.POSITIVE_INFINITY) return;

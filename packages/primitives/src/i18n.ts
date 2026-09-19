@@ -144,6 +144,20 @@ export const DEFAULT_MESSAGES: LibraryMessages = {
   clear: 'Clear',
 };
 
+/**
+ * The message a catalogue itself declares for a key.
+ *
+ * Own properties only. A catalogue is a plain object and a key is any string,
+ * so a plain read of `constructor` or `toString` finds the function every
+ * object inherits — which `has` would call a message, and `t` would try to
+ * pluralise.
+ */
+function ownMessage(catalog: object, key: string): Message | undefined {
+  return Object.hasOwn(catalog, key)
+    ? (catalog as Readonly<Record<string, Message | undefined>>)[key]
+    : undefined;
+}
+
 /** The placeholder whose value picks the plural category. */
 const COUNT = 'n';
 
@@ -346,13 +360,39 @@ function calendarMonths(target: Date, base: Date): number {
 }
 
 /**
+ * Whole months gone by, rather than month boundaries crossed.
+ *
+ * The day of the month has to have come round as well, or the 31st of one
+ * month and the 8th of the next — eight days apart — would be a month.
+ */
+function wholeMonths(target: Date, base: Date): number {
+  const months = calendarMonths(target, base);
+  if (months > 0 && target.getDate() < base.getDate()) return months - 1;
+  if (months < 0 && target.getDate() > base.getDate()) return months + 1;
+  return months;
+}
+
+/**
  * The largest unit that still describes the gap honestly.
  *
  * Sub-day units are measured by elapsed time, which is what "in 3 hours"
- * means. Days and above are measured by the calendar, because "last month" is
- * a position in the calendar and not thirty times 86,400 seconds.
+ * means. Days and above are counted by the calendar, because "last month" is
+ * a position in the calendar and not thirty times 86,400 seconds — and so is
+ * "last year", which is why years are not twelve-month spans.
+ *
+ * Which unit is a question of size, though, not of boundaries: under a whole
+ * month the answer is in weeks, so something eight days old is "last week"
+ * whether or not the 1st fell in between, and from there it is in whole months
+ * until there are twelve of them.
+ *
+ * Exported for whatever has to say the same thing without being a formatter —
+ * a timestamp that keeps itself current paces its clock by the unit, and two
+ * answers for one moment are what a second copy of this arithmetic produces.
  */
-function chooseUnit(target: Date, base: Date): [number, Intl.RelativeTimeFormatUnit] {
+export function relativeTimeParts(
+  target: Date,
+  base: Date,
+): [number, 'second' | 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year'] {
   const ms = target.getTime() - base.getTime();
   const abs = Math.abs(ms);
 
@@ -363,12 +403,13 @@ function chooseUnit(target: Date, base: Date): [number, Intl.RelativeTimeFormatU
   const days = calendarDays(target, base);
   if (Math.abs(days) < 7) return [days, 'day'];
 
-  const months = calendarMonths(target, base);
-  // Four weeks can still be the same calendar month, and "in 0 months" is not
-  // a sentence.
+  // The count that chose the unit is the count reported. Boundaries crossed
+  // would put the 31st of January, seen on the 1st of March, at "2 months ago"
+  // — a day after the 28th of February had it at "4 weeks ago".
+  const months = wholeMonths(target, base);
   if (months === 0) return [Math.trunc(days / 7), 'week'];
   if (Math.abs(months) < 12) return [months, 'month'];
-  return [Math.trunc(months / 12), 'year'];
+  return [target.getFullYear() - base.getFullYear(), 'year'];
 }
 
 /** How many of `unit` separate the two instants, for a caller that named one. */
@@ -378,9 +419,12 @@ function amountIn(unit: Intl.RelativeTimeFormatUnit, target: Date, base: Date): 
 
   switch (singular) {
     case 'year':
-      return Math.trunc(calendarMonths(target, base) / 12);
+      return target.getFullYear() - base.getFullYear();
     case 'quarter':
-      return Math.trunc(calendarMonths(target, base) / 3);
+      return (
+        (target.getFullYear() - base.getFullYear()) * 4 +
+        (Math.floor(target.getMonth() / 3) - Math.floor(base.getMonth() / 3))
+      );
     case 'month':
       return calendarMonths(target, base);
     case 'week':
@@ -430,7 +474,7 @@ export function createFormatters(locale: () => string): Formatters {
 
       const [amount, resolved]: [number, Intl.RelativeTimeFormatUnit] = unit
         ? [amountIn(unit, target, base), unit]
-        : chooseUnit(target, base);
+        : relativeTimeParts(target, base);
       // 'auto' is what produces "yesterday" rather than "1 day ago". Pass
       // numeric: 'always' for a live countdown, where a word that does not
       // change every second reads as a frozen clock.
@@ -514,6 +558,44 @@ export function resolveDirection(el: Element | null | undefined): Direction {
 }
 
 /**
+ * Marks a `dir` that a locale worked out for itself, from the DOM above it or
+ * from its language, as opposed to one somebody chose.
+ *
+ * Written beside the `dir` it describes, by `providerProps`, because that is
+ * the only place that knows: a locale with nothing above it has no reason to
+ * be told its element, and its `dir` still has to be told apart from an
+ * author's. A direction forced through the `direction` option is a choice, so
+ * it goes unmarked and reads below exactly as a hand-written `dir` would.
+ */
+const RESOLVED_DIR_ATTRIBUTE = 'data-volt-dir';
+
+/**
+ * The direction a locale's element inherits from the DOM, not counting what
+ * another locale worked out for itself.
+ *
+ * A locale always writes an explicit `dir` on its element — `ltr` or `rtl`,
+ * never nothing — so to a locale nested inside it that attribute would read as
+ * an author's statement, and an Arabic section in an English page would come
+ * out left to right. So an enclosing locale's resolved `dir` is stepped over,
+ * and the walk goes on to whatever somebody stated above it. Computed style is
+ * not asked once one has been: below a locale's element it is that locale's
+ * `dir` again, which is the answer being set aside.
+ */
+function inheritedDirection(el: Element): Direction | null {
+  const from = el.parentElement ?? el;
+  let declared = from.closest('[dir]');
+  if (declared === null || !declared.hasAttribute(RESOLVED_DIR_ATTRIBUTE)) {
+    return declaredDirection(from);
+  }
+
+  while (declared !== null && declared.hasAttribute(RESOLVED_DIR_ATTRIBUTE)) {
+    declared = declared.parentElement?.closest('[dir]') ?? null;
+  }
+  const value = declared?.getAttribute('dir')?.toLowerCase();
+  return value === 'rtl' || value === 'ltr' ? value : null;
+}
+
+/**
  * A locale's text info, under either spelling.
  *
  * `getTextInfo()` is what the proposal settled on and `textInfo` is what
@@ -544,9 +626,10 @@ function scriptDirection(locale: string): Direction | null {
   let direction: Direction | null = null;
   try {
     const info = textInfoOf(new Intl.Locale(locale));
-    // No text info at all is not the same as left-to-right. Saying `ltr` here
-    // would stop the DOM and the document being consulted, which is where the
-    // answer would otherwise still come from.
+    // No text info at all is no answer rather than a left-to-right one. The
+    // DOM has been asked before this step, so the result is `ltr` either way —
+    // from `direction()`'s own last resort rather than from a claim made here
+    // about a language this engine could not describe.
     direction = info ? (info.direction === 'rtl' ? 'rtl' : 'ltr') : null;
   } catch {
     // A malformed tag. The locale is unusable, but direction is not the place
@@ -584,14 +667,19 @@ export interface LocaleOptions {
 
   /**
    * Force a direction. `auto`, the default, resolves it from the DOM and then
-   * from the language.
+   * from the language. A forced direction is a statement about the region, so
+   * a locale nested inside answers to it as it would to a `dir` written by
+   * hand; one resolved under `auto` is this locale's alone.
    */
   direction?: Signal.State<Direction | 'auto'>;
   defaultDirection?: Direction | 'auto';
 
   /**
    * The element this locale governs, used to resolve direction from the DOM.
-   * Its own `dir` attribute is not consulted — see `providerProps`.
+   * Its own `dir` attribute is not consulted — see `providerProps` — and nor
+   * is one an enclosing locale resolved for itself, so a nested locale's
+   * direction is its own language's unless somebody said otherwise: an author
+   * with a `dir`, or an enclosing locale with a forced direction.
    *
    * A locale given one watches the document for `dir` changes, so it belongs
    * to a reactive scope that can eventually stop it.
@@ -658,7 +746,10 @@ export interface LocaleProvider extends Locale {
   setMessages(messages: MessageCatalog): void;
 
   /**
-   * `lang` and `dir` for the element this locale governs.
+   * `lang` and `dir` for the element this locale governs, and a mark on a
+   * `dir` that was resolved rather than forced — which is how a locale nested
+   * inside tells this one's answer from an author's, whether or not this one
+   * was given its `element`.
    *
    * The provider writes `dir` here, which is why it does not read `dir` back
    * off that same element: it would resolve to whatever it last wrote and stop
@@ -709,7 +800,7 @@ export function createLocale(options: LocaleOptions = {}): LocaleProvider {
    */
   const readInherited = (): Direction | null => {
     const el = options.element?.();
-    return el ? declaredDirection(el.parentElement ?? el) : null;
+    return el ? inheritedDirection(el) : null;
   };
 
   /**
@@ -736,10 +827,12 @@ export function createLocale(options: LocaleOptions = {}): LocaleProvider {
       });
 
       // Subtree, from the root: every ancestor of every candidate element is
-      // covered by one observer, and the filter means it only wakes for `dir`.
+      // covered by one observer, and the filter means it only wakes for `dir`
+      // — and for the mark, since an enclosing locale going from `auto` to a
+      // forced direction of the same value changes that and nothing else.
       observer.observe(document.documentElement, {
         attributes: true,
-        attributeFilter: ['dir'],
+        attributeFilter: ['dir', RESOLVED_DIR_ATTRIBUTE],
         subtree: true,
       });
       onCleanup(() => observer.disconnect());
@@ -753,7 +846,7 @@ export function createLocale(options: LocaleOptions = {}): LocaleProvider {
   };
 
   const lookup = (key: string): Message | undefined =>
-    messages.get()[key] ?? (DEFAULT_MESSAGES as Record<string, Message>)[key];
+    ownMessage(messages.get(), key) ?? ownMessage(DEFAULT_MESSAGES, key);
 
   const collator = (extra?: Intl.CollatorOptions): Intl.Collator =>
     getCollator(code.get(), { ...DEFAULT_COLLATOR_OPTIONS, ...options.collator, ...extra });
@@ -788,7 +881,11 @@ export function createLocale(options: LocaleOptions = {}): LocaleProvider {
     setDirection: (next) => dir.set(next),
     setMessages: (next) => messages.set(next),
 
-    providerProps: () => ({ lang: code.get(), dir: direction() }),
+    providerProps: () => ({
+      lang: code.get(),
+      dir: direction(),
+      [RESOLVED_DIR_ATTRIBUTE]: dir.get() === 'auto' ? 'auto' : undefined,
+    }),
   };
 }
 

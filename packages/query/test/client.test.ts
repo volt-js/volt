@@ -36,6 +36,7 @@ afterEach(() => {
   clients = [];
   flushSync();
   vi.useRealTimers();
+  serverBuild(false);
 });
 
 function makeClient(...args: Parameters<typeof createQueryClient>): QueryClient {
@@ -87,6 +88,16 @@ function useClock(): void {
 async function advance(ms: number): Promise<void> {
   await vi.advanceTimersByTimeAsync(ms);
   await settle();
+}
+
+/**
+ * Compile as a server build does.
+ *
+ * The test config compiles `__VOLT_SERVER__` to a live read of this global, so
+ * one file can exercise both sides.
+ */
+function serverBuild(on: boolean): void {
+  (globalThis as { __VOLT_SERVER__?: boolean }).__VOLT_SERVER__ = on;
 }
 
 /** Run something reactively in a scope the caller ends, and count the runs. */
@@ -520,6 +531,23 @@ describe('lifetime', () => {
 
     await advance(900);
     expect(client.size()).toBe(0);
+  });
+
+  it('starts no clock on a server, where the cache is dropped whole', async () => {
+    useClock();
+    serverBuild(true);
+    const client = makeClient({ gcTime: 1000 });
+    const observation = client.observe({ key: ['users', 1], fetcher: () => Promise.resolve('Ada') });
+    await settle();
+    observation.release();
+
+    // A timer armed here outlives the response that armed it: the cache is
+    // one request's and dies with it, and a prerender process would sit on
+    // the event loop for `gcTime` after its page was written.
+    expect(vi.getTimerCount()).toBe(0);
+
+    await advance(1001);
+    expect(client.size()).toBe(1);
   });
 
   it('keeps an entry for the life of the cache when gcTime is infinite', async () => {

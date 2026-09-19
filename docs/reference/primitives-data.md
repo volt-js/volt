@@ -25,6 +25,7 @@ back prop objects, and nothing here renders. Both are imported from
 | [`createLocale`](#createlocale-and-uselocale) | The same locale with nothing provided — for code outside the component tree |
 | [`useLocale`](#createlocale-and-uselocale) | The nearest provided locale, or an ambient one |
 | [`createFormatters`](#formatting) | Number, currency, percent, date, relative time, list and byte formatting bound to a tag |
+| [`relativeTimeParts`](#relativetime) | The amount and the unit `relativeTime` would say, for code that is not a formatter |
 | [`getNumberFormat` and the other `get*`](#cached-intl-instances) | Cached `Intl` constructors |
 | [`resolveDirection`](#direction) | The writing direction at an element |
 | [`DEFAULT_MESSAGES`](#messages), [`DEFAULT_COLLATOR_OPTIONS`](#sorting) | The defaults a catalogue and a collator start from |
@@ -150,11 +151,13 @@ does not; `attempt` is how the fetcher tells the two apart.
 object literal a derived source usually builds: `{ page, filter }` is a new
 object on every read, so without an `equals` every unrelated re-run refetches.
 
-Only `source` and `enabled` are reactive. `debounce`, `throttle`, `retry` and
-the label strings are read once, when the resource is created, so changing the
-value you passed changes nothing afterwards; the functions — `equals`,
-`retryDelay`, `shouldRetry`, the callbacks — are called each time they are
-needed, and can read whatever they like.
+Only `source` and `enabled` are reactive. `debounce`, `throttle` and `retry`
+are read once, when the resource is created, so changing the value you passed
+changes nothing afterwards; the functions — `equals`, `retryDelay`,
+`shouldRetry`, the callbacks — are called each time they are needed, and can
+read whatever they like. The labels are read off the object you passed each
+time one is spoken, which is what lets a translated one follow the locale — see
+[announcing it](#announcing-it).
 
 `initialData` is ignored when `data` is supplied, since that signal already
 holds the truth. Supplying `data` is how a resource writes into a store shared
@@ -165,8 +168,12 @@ nothing more. Shared between several resources it is whichever wrote last, not
 a summary of them: when the first of two answers, it says `success` while the
 other is still loading. A shell that wants one spinner for several resources
 derives it — a `Signal.Computed` over each one's `isLoading()` — rather than
-sharing the signal. A resource disposed mid-request also leaves a supplied
-status at `loading`, because disposal aborts the request and writes nothing.
+sharing the signal. A resource disposed mid-request puts a supplied status back
+as [`abort()`](#writing-the-data-yourself) does — `success` if there is data,
+`idle` if not — because the signal outlives the component, and a `loading` left
+in it would be a spinner nothing is ever going to take down. Both take back only
+a `loading` of the resource's own: one with nothing in flight writes nothing, so
+a resource that never fetched leaves another's `loading` standing when it goes.
 
 ### What a resource returns
 
@@ -456,12 +463,34 @@ mapping status codes to sentences.
 
 These labels are plain strings, not keys into the
 [locale's catalogue](#messages). A resource does not read the locale; a
-localised application passes them in from `locale.t(…)` itself. What that costs
-is a language change: `labels: { loading: locale.t('loading') }` is evaluated
-once, when the resource is created, and goes on saying it in the language the
+localised application passes them in from `locale.t(…)` itself. The resource
+reads each label off the object you passed at the moment it speaks it, so the
+way to follow a language change is a getter: `get loading()` returning
+`locale.t('loading')` is asked each time, and the region saying it is
+subscribed to the locale through it. `labels: { loading: locale.t('loading') }`
+hands over a string computed once, which goes on saying it in the language the
 page started in after a `setLocale`. The function form of `error` is called
-each time `errorMessage()` is read, so `error: () => locale.t('failed')` does
-follow the locale; the other three have no such form.
+each time `errorMessage()` is read, so it follows the locale the same way.
+
+```ts
+import { createResource, useLocale, type Locale, type ResourceLabels } from '@voltdev/primitives';
+
+function translated(locale: Locale): ResourceLabels {
+  return {
+    get loading() {
+      return locale.t('loading');
+    },
+    error: () => locale.t('failed'),
+  };
+}
+
+export class Orders {
+  locale = useLocale();
+  orders = createResource(async () => (await fetch('/api/orders')).json() as Promise<string[]>, {
+    labels: translated(this.locale),
+  });
+}
+```
 
 ### On a server
 
@@ -471,11 +500,14 @@ server flush drains the data lane and never the user lane, so a resource
 triggered from an `effect` would never fetch there at all. See
 [effects](./reactivity#effects).
 
-Each fetch the resource starts for itself is handed to `trackRequestData`, so
+Every fetch is handed to `trackRequestData` — the ones a resource starts from
+its own effect, and one started by calling `refetch()` during the render — so
 [`settleRequest`](./server#settlerequest) waits for it before the page is
-written — including a resource whose source is another resource's data, which
-is why that waiting is a loop. Two options behave differently while a request
-is current, because both exist for a browser:
+written. That includes a resource whose source is another resource's data,
+which is why that waiting is a loop, and every entry in the
+[query cache](./query), which only ever fetches through `refetch()`. Two options
+behave differently while a request is current, because both exist for a
+browser:
 
 - **`debounce` and `throttle` are zero.** They coalesce keystrokes, and a server
   has none. A wait there is worse than useless: a fetch that has not started is
@@ -483,12 +515,6 @@ is current, because both exist for a browser:
 - **The backoff between retries is zero.** The retries still happen; the
   seconds tuned to let a flaky phone connection recover would be seconds a
   response spent holding its socket open.
-
-**`refetch()` is not tracked.** Only the fetches a resource starts from its own
-effect are handed to the request; one started by calling `refetch()` during a
-server render runs, but `settleRequest` does not wait for it, and the page can
-be written without its answer. On a server, let the resource fetch on its own
-rather than calling `refetch()` from a field initialiser.
 
 A value a server fetched reaches the client through
 [`hydratable`](./server#the-state-payload), handed over as `data`, with
@@ -594,9 +620,10 @@ already know.
 A nested provider does not inherit its parent's tag; give it one. Inheriting
 only the initial value would be a lie the first time the parent changed, and
 inheriting it live would mean a provider that cannot say what locale it is
-without walking the scope on every read. Its writing direction is another
-matter: given an `element` inside the outer provider's, it takes the outer
-one's — see [direction](#direction).
+without walking the scope on every read. Nor does it inherit the direction its
+parent resolved: given an `element` inside the outer provider's, its own
+language decides, unless an author's `dir` or a direction forced on the parent
+says otherwise — see [direction](#direction).
 
 ### What a locale returns
 
@@ -613,7 +640,7 @@ one's — see [direction](#direction).
 | `setLocale(tag)` | Change the tag |
 | `setDirection(direction)` | Force `'ltr'` or `'rtl'`, or go back to `'auto'` |
 | `setMessages(catalog)` | Replace the catalogue |
-| `providerProps()` | `lang` and `dir`, for the element this locale governs |
+| `providerProps()` | `lang` and `dir`, for the element this locale governs, and `data-volt-dir="auto"` beside a `dir` it resolved rather than was forced to |
 
 The first eight are `Locale`, which is what `useLocale` returns; the setters
 and `providerProps` are `LocaleProvider`, and belong to whoever created it.
@@ -643,11 +670,8 @@ interface PluralMessage {
 `DEFAULT_MESSAGES`, and returns the key itself when neither has it — not a
 string anyone wants on screen, which is exactly why it beats an empty space.
 `t` is one letter on purpose: it appears in every template that says anything.
-
-Do not name a key after a member of `Object.prototype` — `constructor`,
-`toString`, `valueOf`. The catalogue and the defaults are both read as plain
-objects, so those names resolve to the inherited function: `has` says the key
-exists, `t` returns `undefined` for it, and `t` with values throws.
+Only a catalogue's own keys count, so a key that happens to name something
+every object inherits — `constructor`, `toString` — is a key like any other.
 
 `{name}` placeholders take their values from `values`, and spaces inside the
 braces are allowed. A number is formatted for the locale, since "1,234" and
@@ -718,8 +742,8 @@ defaults — `resultsAvailable` and `suggestions` in a combobox, `increase` and
 `decrease` on a number input — and use their own English when `has(key)` says
 the catalogue lacks one. A catalogue that defines them translates those too.
 The cost is that there is one flat namespace, shared with your own keys: the
-password input asks for `show` to name its reveal button, so a catalogue that
-defines `show` for something else relabels that button as well.
+number input asks for `increase` to name its stepper button, so a catalogue
+that defines `increase` for something else relabels that button as well.
 
 A plain object passed as `messages` is wrapped in a signal the locale owns, and
 `setMessages` replaces it. Pass a `Signal.State` of your own when something
@@ -736,8 +760,9 @@ rather than replacing it.
 ### Direction
 
 `direction()` is, in order: what `direction`, `defaultDirection` or
-`setDirection` forced; what the governed element inherits from the DOM; the
-direction the language is written in; `'ltr'`.
+`setDirection` forced; what the governed element inherits from the DOM, not
+counting a `dir` another provider resolved for itself; the direction the
+language is written in; `'ltr'`.
 
 The language step is what makes setting the tag to Arabic enough — nothing in
 the DOM has to change for the page to become right-to-left. It reads the
@@ -756,17 +781,28 @@ locale. It reads what the element *inherits* instead. The cost is that a `dir`
 written by hand on the provider's own element is ignored; use the `direction`
 option, which is the one way to say it.
 
-**A provider nested inside another inherits its direction, not its language's.**
-The outer provider always writes an explicit `dir` — `ltr` or `rtl`, never
-nothing — and to the inner provider's DOM step that attribute is
-indistinguishable from one an author wrote, so it answers before the language
-is asked. An Arabic section given an `element` inside an English page resolves
-`ltr`. Give the inner provider no `element`, so the language decides, or force
-its direction with `defaultDirection`.
+**A provider nested inside another takes its direction from its own
+language, unless somebody stated one.** The outer provider always writes an
+explicit `dir` — `ltr` or `rtl`, never nothing — and beside one it resolved
+under `'auto'`, from the DOM or from its language, `providerProps()` writes
+`data-volt-dir="auto"`. The inner provider's DOM step passes over a `dir` so
+marked, going on to whatever was stated above: an Arabic section given an
+`element` inside an English page resolves `rtl`, and an English one inside an
+Arabic page `ltr`. The outer provider needs no `element` of its own for this,
+only `providerProps()` spread on its element. Once the step has passed another
+provider's element it does not ask computed style either, since below that
+element the computed direction is the outer provider's `dir` again.
 
-A locale given an `element` watches the document for `dir` changes with a
-`MutationObserver`, so an ancestor's `dir` added later is noticed; that is also
-why it belongs to a scope that will eventually stop it. The DOM is read from a
+What was stated still answers before the language. That is a `dir` an author
+wrote between the two providers or above both, and it is a direction forced on
+the outer provider — `direction`, `defaultDirection` or `setDirection` — which
+is written without the mark and so reads below as a hand-written `dir` does.
+Forcing `rtl` on an English page to try a layout turns every nested provider
+with it; taking the force off turns them back.
+
+A locale given an `element` watches the document for changes to `dir` and to
+that mark with a `MutationObserver`, so an ancestor's `dir` added later is
+noticed; that is also why it belongs to a scope that will eventually stop it. The DOM is read from a
 user `effect`, once the element is in the document — so on a server, where user
 effects do not run, the DOM step never answers and the language decides.
 
@@ -856,11 +892,17 @@ absorbs the 23- and 25-hour days daylight saving makes. Pass
 `numeric: 'always'` for a live countdown, where a word that does not change
 every second reads as a frozen clock.
 
-From seven days, the month is compared before the week: within one calendar
-month the answer is in weeks, across a boundary it is in months. That makes
-eight days ago, on the 8th, "last month", while 28 days ago, on the 30th, is "4
-weeks ago". Years are whole twelve-month spans, so thirteen months back is "last
-year" even when the calendar year is two behind. Pass `unit` when a surface
+From seven days the answer is in weeks until a whole month has gone by — the
+day of the month has to have come round — so eight days back from the 8th is
+"last week" wherever the month boundary falls, and 28 days back from the 30th
+is "4 weeks ago". Past that the answer is in whole months, the same count that
+ended the weeks: the 31st of January seen on the 1st of March — 29 days, a day
+more than "4 weeks ago" — is "last month", not the two month boundaries it
+crossed. From twelve whole months it is in years, and those are the calendar's,
+as days are: December 2024 seen from January 2026 is "2 years ago" rather than
+"last year", which names 2025. A forced `unit` counts by the calendar
+throughout — `unit: 'year'` on New Year's Day calls the day before "last year",
+and `unit: 'month'` on the 1st calls it "last month". Pass `unit` when a surface
 needs one scale throughout.
 
 ```ts
@@ -872,19 +914,33 @@ const now = new Date(2026, 8, 11, 12, 0);
 format.relativeTime(new Date(2026, 8, 11, 15, 0), { now }); // 'in 3 hours'
 format.relativeTime(new Date(2026, 8, 10, 23, 0), { now }); // '13 hours ago'
 format.relativeTime(new Date(2026, 8, 10, 23, 0), { now, unit: 'day' }); // 'yesterday'
-format.relativeTime(new Date(2026, 7, 20), { now });        // 'last month'
+format.relativeTime(new Date(2026, 7, 20), { now });        // '3 weeks ago'
+format.relativeTime(new Date(2026, 7, 11), { now });        // 'last month'
+format.relativeTime(new Date(2024, 11, 15), { now });       // '2 years ago'
 ```
+
+```ts
+function relativeTimeParts(
+  target: Date,
+  base: Date,
+): [number, 'second' | 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year']
+```
+
+`relativeTimeParts` is that choice on its own — the amount and the unit, before
+any language is involved — for code that needs the two apart: a timestamp that
+paces its own clock by the unit, or a sentence built around the number.
 
 A relative time that keeps itself current as the clock moves is
 `createRelativeTime`, on [display primitives](./primitives-display#relative-time).
-It is a separate implementation, not this formatter on a timer, and the two do
-not agree everywhere. It does not read the locale — it takes a `locale` option
-and otherwise formats in the runtime's language. It truncates amounts under a
-day where this rounds them, so 90 seconds from now is "in 2 minutes" here and
-"in 1 minute" there. And it counts a month only once the day of the month has
-come round, so the eight days back from the 8th that are "last month" here are
-"last week" there. A page that shows both — a live timestamp beside a formatted
-one in a tooltip, say — can show two answers for the same moment.
+It is a separate implementation, not this formatter on a timer. The two choose
+a unit the same way — weeks until a whole month has gone by, then whole months
+— but do not agree everywhere. It does not read the locale — it takes a `locale`
+option and otherwise formats in the runtime's language. It truncates amounts
+under a day where this rounds them, so 90 seconds from now is "in 2 minutes"
+here and "in 1 minute" there. And it counts years in twelve-month spans rather
+than by the calendar, so December 2024 seen from January 2026 is "2 years ago"
+here and "last year" there. A page that shows both — a live timestamp beside a
+formatted one in a tooltip, say — can show two answers for the same moment.
 
 ### `bytes`
 

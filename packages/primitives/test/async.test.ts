@@ -23,6 +23,7 @@ import {
   type ResourceRequest,
   type ResourceStatus,
 } from '../src/async.js';
+import { createLocale } from '../src/i18n.js';
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -419,19 +420,22 @@ describe('the dependency accessor', () => {
 
   it('treats an equal source as the same request', async () => {
     const page = new Signal.State(1);
+    // Read by the source and no part of the question — the unrelated re-run a
+    // derived source sees all the time.
+    const tick = new Signal.State(0);
     const fetcher = vi.fn(() => 'page');
     withScope(() =>
       createResource(fetcher, {
         // A derived source builds a fresh object on every read, so without an
         // equals every unrelated render would refetch.
-        source: () => ({ page: page.get() }),
+        source: () => ({ page: page.get(), tick: tick.get() }),
         equals: (a, b) => a.page === b.page,
       }),
     );
     await settle();
     expect(fetcher).toHaveBeenCalledTimes(1);
 
-    page.set(1);
+    tick.set(1);
     await settle();
     expect(fetcher).toHaveBeenCalledTimes(1);
 
@@ -1056,6 +1060,58 @@ describe('state owned from outside', () => {
     await settle();
     expect(shared.get()).toBe('success');
   });
+
+  it('takes a supplied status out of loading when its scope goes mid-request', async () => {
+    const status = new Signal.State<ResourceStatus>('idle');
+    const store = new Signal.State<string | undefined>(undefined);
+    const withData = new Signal.State<ResourceStatus>('idle');
+    const gate = deferred<string>();
+
+    let dispose!: () => void;
+    createRoot((end) => {
+      dispose = end;
+      createResource(() => gate.promise, { status });
+      createResource(() => gate.promise, { status: withData, data: store, immediate: false }).refetch();
+      store.set('held');
+    });
+    flushSync();
+    expect(status.get()).toBe('loading');
+    expect(withData.get()).toBe('loading');
+
+    // Both signals outlive the component that wrote them. Left at `loading`,
+    // each is a spinner nothing will ever take down — the bug `abort` exists
+    // to prevent, reached by unmounting instead.
+    dispose();
+    expect(status.get()).toBe('idle');
+    expect(withData.get()).toBe('success');
+
+    gate.resolve('late');
+    await settle();
+    expect(status.get()).toBe('idle');
+    expect(store.get()).toBe('held');
+  });
+
+  it('leaves a shared status alone when the resource that goes never fetched', () => {
+    const shared = new Signal.State<ResourceStatus>('idle');
+    const gate = deferred<string>();
+
+    let disposeIdle!: () => void;
+    let idle!: ReturnType<typeof createResource<string, undefined>>;
+    createRoot((end) => {
+      disposeIdle = end;
+      idle = createResource(() => 'never asked for', { status: shared, immediate: false });
+    });
+    withScope(() => createResource(() => gate.promise, { status: shared }));
+    flushSync();
+    expect(shared.get()).toBe('loading');
+
+    // The spinner is the other resource's, which is still waiting. One that
+    // has nothing in flight has nothing to cancel, by hand or by unmounting.
+    idle.abort();
+    expect(shared.get()).toBe('loading');
+    disposeIdle();
+    expect(shared.get()).toBe('loading');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1096,8 +1152,10 @@ describe('cleanup on disposal', () => {
     gate.resolve('late');
     await settle();
 
+    // Disposal cancelled it, so it is back to having nothing rather than
+    // claiming the success the late answer would have been.
     expect(resource.data()).toBeUndefined();
-    expect(resource.status()).toBe('loading');
+    expect(resource.status()).toBe('idle');
   });
 });
 
@@ -1173,6 +1231,25 @@ describe('the strings a user hears', () => {
     );
     await settle();
     expect(resource.errorMessage()).toBe('No results for that search.');
+  });
+
+  it('reads a label each time it speaks, so one written as a getter follows the locale', () => {
+    const locale = createLocale({ defaultLocale: 'en-GB' });
+    const ui = mountList(() => new Promise<string[]>(() => {}), {
+      labels: {
+        get loading() {
+          return locale.t('loading');
+        },
+      },
+    });
+    expect(ui.live().textContent).toBe('Loading…');
+
+    // A value computed once would go on speaking the language the page started
+    // in; the region is subscribed to the catalogue through the getter.
+    locale.setMessages({ loading: 'Chargement…' });
+    locale.setLocale('fr-FR');
+    flushSync();
+    expect(ui.live().textContent).toBe('Chargement…');
   });
 
   it('has no error message when there is no error', () => {

@@ -204,11 +204,9 @@ exception it makes, and keeps a disabled node reachable.
 
 A primitive that has to measure — a collapsible's height, a scroll area's
 thumb, a code block's overflow, a virtualizer's viewport, a textarea growing
-with its text — reads from `measureEffect`, so every read in a flush shares one
-layout (see [effects](./reactivity#effects)). A test fails for any of those that
-goes back to measuring from `effect`. The breadcrumb is the exception today: it
-measures its trail from a user effect, hiding and unhiding crumbs around the
-read, and costs a layout of its own in each flush that re-measures it.
+with its text, a breadcrumb's trail — reads from `measureEffect`, so every read
+in a flush shares one layout (see [effects](./reactivity#effects)). A test fails
+for any of those that goes back to measuring from `effect`.
 
 ### Nothing browser-only runs on a server
 
@@ -659,7 +657,7 @@ createIsland<T>(options: IslandOptions<T>): Island<T>
 |---|---|
 | `sync(read, apply)` | Route one signal to one operation inside the island |
 | `instance()` | What `setup` returned, or `null` — before it has run, on a server, and when it returned a function or nothing |
-| `isReady()` | Whether `instance()` is non-null |
+| `isReady()` | Whether the island has been drawn, whatever `setup` returned |
 | `hostProps()` | `data-volt-island` on the host |
 
 A subtree the framework does not own: a canvas, a map, a video player, an editor
@@ -703,15 +701,16 @@ export class MapView {
 It never draws on a server: `setup` runs from a user effect, and a server flush
 stops before those, so the host is sent empty and filled by the client.
 
-Two things to know, both about how `setup` is called:
+Two things to know, both about `setup`:
 
-- **`setup` is tracked.** It runs inside the effect that watches `host`, and a
-  signal it reads becomes a reason to tear the island down and draw it again.
-  Read signals in `sync`, not in `setup`.
-- **`isReady()` means "has an instance".** A `setup` that returns a teardown
-  function, or nothing, leaves `instance()` null — so `isReady()` stays false
-  after the island has drawn, and `sync` has nothing to apply to. Return the
-  object the island is about when you want either.
+- **It runs untracked, and once.** A signal it reads is not a reason to tear
+  the island down and draw it again; only `host` becoming another element is.
+  Read signals in `sync`, which is what routes one into the scene.
+- **What it returns is what `instance()` holds.** Return the object the island
+  is about — the map, the chart, the editor — and `sync` has something to apply
+  to. Returning a teardown function instead, or nothing, is allowed and leaves
+  `instance()` null; `isReady()` is true either way, because the island has
+  drawn.
 
 ## Every primitive
 
@@ -950,11 +949,6 @@ the limits a user will meet, recorded rather than hidden.
   stays mounted after closing if its CSS promises an exit animation that never
   runs. See [presence](#presence-createpresence) for the two ways to write that
   by accident.
-- **The breadcrumb measures outside the measure lane**, as said
-  [above](#geometry-is-read-in-the-measure-lane).
-- **An island's `setup` is tracked, and `isReady()` needs an instance** — both
-  described [above](#islands-createisland). The first redraws a scene you meant
-  to draw once; the second reports a drawn island as not ready.
 - **Not every string is localised through the provider**, as said
   [above](#strings-are-options).
 - **Not every primitive has a stylesheet in `@voltdev/ui`**, and that is by
