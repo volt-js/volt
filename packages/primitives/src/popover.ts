@@ -59,7 +59,7 @@
 
 import { Signal, effect, onCleanup } from '@voltdev/core';
 import { createPresence, type PresenceState } from './presence.js';
-import { createDismiss, type DismissReason } from './dismiss.js';
+import { createDismiss, isInsideLayer, type DismissReason } from './dismiss.js';
 import { createFocusScope, focusableWithin } from './focus-scope.js';
 import { createAnchor, type AnchorPlacement } from './anchoring.js';
 import { createId } from './id.js';
@@ -178,7 +178,11 @@ export interface Popover {
   isPresent(): boolean;
   /** `open` or `closed`, for CSS to animate against. */
   state(): PresenceState;
-  /** The side it is on, for an arrow or a transform origin. */
+  /**
+   * The placement it was asked for, for an arrow or a transform origin. Not
+   * necessarily the side it is on: when the engine takes one of the fallbacks
+   * it does not report which, and there is no API to ask.
+   */
   placement(): PopoverPlacement;
   /**
    * The anchor's name, for CSS that wants to position something else against
@@ -303,8 +307,9 @@ export function createPopover(options: PopoverOptions): Popover {
         setOpen(false);
       },
       {
-        escape: options.closeOnEscape !== false,
-        outsidePointer: options.closeOnOutsidePointer !== false,
+        // Escape and the press are always taken here, and declined above when
+        // the popover is told not to close on them: a layer that holds focus and
+        // stays open still keeps them from the layer beneath it.
         // The trigger is not "outside": dismissing on it would close the
         // popover and then the trigger's own handler would reopen it.
         exclude: () => (options.trigger ? [options.trigger()] : []),
@@ -504,7 +509,10 @@ function nonModalFocus(content: Element, options: NonModalFocusOptions): void {
   });
 
   if (options.autoFocus) {
-    const preferred = options.initialFocus?.() as HTMLElement | null | undefined;
+    // Untracked: this runs inside the popover's open step, which must not be
+    // set up again — moving focus as it goes — because what the getter reads
+    // has changed.
+    const preferred = untrack(() => options.initialFocus?.()) as HTMLElement | null | undefined;
     const target = preferred ?? focusableWithin(content)[0] ?? (content as HTMLElement);
     target.focus?.();
   }
@@ -513,7 +521,9 @@ function nonModalFocus(content: Element, options: NonModalFocusOptions): void {
 
   const onFocusIn = (event: FocusEvent) => {
     const target = event.target;
-    if (!(target instanceof Node) || content.contains(target)) return;
+    // A popover opened from inside this one is portalled out of it, but focus
+    // going there has not gone somewhere else entirely.
+    if (!(target instanceof Node) || isInsideLayer(content, target)) return;
     // The trigger is not outside. Focusing it on the way to a click has to
     // leave the popover alone, or the press would close it here and the
     // trigger's own handler would open it straight back up.

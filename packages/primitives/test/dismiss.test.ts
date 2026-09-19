@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, flushSync } from '@voltdev/core';
 import { createDismiss, dismissStackSize } from '@voltdev/primitives';
+import { forgetPress, isInsideLayer } from '../src/dismiss.ts';
 
 let disposers: (() => void)[] = [];
 
@@ -90,6 +91,28 @@ describe('escape', () => {
     escape();
     expect(onDismiss).not.toHaveBeenCalled();
   });
+
+  it('passes over a layer that does not take it, to the one beneath', () => {
+    const dialog = layer(el('a'));
+    // A tooltip told not to close on Escape has said the key is not its own,
+    // not that nobody may have it.
+    const tooltip = layer(el('b'), { escape: false });
+
+    escape();
+    expect(tooltip).not.toHaveBeenCalled();
+    expect(dialog).toHaveBeenCalledTimes(1);
+    expect(dialog).toHaveBeenCalledWith('escape');
+  });
+
+  it('still reaches one layer only when several beneath would take it', () => {
+    const lowest = layer(el('outside'));
+    const middle = layer(el('a'));
+    layer(el('b'), { escape: false });
+
+    escape();
+    expect(middle).toHaveBeenCalledTimes(1);
+    expect(lowest).not.toHaveBeenCalled();
+  });
 });
 
 describe('pointer outside', () => {
@@ -143,6 +166,42 @@ describe('pointer outside', () => {
     click(el('outside'));
     expect(onDismiss).not.toHaveBeenCalled();
   });
+
+  it('passes over a layer that does not take presses, to the one beneath', () => {
+    const dialog = layer(el('a'));
+    const alert = layer(el('b'), { outsidePointer: false });
+
+    click(el('outside'));
+    expect(alert).not.toHaveBeenCalled();
+    expect(dialog).toHaveBeenCalledWith('outside-pointer');
+  });
+
+  it('counts a layer that does not take presses as inside the one beneath', () => {
+    const dialog = layer(el('a'));
+    layer(el('b'), { outsidePointer: false });
+
+    // The layer above is part of the one below, whether or not it answers.
+    click(el('b-btn'));
+    expect(dialog).not.toHaveBeenCalled();
+  });
+});
+
+describe('a press spoken for while it is in progress', () => {
+  it('ends without dismissing once the layer has asked for it to be forgotten', () => {
+    const onDismiss = layer(el('a'));
+    press(el('outside'), 'pointerdown');
+    // What a context menu does when `contextmenu` arrives mid-press.
+    forgetPress();
+    press(el('outside'), 'pointerup');
+    expect(onDismiss).not.toHaveBeenCalled();
+  });
+
+  it('leaves the next press alone when there was none to forget', () => {
+    const onDismiss = layer(el('a'));
+    forgetPress();
+    click(el('outside'));
+    expect(onDismiss).toHaveBeenCalledWith('outside-pointer');
+  });
 });
 
 describe('registration', () => {
@@ -164,5 +223,37 @@ describe('registration', () => {
     escape();
     click(el('outside'));
     expect(onDismiss).not.toHaveBeenCalled();
+  });
+});
+
+describe('containment, as the focus rules ask it', () => {
+  it('counts a layer stacked above as inside the one beneath', () => {
+    layer(el('a'));
+    layer(el('b'));
+    // `b` is not a descendant of `a`, but it went on the stack after it.
+    expect(isInsideLayer(el('a'), el('b-btn'))).toBe(true);
+    expect(isInsideLayer(el('b'), el('a-btn'))).toBe(false);
+    expect(isInsideLayer(el('a'), el('outside'))).toBe(false);
+  });
+
+  it('does not count a layer above as inside once it has gone', () => {
+    layer(el('a'));
+    layer(el('b'));
+    disposers.pop()!();
+    expect(isInsideLayer(el('a'), el('b-btn'))).toBe(false);
+  });
+
+  it('does not count the exclusions of a layer above', () => {
+    layer(el('a'));
+    // A tooltip's trigger elsewhere on the page is where a press may land
+    // without closing the tooltip, not a place focus joins the layer below.
+    layer(el('b'), { exclude: () => [el('outside')] });
+    expect(isInsideLayer(el('a'), el('outside'))).toBe(false);
+  });
+
+  it('answers for its own subtree alone when no layer registered it', () => {
+    layer(el('b'));
+    expect(isInsideLayer(el('a'), el('a-btn'))).toBe(true);
+    expect(isInsideLayer(el('a'), el('b-btn'))).toBe(false);
   });
 });

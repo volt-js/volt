@@ -45,20 +45,24 @@ import { createId } from './id.js';
 import { createPresence, type PresenceState } from './presence.js';
 import { createRovingFocus, type Orientation } from './roving-focus.js';
 
+// The proposal's own name for reading without subscribing; Volt adds no second
+// spelling for it.
+const { untrack } = Signal.subtle;
+
 /** Where the measured height of a panel is published. */
 export const COLLAPSIBLE_HEIGHT_PROPERTY = '--volt-collapsible-height';
 
 /**
- * Marks an accordion header for the collection.
+ * Marks an accordion header, with the value of the panel it opens.
  *
  * Deliberately not the shared `data-volt-item`: a panel may contain a menu, a
  * listbox or another collection of its own, and those items must not be
  * mistaken for headers of the accordion around them.
  *
- * What that does not solve is an accordion inside another accordion's panel,
- * since both use this attribute and a collection reads the whole subtree. The
- * alternative is a private attribute name per accordion, which puts a
- * generated string in the markup for CSS and tests to guess at.
+ * It is not what the arrow keys move between, though. An accordion inside
+ * another's panel carries this too, so each accordion also gives its headers
+ * a generated attribute of its own and reads only that. This one stays the
+ * stable name for CSS and tests to find a header by.
  */
 export const ACCORDION_TRIGGER_ATTRIBUTE = 'data-volt-accordion-trigger';
 
@@ -266,8 +270,13 @@ export function createCollapsible(options: CollapsibleOptions): Collapsible {
     // Disabled blocks these rather than only the trigger's own handler, since
     // these *are* what a trigger calls. A caller that must move a disabled
     // section anyway can write to the controlling signal directly.
-    if (disabled()) return;
-    if (state.get() === next) return;
+    //
+    // Both reads are untracked because `open()` may well be called from inside
+    // an effect, and subscribing that effect to the state it just wrote — or to
+    // whatever `disabled` reads — would run it again when the section closes,
+    // and open it straight back up.
+    if (untrack(disabled)) return;
+    if (untrack(() => state.get()) === next) return;
     state.set(next);
     options.onOpenChange?.(next);
   };
@@ -293,7 +302,7 @@ export function createCollapsible(options: CollapsibleOptions): Collapsible {
 
     open: () => setOpen(true),
     close: () => setOpen(false),
-    toggle: () => setOpen(!state.get()),
+    toggle: () => setOpen(!untrack(() => state.get())),
 
     triggerProps: () => panel.triggerProps(),
     contentProps: () => panel.contentProps(),
@@ -433,19 +442,25 @@ export function createAccordion(options: AccordionOptions): Accordion {
     options.onValueChange?.(next);
   };
 
-  const open = (value: string) => {
-    if (isDisabled(value)) return;
-    const current = values.get();
-    if (current.includes(value)) return;
-    setValues(type === 'multiple' ? [...current, value] : [value]);
-  };
+  // These read the open panels and the caller's `disabled` untracked, because
+  // they may well be called from inside an effect, and subscribing that effect
+  // to the state they write would run it again when the panel closes — and
+  // open it straight back up.
+  const open = (value: string) =>
+    untrack(() => {
+      if (isDisabled(value)) return;
+      const current = values.get();
+      if (current.includes(value)) return;
+      setValues(type === 'multiple' ? [...current, value] : [value]);
+    });
 
-  const close = (value: string) => {
-    if (isDisabled(value) || isLocked(value)) return;
-    const current = values.get();
-    if (!current.includes(value)) return;
-    setValues(current.filter((other) => other !== value));
-  };
+  const close = (value: string) =>
+    untrack(() => {
+      if (isDisabled(value) || isLocked(value)) return;
+      const current = values.get();
+      if (!current.includes(value)) return;
+      setValues(current.filter((other) => other !== value));
+    });
 
   // Panels are built the first time a value is asked about, since the values
   // are whatever the consumer renders. Each gets a root of its own rather than
@@ -487,8 +502,14 @@ export function createAccordion(options: AccordionOptions): Accordion {
     }, null);
   };
 
+  // This accordion's own headers, told apart from those of one nested in a
+  // panel. Both carry ACCORDION_TRIGGER_ATTRIBUTE and the inner one's sit in
+  // this one's container, so the shared marker would put them in this one's
+  // arrow sequence and have it answer keys pressed on them.
+  const headerAttribute = `data-${createId('volt-accordion')}`;
+
   const collection = createCollection(() => options.container(), {
-    attribute: ACCORDION_TRIGGER_ATTRIBUTE,
+    attribute: headerAttribute,
     // A header that stays in the tab sequence has to stay in the arrow
     // sequence too, or the two orders disagree about which headers exist and a
     // disabled header becomes reachable one way but not the other.
@@ -522,7 +543,7 @@ export function createAccordion(options: AccordionOptions): Accordion {
 
   const triggerFrom = (target: EventTarget | null): HTMLElement | null => {
     if (!(target instanceof Element)) return null;
-    const trigger = target.closest<HTMLElement>(`[${ACCORDION_TRIGGER_ATTRIBUTE}]`);
+    const trigger = target.closest<HTMLElement>(`[${headerAttribute}]`);
     const container = options.container();
     return trigger && container?.contains(trigger) ? trigger : null;
   };
@@ -536,7 +557,7 @@ export function createAccordion(options: AccordionOptions): Accordion {
 
     open,
     close,
-    toggle: (value) => (values.get().includes(value) ? close(value) : open(value)),
+    toggle: (value) => (untrack(() => values.get()).includes(value) ? close(value) : open(value)),
 
     onTriggerKeyDown(event: KeyboardEvent): boolean {
       const trigger = triggerFrom(event.target);
@@ -567,9 +588,10 @@ export function createAccordion(options: AccordionOptions): Accordion {
 
     triggerProps: (value) => ({
       ...panelFor(value).triggerProps(),
-      // The value rides along on the marker, so a header says which panel it
-      // opens without a second attribute for the collection to ignore.
+      // The shared marker says which panel a header opens, for styling and for
+      // finding one; the accordion's own is what it moves between.
       [ACCORDION_TRIGGER_ATTRIBUTE]: value,
+      [headerAttribute]: '',
     }),
 
     contentProps: (value) => panelFor(value).contentProps(),

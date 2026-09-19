@@ -14,12 +14,18 @@
  * keyboard, mouse, programmatic, and the browser's own address-bar cycle.
  */
 
-import { onCleanup } from '@voltdev/core';
+import { Signal, onCleanup } from '@voltdev/core';
+import { isInsideLayer } from './dismiss.js';
+
+// The proposal's own name for reading without subscribing; Volt adds no second
+// spelling for it.
+const { untrack } = Signal.subtle;
 
 /**
- * Elements that can hold focus. `:not([hidden])` and the disabled checks
- * remove the common cases cheaply; visibility is checked separately, since it
- * needs layout.
+ * Elements that can hold focus. The disabled checks remove the common cases
+ * cheaply; a negative `tabindex` and visibility are checked separately, since
+ * the first can take a native control out of the tab order as well as leave
+ * anything else out of it, and the second needs style.
  */
 const FOCUSABLE = [
   'a[href]',
@@ -27,7 +33,7 @@ const FOCUSABLE = [
   'input:not([disabled])',
   'select:not([disabled])',
   'textarea:not([disabled])',
-  '[tabindex]:not([tabindex="-1"])',
+  '[tabindex]',
   'audio[controls]',
   'video[controls]',
   '[contenteditable]:not([contenteditable="false"])',
@@ -62,9 +68,15 @@ export function createFocusScope(
     }
   });
 
+  // Read untracked, wherever it is asked. The scope is created from an effect
+  // and recovers inside whatever moved focus, which can be another effect, and
+  // either one depending on what the getter reads would run again when that
+  // changes — building the scope again, or moving focus back to where it was.
+  const initialFocus = () => untrack(() => options.initialFocus?.());
+
   const container = node();
   if (container) {
-    if (options.autoFocus !== false) focusFirst(container, options.initialFocus?.());
+    if (options.autoFocus !== false) focusFirst(container, initialFocus());
 
     // Guards against the trap re-entering itself. Moving focus fires `blur` on
     // whatever held it and `focusin` on whatever takes it, so a container with
@@ -73,35 +85,87 @@ export function createFocusScope(
     // attempt per escape, which is all a recovery can usefully be.
     let recovering = false;
 
+    // Whether focus is on its way backwards. `focusin` says where focus landed
+    // and not which way it was heading, and Shift+Tab off the first element
+    // wants the last one, not the first again. Tab moves focus between the key
+    // going down and coming up, so the direction holds for exactly that long —
+    // an escape by a press or by script afterwards was not heading anywhere.
+    let backwards = false;
+    const onTab = (event: KeyboardEvent) => {
+      if (event.key === 'Tab') backwards = event.type === 'keydown' && event.shiftKey;
+    };
+
     const onFocusIn = (event: FocusEvent) => {
       if (recovering) return;
       const target = event.target;
-      if (!(target instanceof Node) || container.contains(target)) return;
+      // A layer opened from inside this one — a popover or a menu from a
+      // dialog — is portalled out of the container, and focus going into it
+      // has not escaped.
+      if (!(target instanceof Node) || isInsideLayer(container, target)) return;
 
       recovering = true;
       try {
-        // Focus escaped — pull it back to the first thing inside.
-        focusFirst(container, options.initialFocus?.());
+        // Focus escaped — pull it back to the first thing inside, or round to
+        // the last when it left backwards.
+        const last = backwards ? focusableWithin(container).at(-1) : undefined;
+        if (last) last.focus();
+        else focusFirst(container, initialFocus());
       } finally {
         recovering = false;
       }
     };
     document.addEventListener('focusin', onFocusIn, true);
-    onCleanup(() => document.removeEventListener('focusin', onFocusIn, true));
+    document.addEventListener('keydown', onTab, true);
+    document.addEventListener('keyup', onTab, true);
+    onCleanup(() => {
+      document.removeEventListener('focusin', onFocusIn, true);
+      document.removeEventListener('keydown', onTab, true);
+      document.removeEventListener('keyup', onTab, true);
+    });
   }
 }
 
-/** Focusable descendants in tab order, minus anything not actually visible. */
+/**
+ * The descendants Tab stops on, in the order it visits them, minus anything
+ * not actually visible.
+ *
+ * The order is the browser's rather than the document's: a positive
+ * `tabindex` comes before everything else, lowest first. And `tabindex="-1"`
+ * leaves an element out even when it is a button, because that is how a
+ * roving group keeps its resting items off the tab sequence — Tab-out of a
+ * popover that landed on one would be landing where Tab itself never does.
+ */
 export function focusableWithin(container: Element): HTMLElement[] {
-  return [...container.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(isVisible);
+  const natural: HTMLElement[] = [];
+  const positive: HTMLElement[] = [];
+  for (const el of container.querySelectorAll<HTMLElement>(FOCUSABLE)) {
+    const index = tabIndexOf(el);
+    if (index < 0 || !isVisible(el)) continue;
+    (index > 0 ? positive : natural).push(el);
+  }
+  if (positive.length === 0) return natural;
+  // A stable sort, so equal indexes keep their document order.
+  positive.sort((a, b) => tabIndexOf(a) - tabIndexOf(b));
+  return [...positive, ...natural];
 }
 
+/** Its own `tabindex`, or 0 for a control that is in the tab order by nature. */
+function tabIndexOf(el: Element): number {
+  const value = Number.parseInt(el.getAttribute('tabindex') ?? '', 10);
+  return Number.isNaN(value) ? 0 : value;
+}
+
+/**
+ * Whether it is rendered, asked of the ancestors as well as the element. A
+ * button inside a `display: none` panel computes a display of its own, so a
+ * look at its own style alone lists something that cannot take focus.
+ * `checkVisibility()` walks up for itself, and answers for `hidden` too, by
+ * way of the user-agent rule that gives it `display: none` — so an author's
+ * rule that shows a `hidden` element anyway leaves it listed here, as it is
+ * focusable in the page.
+ */
 function isVisible(el: HTMLElement): boolean {
-  if (el.hasAttribute('hidden')) return false;
-  const view = el.ownerDocument?.defaultView;
-  if (!view?.getComputedStyle) return true;
-  const styles = view.getComputedStyle(el);
-  return styles.display !== 'none' && styles.visibility !== 'hidden';
+  return el.checkVisibility({ visibilityProperty: true });
 }
 
 function focusFirst(container: Element, preferred: Element | null | undefined): void {

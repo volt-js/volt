@@ -8,9 +8,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { compileTemplate } from '@voltdev/core/jit';
-import { Signal, defineComponent, flushSync, mount } from '@voltdev/core';
+import { Signal, createRoot, defineComponent, flushSync, mount } from '@voltdev/core';
 import { createPopover, type PopoverOptions } from '../src/popover.ts';
-import { dismissStackSize } from '../src/dismiss.ts';
+import { createDismiss, dismissStackSize } from '../src/dismiss.ts';
 
 let host: HTMLElement;
 let mounted: { unmount(): void }[] = [];
@@ -107,6 +107,11 @@ function keydown(el: Element, key: string, init: KeyboardEventInit = {}): Keyboa
 function after(): HTMLElement {
   return document.querySelector<HTMLElement>('#after')!;
 }
+
+// Every browser's user-agent stylesheet hides `[hidden]`, which is how
+// `checkVisibility()` knows to leave out a hidden element. happy-dom has no
+// user-agent stylesheet, so it is given that one rule.
+document.head.insertAdjacentHTML('beforeend', '<style>[hidden] { display: none }</style>');
 
 beforeEach(() => {
   // `#after` sits past the component in tab order, which is where Tab out of a
@@ -205,6 +210,33 @@ describe('opening and closing', () => {
     press(document.querySelector('#behind')!);
     flushSync();
     expect(content()).not.toBeNull();
+  });
+
+  it('keeps what it does not close on from the layer beneath', () => {
+    const beneath = vi.fn();
+    const dispose = createRoot((dispose) => {
+      createDismiss(() => document.querySelector('#behind'), beneath);
+      return dispose;
+    });
+    try {
+      const { trigger, content } = mountPopover({
+        closeOnEscape: false,
+        closeOnOutsidePointer: false,
+      });
+      trigger().click();
+      flushSync();
+
+      // A layer that takes focus and will not close is still the layer the key
+      // and the press were meant for; closing the one under it would be a
+      // surprise.
+      escape();
+      press(after());
+      flushSync();
+      expect(content()).not.toBeNull();
+      expect(beneath).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
   });
 
   it('reports nothing when asked to close while already closed', () => {
@@ -433,6 +465,27 @@ describe('the keyboard map', () => {
     expect(content()).toBeNull();
   });
 
+  it('tabs out past what Tab itself would skip', () => {
+    // A roving toolbar between the trigger and `#after`: its resting item is
+    // focusable by script and skipped by Tab, and so skipped here too.
+    after().insertAdjacentHTML(
+      'beforebegin',
+      '<div role="toolbar"><button id="resting" tabindex="-1">resting</button></div>' +
+        '<div hidden><button id="closed">closed</button></div>',
+    );
+    const { trigger, content } = mountPopover();
+    trigger().focus();
+    trigger().click();
+    flushSync();
+
+    const last = content()!.querySelector<HTMLElement>('.close')!;
+    last.focus();
+    keydown(last, 'Tab');
+    flushSync();
+
+    expect(document.activeElement).toBe(after());
+  });
+
   it('tabs backwards out of the popover to the trigger', () => {
     const { trigger, content } = mountPopover();
     trigger().focus();
@@ -503,6 +556,31 @@ describe('focus', () => {
     trigger().click();
     flushSync();
     expect(document.activeElement).toBe(content()!.querySelector('.two'));
+  });
+
+  it('does not move focus again when what initialFocus reads changes', () => {
+    for (const modal of [false, true]) {
+      const target = new Signal.State('.one');
+      const { trigger, content, handle } = mountPopover({
+        modal,
+        initialFocus: () => document.querySelector(`[role="dialog"] ${target.get()}`),
+      });
+      trigger().click();
+      flushSync();
+      expect(document.activeElement).toBe(content()!.querySelector('.one'));
+
+      // Read once, as the popover opens. Subscribing the open step to it would
+      // set the popover up again here, and focus would jump to the new target
+      // from under the user.
+      content()!.querySelector<HTMLElement>('.two')!.focus();
+      target.set('.close');
+      flushSync();
+      expect(document.activeElement, `modal: ${modal}`).toBe(content()!.querySelector('.two'));
+
+      handle.unmount();
+      mounted.splice(mounted.indexOf(handle), 1);
+      flushSync();
+    }
   });
 
   it('closes when focus lands somewhere else entirely, and leaves it there', () => {
@@ -734,5 +812,123 @@ describe('anchor positioning', () => {
     expect(props['aria-hidden']).toBe('true');
     expect(props.style).toEqual({ 'position-anchor': popover.anchorName() });
     expect(props['data-placement']).toBe('bottom');
+  });
+});
+
+describe('opening one layer from another', () => {
+  /** An outer layer with the inner one's trigger inside it, both portalled. */
+  function mountNested(outerOptions: Partial<PopoverOptions> = {}) {
+    class Nested {
+      outerTrigger = new Signal.State<Element | null>(null);
+      outerContent = new Signal.State<Element | null>(null);
+      innerTrigger = new Signal.State<Element | null>(null);
+      innerContent = new Signal.State<Element | null>(null);
+      outer = createPopover({
+        trigger: () => this.outerTrigger.get(),
+        content: () => this.outerContent.get(),
+        ...outerOptions,
+      });
+      inner = createPopover({
+        trigger: () => this.innerTrigger.get(),
+        content: () => this.innerContent.get(),
+      });
+    }
+
+    seq += 1;
+    defineComponent(Nested, {
+      selector: `v-popover-nested-${seq}`,
+      render: compileTemplate(`
+        <div>
+          <button class="outer" :ref="outerTrigger" :spread="outer.triggerProps()">outer</button>
+          <div :if="outer.isPresent()" :portal class="outer-content" :ref="outerContent"
+               :spread="outer.contentProps()">
+            <button class="inner" :ref="innerTrigger" :spread="inner.triggerProps()">inner</button>
+          </div>
+          <div :if="inner.isPresent()" :portal class="inner-content" :ref="innerContent"
+               :spread="inner.contentProps()">
+            <input class="field" />
+          </div>
+        </div>
+      `),
+    });
+
+    const instance = track(mount(Nested, host)).instance as Nested;
+    return {
+      outer: instance.outer,
+      inner: instance.inner,
+      outerTrigger: () => host.querySelector<HTMLElement>('.outer')!,
+      innerTrigger: () => document.querySelector<HTMLElement>('.inner')!,
+      field: () => document.querySelector<HTMLElement>('.field')!,
+    };
+  }
+
+  /** A pointer press and the click it becomes, focusing on the way as a browser does. */
+  function pressAndClick(el: HTMLElement) {
+    el.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    el.focus();
+    el.dispatchEvent(new Event('pointerup', { bubbles: true }));
+    el.click();
+    flushSync();
+  }
+
+  it('keeps a popover open while focus is in one opened from inside it', () => {
+    const { outer, inner, outerTrigger, innerTrigger, field } = mountNested();
+    pressAndClick(outerTrigger());
+    pressAndClick(innerTrigger());
+
+    // Portalled, the inner popover is not inside the outer one's content, but
+    // it is a layer above it: focus moving in has not left the outer one.
+    expect(inner.isOpen()).toBe(true);
+    expect(outer.isOpen()).toBe(true);
+    expect(document.activeElement).toBe(field());
+  });
+
+  it('closes one layer per Escape, handing focus back down the stack', () => {
+    const { outer, inner, outerTrigger, innerTrigger } = mountNested();
+    pressAndClick(outerTrigger());
+    pressAndClick(innerTrigger());
+
+    escape();
+    flushSync();
+    expect(inner.isOpen()).toBe(false);
+    expect(outer.isOpen()).toBe(true);
+    expect(document.activeElement).toBe(innerTrigger());
+  });
+
+  it('still closes both when focus goes somewhere else entirely', () => {
+    const { outer, inner, outerTrigger, innerTrigger } = mountNested();
+    pressAndClick(outerTrigger());
+    pressAndClick(innerTrigger());
+
+    after().focus();
+    flushSync();
+    expect(inner.isOpen()).toBe(false);
+    expect(outer.isOpen()).toBe(false);
+    expect(document.activeElement).toBe(after());
+  });
+
+  it('closes one layer per press on the page behind, as any stack does', () => {
+    const { outer, inner, outerTrigger, innerTrigger } = mountNested();
+    pressAndClick(outerTrigger());
+    pressAndClick(innerTrigger());
+
+    // Text takes no focus, so a browser pressed on it sends focus to <body>,
+    // which fires no focusin: only the pointer rule hears the press.
+    const behind = document.querySelector<HTMLElement>('#behind')!;
+    const pressBehind = () => {
+      behind.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      (document.activeElement as HTMLElement | null)?.blur();
+      behind.dispatchEvent(new Event('pointerup', { bubbles: true }));
+      behind.click();
+      flushSync();
+    };
+
+    pressBehind();
+    expect(inner.isOpen()).toBe(false);
+    expect(outer.isOpen()).toBe(true);
+    expect(document.activeElement).toBe(innerTrigger());
+
+    pressBehind();
+    expect(outer.isOpen()).toBe(false);
   });
 });

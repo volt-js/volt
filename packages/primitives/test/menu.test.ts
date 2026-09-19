@@ -16,8 +16,18 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { compileTemplate } from '@voltdev/core/jit';
-import { Component, Signal, defineComponent, flushSync, mount } from '@voltdev/core';
+import {
+  Component,
+  Signal,
+  createRoot,
+  defineComponent,
+  effect,
+  flushSync,
+  mount,
+} from '@voltdev/core';
 import { createMenu, type MenuOptions } from '../src/menu.ts';
+import { createDialog } from '../src/dialog.ts';
+import { createDismiss } from '../src/dismiss.ts';
 
 let host: HTMLElement;
 let mounted: { unmount(): void }[] = [];
@@ -883,6 +893,49 @@ describe('as a context menu', () => {
     expect(instance.opened).toEqual([true]);
   });
 
+  it('moves on a second right-click where the platform asks for the menu as the button goes down', () => {
+    const { instance, menu, area, content } = contextSetup();
+    rightClick(area(), 10, 10);
+    const first = content();
+
+    // macOS and Linux: down, contextmenu, up. The press is outside the menu,
+    // but it is the press that asked for the menu, not one dismissing it.
+    area().dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 2 }));
+    rightClick(area(), 200, 40);
+    area().dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 2 }));
+    flushSync();
+
+    expect(menu.position()).toEqual({ x: 200, y: 40 });
+    expect(content()).toBe(first);
+    expect(instance.opened).toEqual([true]);
+  });
+
+  it('ends up open at the new point where the platform asks once the button is up', () => {
+    const { menu, area, content } = contextSetup();
+    rightClick(area(), 10, 10);
+
+    // Windows: down, up, contextmenu. The release dismisses the menu as any
+    // press outside it would, and the request that follows opens it again.
+    area().dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 2 }));
+    area().dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 2 }));
+    flushSync();
+    rightClick(area(), 200, 40);
+
+    expect(menu.isOpen()).toBe(true);
+    expect(content()).not.toBeNull();
+    expect(menu.position()).toEqual({ x: 200, y: 40 });
+  });
+
+  it('still closes on the next press outside after the keyboard moved it', () => {
+    const { area, content } = contextSetup();
+    rightClick(area(), 10, 10);
+    // The context-menu key: a request with no press around it.
+    rightClick(area(), 200, 40);
+
+    pressOutside(document.querySelector('#behind')!);
+    expect(content()).toBeNull();
+  });
+
   it('treats the area it opened over as outside', () => {
     const { area, content } = contextSetup();
     rightClick(area(), 10, 10);
@@ -1049,5 +1102,170 @@ describe('controlling it from outside', () => {
     clickOn(document.querySelector('[data-value="one"]')!);
     expect(onOpenChange).toHaveBeenCalledTimes(2);
     expect(onOpenChange).toHaveBeenLastCalledWith(false);
+  });
+});
+
+describe('told not to close', () => {
+  it('keeps what it does not close on from the layer beneath', () => {
+    const beneath = vi.fn();
+    const disposeBeneath = createRoot((dispose) => {
+      createDismiss(() => document.querySelector('#app'), beneath);
+      return dispose;
+    });
+    try {
+      @Component({
+        selector: 'v-menu-stays',
+        render: compileTemplate(
+          `<div><button :click="menu.open()">go</button>` +
+            `<div :if="menu.isPresent()" :portal :ref="content" :spread="menu.contentProps()">x</div></div>`,
+        ),
+      })
+      class Stays {
+        content = new Signal.State<Element | null>(null);
+        menu = createMenu({
+          content: () => this.content.get(),
+          closeOnEscape: false,
+          closeOnOutsidePointer: false,
+        });
+      }
+
+      const page = track(mount(Stays, host)).instance as Stays;
+      clickOn(host.querySelector('button')!);
+
+      // The menu holds focus; a key or a press it declines is still one that
+      // was meant for it, not for whatever it was opened over.
+      escape();
+      pressOutside(document.querySelector('#behind')!);
+      expect(page.menu.isOpen()).toBe(true);
+      expect(beneath).not.toHaveBeenCalled();
+    } finally {
+      disposeBeneath();
+    }
+  });
+});
+
+describe('opened from an effect', () => {
+  it('does not make the effect depend on the menu it opened', () => {
+    const { menu } = setup();
+    const want = new Signal.State(false);
+    const dispose = createRoot((dispose) => {
+      effect(() => {
+        if (want.get()) menu.open('first');
+      });
+      return dispose;
+    });
+
+    want.set(true);
+    flushSync();
+    expect(menu.isOpen()).toBe(true);
+
+    // Closed while `want` still holds. An effect that had subscribed to the
+    // menu's state would run again here and open it straight back up.
+    menu.close();
+    flushSync();
+    expect(menu.isOpen()).toBe(false);
+    dispose();
+  });
+
+  it('does not make an effect that toggles it depend on it either', () => {
+    const { menu } = setup();
+    const want = new Signal.State(false);
+    const dispose = createRoot((dispose) => {
+      effect(() => {
+        if (want.get()) menu.toggle();
+      });
+      return dispose;
+    });
+
+    want.set(true);
+    flushSync();
+    expect(menu.isOpen()).toBe(true);
+
+    menu.close();
+    flushSync();
+    expect(menu.isOpen()).toBe(false);
+    dispose();
+  });
+});
+
+describe('inside a modal dialog', () => {
+  @Component({
+    selector: 'v-dialog-menu',
+    render: compileTemplate(`
+      <div>
+        <button class="open" :click="dialog.open()">open</button>
+        <div :if="dialog.isPresent()" :portal :ref="dialogContent" :spread="dialog.contentProps()">
+          <button class="first">first</button>
+          <button class="actions" :ref="trigger" :spread="menu.triggerProps()"
+                  :click="menu.toggle()" :keydown="menu.onTriggerKeyDown($event)">actions</button>
+        </div>
+        <div :if="menu.isPresent()" :portal :ref="content" :spread="menu.contentProps()"
+             :keydown="menu.onContentKeyDown($event)" :click="menu.onItemClick($event)">
+          <button :spread="menu.itemProps({ value: 'rename' })">Rename</button>
+          <button :spread="menu.itemProps({ value: 'move' })">Move</button>
+          <button :spread="menu.itemProps({ value: 'delete' })">Delete</button>
+        </div>
+      </div>
+    `),
+  })
+  class InDialog {
+    dialogContent = new Signal.State<Element | null>(null);
+    trigger = new Signal.State<Element | null>(null);
+    content = new Signal.State<Element | null>(null);
+    dialog = createDialog({ content: () => this.dialogContent.get() });
+    menu = createMenu({
+      trigger: () => this.trigger.get(),
+      content: () => this.content.get(),
+    });
+  }
+
+  function openDialog() {
+    const page = track(mount(InDialog, host)).instance as InDialog;
+    host.querySelector<HTMLElement>('.open')!.click();
+    flushSync();
+    return {
+      page,
+      trigger: () => document.querySelector<HTMLElement>('.actions')!,
+      item: (value: string) => document.querySelector<HTMLElement>(`[data-value="${value}"]`)!,
+    };
+  }
+
+  it('moves with the arrow keys once opened from the keyboard', () => {
+    const { page, trigger, item } = openDialog();
+    trigger().focus();
+    press('Enter', trigger());
+    expect(page.menu.isOpen()).toBe(true);
+    expect(focused()).toBe(item('rename'));
+
+    // The dialog's trap and the menu's are both live. Each arrow has to move
+    // on from where the last one landed, not snap back to where it opened.
+    press('ArrowDown', focused()!);
+    expect(focused()).toBe(item('move'));
+    press('ArrowDown', focused()!);
+    expect(focused()).toBe(item('delete'));
+  });
+
+  it('moves with the arrow keys once opened by a click', () => {
+    const { page, trigger, item } = openDialog();
+    trigger().focus();
+    clickOn(trigger());
+    expect(page.menu.isOpen()).toBe(true);
+    expect(focused()).toBe(document.querySelector('[role="menu"]'));
+
+    press('ArrowDown', focused()!);
+    expect(focused()).toBe(item('rename'));
+    press('ArrowDown', focused()!);
+    expect(focused()).toBe(item('move'));
+  });
+
+  it('hands focus back into the dialog when it closes', () => {
+    const { page, trigger } = openDialog();
+    trigger().focus();
+    press('Enter', trigger());
+
+    press('Escape', focused()!);
+    expect(page.menu.isOpen()).toBe(false);
+    expect(page.dialog.isOpen()).toBe(true);
+    expect(focused()).toBe(trigger());
   });
 });

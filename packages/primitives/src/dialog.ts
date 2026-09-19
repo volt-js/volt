@@ -14,7 +14,8 @@
  *     });
  *   }
  *
- *   <button :ref="trigger" :spread="dialog.triggerProps()">Delete</button>
+ *   <button :ref="trigger" :spread="dialog.triggerProps()"
+ *           :click="dialog.open()">Delete</button>
  *   <div :if="dialog.isPresent()" :portal
  *        :ref="content" :spread="dialog.contentProps()">
  *     <h2 :spread="dialog.titleProps()">Are you sure?</h2>
@@ -22,17 +23,25 @@
  *     <button :click="dialog.close()">Cancel</button>
  *   </div>
  *
+ * The props carry no event handlers, so the trigger's `:click` and the close
+ * button's are the consumer's to bind.
+ *
  * `aria-labelledby` and `aria-describedby` are only emitted when a title and
  * description actually exist, because pointing at a missing id is worse than
  * pointing at nothing: a screen reader announces an unlabelled dialog either
  * way, but a dangling reference hides the fact that the label is missing.
  */
 
-import { Signal, effect, onCleanup } from '@voltdev/core';
+import { Signal, effect, measureEffect, onCleanup } from '@voltdev/core';
 import { createPresence, type PresenceState } from './presence.js';
 import { createDismiss, type DismissReason } from './dismiss.js';
 import { createFocusScope } from './focus-scope.js';
 import { createId } from './id.js';
+import { TOASTER_ATTRIBUTE } from './toast.js';
+
+// The proposal's own name for reading without subscribing; Volt adds no second
+// spelling for it.
+const { untrack } = Signal.subtle;
 
 export interface DialogOptions {
   /** The dialog's content element, once rendered. */
@@ -102,8 +111,25 @@ export function createDialog(options: DialogOptions): Dialog {
     () => options.content(),
   );
 
+  // The width of the scrollbar the lock is about to hide. Read in the measure
+  // lane, so it shares the flush's one layout with everything else that
+  // measures instead of forcing one of its own from the effect below — and
+  // that lane drains before user effects, so the width is there by the time
+  // the lock is taken in the same flush. A plain variable, because nothing
+  // renders from it: a later measurement is no reason to run anything again.
+  let scrollbarWidth = 0;
+  if (modal) {
+    measureEffect(() => {
+      if (!state.get() || !options.content()) return;
+      scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
+    });
+  }
+
   const setOpen = (next: boolean) => {
-    if (state.get() === next) return;
+    // Untracked because `open()` may well be called from inside an effect, and
+    // subscribing that effect to the state it just wrote would run it again
+    // when the dialog closes — and open it straight back up.
+    if (untrack(() => state.get()) === next) return;
     state.set(next);
     options.onOpenChange?.(next);
   };
@@ -130,8 +156,9 @@ export function createDialog(options: DialogOptions): Dialog {
         setOpen(false);
       },
       {
-        escape: options.closeOnEscape !== false,
-        outsidePointer: options.closeOnOutsidePointer !== false,
+        // Escape and the press are always taken here, and declined above when
+        // the dialog is told not to close on them: a layer that holds focus and
+        // stays open still keeps them from the layer beneath it.
         // The trigger is not "outside": dismissing on it would close the
         // dialog and then the trigger's own handler would reopen it.
         exclude: () => (options.trigger ? [options.trigger()] : []),
@@ -140,7 +167,7 @@ export function createDialog(options: DialogOptions): Dialog {
 
     if (modal) {
       createFocusScope(() => options.content(), { restoreFocus: true });
-      lockScroll();
+      lockScroll(scrollbarWidth);
       makeRestInert(content);
     }
   });
@@ -152,7 +179,7 @@ export function createDialog(options: DialogOptions): Dialog {
 
     open: () => setOpen(true),
     close: () => setOpen(false),
-    toggle: () => setOpen(!state.get()),
+    toggle: () => setOpen(!untrack(() => state.get())),
 
     triggerProps: () => ({
       'aria-haspopup': 'dialog',
@@ -180,19 +207,19 @@ export function createDialog(options: DialogOptions): Dialog {
  *
  * Without the padding the page visibly jumps sideways as the scrollbar
  * disappears. Nesting is counted, so two stacked dialogs do not release the
- * lock when only the inner one closes.
+ * lock when only the inner one closes — and only the first lock pads, since
+ * by the second there is no scrollbar left to measure.
  */
 let scrollLocks = 0;
 let restoreScroll: (() => void) | null = null;
 
-function lockScroll(): void {
+function lockScroll(gap: number): void {
   scrollLocks += 1;
 
   if (scrollLocks === 1 && typeof document !== 'undefined') {
     const body = document.body;
     const previousOverflow = body.style.overflow;
     const previousPadding = body.style.paddingRight;
-    const gap = window.innerWidth - document.documentElement.clientWidth;
 
     body.style.overflow = 'hidden';
     if (gap > 0) body.style.paddingRight = `${gap}px`;
@@ -234,8 +261,10 @@ function makeRestInert(content: Element): void {
   for (const el of document.body.children) {
     if (el === content || el.contains(content)) continue;
     // A live region must keep announcing — a toast raised while a dialog is
-    // open is exactly the case that matters.
-    if (el.hasAttribute('aria-live')) continue;
+    // open is exactly the case that matters. A toaster's region is not a live
+    // region itself, and holds none until a toast arrives, so it says what it
+    // is with a marker instead.
+    if (el.hasAttribute('aria-live') || el.hasAttribute(TOASTER_ATTRIBUTE)) continue;
 
     changed.push({
       el,

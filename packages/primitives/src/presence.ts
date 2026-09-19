@@ -7,11 +7,12 @@
  *
  * This needs no support from the framework. Volt removes nodes when `:if`
  * turns false, so presence simply keeps that condition true a little longer:
- * on close it flips a `data-state` attribute, asks the element whether
- * anything is actually animating, and only then lets the node go. If nothing
- * is animating — no animation declared, or reduced motion turning it off —
- * the node is released synchronously, so a library that never animates pays
- * nothing and needs no configuration.
+ * on close it flips a `data-state` attribute, asks the element what is
+ * actually animating on it, and lets the node go once all of that has
+ * finished. If nothing is — no animation declared, one that closing does not
+ * start, or reduced motion turning it off — the node is released
+ * synchronously, so a library that never animates pays nothing and needs no
+ * configuration.
  *
  *   class Dialog {
  *     open = new Signal.State(false);
@@ -47,16 +48,11 @@ export interface Presence {
   state(): PresenceState;
 }
 
-/** Events that can end an exit animation, including the ones that cancel it. */
-const END_EVENTS = ['animationend', 'animationcancel', 'transitionend', 'transitioncancel'];
-
 export function createPresence(
   open: () => boolean,
   node: () => Element | null | undefined,
 ): Presence {
-  const initial = untrack(open);
-  const present = new Signal.State(initial);
-  const state = new Signal.State<PresenceState>(initial ? 'open' : 'closed');
+  const present = new Signal.State(untrack(open));
 
   let stopWaiting: (() => void) | null = null;
 
@@ -75,72 +71,73 @@ export function createPresence(
       stopWaiting?.();
       stopWaiting = null;
       present.set(true);
-      state.set('open');
       return;
     }
 
     if (!untrack(() => present.get())) return;
 
-    state.set('closed');
-
-    // Read the element after the state attribute has been written. Volt
-    // flushes render effects before user effects, so by here the DOM already
-    // carries `data-state="closed"` and computed style reflects the exit rule.
+    // The element already carries `data-state="closed"`: the state is derived
+    // from `open` below rather than written from here, so the render effects
+    // that put it on the element ran before this one — Volt flushes render
+    // effects before user effects. Asking for its animations now applies the
+    // exit rule and starts whatever that rule starts.
     const el = untrack(node);
-    if (!el || !isAnimating(el)) {
+    const running = el ? exitAnimations(el) : [];
+    if (running.length === 0) {
       release();
       return;
     }
 
-    const onEnd = (event: Event) => {
-      // A descendant's animation must not end the parent's presence.
-      if (event.target === el) release();
-    };
-    for (const type of END_EVENTS) el.addEventListener(type, onEnd);
+    // All of them, not the first to end: a fade over 150ms and a slide over
+    // 300ms are one exit, and letting go at the first would cut the second off
+    // halfway. A cancelled animation settles too, so an exit interrupted for
+    // any reason still lets the node go.
+    let superseded = false;
     stopWaiting = () => {
-      for (const type of END_EVENTS) el.removeEventListener(type, onEnd);
+      superseded = true;
     };
+    void Promise.allSettled(running.map((animation) => animation.finished)).then(() => {
+      if (!superseded) release();
+    });
   });
 
   onCleanup(() => stopWaiting?.());
 
   return {
     isPresent: () => present.get(),
-    state: () => state.get(),
+    // Derived, not held. Written from the effect above, it would reach the DOM
+    // a pass after that effect has asked the element what closing started — so
+    // the question would be put to the open state, which starts no exit.
+    state: () => (open() ? 'open' : 'closed'),
   };
 }
 
 /**
- * Whether an exit animation or transition will actually run.
+ * What is actually animating on the element now that it is marked closed.
  *
  * Asking the element rather than being told a duration is what lets CSS stay
  * the single source of truth — including when a `prefers-reduced-motion` rule
- * has turned the animation off, which shows up here as no animation at all.
+ * has turned the animation off, which shows up here as nothing running. And
+ * asking what runs, rather than what is declared, is what makes that safe: an
+ * animation written on the element in every state finished long before the
+ * close and does not start again, and a `transition: color` kept for a hover
+ * effect starts nothing when closing changes no colour. Neither sends an end
+ * event, so waiting on either would keep the node in the page for good.
+ *
+ * Only the element's own count, so a spinner inside a panel cannot end the
+ * panel's exit. And only one with an end: an infinite animation in the closed
+ * state is a loop rather than an exit, and waiting for it would be waiting
+ * for ever.
  */
-function isAnimating(el: Element): boolean {
-  const view = el.ownerDocument?.defaultView;
-  if (!view?.getComputedStyle) return false;
-
-  const styles = view.getComputedStyle(el);
-
-  const animated =
-    styles.animationName !== '' &&
-    styles.animationName !== 'none' &&
-    hasDuration(styles.animationDuration);
-
-  const transitioned =
-    hasDuration(styles.transitionDuration) &&
-    styles.transitionProperty !== '' &&
-    styles.transitionProperty !== 'none';
-
-  return animated || transitioned;
-}
-
-/** True when any comma-separated duration in the list is non-zero. */
-function hasDuration(value: string): boolean {
-  if (!value) return false;
-  return value.split(',').some((part) => {
-    const seconds = Number.parseFloat(part);
-    return Number.isFinite(seconds) && seconds > 0;
-  });
+function exitAnimations(el: Element): Animation[] {
+  // A DOM implemented for tests may have no animation engine to ask, and
+  // nothing animates there.
+  if (typeof el.getAnimations !== 'function') return [];
+  return el
+    .getAnimations()
+    .filter(
+      (animation) =>
+        animation.playState === 'running' &&
+        Number.isFinite(animation.effect?.getComputedTiming().endTime),
+    );
 }

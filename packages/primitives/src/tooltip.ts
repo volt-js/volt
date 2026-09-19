@@ -92,15 +92,23 @@ const DEFAULT_SKIP_DELAY = 300;
  */
 let openTooltips = 0;
 let skipUntil = 0;
+/** Which group is current. A tooltip leaves only the group it joined. */
+let group = 0;
 
 function inSkipWindow(): boolean {
   return openTooltips > 0 || Date.now() < skipUntil;
 }
 
-/** Test seam: forget that any tooltip has been open. */
+/**
+ * Test seam: forget that any tooltip has been open.
+ *
+ * One that is open at the time is forgotten with the rest: when it closes it
+ * neither takes the new group's count below nothing nor warms it.
+ */
 export function resetTooltipDelayGroup(): void {
   openTooltips = 0;
   skipUntil = 0;
+  group += 1;
 }
 
 export interface TooltipOptions {
@@ -143,7 +151,10 @@ export interface TooltipOptions {
   /** Let the browser flip to the opposite side when it would overflow. Default true. */
   flip?: boolean;
 
-  /** Escape closes it. Default true. */
+  /**
+   * Escape closes it. Default true. Turned off, the key goes to the layer the
+   * tooltip is showing in instead.
+   */
   closeOnEscape?: boolean;
 
   onOpenChange?: (open: boolean) => void;
@@ -357,18 +368,22 @@ export function createTooltip(options: TooltipOptions): Tooltip {
   effect(() => {
     if (!state.get()) return;
 
+    const joined = group;
     openTooltips += 1;
     onCleanup(() => {
+      if (joined !== group) return;
       openTooltips -= 1;
       skipUntil = Date.now() + skipDelay;
     });
 
     createDismiss(() => options.content(), () => setOpen(false), {
+      // Turned off, Escape passes to the layer beneath rather than stopping
+      // here: a tooltip holds nothing, so a key it does not want was meant
+      // for the dialog it is showing in.
       escape: options.closeOnEscape !== false,
       // Outside presses are already covered by leave and blur, so this rule
-      // never fires first. It is on because dismissal only ever acts on the
-      // topmost layer: a tooltip that opted out would swallow the press that
-      // was meant to close the dialog underneath it.
+      // never fires first. It stays on as the backstop for a tooltip that
+      // neither of those reaches — one opened from outside, with `open()`.
       outsidePointer: true,
       // The trigger is not "outside" — its own press handler closes the
       // tooltip, and dismissing here as well would race with it.

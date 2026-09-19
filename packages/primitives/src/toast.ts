@@ -16,7 +16,7 @@
  *     }
  *   }
  *
- *   <div :ref="region" :spread="toaster.regionProps()">
+ *   <div :portal :ref="region" :spread="toaster.regionProps()">
  *     <div :for="toast in toaster.visible()" :key="toast.id"
  *          :spread="toaster.toastProps(toast)">
  *       <p>{ toast.data().title }</p>
@@ -55,6 +55,18 @@ export type ToastPriority = 'polite' | 'assertive';
 
 /** Why a toast was dismissed — its own clock, or a call. */
 export type ToastDismissReason = 'timeout' | 'api';
+
+/**
+ * Marks a toaster's region, so that a modal dialog knows to leave it live.
+ *
+ * A modal makes every other child of <body> inert, and an inert subtree is out
+ * of the accessibility tree, so a toast raised inside one is never announced.
+ * The dialog spares a live region, but the region is not one — each toast is
+ * its own — and an empty region has nothing live in it to find. Only a child
+ * of <body> is spared, which is why a region that has to speak over a modal
+ * is portalled there, as the dialog is.
+ */
+export const TOASTER_ATTRIBUTE = 'data-volt-toaster';
 
 /**
  * Every string this can put in front of a user.
@@ -200,16 +212,25 @@ export function createToaster<T = unknown>(options: ToasterOptions<T>): Toaster<
    * A toast's element, if it is rendered.
    *
    * Found by id rather than a ref, because `:ref` binds a property on the
-   * component and a `:for` row has no property of its own to bind. Looked up
-   * with `getElementById` rather than a selector, since a consumer-supplied id
-   * is arbitrary text and would need escaping — and the search is confined to
-   * this region, so two toasters on a page cannot read each other's nodes.
+   * component and a `:for` row has no property of its own to bind. Searched
+   * from the region rather than with `getElementById`, which answers with the
+   * first element in the whole document to carry the id: a custom id the page
+   * happens to use elsewhere would hand back that element instead, and this
+   * toast would lose the exit animation it is in the middle of. Searching from
+   * the region also keeps two toasters on a page from reading each other's
+   * nodes.
+   *
+   * The ids are compared rather than written into a selector, because a
+   * consumer-supplied id is arbitrary text: a line break in one makes the
+   * selector invalid unless it is escaped as a code point, which is what
+   * `CSS.escape` is for — and that is a browser global a server has not got.
+   * The region holds a few toasts, so the walk is short.
    */
   const elementOf = (id: string): Element | null => {
     const region = options.region();
     if (!region) return null;
-    const el = region.ownerDocument.getElementById(id);
-    return el && region.contains(el) ? el : null;
+    for (const el of region.querySelectorAll('[id]')) if (el.id === id) return el;
+    return null;
   };
 
   const containsFocus = (region: Element): boolean =>
@@ -565,6 +586,7 @@ export function createToaster<T = unknown>(options: ToasterOptions<T>): Toaster<
       // Focusable by the hotkey, out of the tab order the rest of the time.
       tabindex: '-1',
       'data-paused': isPaused() ? '' : undefined,
+      [TOASTER_ATTRIBUTE]: '',
     }),
 
     toastProps: (toast: Toast<T>) => {
@@ -602,7 +624,10 @@ interface Timer {
   resume(): void;
   /** Hold the countdown, keeping what is left of it. */
   pause(): void;
-  /** Give it a new duration. A running timer restarts on the new one. */
+  /**
+   * Give it a new duration. A timer that has been resumed restarts on the new
+   * one, including one a zero or infinite duration was holding still.
+   */
   reset(duration: number): void;
   stop(): void;
 }
@@ -618,6 +643,13 @@ function createTimer(onExpire: () => void): Timer {
   let remaining = 0;
   /** A zero or infinite duration: this toast waits to be dismissed. */
   let sticky = true;
+  /**
+   * Whether the toaster wants this counting down, which a sticky duration
+   * gives no handle to show. Held apart from the handle so that a new duration
+   * can start a clock the old one never let run: nothing else wakes the
+   * effect that resumes timers when only a duration changes.
+   */
+  let resumed = false;
   let startedAt = 0;
   let handle: ReturnType<typeof setTimeout> | null = null;
 
@@ -639,25 +671,28 @@ function createTimer(onExpire: () => void): Timer {
 
   return {
     resume() {
+      resumed = true;
       if (handle === null) start();
     },
 
     pause() {
+      resumed = false;
       if (!clear()) return;
       remaining = Math.max(0, remaining - (Date.now() - startedAt));
     },
 
     reset(duration: number) {
-      const wasRunning = clear();
+      clear();
       remaining = duration;
       sticky = !Number.isFinite(duration) || duration <= 0;
-      if (wasRunning) start();
+      if (resumed) start();
     },
 
     stop() {
       clear();
       remaining = 0;
       sticky = true;
+      resumed = false;
     },
   };
 }

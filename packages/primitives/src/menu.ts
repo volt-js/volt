@@ -85,12 +85,16 @@
 
 import { Signal, effect, onCleanup } from '@voltdev/core';
 import { createPresence, type PresenceState } from './presence.js';
-import { createDismiss, type DismissReason } from './dismiss.js';
+import { createDismiss, forgetPress, type DismissReason } from './dismiss.js';
 import { createFocusScope } from './focus-scope.js';
 import { createCollection, ITEM_ATTRIBUTE } from './collection.js';
 import { createRovingFocus, type Orientation } from './roving-focus.js';
 import { createAnchor, type AnchorPlacement } from './anchoring.js';
 import { createId } from './id.js';
+
+// The proposal's own name for reading without subscribing; Volt adds no second
+// spelling for it.
+const { untrack } = Signal.subtle;
 
 /**
  * `menuitem` acts; the other two carry a state, and must say so with
@@ -278,7 +282,10 @@ export function createMenu(options: MenuOptions): Menu {
   });
 
   const setOpen = (next: boolean) => {
-    if (state.get() === next) return;
+    // Untracked because `open()` may well be called from inside an effect, and
+    // subscribing that effect to the state it just wrote would run it again
+    // when the menu closes — and open it straight back up.
+    if (untrack(() => state.get()) === next) return;
     state.set(next);
     options.onOpenChange?.(next);
   };
@@ -343,8 +350,9 @@ export function createMenu(options: MenuOptions): Menu {
         setOpen(false);
       },
       {
-        escape: options.closeOnEscape !== false,
-        outsidePointer: options.closeOnOutsidePointer !== false,
+        // Escape and the press are always taken here, and declined above when
+        // the menu is told not to close on them: a layer that holds focus and
+        // stays open still keeps them from the layer beneath it.
         // The trigger is not "outside": dismissing on it would close the menu
         // and then the trigger's own handler would reopen it.
         exclude: () => (options.trigger ? [options.trigger()] : []),
@@ -384,7 +392,7 @@ export function createMenu(options: MenuOptions): Menu {
 
     open: (focus) => openMenu(focus),
     close: () => setOpen(false),
-    toggle: () => (state.get() ? setOpen(false) : openMenu('none')),
+    toggle: () => (untrack(() => state.get()) ? setOpen(false) : openMenu('none')),
 
     focusItem: (item) => roving.focus(item),
     select,
@@ -435,8 +443,14 @@ export function createMenu(options: MenuOptions): Menu {
 
       // A second press while open moves the menu rather than reopening it:
       // focus is already inside, and closing first would restore focus to
-      // whatever the user was on before, only to take it away again.
-      if (state.get()) return;
+      // whatever the user was on before, only to take it away again. Where the
+      // platform asks as the button goes down, that press is still in progress
+      // and began outside the menu, so its release would otherwise dismiss the
+      // menu it has just moved.
+      if (state.get()) {
+        forgetPress();
+        return;
+      }
       openMenu('none');
     },
 

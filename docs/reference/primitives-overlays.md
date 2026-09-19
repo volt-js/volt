@@ -56,13 +56,12 @@ state — its own `open()`, `close()` and `toggle()`, a dismissal, a key. A writ
 you make to your own signal is not reported back to you, since you already
 know about it.
 
-**Opening from an effect subscribes it — for three of them.** The popover and
-the tooltip read their own state untracked inside `open()` and `close()`; the
-dialog, the menu and the collapsible do not. So an effect that calls
-`dialog.open()` starts depending on the dialog's state, and when the user
-closes the dialog the effect runs again and, if its condition still holds,
-opens it straight back up. Until that is made consistent, make the call
-untracked:
+**Opening from an effect does not subscribe it.** Every one of them reads its
+own state untracked inside `open()`, `close()` and `toggle()` — and the
+collapsible reads `disabled` the same way. So an effect that opens a dialog
+when an upload fails does not start depending on the dialog; tracked, closing
+it would run the effect again and, the condition still holding, open it
+straight back up:
 
 ```ts
 import { Signal, effect } from '@voltdev/core';
@@ -75,9 +74,7 @@ class Upload {
 
   constructor() {
     effect(() => {
-      // Tracked, this would reopen the dialog every time it was closed while
-      // `failed` is still true.
-      if (this.failed.get()) Signal.subtle.untrack(() => this.dialog.open());
+      if (this.failed.get()) this.dialog.open();
     });
   }
 }
@@ -193,19 +190,27 @@ undoes them in reverse:
   `inert` and `aria-hidden="true"`: out of the tab order, deaf to the pointer,
   and hidden from a screen reader's own cursor, which a focus trap alone does
   not reach. A child carrying `aria-live` is left alone so it can keep
-  announcing — though the toaster is not such a child; see
-  [what a dialog does not do](#what-a-dialog-does-not-do).
+  announcing, and so is a toaster's region: it is not a live region itself and
+  holds none until a toast arrives, so it says what it is with a
+  `data-volt-toaster` marker (`TOASTER_ATTRIBUTE`) instead. Both have to be
+  children of `<body>` to be spared — a region left inside the application's
+  root goes inert with the root.
 - **The page stops scrolling.** `overflow: hidden` goes on `<body>`, with
   right padding the width of the scrollbar that disappears so the page does
   not shift sideways. Locks are counted, so an inner dialog closing does not
-  release an outer one's. The scrollbar is measured from an ordinary effect
-  rather than the measure lane, so taking the lock forces a layout of its own
-  and shows up as a stray read in
-  [`getFlushMetrics()`](./reactivity#scheduling).
+  release an outer one's — and only the first lock pads, since by the second
+  there is no scrollbar left to measure. That width is read in the measure
+  lane, which drains before user effects, so taking the lock shares the
+  flush's one layout instead of forcing another — see
+  [effects](./reactivity#effects).
 
 `modal: false` drops all three, and with them any focus handling at all: a
 non-modal dialog does not move focus in and does not put it back. Escape and
 a press outside still close it.
+
+A popover, a menu or a second dialog opened from inside a modal one keeps
+focus and stays open — see
+[opening one layer from another](#opening-one-layer-from-another).
 
 ### Naming
 
@@ -218,12 +223,6 @@ the dialog opens — a title rendered later under its own `:if` is not noticed.
 
 ### What a dialog does not do
 
-- **Leave the toaster announcing.** The exemption looks for `aria-live` on a
-  child of `<body>`, and [`createToaster`](#notifications-createtoaster) puts
-  it on each toast rather than on the region. A region portalled to `<body>`
-  is therefore made inert and hidden with everything else, and a region left
-  inside the application's root goes with the root. Either way, a toast raised
-  while a modal dialog is open is not announced.
 - **Choose where focus starts.** There is no `initialFocus`. A confirmation
   that should land on Cancel rather than on the destructive button has to put
   Cancel first in the markup.
@@ -233,8 +232,6 @@ the dialog opens — a title rendered later under its own `:if` is not noticed.
   are touched, which is why the dialog has to be portalled. Anything portalled
   to `<body>` *after* it opened — a popover from inside it — is left live,
   or it could not be pressed at all.
-- **Host another focus-taking layer.** See
-  [opening one layer from another](#opening-one-layer-from-another).
 
 ## Anchoring a panel to a control: `createPopover`
 
@@ -332,6 +329,10 @@ On close it puts focus back only if the popover still held it, or if it was
 dropped on `<body>` when the content went. A user who has moved on to another
 field is left there.
 
+Focus in a layer opened from inside the popover — a second popover, a menu —
+is focus inside it, so opening one does not close the one it came from. See
+[opening one layer from another](#opening-one-layer-from-another).
+
 `modal: true` swaps that for [`createFocusScope`](#createfocusscope)'s trap,
 and nothing more. It does not make the page inert or lock scrolling — a layer
 that needs the page switched off is a dialog — so `aria-modal` on a popover is
@@ -372,8 +373,6 @@ a child of the content, drawn against the content's own edge by your CSS from
   has the browser's `position: fixed` overridden.
 - **Move.** The placement is fixed for the popover's life; there is no
   `setPlacement` on it.
-- **Nest, or open from a modal dialog.** See
-  [opening one layer from another](#opening-one-layer-from-another).
 
 ## Describing a control: `createTooltip`
 
@@ -459,9 +458,8 @@ over the page, and a zero delay closes the tooltip before it arrives.
 Open, it is a layer like any other on the [dismissal](#createdismiss) stack.
 With a tooltip showing inside a dialog, the first Escape — or the first press
 outside both — closes the tooltip, and the dialog needs a second. With
-`closeOnEscape: false` it stays on that stack all the same, and the stack only
-ever asks its top layer: while it shows, Escape closes nothing at all, the
-dialog beneath included.
+`closeOnEscape: false` it stays on that stack all the same, but it has said
+the key is not its own, so Escape goes to the dialog beneath it instead.
 
 **The skip window is global.** Once one tooltip has opened, the next opens
 without its delay, and that lasts until `skipDelay` after the last one
@@ -470,10 +468,9 @@ module state on purpose, because the group spans components that know nothing
 of each other. The cost is that every tooltip on the page shares it, and a
 caller who wants an isolated group cannot have one. `resetTooltipDelayGroup()`
 forgets that any tooltip has been open, and is there so that one test's
-tooltips do not shorten the next test's delays. Call it with no tooltip open:
-it zeroes a count, and a tooltip that closes afterwards takes that count below
-zero, so from then on an open tooltip no longer lets the next one skip its
-delay.
+tooltips do not shorten the next test's delays. It starts a fresh group, so a
+tooltip that was open when it was called is forgotten with the rest: closing
+afterwards it neither takes the new count below zero nor warms the window.
 
 ### ARIA
 
@@ -496,8 +493,6 @@ readers skip descriptions by default.
   is written only while it is present, so a screen reader that reaches the
   trigger without moving focus to it — a reading cursor rather than Tab —
   finds no description to read.
-- **Let Escape through when `closeOnEscape` is off.** It still holds the top
-  of the dismissal stack while it shows; see above.
 - **Keep a group of its own.** See the skip window, above.
 
 ## A list of actions: `createMenu`
@@ -665,23 +660,26 @@ pixels is yours — a context menu is not anchored, and nothing stops it running
 off the edge of the window.
 
 A `contextmenu` event that arrives while the menu is open moves it rather
-than reopening it — which is what the keyboard's context-menu key and
-Shift+F10 produce. **A second right-click does not.** A right-click is also a
-press, dismissal does not ask which button made it, and the area is outside
-the menu. Where the platform fires `contextmenu` as the button goes down
-(macOS, Linux), the menu moves and is then dismissed as the button comes up,
-leaving no menu at all, since the platform's own was suppressed. Where it
-fires once the button is up (Windows), the menu closes, hands focus back to
-the page, and opens again at the new point. The package's test of the move
-dispatches `contextmenu` without the press around it, which is why it passes.
+than reopening it — a second right-click, and what the keyboard's
+context-menu key and Shift+F10 produce alike. A right-click is also a press,
+and the area is outside the menu, so where the platform asks as the button
+goes down (macOS, Linux) the release would otherwise dismiss the menu the
+press had just moved. Asking for the menu spends the press: the release that
+follows ends without dismissing anything, and the next press outside closes
+the menu as usual. Where the platform asks once the button is up (Windows),
+the menu closes on the press and opens again at the new point.
 
 ### Focus
 
 Focus is trapped inside an open menu, because every deliberate way out —
-Escape, Tab, choosing an item, a press outside — closes it first. The cost is
-one real case: a press on a text field elsewhere on the page closes the menu
-but does not focus the field, because the trap is still live when the browser
-moves focus and only lets go at pointer-up. That field takes a second click.
+Escape, Tab, choosing an item, a press outside — closes it first. A menu
+opened from inside a modal dialog keeps its own focus and its own arrow keys;
+see [opening one layer from another](#opening-one-layer-from-another).
+
+The cost is one real case: a press on a text field elsewhere on the page
+closes the menu but does not focus the field, because the trap is still live
+when the browser moves focus and only lets go at pointer-up. That field takes
+a second click.
 The alternative is focus escaping a menu that is still open, stranding a
 keyboard user behind an overlay they cannot see.
 
@@ -694,10 +692,6 @@ keyboard user behind an overlay they cannot see.
   Toggling it in `onSelect` is yours, and so is keeping one radio item checked
   per group — there is no `role="group"` and no grouping.
 - **Placing a context menu.** See above.
-- **Move on a second right-click.** See above; it closes instead, or closes
-  and reopens, depending on the platform.
-- **Work inside a modal dialog.** The arrow keys stop working there; see
-  [opening one layer from another](#opening-one-layer-from-another).
 
 ## Notifications: `createToaster`
 
@@ -729,7 +723,7 @@ whatever you want each toast to carry — a title, a message, an action.
 | `update(id, data, options?)` | Replace a toast's contents. `false` when it has already gone |
 | `dismiss(id)` / `dismissAll()` | Take one or all away |
 | `focusRegion()` | Move focus to the region, as the hotkey does |
-| `regionProps()` | `role="region"`, `aria-label`, `tabindex="-1"`, `data-paused` |
+| `regionProps()` | `role="region"`, `aria-label`, `tabindex="-1"`, `data-paused`, and the `data-volt-toaster` marker |
 | `toastProps(toast)` | `id`, `role`, `aria-live`, `aria-atomic`, `data-state`, `data-type` |
 | `closeProps()` | `aria-label` only |
 
@@ -763,7 +757,7 @@ class Shell {
 ```
 
 ```html
-<div :ref="region" :spread="toaster.regionProps()">
+<div :portal :ref="region" :spread="toaster.regionProps()">
   <div :for="toast in toaster.visible()" :key="toast.id" :spread="toaster.toastProps(toast)">
     <p>{ toast.data().title }</p>
     <button :spread="toaster.closeProps()" :click="toast.dismiss()">×</button>
@@ -775,6 +769,11 @@ There is no `:if` on a toast. A dismissed toast stays in the queue, marked
 `closed`, until its exit animation has run, and the `:for` removes it when
 the queue lets it go. Render the region itself unconditionally: it is what
 the pointer and focus pauses listen on, and what the hotkey moves focus to.
+
+Portal it too. A modal dialog makes every other child of `<body>` inert, and
+spares a toaster's region only when the region is one of those children, which
+is what `:portal` makes it. Left inside the application's root, it goes inert
+with the root, and a toast raised while the dialog is open is never heard.
 
 ### Announcement
 
@@ -820,16 +819,13 @@ upload().then(
 );
 ```
 
-**The success branch does not yet do what it says.** An `update` that gives a
-toast with no end — `0` or `Infinity` — a finite duration records the new
-duration but does not start the clock. The countdown begins only when
-something else wakes the toaster's timers: the pointer crossing the region,
-focus moving in or out of it, the document's visibility changing, or another
-toast arriving or leaving. Until then the "Uploaded" toast stays up. An update
-from one finite duration to another restarts the countdown as it should. Where
-the result has to go on time, dismiss the pending toast and `add` the result
-as a new one: it counts down, and pauses, like any other. The cost is an exit
-and an entrance where there should have been one toast changing its words.
+An `update` that gives a toast with no end — `0` or `Infinity` — a finite
+duration starts the clock on it, so the "Uploaded" toast leaves on its own
+four seconds later. An `update` that names no duration leaves the toast the
+one it already had: the "Upload failed" branch keeps the `Infinity` it was
+raised with and stays until it is dismissed, which is what a failure the user
+has to do something about wants. Either way the countdown is held while the
+pointer or focus is on the region, as any other toast's is.
 
 ### Keyboard
 
@@ -851,11 +847,10 @@ nothing, and when the last toast goes focus does fall to `<body>`.
 - **Wire the close button.** `closeProps()` is a name and nothing else — no
   handler and no `type="button"`, unlike the popover's.
 - **Check that an id is unique.** A toast's DOM `id` is the id it was added
-  with. A custom id that another element on the page already carries is found
-  by `getElementById` outside the region and ignored, so that toast loses its
-  exit animation and its focus hand-off.
-- **Stay announced under a modal dialog.** See
-  [what a dialog does not do](#what-a-dialog-does-not-do).
+  with, and nothing stops the page carrying that id elsewhere too. The search
+  for a toast's element runs from the region rather than over the document, so
+  an id used elsewhere costs this toast nothing — but two elements answering
+  to one id is still markup a validator will refuse.
 
 ## Expanding a section: `createCollapsible` and `createAccordion`
 
@@ -961,7 +956,7 @@ pattern asks for between the headers.
 | `onTriggerKeyDown(event)` | Bind on the container; returns whether it handled the key |
 | `rootProps()` | `data-orientation` |
 | `itemProps(value)` | `data-state`, `data-disabled`, `data-orientation` |
-| `triggerProps(value)` | The collapsible's trigger props, plus the header marker |
+| `triggerProps(value)` | The collapsible's trigger props, plus `data-volt-accordion-trigger` with the value, and a marker of this accordion's own |
 | `contentProps(value)` | The collapsible's content props |
 
 ```ts
@@ -1010,6 +1005,13 @@ through. A disabled header is reachable both ways, so the two orders never
 disagree about which headers exist. A key pressed inside a panel — an arrow
 in a text field there — is left alone.
 
+**An accordion in a panel.** Each accordion moves between its own headers and
+no others. `data-volt-accordion-trigger` (`ACCORDION_TRIGGER_ATTRIBUTE`) is on
+every header of every accordion, so each one also marks its headers with an
+attribute it generates and reads only that. The outer one's arrow keys pass
+over the inner one's headers, and a key pressed on an inner header is the
+inner one's alone.
+
 **The panel that cannot close.** In a single accordion without
 `collapsible`, the open panel's header reports `aria-disabled="true"`, as the
 pattern asks, because pressing it does nothing. It is not given
@@ -1027,9 +1029,6 @@ Past roughly six panels they crowd out every other landmark on the page, and
 - Closed content is not in the document, because presence works by keeping
   an `:if` true and then letting it go. The browser's find-in-page cannot
   reach it, and a fragment link cannot open it.
-- An accordion inside another accordion's panel confuses the outer one's
-  arrow keys: both mark their headers with `data-volt-accordion-trigger`
-  (`ACCORDION_TRIGGER_ATTRIBUTE`), and the outer one reads the whole subtree.
 - A value that disappears from the list keeps its panel — its presence and its
   height measurement, three signals and two effects — until the accordion
   itself goes. Panels get a scope of their own so that a re-render does not
@@ -1042,27 +1041,29 @@ Escape closes one layer, and a press inside a popover opened from a dialog is
 not a press outside the dialog, though once portalled the popover is not its
 descendant. A tooltip nests anywhere, because it never takes focus.
 
-Focus does not understand nesting, and three combinations do not work today:
+Focus reads the same stack. A focus scope, and the popover's focus-outside
+rule, each count the layers registered above their own as inside it, so focus
+moving into a layer opened from within one has not left the one it came from:
 
 | Combination | What happens |
 |---|---|
-| A popover, from inside a popover | The outer one closes as the inner one opens: focus has landed outside it. `closeOnFocusOutside: false` on the outer keeps it open |
-| A popover, from inside a modal dialog | It opens, but the dialog's trap pulls focus straight back out of it, and focus reaching into it later — a click on a field inside — closes it |
-| A menu, from inside a modal dialog | It opens, and the arrow keys then do nothing: each press sends focus back to where the menu opened — its first item from the keyboard, the menu itself from a click |
+| A popover, from inside a popover | Both stay open while focus is in the inner one. Escape closes the inner and hands focus back to the outer; a second closes the outer |
+| A popover, from inside a modal dialog | It opens, takes focus and keeps it; the dialog's trap counts it as inside itself, and has the focus back when it closes |
+| A menu, from inside a modal dialog | It opens with focus and arrow keys of its own, and hands focus back into the dialog when it closes |
+| A dialog, from inside a dialog | The inner one traps focus and gives it back to the outer; the scroll lock is counted, so only the last close releases it |
 
-The cause is the same in all three. A focus scope, and the popover's
-focus-outside rule, each watch the whole document and know nothing of the
-layers above them, so two of them pull focus in opposite directions. In the
-menu's case the tug of war also happens while the menu is opening: the
-dialog's trap pulls focus out, the menu's trap pulls it back by asking which
-item is active, and that read lands inside the menu's own open step, which
-from then on re-runs — and re-focuses where it opened — every time an arrow
-key changes the active item.
+Two things make that work. A layer's containment is its own subtree plus every
+layer stacked above it, which is what stops two traps pulling focus in
+opposite directions. And a scope reads `initialFocus` untracked, so asking
+which item a menu has active cannot make the step that opened the menu depend
+on it — and re-run, re-focusing where it opened, at every arrow key.
 
-None of the three is covered by the package's tests; what is written here was
-reproduced against the source, not taken from them. A dialog opened from a
-dialog is not covered either: its scroll lock is counted, and the same two
-traps are live.
+Focus that goes somewhere else entirely still closes what it left behind:
+both popovers, when the inner one was opened from the outer. A press on the
+page behind closes one layer at a time, as for any stack — the inner one
+first, handing focus back to its trigger inside the outer one, and the outer
+one on the next press — unless the press lands on something focusable, which
+takes focus out of both.
 
 ## The behaviours underneath
 
@@ -1098,33 +1099,32 @@ class Drawer {
 <aside :if="presence.isPresent()" :ref="panel" :attr-data-state="presence.state()">…</aside>
 ```
 
-On close it writes `closed`, then asks the element's computed style whether an
-animation or a transition with a non-zero duration applies to it. If one does,
-the node stays until `animationend`, `animationcancel`, `transitionend` or
-`transitioncancel` arrives from the element itself; if none does — nothing
-declared, or a `prefers-reduced-motion` rule turning it off — it is released
-at once. CSS stays the only place a duration is written, and a library that
-never animates pays nothing.
+`state()` is derived from `open` rather than held, so the element already
+carries `data-state="closed"` by the time the close is acted on. Presence then
+asks the element what `getAnimations()` reports running on it — which is
+whatever the closed rule has just started — and keeps the node until all of
+them have finished, not until the first does: a fade over 150ms and a slide
+over 300ms are one exit. Nothing running means nothing to wait for and the
+node goes at once — no exit declared, a `prefers-reduced-motion` rule turning
+it off, an animation that closing does not start. CSS stays the only place a
+duration is written, and a library that never animates pays nothing.
 
-Reopening during the exit cancels the wait. What it cannot do:
+Asking what runs rather than what is declared is what makes that safe. A
+`transition: color 150ms` kept on the element for a hover effect starts
+nothing when closing changes no colour, and an `animation` written on the
+element in every state finished long before the close and does not run again.
+Neither sends an end event, and waiting on either would keep the node in the
+page for good.
 
-- **Wait for a child.** Only the element's own animation counts, and an end
-  event bubbling up from a descendant is ignored — deliberately, or a
-  spinner inside a panel would end the panel's exit.
-- **Wait for the last of several.** It lets go at the first end event from
-  the element, so a transition on `opacity` over 150ms and on `transform`
-  over 300ms is cut off halfway through the second.
-- **Tell a declared animation or transition from a running one.** It asks
-  whether one is declared, not whether closing starts one. A
-  `transition: color 150ms` left on the element for a hover effect, with
-  nothing in the closed state that changes `color`, starts no transition and
-  sends no end event — and the node stays in the page, marked `closed`, until
-  the next open. An `animation` written on the element in every state does
-  the same: it finished long before the close, does not run again because its
-  name has not changed, and sends nothing. Scope each animation to the
-  `data-state` it belongs to.
-- **Survive an end event that never comes** for any other reason. An infinite
-  animation in the closed state keeps the node the same way.
+A cancelled animation settles too, so an exit interrupted for any reason still
+lets the node go, and reopening during the exit cancels the wait. What it does
+not do:
+
+- **Wait for a child.** Only the element's own animations count, so a spinner
+  inside a panel cannot end the panel's exit.
+- **Wait for something with no end.** An animation that loops for ever in the
+  closed state is a loop rather than an exit, so the node goes at once rather
+  than never.
 
 ### `createDismiss`
 
@@ -1169,27 +1169,29 @@ answers, so called from a field initialiser it would sit there closed and take
 the Escape meant for the layer below. Three rules, and they are where
 hand-written dismissal usually goes wrong:
 
-- **Only the topmost layer responds.** With a popover open inside a dialog,
-  one Escape closes one layer. That needs a stack shared by every layer on
-  the page, which is why it is module state rather than per-component. The
-  same holds for the pointer: a press outside everything closes the top layer
-  only, and the next press closes the one beneath.
+- **One layer responds — the topmost that takes it.** With a popover open
+  inside a dialog, one Escape closes one layer. That needs a stack shared by
+  every layer on the page, which is why it is module state rather than
+  per-component. The same holds for the pointer: a press outside everything
+  closes one layer, and the next press closes the one beneath. A layer
+  registered with `escape: false` has said the key is not its own, so it is
+  passed over and the layer beneath is asked; `outsidePointer: false` does the
+  same for a press.
 - **Outside is decided on pointer down and acted on at pointer up.** Both
   ends of the press have to be outside. Selecting text in a dialog and
   releasing past its edge does not dismiss it.
 - **Layers above are inside.** A popover opened from a dialog is not outside
-  the dialog, though once portalled it is not its descendant. As built, this
-  follows from the first rule rather than adding to it: only the top layer is
-  ever asked about a press, and the containment walk up the stack from it has
-  nothing above the top to visit.
+  the dialog, though once portalled it is not its descendant. The containment
+  walk starts at the layer being asked and counts every layer above it, which
+  is what keeps that true now that the layer asked need not be the top one.
 
-The first rule is stricter than it reads. A top layer with `escape: false`
-does not pass Escape down — nothing beneath it closes either, until it goes —
-and the same holds for `outsidePointer: false`. That is why the tooltip offers
-no way to turn outside presses off, and why its `closeOnEscape: false`
-swallows the Escape meant for a dialog beneath it. The dialog's, popover's and
-menu's `closeOnEscape: false` and `closeOnOutsidePointer: false` do the same
-to anything under them.
+A layer that has to keep Escape from everything under it — a dialog that will
+not close until it is answered — takes the key and declines it in `onDismiss`
+rather than turning it off. That is what the dialog, the popover and the menu
+do with `closeOnEscape: false` and `closeOnOutsidePointer: false`: they stay
+open, and nothing beneath them closes either. The tooltip does the opposite,
+because it holds nothing of its own: its `closeOnEscape: false` lets the key
+through to the layer it is showing in.
 
 The listeners are on the document in the capture phase, so a handler in the
 page that stops propagation cannot keep a layer open, and they are removed
@@ -1211,13 +1213,18 @@ createFocusScope(node: () => Element | null | undefined, options?: FocusScopeOpt
 | `restoreFocus` | `true` | Put focus back where it was when the scope ends |
 | `initialFocus` | — | `() => Element \| null \| undefined` — what to focus instead of the first focusable element |
 
-`focusableWithin(container)` returns the focusable descendants — links with an
-`href`, enabled form controls, media with controls, `contenteditable`, and
-anything with a `tabindex` other than `-1` — less those that are `hidden`,
-`display: none` or `visibility: hidden`. Hidden is judged on each element's
-own attribute and computed style, so a button inside a `display: none` or
-`hidden` ancestor is still listed, and focusing it does nothing. `<summary>`
-and `<iframe>` are not on the list.
+`focusableWithin(container)` returns the descendants Tab stops on, in the
+order it visits them: a positive `tabindex` first, lowest first and document
+order among equals, then everything else in document order. The candidates
+are links with an `href`, enabled form controls, media with controls,
+`contenteditable`, and anything carrying a `tabindex` — less any whose
+`tabindex` is negative, `<button tabindex="-1">` included, since that is how
+a roving group keeps its resting items out of the tab sequence. Rendering is
+judged with `checkVisibility()`, which asks the ancestors as well, so a button
+inside a `display: none` or `hidden` panel is left out rather than offered as
+somewhere focus can go — and one that a stylesheet shows despite `hidden` is
+kept, as the browser would let it take focus. `<summary>` and `<iframe>` are
+not on the list.
 
 ```ts
 import { Signal, effect } from '@voltdev/core';
@@ -1250,26 +1257,21 @@ own cycle through its address bar. When focus escapes it is sent to
 `initialFocus`, else the first focusable element, else the container itself,
 which is given `tabindex="-1"` if it needs one.
 
-The costs of doing it that way:
+Which way focus was heading is the one thing `focusin` does not carry, and
+the ends of the scope need it: Shift+Tab off the first element wants the
+last, not the first again. It is read from the Tab press itself, which is
+still down while focus moves, so focus that escapes backwards is sent to the
+last element inside and an escape by a press or by script afterwards is not
+treated as heading anywhere. Under a modal dialog the page behind is inert
+and cannot take focus at all, so Tab past either end goes to the browser's
+own controls and comes back to the dialog.
 
-- **Shift+Tab does not wrap.** Where the page behind can take focus — a menu,
-  a modal popover — Tab past the last element lands outside and is pulled
-  back to the first, which looks like wrapping. Shift+Tab from the first also
-  lands outside and is pulled back to the first, so it stays put rather than
-  reaching the last. Under a modal dialog the page behind is inert and cannot
-  take focus at all, so Tab past either end goes to the browser's own
-  controls and comes back to the dialog.
-- **Scopes do not stack.** Two live scopes each pull focus towards their own
-  container, and neither knows the other is there. See
-  [opening one layer from another](#opening-one-layer-from-another) for what
-  that breaks.
-- **`focusableWithin` is not the tab sequence.** It is document order, so a
-  positive `tabindex` is not sorted to the front. And `tabindex="-1"` only
-  excludes an element that would not be focusable without it: a
-  `<div tabindex="-1">` is left out, a `<button tabindex="-1">` is kept. The
-  popover's Tab-out uses it, so tabbing out of a popover whose trigger sits
-  before a roving toolbar can land on a toolbar item Tab itself would have
-  skipped.
+Scopes stack. A scope counts every dismissal layer above its own as inside
+it, so a menu or a popover opened from a dialog keeps the focus it takes; see
+[opening one layer from another](#opening-one-layer-from-another). And
+`initialFocus` is read untracked, so a getter that reads a signal — which
+item a menu has active — cannot make the effect that built the scope depend
+on it and rebuild it, moving focus, at every change.
 
 Focus is restored only if the element that had it is still in the document;
 otherwise it is left where the browser put it.

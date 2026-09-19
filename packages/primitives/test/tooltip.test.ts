@@ -9,8 +9,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { compileTemplate } from '@voltdev/core/jit';
-import { Component, Signal, flushSync, mount } from '@voltdev/core';
+import { Component, Signal, createRoot, flushSync, mount } from '@voltdev/core';
 import { createTooltip, resetTooltipDelayGroup, type TooltipOptions } from '../src/tooltip.ts';
+import { createDismiss } from '../src/dismiss.ts';
 
 type Overrides = Omit<Partial<TooltipOptions>, 'content' | 'trigger'>;
 
@@ -350,6 +351,27 @@ describe('dismissal', () => {
     expect(content()).not.toBeNull();
   });
 
+  it('lets Escape through to the layer beneath when Escape is turned off', () => {
+    const beneath = vi.fn();
+    const dispose = createRoot((dispose) => {
+      createDismiss(() => document.querySelector('#elsewhere'), beneath);
+      return dispose;
+    });
+    try {
+      const { trigger, content } = setup({ closeOnEscape: false });
+      trigger().focus();
+      flushSync();
+
+      // Not the tooltip's key, which is not the same as nobody's: a dialog the
+      // tooltip is showing in still has to close.
+      escape();
+      expect(content()).not.toBeNull();
+      expect(beneath).toHaveBeenCalledWith('escape');
+    } finally {
+      dispose();
+    }
+  });
+
   it('does not reopen after Escape while the pointer sits still', () => {
     const { trigger, content } = setup();
     enter(trigger());
@@ -587,6 +609,32 @@ describe('the shared skip-delay window', () => {
     expect(instance.two.isOpen()).toBe(false);
     advance(700);
     expect(instance.two.isOpen()).toBe(true);
+  });
+
+  it('still counts later tooltips after a reset that found one open', () => {
+    const { instance, one, two } = toolbar();
+    enter(one());
+    advance(700);
+    expect(instance.one.isOpen()).toBe(true);
+
+    // Forgotten while open, then closed: it belongs to the group that was
+    // forgotten, and must not take the new one's count below nothing.
+    resetTooltipDelayGroup();
+    leave(one());
+    advance(300);
+    expect(instance.one.isOpen()).toBe(false);
+
+    // Nor warm the new group on its way out.
+    enter(two());
+    flushSync();
+    expect(instance.two.isOpen()).toBe(false);
+    advance(700);
+    expect(instance.two.isOpen()).toBe(true);
+
+    // With the second one open, the first skips its delay as it always would.
+    enter(one());
+    flushSync();
+    expect(instance.one.isOpen()).toBe(true);
   });
 
   it('leaves the group when a tooltip is unmounted while open', () => {

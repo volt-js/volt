@@ -108,23 +108,34 @@ function setDocumentHidden(hidden: boolean) {
   flushSync();
 }
 
-/** Report a running animation, the way a browser would mid-transition. */
-function pretendAnimating(el: Element) {
-  const view = el.ownerDocument.defaultView!;
-  const original = view.getComputedStyle.bind(view);
-  view.getComputedStyle = ((node: Element, pseudo?: string | null) => {
-    if (node === el) {
-      return {
-        animationName: 'slide-out',
-        animationDuration: '0.2s',
-        transitionDuration: '0s',
-        transitionProperty: 'none',
-      } as unknown as CSSStyleDeclaration;
-    }
-    return original(node, pseudo ?? undefined);
-  }) as typeof view.getComputedStyle;
-  return () => {
-    view.getComputedStyle = original;
+/**
+ * Report an exit animation on one toast, the way a browser would: running once
+ * the toast is marked closed, and not before. happy-dom has no animation
+ * engine to ask, so presence is handed what one would answer.
+ */
+function pretendAnimating(el: Element): { finish(): Promise<void> } {
+  let settle!: () => void;
+  const finished = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  const animation = {
+    playState: 'running',
+    finished,
+    effect: { getComputedTiming: () => ({ endTime: 200 }) },
+  };
+
+  Object.defineProperty(el, 'getAnimations', {
+    configurable: true,
+    value: () => (el.getAttribute('data-state') === 'closed' ? [animation] : []),
+  });
+
+  return {
+    async finish() {
+      settle();
+      // Presence hears of it in a promise callback; let every queued one run.
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      flushSync();
+    },
   };
 }
 
@@ -482,6 +493,55 @@ describe('addressing a toast by id', () => {
     expect(titles()).toEqual([]);
   });
 
+  it('starts the clock when an update gives a waiting toast a duration', () => {
+    const { toaster, titles } = setup();
+    // The promise pattern: a toast with no end, which becomes its result.
+    const id = toaster.add({ title: 'Uploading…' }, { duration: Infinity });
+    advance(60_000);
+    expect(titles()).toEqual(['Uploading…']);
+
+    toaster.update(id, { title: 'Uploaded' }, { duration: 4000 });
+    advance(3999);
+    expect(titles()).toEqual(['Uploaded']);
+    advance(2);
+    expect(titles()).toEqual([]);
+  });
+
+  it('starts the clock for a toast that waited with a zero duration too', () => {
+    const { toaster, titles } = setup();
+    const id = toaster.add({ title: 'Undo?' }, { duration: 0 });
+    advance(60_000);
+
+    toaster.update(id, { title: 'Undone' }, { duration: 1000 });
+    advance(1001);
+    expect(titles()).toEqual([]);
+  });
+
+  it('holds a toast still when an update takes its duration away', () => {
+    const { toaster, titles } = setup({ duration: 1000 });
+    const id = toaster.add({ title: 'Saving…' });
+    advance(500);
+
+    toaster.update(id, { title: 'Undo?' }, { duration: 0 });
+    advance(60_000);
+    expect(titles()).toEqual(['Undo?']);
+  });
+
+  it('does not start the clock of a paused toast that an update gives a duration', () => {
+    const { toaster, titles, region } = setup();
+    const id = toaster.add({ title: 'Uploading…' }, { duration: Infinity });
+    flushSync();
+    pointer(region(), 'pointerenter');
+
+    toaster.update(id, { title: 'Uploaded' }, { duration: 1000 });
+    advance(60_000);
+    expect(titles()).toEqual(['Uploaded']);
+
+    pointer(region(), 'pointerleave');
+    advance(1001);
+    expect(titles()).toEqual([]);
+  });
+
   it('changes how a toast is announced', () => {
     const { toaster, toasts } = setup({ duration: 0 });
     const id = toaster.add({ title: 'Saving…' });
@@ -683,29 +743,25 @@ describe('focus that a leaving toast was holding', () => {
 });
 
 describe('leaving', () => {
-  it('keeps a dismissed toast mounted until its animation ends', () => {
+  it('keeps a dismissed toast mounted until its animation ends', async () => {
     const { toaster, toasts } = setup({ duration: 0, max: 1 });
     const id = toaster.add({ title: 'one' });
     flushSync();
 
     const el = toasts()[0]!;
-    const restore = pretendAnimating(el);
+    const exit = pretendAnimating(el);
     toaster.add({ title: 'two' });
     toaster.dismiss(id);
     flushSync();
 
-    expect(toasts()).toHaveLength(1);
-    expect(el.getAttribute('data-state')).toBe('closed');
     // The slot is still taken: a queued toast appearing on top of one that is
     // still on screen is worse than waiting for it to finish.
-    expect(el.querySelector('.title')!.textContent).toBe('one');
+    expect(toasts()).toEqual([el]);
+    expect(el.getAttribute('data-state')).toBe('closed');
 
-    el.dispatchEvent(new Event('animationend'));
-    flushSync();
+    await exit.finish();
     expect(toasts()).toHaveLength(1);
     expect(toasts()[0]!.querySelector('.title')!.textContent).toBe('two');
-
-    restore();
   });
 
   it('leaves at once when nothing is animating', () => {
@@ -720,12 +776,55 @@ describe('leaving', () => {
     expect(toasts()).toHaveLength(0);
   });
 
+  it('finds its own toast when another element on the page carries that id', async () => {
+    // A custom id is the consumer's text, and nothing stops the page using it
+    // elsewhere. Looked for by id alone, the element found is the other one,
+    // and the toast loses the exit animation it is in the middle of.
+    document.body.insertAdjacentHTML('afterbegin', '<div id="upload"></div>');
+    const { toaster, toasts } = setup({ duration: 0, max: 1 });
+    toaster.add({ title: 'Uploading…' }, { id: 'upload' });
+    flushSync();
+
+    const el = toasts()[0]!;
+    const exit = pretendAnimating(el);
+    toaster.dismiss('upload');
+    flushSync();
+
+    expect(toasts()).toEqual([el]);
+    expect(el.getAttribute('data-state')).toBe('closed');
+
+    await exit.finish();
+    expect(toasts()).toHaveLength(0);
+  });
+
+  it('finds its own toast whatever its id holds', async () => {
+    // A custom id is the consumer's text and may hold anything: here a line
+    // break, which a quoted selector cannot carry even escaped the way a quote
+    // is, and quotes as well. Finding the toast must not depend on what the id
+    // says, or it would lose its exit animation — or throw — on the way out.
+    const id = 'upload\n"Q3 report"';
+    const { toaster, toasts } = setup({ duration: 0, max: 1 });
+    toaster.add({ title: 'Uploading…' }, { id });
+    flushSync();
+
+    const el = toasts()[0]!;
+    const exit = pretendAnimating(el);
+    toaster.dismiss(id);
+    flushSync();
+
+    expect(toasts()).toEqual([el]);
+    expect(el.getAttribute('data-state')).toBe('closed');
+
+    await exit.finish();
+    expect(toasts()).toHaveLength(0);
+  });
+
   it('brings a toast back when an update lands during its exit', () => {
     const { toaster, toasts, titles } = setup({ duration: 0 });
     const id = toaster.add({ title: 'Saving…' });
     flushSync();
 
-    const restore = pretendAnimating(toasts()[0]!);
+    pretendAnimating(toasts()[0]!);
     toaster.dismiss(id);
     flushSync();
 
@@ -733,8 +832,6 @@ describe('leaving', () => {
     flushSync();
     expect(titles()).toEqual(['Saved']);
     expect(toasts()[0]!.getAttribute('data-state')).toBe('open');
-
-    restore();
   });
 });
 

@@ -7,7 +7,11 @@
  *   - **Only the topmost layer responds to Escape.** With a dialog open over a
  *     popover, one keypress must close one layer, not both. That needs a
  *     shared stack, which is why this is a module-level registry rather than
- *     per-component state.
+ *     per-component state. Topmost of the layers that take the key, that is: a
+ *     layer registered with `escape: false` has said the key is not its own,
+ *     and the one beneath is asked instead — a tooltip that stays up through
+ *     Escape must not cost the dialog under it the key. The same goes for a
+ *     press and `outsidePointer: false`.
  *   - **Outside is measured on pointer *down*, acted on at pointer *up*.**
  *     Using click alone closes a layer when a drag that began inside it
  *     happens to release outside — selecting text in a dialog and releasing
@@ -23,9 +27,16 @@ import { onCleanup } from '@voltdev/core';
 export interface DismissOptions {
   /** Elements that count as inside, beyond the layer itself — e.g. a trigger. */
   exclude?: () => (Element | null | undefined)[];
-  /** Escape closes this layer. Default true. */
+  /**
+   * Escape closes this layer. Default true. When false the key passes to the
+   * layer beneath; a layer that must keep it from there takes it and declines
+   * in `onDismiss`.
+   */
   escape?: boolean;
-  /** A pointer press outside closes this layer. Default true. */
+  /**
+   * A pointer press outside closes this layer. Default true. When false the
+   * press is the layer beneath's to judge, as Escape is.
+   */
   outsidePointer?: boolean;
 }
 
@@ -81,11 +92,16 @@ function detachIfIdle(): void {
   document.removeEventListener('pointerup', onPointerUp, true);
 }
 
+/** The index of the topmost layer that takes this kind of dismissal, or -1. */
+function topmost(kind: 'escape' | 'outsidePointer'): number {
+  let index = stack.length - 1;
+  while (index >= 0 && stack[index]!.options[kind] === false) index -= 1;
+  return index;
+}
+
 function onKeyDown(event: KeyboardEvent): void {
   if (event.key !== 'Escape') return;
-  const top = stack[stack.length - 1];
-  if (!top || top.options.escape === false) return;
-  top.onDismiss('escape');
+  stack[topmost('escape')]?.onDismiss('escape');
 }
 
 /**
@@ -97,12 +113,8 @@ function onKeyDown(event: KeyboardEvent): void {
 let pressedInside: boolean | null = null;
 
 function onPointerDown(event: PointerEvent): void {
-  const top = stack[stack.length - 1];
-  if (!top || top.options.outsidePointer === false) {
-    pressedInside = null;
-    return;
-  }
-  pressedInside = isInsideStack(event.target, stack.indexOf(top));
+  const top = topmost('outsidePointer');
+  pressedInside = top === -1 ? null : isInsideStack(event.target, top);
 }
 
 function onPointerUp(event: PointerEvent): void {
@@ -110,12 +122,25 @@ function onPointerUp(event: PointerEvent): void {
   pressedInside = null;
   if (startedInside !== false) return;
 
-  const top = stack[stack.length - 1];
-  if (!top || top.options.outsidePointer === false) return;
+  const top = topmost('outsidePointer');
   // Both ends of the press have to be outside before this counts.
-  if (isInsideStack(event.target, stack.indexOf(top))) return;
+  if (top === -1 || isInsideStack(event.target, top)) return;
 
-  top.onDismiss('outside-pointer');
+  stack[top]!.onDismiss('outside-pointer');
+}
+
+/**
+ * Let the press in progress end without dismissing anything.
+ *
+ * For a layer that the press itself has just been spoken for by — a context
+ * menu asked to move by a second right-click, where the platform sends
+ * `contextmenu` between the button going down and coming up. That press began
+ * outside the menu and will end there, and it is a request for the menu, not
+ * a dismissal of it. With no press in progress this does nothing, which is
+ * what makes it safe to call for the keyboard's context-menu key as well.
+ */
+export function forgetPress(): void {
+  pressedInside = null;
 }
 
 /**
@@ -133,6 +158,33 @@ function isInsideStack(target: EventTarget | null, index: number): boolean {
     for (const extra of layer.options.exclude?.() ?? []) {
       if (extra?.contains(target)) return true;
     }
+  }
+  return false;
+}
+
+/**
+ * Whether `target` is inside the layer whose element is `el`, counting every
+ * layer stacked above it as inside.
+ *
+ * The pointer rule's containment, for the rules that watch focus instead: a
+ * focus trap, and a popover that closes when focus lands outside it. A popover
+ * or a menu opened from a dialog is portalled out of the dialog's subtree, so
+ * each of those rules would see focus moving into it as focus leaving — and
+ * two of them watching the whole document pull focus in opposite directions.
+ *
+ * Exclusions are not counted. They are where a press may land without
+ * dismissing a layer, and a tooltip's trigger elsewhere on the page is not
+ * somewhere focus becomes part of the layer beneath it. An element that no
+ * layer registered answers for its own subtree alone.
+ */
+export function isInsideLayer(el: Element, target: Node): boolean {
+  if (el.contains(target)) return true;
+  for (let i = stack.length - 1; i >= 0; i--) {
+    if (stack[i]!.node() !== el) continue;
+    for (let j = i + 1; j < stack.length; j++) {
+      if (stack[j]!.node()?.contains(target)) return true;
+    }
+    return false;
   }
   return false;
 }

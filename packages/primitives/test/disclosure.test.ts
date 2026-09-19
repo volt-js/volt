@@ -10,7 +10,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { compileTemplate } from '@voltdev/core/jit';
-import { Component, Signal, flushSync, mount } from '@voltdev/core';
+import { Component, Signal, createRoot, effect, flushSync, mount } from '@voltdev/core';
 import {
   ACCORDION_TRIGGER_ATTRIBUTE,
   COLLAPSIBLE_HEIGHT_PROPERTY,
@@ -56,26 +56,35 @@ function stubScrollHeight(px: number): void {
   });
 }
 
-/** Report a running animation on one element, the way a browser would. */
-function pretendAnimating(el: Element): void {
-  const view = el.ownerDocument!.defaultView!;
-  const original = view.getComputedStyle.bind(view);
-
-  view.getComputedStyle = ((node: Element, pseudo?: string | null) => {
-    if (node === el) {
-      return {
-        animationName: 'collapse',
-        animationDuration: '0.15s',
-        transitionDuration: '0s',
-        transitionProperty: 'none',
-      } as unknown as CSSStyleDeclaration;
-    }
-    return original(node, pseudo ?? undefined);
-  }) as typeof view.getComputedStyle;
-
-  restores.push(() => {
-    view.getComputedStyle = original;
+/**
+ * Report an exit animation on one element, the way a browser would: running
+ * once the element is marked closed, and not before. happy-dom has no
+ * animation engine to ask, so presence is handed what one would answer.
+ */
+function pretendAnimating(el: Element): { finish(): Promise<void> } {
+  let settle!: () => void;
+  const finished = new Promise<void>((resolve) => {
+    settle = resolve;
   });
+  const animation = {
+    playState: 'running',
+    finished,
+    effect: { getComputedTiming: () => ({ endTime: 150 }) },
+  };
+
+  Object.defineProperty(el, 'getAnimations', {
+    configurable: true,
+    value: () => (el.getAttribute('data-state') === 'closed' ? [animation] : []),
+  });
+
+  return {
+    async finish() {
+      settle();
+      // Presence hears of it in a promise callback; let every queued one run.
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      flushSync();
+    },
+  };
 }
 
 function press(el: Element, key: string): KeyboardEvent {
@@ -267,13 +276,13 @@ describe('collapsible', () => {
       expect(panel()!.style.getPropertyValue(COLLAPSIBLE_HEIGHT_PROPERTY)).toBe('240px');
     });
 
-    it('keeps the last measurement through the exit, so it can animate to nothing', () => {
+    it('keeps the last measurement through the exit, so it can animate to nothing', async () => {
       stubScrollHeight(120);
       const { trigger, panel } = mountCollapsible();
 
       trigger().click();
       flushSync();
-      pretendAnimating(panel()!);
+      const exit = pretendAnimating(panel()!);
 
       trigger().click();
       flushSync();
@@ -284,8 +293,7 @@ describe('collapsible', () => {
       expect(panel()!.getAttribute('data-state')).toBe('closed');
       expect(panel()!.style.getPropertyValue(COLLAPSIBLE_HEIGHT_PROPERTY)).toBe('120px');
 
-      panel()!.dispatchEvent(new Event('animationend'));
-      flushSync();
+      await exit.finish();
       expect(panel()).toBeNull();
     });
   });
@@ -439,12 +447,12 @@ describe('accordion state', () => {
     }
   });
 
-  it('animates a panel out before removing it', () => {
+  it('animates a panel out before removing it', async () => {
     const { trigger, panel } = mountAccordion();
 
     trigger('one').click();
     flushSync();
-    pretendAnimating(panel('one')!);
+    const exit = pretendAnimating(panel('one')!);
 
     trigger('two').click();
     flushSync();
@@ -454,8 +462,7 @@ describe('accordion state', () => {
     expect(panel('one')!.getAttribute('data-state')).toBe('closed');
     expect(panel('two')).not.toBeNull();
 
-    panel('one')!.dispatchEvent(new Event('animationend'));
-    flushSync();
+    await exit.finish();
     expect(panel('one')).toBeNull();
   });
 });
@@ -645,6 +652,60 @@ describe('accordion keyboard', () => {
   });
 });
 
+describe('an accordion inside another one’s panel', () => {
+  function mountNested() {
+    @Component({
+      selector: 'v-nested-sections',
+      render: compileTemplate(`
+        <div :ref="outerRoot" :spread="outer.rootProps()" :keydown="outer.onTriggerKeyDown($event)">
+          <div :for="o in ['o1', 'o2']" :key="o" :spread="outer.itemProps(o)">
+            <h3><button :spread="outer.triggerProps(o)" :click="outer.toggle(o)">{ o }</button></h3>
+            <div :if="outer.isPresent(o)" :spread="outer.contentProps(o)">
+              <div :if="o === 'o1'" :ref="innerRoot" :spread="inner.rootProps()"
+                   :keydown="inner.onTriggerKeyDown($event)">
+                <div :for="i in ['i1', 'i2']" :key="i" :spread="inner.itemProps(i)">
+                  <h4><button :spread="inner.triggerProps(i)" :click="inner.toggle(i)">{ i }</button></h4>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      `),
+    })
+    class Nested {
+      outerRoot = new Signal.State<Element | null>(null);
+      innerRoot = new Signal.State<Element | null>(null);
+      outer = createAccordion({ container: () => this.outerRoot.get(), defaultValue: ['o1'] });
+      inner = createAccordion({ container: () => this.innerRoot.get() });
+    }
+
+    track(mount(Nested, host));
+    flushSync();
+    return (value: string) =>
+      host.querySelector<HTMLElement>(`[${ACCORDION_TRIGGER_ATTRIBUTE}="${value}"]`)!;
+  }
+
+  it('moves the outer one past the inner one’s headers', () => {
+    const header = mountNested();
+
+    header('o1').focus();
+    press(header('o1'), 'ArrowDown');
+    // The inner headers sit between the outer two in the document, but they
+    // are another accordion's to move between.
+    expect(document.activeElement).toBe(header('o2'));
+  });
+
+  it('keeps a key pressed on an inner header to the inner one', () => {
+    const header = mountNested();
+
+    header('i1').focus();
+    press(header('i1'), 'End');
+    // Heard by both, since the inner one is inside the outer one's container:
+    // the outer one must not take it as coming from a header of its own.
+    expect(document.activeElement).toBe(header('i2'));
+  });
+});
+
 describe('a disabled accordion item', () => {
   const options = { disabled: (value: string) => value === 'two' };
 
@@ -677,5 +738,113 @@ describe('a disabled accordion item', () => {
     trigger('two').click();
     flushSync();
     expect(panel('two')).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Opened from a consumer's effect
+// ---------------------------------------------------------------------------
+
+describe('opened from an effect', () => {
+  /** Run `fn` from an effect that re-runs whenever `want` changes. */
+  function whenWanted(want: Signal.State<boolean>, fn: () => void): void {
+    createRoot((dispose) => {
+      restores.push(dispose);
+      effect(() => {
+        if (want.get()) fn();
+      });
+    });
+  }
+
+  it('does not make the effect depend on the collapsible it opened', () => {
+    const { collapsible } = mountCollapsible();
+    const want = new Signal.State(false);
+    whenWanted(want, () => collapsible.open());
+
+    want.set(true);
+    flushSync();
+    expect(collapsible.isOpen()).toBe(true);
+
+    // Closed while `want` still holds. An effect that had subscribed to the
+    // collapsible's state would run again here and open it straight back up.
+    collapsible.close();
+    flushSync();
+    expect(collapsible.isOpen()).toBe(false);
+  });
+
+  it('does not make an effect that toggles it depend on it either', () => {
+    const { collapsible } = mountCollapsible();
+    const want = new Signal.State(false);
+    whenWanted(want, () => collapsible.toggle());
+
+    want.set(true);
+    flushSync();
+    expect(collapsible.isOpen()).toBe(true);
+
+    collapsible.close();
+    flushSync();
+    expect(collapsible.isOpen()).toBe(false);
+  });
+
+  it('does not make the effect depend on what disables it', () => {
+    const locked = new Signal.State(false);
+    const { collapsible } = mountCollapsible({ disabled: () => locked.get() });
+    const want = new Signal.State(false);
+    whenWanted(want, () => collapsible.open());
+
+    want.set(true);
+    flushSync();
+    collapsible.close();
+    flushSync();
+
+    // Locking and unlocking it is not a reason for the effect to open it again.
+    locked.set(true);
+    flushSync();
+    locked.set(false);
+    flushSync();
+    expect(collapsible.isOpen()).toBe(false);
+  });
+
+  it('does not make the effect depend on the accordion it opened a panel of', () => {
+    const { accordion } = mountAccordion({ collapsible: true });
+    const want = new Signal.State(false);
+    whenWanted(want, () => accordion.open('two'));
+
+    want.set(true);
+    flushSync();
+    expect(accordion.value()).toEqual(['two']);
+
+    accordion.close('two');
+    flushSync();
+    expect(accordion.value()).toEqual([]);
+  });
+
+  it('does not make an effect that closes a panel depend on the accordion', () => {
+    const { accordion } = mountAccordion({ collapsible: true, defaultValue: ['two'] });
+    const want = new Signal.State(false);
+    whenWanted(want, () => accordion.close('two'));
+
+    want.set(true);
+    flushSync();
+    expect(accordion.value()).toEqual([]);
+
+    // Opened again by the user while `want` still holds.
+    accordion.open('two');
+    flushSync();
+    expect(accordion.value()).toEqual(['two']);
+  });
+
+  it('does not make an effect that toggles a panel depend on the accordion either', () => {
+    const { accordion } = mountAccordion({ collapsible: true });
+    const want = new Signal.State(false);
+    whenWanted(want, () => accordion.toggle('two'));
+
+    want.set(true);
+    flushSync();
+    expect(accordion.value()).toEqual(['two']);
+
+    accordion.close('two');
+    flushSync();
+    expect(accordion.value()).toEqual([]);
   });
 });
