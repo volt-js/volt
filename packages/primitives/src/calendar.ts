@@ -50,10 +50,12 @@
  * lands, `toEpochDay`/`fromEpochDay` and the six functions over them are the
  * only things that change.
  *
- * **Everything the user reads comes from `Intl`.** The first day of the week
- * from the locale's week info, the weekday and month names from
- * `Intl.DateTimeFormat`, the digits from the locale's numbering system. None
- * of it is a constant, and none of it is a prop with an English default.
+ * **Everything the user reads comes from the locale.** The first day of the
+ * week from the locale's week info, the weekday and month names from
+ * `Intl.DateTimeFormat`, the digits from the locale's numbering system — none
+ * of it is a constant or a prop. The few words said around the dates, "today"
+ * and "selected" and the like, come from the locale's catalogue, and are
+ * English only where the catalogue has nothing to say.
  *
  * **The calendar is Gregorian even where the locale's is not.** `ar-SA`
  * resolves to `islamic-umalqura`, and formatting a Gregorian month grid with a
@@ -95,7 +97,7 @@
 import { Signal, effect, onCleanup } from '@voltdev/core';
 import { announce } from './announcer.js';
 import { createId } from './id.js';
-import { getDateTimeFormat, resolveDirection, useLocale } from './i18n.js';
+import { getDateTimeFormat, resolveDirection, useLocale, type MessageValues } from './i18n.js';
 
 const { untrack } = Signal.subtle;
 
@@ -111,6 +113,7 @@ const { untrack } = Signal.subtle;
 export const CALENDAR_DAY_ATTRIBUTE = 'data-volt-calendar-day';
 
 const MS_PER_DAY = 86_400_000;
+const MS_PER_HOUR = 3_600_000;
 
 /** Days in each month of a common year, January first. */
 const MONTH_LENGTHS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] as const;
@@ -256,22 +259,32 @@ export function clampDate(
   return date;
 }
 
-/** `YYYY-MM-DD`, which is what the day cells carry and what a form posts. */
+/**
+ * `YYYY-MM-DD`, which is what the day cells carry and what a form posts.
+ *
+ * A year outside 0000–9999 is written `±YYYYYY`, a sign and six digits: four
+ * digits cannot hold it, and the extended form is the one ISO 8601 and
+ * `Temporal` read — "10000-01-01" and "-0001-12-31" are both refused.
+ */
 export function toIsoDate(date: PlainDateValue): string {
-  const year = String(Math.abs(date.year)).padStart(4, '0');
-  const sign = date.year < 0 ? '-' : '';
-  return `${sign}${year}-${String(date.month).padStart(2, '0')}-${String(date.day).padStart(2, '0')}`;
+  const { year } = date;
+  const yyyy =
+    year >= 0 && year <= 9999
+      ? String(year).padStart(4, '0')
+      : `${year < 0 ? '-' : '+'}${String(Math.abs(year)).padStart(6, '0')}`;
+  return `${yyyy}-${String(date.month).padStart(2, '0')}-${String(date.day).padStart(2, '0')}`;
 }
 
 /**
- * Parse `YYYY-MM-DD`, returning null for anything else.
+ * Parse `YYYY-MM-DD`, or `±YYYYYY-MM-DD`, returning null for anything else.
  *
  * Null rather than a throw: this reads values that came from an attribute, a
  * query string or a server, and a page that stops rendering because a date
  * arrived malformed is a worse failure than a picker that starts empty.
  */
 export function parseIsoDate(value: string): PlainDateValue | null {
-  const match = /^(-?\d{4,6})-(\d{2})-(\d{2})$/.exec(value);
+  // `-000000` is excluded by ISO 8601 itself: year zero has no negative.
+  const match = /^(\d{4}|(?!-000000)[+-]\d{6})-(\d{2})-(\d{2})$/.exec(value);
   if (!match) return null;
   const year = Number(match[1]);
   const month = Number(match[2]);
@@ -350,23 +363,86 @@ export function firstDayOfWeek(locale: string): number {
  * `toLocaleString` without a tag.
  */
 export function today(timeZone?: string): PlainDateValue {
+  return readClock(timeZone).date;
+}
+
+/**
+ * The date on the clock, and how far into that date the clock has got.
+ *
+ * One `Intl` reading for both, because the second is what says when the
+ * first will next change — see `watchClock`.
+ */
+function readClock(timeZone?: string): { date: PlainDateValue; msIntoDay: number } {
+  const now = Date.now();
   const parts = getDateTimeFormat('en-US', {
     calendar: 'gregory',
     year: 'numeric',
     month: 'numeric',
     day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+    second: 'numeric',
+    hourCycle: 'h23',
     ...(timeZone ? { timeZone } : {}),
-  }).formatToParts(Date.now());
+  }).formatToParts(now);
 
   let year = 1970;
   let month = 1;
   let day = 1;
+  let hour = 0;
+  let minute = 0;
+  let second = 0;
   for (const part of parts) {
-    if (part.type === 'year') year = Number(part.value);
-    else if (part.type === 'month') month = Number(part.value);
-    else if (part.type === 'day') day = Number(part.value);
+    const value = Number(part.value);
+    if (part.type === 'year') year = value;
+    else if (part.type === 'month') month = value;
+    else if (part.type === 'day') day = value;
+    else if (part.type === 'hour') hour = value;
+    else if (part.type === 'minute') minute = value;
+    else if (part.type === 'second') second = value;
   }
-  return { year, month, day };
+  return {
+    date: { year, month, day },
+    msIntoDay: ((hour * 60 + minute) * 60 + second) * 1000 + (now % 1000),
+  };
+}
+
+/**
+ * Today on the runtime's clock, shared by every calendar that was not told
+ * what today is.
+ *
+ * One reading for all of them rather than one per cell: a grid re-runs every
+ * cell's bindings on each arrow press, and asking `Intl` what day it is costs
+ * more than a cell's own name does. And watched, so a calendar left open
+ * across midnight moves its mark with the day rather than going on marking
+ * yesterday until something else re-renders it. One timer does that for the
+ * whole page, set for when the day turns over, and only while a calendar is
+ * reading.
+ */
+const clockDay = new Signal.State<PlainDateValue>({ year: 1970, month: 1, day: 1 });
+let clockReaders = 0;
+let clockTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Read the clock, and wake again when the day next turns over or in an hour,
+ * whichever is sooner. A day is not always twenty-four hours long, and the
+ * hour a clock change takes away would otherwise leave the mark that late.
+ */
+function tickClock(): void {
+  const { date, msIntoDay } = readClock();
+  if (!isSameDate(date, untrack(() => clockDay.get()))) clockDay.set(date);
+  clockTimer = setTimeout(tickClock, Math.min(MS_PER_HOUR, MS_PER_DAY - msIntoDay));
+}
+
+/** Today from the shared clock, for as long as the calling scope lives. */
+function watchClock(): () => PlainDateValue {
+  if (clockReaders++ === 0) tickClock();
+  onCleanup(() => {
+    if (--clockReaders > 0 || clockTimer === null) return;
+    clearTimeout(clockTimer);
+    clockTimer = null;
+  });
+  return () => clockDay.get();
 }
 
 // ---------------------------------------------------------------------------
@@ -427,20 +503,31 @@ export interface CalendarWeekday {
 
 export type CalendarSelectionMode = 'single' | 'range';
 
+/**
+ * Every string the calendar says around the dates.
+ *
+ * Each falls back to the locale's catalogue under the key of the same name —
+ * except the month buttons, which read `previous` and `next` — and then to
+ * English. A catalogue sentence names its dates `{date}`, or `{start}` and
+ * `{end}`. `monthChanged` alone has no key: what it says by default is the
+ * month's own name, which is already the locale's.
+ */
 export interface CalendarLabels {
   /** Names the previous-month button. Defaults to the locale's `previous`. */
   previousMonth?: string;
   /** Names the next-month button. Defaults to the locale's `next`. */
   nextMonth?: string;
+  /** Names the previous-year button. Default `Previous year`. */
   previousYear?: string;
+  /** Names the next-year button. Default `Next year`. */
   nextYear?: string;
   /** Said when the grid moves to a month nothing else announces. */
   monthChanged?: (label: string) => string;
-  /** Said when a single date is chosen. */
+  /** Said when a single date is chosen. Default `{date} selected`. */
   dateSelected?: (date: string) => string;
   /** Said when the first end of a range is chosen and the grid now waits. */
   rangeStartSelected?: (date: string) => string;
-  /** Said when a range closes. */
+  /** Said when a range closes. Default `{start} to {end} selected`. */
   rangeSelected?: (start: string, end: string) => string;
   /** Appended to a cell's name when the date cannot be chosen. */
   unavailable?: string;
@@ -480,7 +567,8 @@ export interface CalendarOptions {
   /**
    * Dates inside the bounds that still cannot be chosen — a fully booked
    * night, a public holiday. They stay focusable and are announced as
-   * unavailable, which is the only way a keyboard user can find out why.
+   * unavailable, which is the only way a keyboard user can find out why. A
+   * range cannot be drawn across one.
    */
   isDateDisabled?: (date: PlainDateValue) => boolean;
 
@@ -579,7 +667,7 @@ export function createCalendar(options: CalendarOptions): Calendar {
   const baseId = createId('calendar');
   const headingId = (index: number): string => `${baseId}-h${index}`;
 
-  const now = (): PlainDateValue => options.today?.() ?? today();
+  const now: () => PlainDateValue = options.today ?? watchClock();
 
   const value =
     options.value ?? new Signal.State<PlainDateValue | null>(options.defaultValue ?? null);
@@ -595,13 +683,34 @@ export function createCalendar(options: CalendarOptions): Calendar {
    * before it moves, while a date the predicate refuses is reached, focused
    * and announced as unavailable. That is the difference between a month that
    * does not exist and a night that is booked.
+   *
+   * While a range waits for its second press, the far side of the nearest
+   * refused date is refused too — see `reach`.
    */
   const dateDisabled = (date: PlainDateValue): boolean => {
     const min = options.min?.();
     if (min && compareDates(date, min) < 0) return true;
     const max = options.max?.();
     if (max && compareDates(date, max) > 0) return true;
-    return options.isDateDisabled?.(date) ?? false;
+    if (options.isDateDisabled?.(date)) return true;
+    const limits = reach.get();
+    if (limits === null) return false;
+    const day = toEpochDay(date);
+    return day <= limits.before || day >= limits.after;
+  };
+
+  /**
+   * The first day `isDateDisabled` refuses on the way from `from` to `to`,
+   * both epoch days and neither of them counted, or null when none is.
+   */
+  const firstRefused = (from: number, to: number): number | null => {
+    const refuse = options.isDateDisabled;
+    if (!refuse) return null;
+    const direction = Math.sign(to - from);
+    for (let day = from + direction; day !== to; day += direction) {
+      if (refuse(fromEpochDay(day))) return day;
+    }
+    return null;
   };
 
   const bounded = (date: PlainDateValue): PlainDateValue =>
@@ -638,14 +747,26 @@ export function createCalendar(options: CalendarOptions): Calendar {
   const hovered = new Signal.State<PlainDateValue | null>(null);
 
   const labels = options.labels ?? {};
+
+  /**
+   * A string the calendar says around the dates: the locale's catalogue first,
+   * then English. Read when it is said rather than once here, so a catalogue
+   * that is swapped later is heard from then on.
+   */
+  const said = (key: string, fallback: string, values?: MessageValues): string =>
+    locale.has(key) ? locale.t(key, values) : fallback;
+
   const monthChangedLabel = labels.monthChanged ?? ((label: string) => label);
-  const dateSelectedLabel = labels.dateSelected ?? ((date: string) => `${date} selected`);
-  const rangeStartLabel =
-    labels.rangeStartSelected ?? ((date: string) => `${date} selected. Choose an end date.`);
-  const rangeSelectedLabel =
-    labels.rangeSelected ?? ((from: string, to: string) => `${from} to ${to} selected`);
-  const unavailableLabel = labels.unavailable ?? 'unavailable';
-  const todayLabel = labels.today ?? 'today';
+  const dateSelectedLabel = (date: string): string =>
+    labels.dateSelected?.(date) ?? said('dateSelected', `${date} selected`, { date });
+  const rangeStartLabel = (date: string): string =>
+    labels.rangeStartSelected?.(date) ??
+    said('rangeStartSelected', `${date} selected. Choose an end date.`, { date });
+  const rangeSelectedLabel = (start: string, end: string): string =>
+    labels.rangeSelected?.(start, end) ??
+    said('rangeSelected', `${start} to ${end} selected`, { start, end });
+  const unavailableLabel = (): string => labels.unavailable ?? said('unavailable', 'unavailable');
+  const todayLabel = (): string => labels.today ?? said('today', 'today');
 
   // --- Locale --------------------------------------------------------------
 
@@ -758,6 +879,10 @@ export function createCalendar(options: CalendarOptions): Calendar {
       return;
     }
 
+    // In full, and not only as far as `reach` looks: a date chosen from code,
+    // or arrowed to past the months on screen, can be anywhere.
+    if (firstRefused(toEpochDay(from), toEpochDay(date)) !== null) return;
+
     const forwards = compareDates(from, date) <= 0;
     const span = forwards ? { start: from, end: date } : { start: date, end: from };
     anchor.set(null);
@@ -796,6 +921,44 @@ export function createCalendar(options: CalendarOptions): Calendar {
     const shifted = addMonths({ year: anchor.year, month: anchor.month, day: 1 }, shift);
     return { year: shifted.year, month: shifted.month };
   };
+
+  /**
+   * The first month on screen, changing only when it is a different month.
+   * `visibleMonth` follows the focused date, which every arrow press moves, and
+   * what hangs off the month should not re-run for a press that stays in it.
+   */
+  const firstVisible = new Signal.Computed(visibleMonth, {
+    equals: (a, b) => a.year === b.year && a.month === b.month,
+  });
+
+  /**
+   * How far a pending range can reach from its first end: the nearest day
+   * either side that `isDateDisabled` refuses, as epoch days.
+   *
+   * A stay drawn across a booked night is not a stay anyone can have, so
+   * everything past that night is refused the way the night itself is —
+   * reached, focused and announced as unavailable, rather than taking a press
+   * that then comes to nothing. Worked out once per first press and visible
+   * span rather than once per cell, and only as far as the span goes: no cell
+   * can ask about anything beyond it, and `select` checks a press there in
+   * full.
+   */
+  const reach = new Signal.Computed<{ before: number; after: number } | null>(() => {
+    const from = anchor.get();
+    if (from === null || !options.isDateDisabled) return null;
+
+    const first = firstVisible.get();
+    const last = addMonths({ year: first.year, month: first.month, day: 1 }, visibleMonths - 1);
+    // Six days before the first month and fourteen after the last cover every
+    // neighbouring day a grid pads its first and last rows with.
+    const start = toEpochDay({ year: first.year, month: first.month, day: 1 }) - 6;
+    const end = toEpochDay({ ...last, day: daysInMonth(last.year, last.month) }) + 14;
+    const origin = toEpochDay(from);
+    return {
+      before: (start < origin ? firstRefused(origin, start - 1) : null) ?? -Infinity,
+      after: (end > origin ? firstRefused(origin, end + 1) : null) ?? Infinity,
+    };
+  });
 
   /**
    * Report the month on screen, once, when it actually changes.
@@ -1064,7 +1227,9 @@ export function createCalendar(options: CalendarOptions): Calendar {
   const onDayPointerOver = (event: PointerEvent): void => {
     if (mode !== 'range' || untrack(() => anchor.get()) === null) return;
     const date = dayFrom(event.target);
-    if (date) hovered.set(date);
+    // The pending interval stops at the last date that could end it, rather
+    // than being painted over one the second press would refuse.
+    if (date && !untrack(() => dateDisabled(date))) hovered.set(date);
   };
 
   const onPointerLeave = (): void => {
@@ -1173,8 +1338,8 @@ export function createCalendar(options: CalendarOptions): Calendar {
       // across readers and `aria-current="date"` even less so, and both are
       // the difference between a date a user can book and one they cannot.
       const parts = [dateLabel(date)];
-      if (current) parts.push(todayLabel);
-      if (disabled) parts.push(unavailableLabel);
+      if (current) parts.push(todayLabel());
+      if (disabled) parts.push(unavailableLabel());
 
       return {
         [CALENDAR_DAY_ATTRIBUTE]: toIsoDate(date),
@@ -1202,7 +1367,10 @@ export function createCalendar(options: CalendarOptions): Calendar {
 
     previousMonthProps: () => navProps(labels.previousMonth ?? '', locale.t('previous'), -1),
     nextMonthProps: () => navProps(labels.nextMonth ?? '', locale.t('next'), 1),
-    previousYearProps: () => navProps(labels.previousYear ?? '', locale.t('previous'), -12),
-    nextYearProps: () => navProps(labels.nextYear ?? '', locale.t('next'), 12),
+    // Not the month buttons' `previous` and `next`: a calendar that renders all
+    // four would have two buttons with one name that do different things.
+    previousYearProps: () =>
+      navProps(labels.previousYear ?? '', said('previousYear', 'Previous year'), -12),
+    nextYearProps: () => navProps(labels.nextYear ?? '', said('nextYear', 'Next year'), 12),
   };
 }

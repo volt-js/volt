@@ -65,10 +65,12 @@
  * `form.reset()` and to the browser's own required-field handling. So the
  * consumer renders a visually hidden `<select>` or `<input>`, and this keeps it
  * in step. One value goes behind either; several can only go behind a
- * `<select multiple>`, because an `<input>` holds one string — a `multiple`
- * widget backed by one submits the first value chosen and drops the rest,
- * which is the kind of wrong nobody can see in the form data. So a `multiple`
- * widget renders one option per chosen value:
+ * `<select multiple>`, because an `<input>` holds one string. A `multiple`
+ * widget backed by an `<input>` leaves it empty rather than giving it the
+ * first value chosen: a form that receives one of three things is wrong in a
+ * way nobody can see in the form data, while an empty one fails the required
+ * check and says so. So a `multiple` widget renders one option per chosen
+ * value:
  *
  *   <select :ref="native" :spread="combo.nativeProps()">
  *     <option :for="v of combo.values()" :key="v"
@@ -412,11 +414,23 @@ function createListboxCore(
     namesLearned.set(untrack(() => namesLearned.get()) + 1);
   };
 
+  /**
+   * Values whose option was disabled when last seen.
+   *
+   * Kept beside the names because a name is how typed text finds its way back
+   * to an option — see `valueNamed` — and an option nobody can press must not
+   * be reachable by typing what it is called.
+   */
+  const unavailable = new Set<string>();
+
   /** Record what everything the popup is showing is called. */
   const learnNames = (): void => {
     for (const option of items.all()) {
       const value = option.getAttribute('data-value');
-      if (value !== null) nameValue(value, textOf(option));
+      if (value === null) continue;
+      nameValue(value, textOf(option));
+      if (isDisabled(option)) unavailable.add(value);
+      else unavailable.delete(value);
     }
   };
 
@@ -582,8 +596,20 @@ function createListboxCore(
     ...document.querySelectorAll(`[aria-controls="${listboxId}"]`),
   ];
 
-  const setActive = (option: HTMLElement | null): void => {
+  /**
+   * Whether the pointer alone put the highlight where it is.
+   *
+   * Nothing clears a hover highlight when the pointer leaves the list, so it
+   * outlives the gesture that made it — and the press that takes focus out of
+   * a combobox is often the one that dragged the pointer across the list on
+   * the way. Every other route here is something the user asked for: an arrow
+   * key, a typed prefix, an inline completion.
+   */
+  let activeFromPointer = false;
+
+  const setActive = (option: HTMLElement | null, fromPointer = false): void => {
     if (!option) return;
+    activeFromPointer = fromPointer;
     activeValue.set(option.getAttribute('data-value'));
     // The option is virtually focused, so nothing scrolls it into view for us.
     // `nearest` is the one that does not move the list when it is already
@@ -808,9 +834,27 @@ function createListboxCore(
    */
   const labelOf = (value: string): string => nameOf(value) ?? value;
 
+  /**
+   * The value something on this page calls `text`, if anything does.
+   *
+   * What typed text is checked against before it is taken as a value of its
+   * own: text that is an option's name is that option, and taking the string
+   * would put the name where the option's identifier belongs, behind the
+   * form's back. The values held are asked first, because `labelFor` may be
+   * all that names them; then every name the page has shown.
+   */
+  const valueNamed = (text: string): string | undefined => {
+    const held = valuesNow().find((value) => labelOf(value) === text);
+    if (held !== undefined) return held;
+    for (const [value, name] of names) if (name === text) return value;
+    return undefined;
+  };
+
   const emptyMessage = (): string => options.labels?.empty ?? message('noResults', 'No results');
 
   const loadingMessage = (): string => options.labels?.loading ?? message('loading', 'Loading…');
+
+  const clearMessage = (): string => options.labels?.clear ?? message('clear', 'Clear');
 
   const resultsMessage = (count: number): string =>
     options.labels?.results?.(count) ??
@@ -941,7 +985,7 @@ function createListboxCore(
     if (!option || isDisabled(option) || option.getAttribute('data-value') === activeValue.get()) {
       return;
     }
-    setActive(option);
+    setActive(option, true);
   };
 
   const onListboxPointerDown = (event: PointerEvent): void => {
@@ -991,6 +1035,7 @@ function createListboxCore(
     close,
     optionFor,
     activeOption,
+    isActiveFromPointer: (): boolean => activeFromPointer,
     rememberController,
     setActive,
     move,
@@ -1000,8 +1045,11 @@ function createListboxCore(
     nameValue,
     nameOf,
     labelOf,
+    valueNamed,
+    isUnavailable: (value: string): boolean => unavailable.has(value),
     emptyMessage,
     loadingMessage,
+    clearMessage,
     resultsMessage,
     message,
     listboxProps,
@@ -1156,7 +1204,7 @@ function commonSurface(core: ListboxCore): ListboxCommon {
       // do from the control, and a tab stop between the control and the rest
       // of the form is one more thing to step over on every pass.
       tabindex: '-1',
-      'aria-label': core.message('clear', 'Clear'),
+      'aria-label': core.clearMessage(),
       'aria-disabled': core.disabled() || core.readOnly() ? 'true' : undefined,
     }),
   };
@@ -1256,9 +1304,31 @@ export function createSelect(options: SelectOptions): Select {
     return count === 0 ? core.emptyMessage() : core.resultsMessage(count);
   };
 
+  /**
+   * What Enter and Space do to the highlighted option: exactly what a press on
+   * it does, closing included. `closeOnSelect` defaults to false when
+   * `multiple`, and a keyboard that closed anyway would mean reopening the list
+   * once per value — or closing on the press that takes one away, which the
+   * pointer leaves open. With nothing highlighted there is nothing to choose,
+   * and the key only closes.
+   */
   const chooseActive = (): void => {
     const value = core.activeValue.get();
-    if (value !== null) core.choose(value);
+    if (value === null) core.close();
+    else core.choose(value);
+  };
+
+  /**
+   * What the keys that leave the popup do to the highlighted option: take it,
+   * and close whatever `closeOnSelect` says. Taken rather than toggled, because
+   * a way out that dropped the value it was resting on would be a removal
+   * nobody asked for — and a multiple opens resting on the first value it
+   * holds, so the Tab of someone who only looked would cost them that value.
+   */
+  const takeActive = (): void => {
+    const value = core.activeValue.get();
+    if (value !== null) core.select(value);
+    core.close();
   };
 
   return {
@@ -1294,8 +1364,7 @@ export function createSelect(options: SelectOptions): Select {
           else if (alt) {
             // Alt+Up is the keyboard's "that one, thanks" — it commits and
             // collapses in a single press.
-            chooseActive();
-            core.close();
+            takeActive();
           } else core.move(-1);
           break;
 
@@ -1321,10 +1390,7 @@ export function createSelect(options: SelectOptions): Select {
 
         case 'Enter':
           if (!open) core.openListbox('selected');
-          else {
-            chooseActive();
-            core.close();
-          }
+          else chooseActive();
           break;
 
         case ' ':
@@ -1336,10 +1402,7 @@ export function createSelect(options: SelectOptions): Select {
             break;
           }
           if (!open) core.openListbox('selected');
-          else {
-            chooseActive();
-            core.close();
-          }
+          else chooseActive();
           break;
 
         case 'Escape':
@@ -1353,8 +1416,7 @@ export function createSelect(options: SelectOptions): Select {
           // Not prevented: the popup closes, the highlighted option is taken,
           // and the browser's own Tab carries on from the trigger — which is
           // where a user who tabbed out of a listbox expects to be.
-          chooseActive();
-          core.close();
+          takeActive();
           return;
 
         default: {
@@ -1656,12 +1718,13 @@ export function createCombobox<T = unknown>(options: ComboboxOptions<T>): Combob
    * Only a question can be committed, so the box showing "Cherry" over a chosen
    * `ch` offers nothing: that is this component's own answer, and every blur
    * after a successful pick would otherwise arrive here holding it out. Text
-   * naming a value already held is the same thing typed by hand and is refused
-   * for the same reason — either way, taking it replaces an option's id with
-   * its human text behind the form's back.
+   * that names an option — one already held, or one the list has shown — is
+   * that option typed by hand, and is taken as the option for the same reason:
+   * taking the string would replace an option's id with its human text behind
+   * the form's back. An option that is disabled is not taken either way.
    *
-   * What is taken is its own name, and the only one it will ever have: the
-   * value came from the user writing it down.
+   * Anything else is taken as its own name, and the only one it will ever
+   * have: the value came from the user writing it down.
    */
   const commitCustomValue = (): void => {
     if (options.allowCustomValue !== true) return;
@@ -1669,17 +1732,24 @@ export function createCombobox<T = unknown>(options: ComboboxOptions<T>): Combob
     if (typed === '') return;
 
     untrack(() => {
-      if (!core.valuesNow().some((value) => core.labelOf(value) === typed)) {
-        core.nameValue(typed, typed);
-        core.select(typed);
-      }
+      const named = core.valueNamed(typed);
+      // Nothing is taken, so the question stands, as it does for any refusal.
+      if (named !== undefined && core.isUnavailable(named)) return;
+      if (named === undefined) core.nameValue(typed, typed);
+      core.select(named ?? typed);
       asked.set(null);
     });
   };
 
-  /** What a press or an Enter on an option leaves in the textbox. */
-  const takeOption = (value: string): void => {
-    core.choose(value);
+  /**
+   * What taking an option leaves in the textbox.
+   *
+   * `take` is how it is taken: `choose` for a press or an Enter, which toggles
+   * in a multiple, and `select` for the ways out of the popup, which only ever
+   * add — see Tab below.
+   */
+  const takeOption = (value: string, take: (value: string) => void = core.choose): void => {
+    take(value);
     // Nothing was taken, so the question stands: a read-only combobox that
     // answered a press it refused would clear text the user is still typing.
     if (core.disabled() || core.readOnly()) return;
@@ -1974,7 +2044,20 @@ export function createCombobox<T = unknown>(options: ComboboxOptions<T>): Combob
 
     onInputBlur() {
       core.field.markTouched();
-      if (options.allowCustomValue === true && !core.multiple) commitCustomValue();
+      if (options.allowCustomValue === true && !core.multiple) {
+        // Leaving commits the way Enter does: the option the keyboard — or an
+        // inline completion — is proposing first, and only then the text.
+        // Otherwise the box would go on showing the completion while the form
+        // held the half of it that was typed. A highlight the pointer left
+        // behind on its way past the list proposes nothing, and taking it
+        // would throw away the question the user is still writing.
+        const active =
+          core.openState.get() && asked.get() !== null && !core.isActiveFromPointer()
+            ? core.activeValue.get()
+            : null;
+        if (active !== null) takeOption(active);
+        else commitCustomValue();
+      }
       // Whatever is left in the box is not a value, so the box goes back to
       // saying which one is. Leaving it would show text the form does not hold.
       asked.set(null);
@@ -2047,11 +2130,15 @@ export function createCombobox<T = unknown>(options: ComboboxOptions<T>): Combob
           if (!clearTextbox()) return;
           break;
 
-        case 'Tab':
+        case 'Tab': {
           if (!open) return;
-          if (core.activeValue.get() !== null) takeOption(core.activeValue.get() ?? '');
+          // Taken rather than toggled: leaving is not a request to drop the
+          // chip the highlight happens to rest on.
+          const value = core.activeValue.get();
+          if (value !== null) takeOption(value, core.select);
           core.close();
           return;
+        }
 
         case 'Backspace': {
           // Only on an empty box, so it never eats a character the user meant.
@@ -2148,9 +2235,10 @@ export function createCombobox<T = unknown>(options: ComboboxOptions<T>): Combob
  *
  * `createRovingFocus` owns this for a collection that takes real DOM focus,
  * and cannot be used here: it moves focus to the item it matches, which is
- * precisely what a combobox must never do. What is shared is the part that
- * matters — the matching itself is `collection.match`, so a menu, a select and
- * a combobox all agree on what a typed prefix means.
+ * precisely what a popup listbox must never do. What is shared is the part
+ * that matters — the matching itself is `collection.match`, so a menu and a
+ * select agree on what a typed prefix means. A combobox has none of this: its
+ * typing filters.
  */
 function createTypeahead(timeout: () => number) {
   let search = '';

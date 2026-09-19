@@ -263,6 +263,29 @@ describe('civil arithmetic, with no Date anywhere near it', () => {
     expect(parseIsoDate('2026-13-01')).toBeNull();
     expect(parseIsoDate('not a date')).toBeNull();
   });
+
+  it('writes a year outside 0000–9999 the way ISO 8601 and Temporal write it', () => {
+    // Four digits hold only 0000–9999. Past either end the form is a sign and
+    // six digits, which is what `Temporal.PlainDate#toString` prints and the
+    // only thing its parser takes: "10000-01-01" and "-0001-12-31" it refuses.
+    expect(toIsoDate({ year: 10000, month: 1, day: 1 })).toBe('+010000-01-01');
+    expect(toIsoDate({ year: -1, month: 12, day: 31 })).toBe('-000001-12-31');
+    expect(toIsoDate({ year: 0, month: 1, day: 1 })).toBe('0000-01-01');
+    expect(toIsoDate({ year: 9999, month: 12, day: 31 })).toBe('9999-12-31');
+
+    for (const date of [
+      { year: 10000, month: 1, day: 1 },
+      { year: -1, month: 12, day: 31 },
+      { year: 0, month: 1, day: 1 },
+    ]) {
+      expect(parseIsoDate(toIsoDate(date))).toEqual(date);
+    }
+    expect(parseIsoDate('+002026-08-12')).toEqual({ year: 2026, month: 8, day: 12 });
+    expect(parseIsoDate('10000-01-01')).toBeNull();
+    expect(parseIsoDate('-0001-12-31')).toBeNull();
+    // Year zero has no sign; ISO 8601 rules the negative spelling of it out.
+    expect(parseIsoDate('-000000-01-01')).toBeNull();
+  });
 });
 
 describe('what comes from the locale rather than from an assumption', () => {
@@ -411,6 +434,38 @@ describe('what assistive technology is told', () => {
     setup();
     const buttons = [...host.querySelectorAll('.prev')];
     expect(buttons.at(-1)!.getAttribute('aria-label')).toBe('Mois précédent');
+  });
+
+  it('names the year buttons apart from the month buttons', () => {
+    setup();
+    const names = ['.prev', '.next', '.prev-year', '.next-year'].map((selector) =>
+      host.querySelector(selector)!.getAttribute('aria-label'),
+    );
+    // Four buttons that do four different things, and a reader walking the
+    // controls hears each of them once rather than "Previous" twice.
+    expect(names).toEqual(['Previous', 'Next', 'Previous year', 'Next year']);
+
+    localeTag = 'fr-FR';
+    localeMessages = { previousYear: 'Année précédente', nextYear: 'Année suivante' };
+    setup();
+    expect([...host.querySelectorAll('.prev-year')].at(-1)!.getAttribute('aria-label')).toBe(
+      'Année précédente',
+    );
+    expect([...host.querySelectorAll('.next-year')].at(-1)!.getAttribute('aria-label')).toBe(
+      'Année suivante',
+    );
+  });
+
+  it('takes the words it adds to a cell from the catalogue', () => {
+    localeMessages = { today: "aujourd'hui", unavailable: 'indisponible' };
+    calOptions = { ...calOptions, isDateDisabled: (date) => date.day === 13 };
+    const { cell } = setup();
+    expect(cell(TODAY).getAttribute('aria-label')).toBe(
+      "Wednesday, August 12, 2026, aujourd'hui",
+    );
+    expect(cell({ year: 2026, month: 8, day: 13 }).getAttribute('aria-label')).toBe(
+      'Thursday, August 13, 2026, indisponible',
+    );
   });
 });
 
@@ -735,6 +790,88 @@ describe('range selection', () => {
     expect(cell({ year: 2026, month: 8, day: 13 }).hasAttribute('data-in-range')).toBe(false);
   });
 
+  it('cannot be drawn across a date it refuses', () => {
+    const booked = { year: 2026, month: 8, day: 15 };
+    calOptions = {
+      ...calOptions,
+      mode: 'range',
+      isDateDisabled: (date) => compareDates(date, booked) === 0,
+    };
+    const { cal, cell } = setup();
+    const aug = (day: number) => ({ year: 2026, month: 8, day });
+
+    click(cell(aug(10)));
+    // The first end is down and the 15th is booked, so nothing past it can be
+    // the other end — and a keyboard user hears that on the cell, the way the
+    // booked night itself is heard.
+    expect(cal.isDisabled(aug(20))).toBe(true);
+    expect(cell(aug(20)).getAttribute('aria-disabled')).toBe('true');
+    expect(cell(aug(20)).getAttribute('aria-label')).toContain('unavailable');
+    expect(cal.isDisabled(aug(14))).toBe(false);
+    expect(cal.isDisabled(aug(5))).toBe(false);
+
+    // Nor is the interval painted across it on the way.
+    hover(cell(aug(20)));
+    expect(cal.isInRange(aug(17))).toBe(false);
+
+    click(cell(aug(20)));
+    expect(cal.selectedRange()).toBeNull();
+
+    click(cell(aug(14)));
+    expect(cal.selectedRange()).toEqual({ start: aug(10), end: aug(14) });
+    // With the range closed, the 20th is a date like any other again.
+    expect(cal.isDisabled(aug(20))).toBe(false);
+  });
+
+  it('checks the whole interval, including the part off screen', () => {
+    // A range closed from code, or on a date arrowed to beyond the months on
+    // screen, crosses dates no cell was rendered for.
+    calOptions = {
+      ...calOptions,
+      mode: 'range',
+      isDateDisabled: (date) => date.month === 10 && date.day === 1,
+    };
+    const { cal } = setup();
+
+    cal.select({ year: 2026, month: 8, day: 10 });
+    cal.select({ year: 2026, month: 11, day: 3 });
+    flushSync();
+    expect(cal.selectedRange()).toBeNull();
+
+    cal.select({ year: 2026, month: 9, day: 30 });
+    flushSync();
+    expect(cal.selectedRange()).toEqual({
+      start: { year: 2026, month: 8, day: 10 },
+      end: { year: 2026, month: 9, day: 30 },
+    });
+  });
+
+  it('finds how far a range can reach once per month shown, not once per arrow press', () => {
+    const asked: string[] = [];
+    calOptions = {
+      ...calOptions,
+      mode: 'range',
+      isDateDisabled: (date) => {
+        asked.push(toIsoDate(date));
+        return date.day === 15;
+      },
+    };
+    const { root, cell } = setup();
+    click(cell({ year: 2026, month: 8, day: 10 }));
+
+    // The arrow stays inside August, so the booked night nearest the first end
+    // is where it was. Each cell asks about its own date as its bindings
+    // re-run, so every date is asked about as often as every other; walking
+    // the month again would ask once more about the days between the first
+    // end and that night.
+    asked.length = 0;
+    press(root, 'ArrowRight');
+    const times = new Map<string, number>();
+    for (const date of asked) times.set(date, (times.get(date) ?? 0) + 1);
+    expect(times.size).toBeGreaterThan(0);
+    expect(new Set(times.values()).size).toBe(1);
+  });
+
   it('drops the old interval on the first press of a new one', () => {
     calOptions = { ...calOptions, mode: 'range' };
     const { cal, cell } = setup();
@@ -790,6 +927,31 @@ describe('what the grid says out loud', () => {
     click(cell({ year: 2026, month: 8, day: 13 }));
     vi.advanceTimersByTime(50);
     expect(spoken()).toBe('Monday, August 10, 2026 to Thursday, August 13, 2026 selected');
+  });
+
+  it('takes its sentences from the catalogue, so a translation reaches them', () => {
+    localeMessages = {
+      dateSelected: '{date} : sélectionné',
+      rangeStartSelected: '{date} : début choisi',
+      rangeSelected: 'du {start} au {end}',
+    };
+    const single = setup();
+    click(single.cell({ year: 2026, month: 8, day: 20 }));
+    vi.advanceTimersByTime(50);
+    expect(spoken()).toBe('Thursday, August 20, 2026 : sélectionné');
+
+    calOptions = { ...calOptions, mode: 'range' };
+    const ranged = setup();
+    const cellIn = (day: number) =>
+      [...host.querySelectorAll<HTMLElement>(`[${CALENDAR_DAY_ATTRIBUTE}="2026-08-${day}"]`)].at(
+        -1,
+      )!;
+    click(cellIn(10));
+    vi.advanceTimersByTime(50);
+    expect(spoken()).toBe('Monday, August 10, 2026 : début choisi');
+    click(cellIn(13));
+    vi.advanceTimersByTime(50);
+    expect(spoken()).toBe('du Monday, August 10, 2026 au Thursday, August 13, 2026');
   });
 
   it('takes the sentence from the consumer when the consumer supplies one', () => {
@@ -848,6 +1010,38 @@ describe('paging the visible month', () => {
     flushSync();
     expect(seen).toEqual([{ year: 2027, month: 3 }]);
     expect(cal.visibleMonth()).toEqual({ year: 2027, month: 3 });
+  });
+});
+
+describe('today, when nothing says what today is', () => {
+  it('reads the clock once for the grid, not once for every cell', () => {
+    calOptions = {};
+    const { root } = setup();
+    const reads = vi.spyOn(Intl.DateTimeFormat.prototype, 'formatToParts');
+
+    // An arrow press re-runs every cell's bindings, since the tab stop moved;
+    // each of them asking `Intl` what day it is would be forty-odd clock
+    // readings per keystroke.
+    press(root, 'ArrowRight');
+    expect(reads).not.toHaveBeenCalled();
+    reads.mockRestore();
+  });
+
+  it('moves the mark when the day turns over, with nothing else re-rendering', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    // Thirty seconds to midnight, on the runtime's own clock.
+    vi.setSystemTime(new Date(2026, 7, 12, 23, 59, 30));
+    calOptions = {};
+    const { cell } = setup();
+    const twelfth = { year: 2026, month: 8, day: 12 };
+    const thirteenth = { year: 2026, month: 8, day: 13 };
+    expect(cell(twelfth).getAttribute('aria-current')).toBe('date');
+
+    vi.advanceTimersByTime(60_000);
+    flushSync();
+    expect(cell(twelfth).hasAttribute('aria-current')).toBe(false);
+    expect(cell(thirteenth).getAttribute('aria-current')).toBe('date');
+    expect(cell(thirteenth).getAttribute('aria-label')).toBe('Thursday, August 13, 2026, today');
   });
 });
 

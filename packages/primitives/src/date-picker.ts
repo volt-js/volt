@@ -52,9 +52,11 @@
  */
 
 import { Signal, effect, onCleanup } from '@voltdev/core';
+import { VISUALLY_HIDDEN_INPUT_STYLE } from './form-controls.js';
 import { createId } from './id.js';
 import { getDateTimeFormat, getNumberFormat, resolveDirection, useLocale } from './i18n.js';
 import {
+  clampDate,
   compareDates,
   createCalendar,
   daysInMonth,
@@ -103,6 +105,8 @@ type EditableSegmentType = Exclude<DateSegmentType, 'literal'>;
  *
  * Chosen to be the unit a person actually thinks in — a quarter of an hour, a
  * week, a quarter of a year, a decade — rather than a round number of steps.
+ * A distance in the field's own unit, which a stepped field rounds to whole
+ * steps; see `pageUnits`.
  */
 const PAGE_STEPS: Readonly<Record<EditableSegmentType, number>> = {
   year: 10,
@@ -142,7 +146,7 @@ export interface SegmentedFieldLabels {
    * the field, from `Intl.DisplayNames`.
    */
   segment?: (type: EditableSegmentType) => string;
-  /** What an empty segment reads as. Default "Empty". */
+  /** What an empty segment reads as. Defaults to the locale's `empty`, then "Empty". */
   empty?: string;
 }
 
@@ -172,7 +176,10 @@ export interface SegmentedField<T> {
   onKeyDown(event: KeyboardEvent): boolean;
   fieldProps(): SegmentedFieldProps;
   segmentProps(segment: DateSegment): SegmentedFieldProps;
-  /** A `<input type="hidden">` carrying the ISO value, for a plain form post. */
+  /**
+   * A visually hidden `<input>` carrying the ISO value, for a plain form post,
+   * and the control the platform validates when the field is `required`.
+   */
   hiddenInputProps(): SegmentedFieldProps;
 }
 
@@ -256,6 +263,8 @@ function createSegmentedField<T>(
     labelledBy?: string;
     describedBy?: string;
     labels?: SegmentedFieldLabels;
+    /** Whether the value the segments compose is one the caller refuses. */
+    invalid?: (value: T | null) => boolean;
     onChange?: (value: T | null) => void;
   },
   config: SegmentedConfig<T>,
@@ -263,7 +272,8 @@ function createSegmentedField<T>(
   const locale = useLocale();
   const baseId = createId(config.kind);
   const labels = options.labels ?? {};
-  const emptyLabel = labels.empty ?? 'Empty';
+  const emptyLabel = (): string =>
+    labels.empty ?? (locale.has('empty') ? locale.t('empty') : 'Empty');
 
   const value = options.value ?? new Signal.State<T | null>(options.defaultValue ?? null);
   const parts = new Signal.State<Parts>(
@@ -275,6 +285,10 @@ function createSegmentedField<T>(
 
   const isDisabled = (): boolean => options.disabled?.() ?? false;
   const isReadOnly = (): boolean => options.readOnly?.() ?? false;
+  // Read off the segments rather than off the value signal, so what is judged
+  // is the date on screen. A field nobody refuses anything for composes
+  // nothing at all: an optional call evaluates no argument.
+  const isInvalid = (): boolean => options.invalid?.(config.compose(parts.get())) ?? false;
 
   /**
    * A value handed in from outside becomes segments.
@@ -513,6 +527,18 @@ function createSegmentedField<T>(
     setField(type, range.min + ((((entered + delta - range.min) % span) + span) % span));
   };
 
+  /**
+   * One page, counted in the field's own steps: the distance `PAGE_STEPS`
+   * names, rounded to a whole number of steps and never fewer than one.
+   * Counting the distance itself as steps would page fifteen `minuteStep`s at
+   * a time — 45 minutes on with a step of 15, and all the way round the hour
+   * to where it started with a step of 20.
+   */
+  const pageUnits = (type: EditableSegmentType): number => {
+    const size = config.rangeOf(type, untrack(() => parts.get())).step ?? 1;
+    return Math.max(1, Math.round(PAGE_STEPS[type] / size));
+  };
+
   const typeDigit = (type: EditableSegmentType, digit: number): void => {
     const current = untrack(() => parts.get());
     const range = config.rangeOf(type, current);
@@ -565,10 +591,10 @@ function createSegmentedField<T>(
         if (editable) step(type, -1);
         return true;
       case 'PageUp':
-        if (editable) step(type, PAGE_STEPS[type]);
+        if (editable) step(type, pageUnits(type));
         return true;
       case 'PageDown':
-        if (editable) step(type, -PAGE_STEPS[type]);
+        if (editable) step(type, -pageUnits(type));
         return true;
       case 'Home':
         if (editable) setField(type, config.rangeOf(type, untrack(() => parts.get())).min);
@@ -590,8 +616,11 @@ function createSegmentedField<T>(
     if (!editable) return false;
 
     if (type === 'dayPeriod') {
-      // The letters, not the digits: nobody types 0 for morning. Matched
-      // against the locale's own names first, so 午前 answers to ご as well.
+      // The letters, not the digits: nobody types 0 for morning. A and P
+      // always answer, and so does the first letter of the locale's own names
+      // wherever a keyboard types it directly — ص and م in Arabic, π and μ in
+      // Greek. A name written through an input method never gets here: the
+      // key that sends is `Process`.
       const key = event.key.toLowerCase();
       const [am, pm] = periodNames();
       if (key === 'a' || am.toLowerCase().startsWith(key)) {
@@ -642,6 +671,9 @@ function createSegmentedField<T>(
       'data-disabled': isDisabled() ? '' : undefined,
       'data-readonly': isReadOnly() ? '' : undefined,
       'data-empty': Object.keys(parts.get()).length === 0 ? '' : undefined,
+      // For a stylesheet. `aria-invalid` goes on the segments instead, for the
+      // same reason `aria-required` does: a group carries neither.
+      'data-invalid': isInvalid() ? '' : undefined,
     }),
 
     segmentProps: (segment) => {
@@ -662,13 +694,18 @@ function createSegmentedField<T>(
         'aria-valuenow': segment.value ?? undefined,
         // The text, not the number: "PM" rather than 1, and the locale's own
         // digits rather than the Latin ones a number would be read as.
-        'aria-valuetext': segment.isPlaceholder ? emptyLabel : segment.text,
+        'aria-valuetext': segment.isPlaceholder ? emptyLabel() : segment.text,
         'aria-disabled': isDisabled() ? 'true' : undefined,
         'aria-readonly': isReadOnly() ? 'true' : undefined,
+        // On every segment, because the group around them is where the name
+        // goes and `aria-required` is not an attribute a group can carry.
+        'aria-required': options.required?.() ? 'true' : undefined,
+        // Beside it, and on the segments for the same reason: a spinbutton is
+        // a widget and carries both, a group is neither and carries neither.
+        'aria-invalid': isInvalid() ? 'true' : undefined,
         // Exactly one segment is in the tab order, so Tab enters and leaves the
         // whole field in a single press — the same rule as a listbox's options.
         tabindex: isDisabled() ? undefined : tabStopType() === type ? '0' : '-1',
-        inputmode: 'numeric',
         'data-segment': type,
         'data-placeholder': segment.isPlaceholder ? '' : undefined,
       };
@@ -676,15 +713,47 @@ function createSegmentedField<T>(
 
     hiddenInputProps: () => {
       const composed = config.compose(parts.get());
-      return {
-        type: 'hidden',
-        name: options.name,
-        value: composed === null ? '' : config.serialize(composed),
-        // Required is stated for the form, and disabled keeps the field out of
-        // the submission entirely, which is what a disabled control means.
+      const iso = composed === null ? '' : config.serialize(composed);
+      const props: Record<string, SegmentedFieldPropValue> = {
+        // A visually hidden text input rather than `type="hidden"`, which is
+        // barred from constraint validation: `required` on one is a promise
+        // the platform never keeps, and the form submits without the date.
+        // This one is validated, and keeps a clipped pixel on the page for the
+        // browser to point its message at.
+        type: 'text',
+        // The same string as the value and as the default. The value is what
+        // the form posts once anything has written to the input — autofill, a
+        // restored form, a stray keystroke — and without it the input would
+        // never follow the segments again. The default is what a server
+        // renders, since markup has no property to set, and the only thing
+        // `form.reset()` puts back, so a reset leaves the input holding what
+        // the segments still show.
+        value: iso,
+        defaultValue: iso,
         required: options.required?.() ? true : undefined,
+        // Neither a field nobody can fill in nor one that is not part of the
+        // form may hold the submit, and both attributes take the input out of
+        // validation. Disabled also keeps it out of the submission, which is
+        // what a disabled control means.
+        readOnly: isReadOnly() ? true : undefined,
         disabled: isDisabled() ? true : undefined,
+        // Reachable to the platform, invisible to assistive technology and to
+        // Tab: the segments carry the semantics, and announcing both would
+        // announce the field twice.
+        tabindex: '-1',
+        'aria-hidden': 'true',
+        style: VISUALLY_HIDDEN_INPUT_STYLE,
+        // The platform focuses the control it is holding the submit for, and
+        // this one is a clipped pixel: the caret would be somewhere nobody can
+        // see, and the digits typed there would go to the form rather than to
+        // the segments. The first segment is where the date is entered, so
+        // that is where the message sends the user.
+        onfocus: () => focusSegment(),
       };
+      // Omitted rather than set to undefined: `name` is a property on an
+      // input, and assigning undefined to it submits the string "undefined".
+      if (options.name !== undefined) props.name = options.name;
+      return props;
     },
   };
 }
@@ -701,6 +770,13 @@ export interface DateFieldOptions {
   defaultValue?: PlainDateValue | null;
   /** What an arrow press on an empty year means. Defaults to the clock. */
   today?: () => PlainDateValue;
+
+  /**
+   * Bounds a typed date is reported against. A date outside them is still the
+   * value — see `createDateField` — and every segment says it is invalid.
+   */
+  min?: () => PlainDateValue | null | undefined;
+  max?: () => PlainDateValue | null | undefined;
 
   disabled?: () => boolean;
   readOnly?: () => boolean;
@@ -723,47 +799,56 @@ export type DateField = SegmentedField<PlainDateValue>;
  *
  * The year runs to 9999 rather than to some window around today, because a
  * field that refuses 1901 is useless for a birth date and one that refuses
- * 2087 is useless for a maturity date. Bounds belong to the thing that knows
- * what the date is for — `createDatePicker` has `min` and `max`, and a form
- * validator has the rest.
+ * 2087 is useless for a maturity date. `min` and `max` are reported rather
+ * than enforced: a user typing 2026 passes through 2020 on the way, so a
+ * field that refused the keystroke could not be typed into at all, and one
+ * that rewrote the date under them would post something nobody entered.
  */
 export function createDateField(options: DateFieldOptions): DateField {
   const now = (): PlainDateValue => options.today?.() ?? todayInZone();
 
-  return createSegmentedField<PlainDateValue>(options, {
-    kind: 'date-field',
-    formatOptions: {
-      calendar: 'gregory',
-      timeZone: 'UTC',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
+  return createSegmentedField<PlainDateValue>(
+    {
+      ...options,
+      invalid: (value) =>
+        value !== null &&
+        compareDates(clampDate(value, options.min?.(), options.max?.()), value) !== 0,
     },
+    {
+      kind: 'date-field',
+      formatOptions: {
+        calendar: 'gregory',
+        timeZone: 'UTC',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      },
 
-    rangeOf(type, parts) {
-      if (type === 'year') return { min: 1, max: 9999, digits: 4, blank: now().year };
-      if (type === 'month') return { min: 1, max: 12, digits: 2, blank: 1 };
-      // A leap year when the year is not known yet, so the 29th stays
-      // reachable while the user is still typing the rest.
-      const year = parts.year ?? 2024;
-      const month = parts.month ?? 1;
-      return { min: 1, max: daysInMonth(year, month), digits: 2, blank: 1 };
+      rangeOf(type, parts) {
+        if (type === 'year') return { min: 1, max: 9999, digits: 4, blank: now().year };
+        if (type === 'month') return { min: 1, max: 12, digits: 2, blank: 1 };
+        // A leap year when the year is not known yet, so the 29th stays
+        // reachable while the user is still typing the rest.
+        const year = parts.year ?? 2024;
+        const month = parts.month ?? 1;
+        return { min: 1, max: daysInMonth(year, month), digits: 2, blank: 1 };
+      },
+
+      compose(parts) {
+        const { year, month, day } = parts;
+        if (year === undefined || month === undefined || day === undefined) return null;
+        return { year, month, day };
+      },
+
+      decompose: (value) => ({ year: value.year, month: value.month, day: value.day }),
+
+      same: (a, b) =>
+        a === b ||
+        (a !== null && b !== null && a.year === b.year && a.month === b.month && a.day === b.day),
+
+      serialize: toIsoDate,
     },
-
-    compose(parts) {
-      const { year, month, day } = parts;
-      if (year === undefined || month === undefined || day === undefined) return null;
-      return { year, month, day };
-    },
-
-    decompose: (value) => ({ year: value.year, month: value.month, day: value.day }),
-
-    same: (a, b) =>
-      a === b ||
-      (a !== null && b !== null && a.year === b.year && a.month === b.month && a.day === b.day),
-
-    serialize: toIsoDate,
-  });
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -943,7 +1028,10 @@ export function createTimePicker(options: TimePickerOptions): TimePicker {
 // ---------------------------------------------------------------------------
 
 export interface DatePickerLabels extends SegmentedFieldLabels, CalendarLabels {
-  /** Names the button that opens the calendar. */
+  /**
+   * Names the button that opens the calendar. Defaults to the locale's
+   * `chooseDate`, then "Choose date".
+   */
   trigger?: string;
   /** Names the popover itself, for a reader entering it. */
   calendar?: string;
@@ -1025,6 +1113,7 @@ export interface DatePicker {
  * require finding the button first.
  */
 export function createDatePicker(options: DatePickerOptions): DatePicker {
+  const locale = useLocale();
   const labels = options.labels ?? {};
   const closeOnSelect = options.closeOnSelect !== false;
 
@@ -1035,18 +1124,32 @@ export function createDatePicker(options: DatePickerOptions): DatePicker {
   const now = (): PlainDateValue => options.today?.() ?? todayInZone();
 
   /**
+   * The date the grid opens on: the one the field holds, else today, and
+   * inside the bounds either way. The field takes no bounds, so it can hold a
+   * date outside them, and today can be before `min`; a tab stop on either
+   * would sit on the one kind of cell the grid promises is never reached.
+   */
+  const openingDate = (): PlainDateValue =>
+    clampDate(untrack(() => value.get()) ?? now(), options.min?.(), options.max?.());
+
+  /**
    * The calendar's tab stop, owned here rather than by the calendar.
    *
    * The grid is built once and shown many times, and each time it has to open
    * on the date the field currently holds — which the calendar cannot know,
    * because it was constructed before any of those values existed.
    */
-  const focusedDate = new Signal.State<PlainDateValue>(untrack(() => value.get()) ?? now());
+  const focusedDate = new Signal.State<PlainDateValue>(untrack(openingDate));
 
   const field = createDateField({
     field: options.field,
     value,
     today: options.today,
+    // The same bounds the grid has. The field takes what is typed into it
+    // either way, and says on every segment that a date outside them is not
+    // one this picker accepts.
+    min: options.min,
+    max: options.max,
     disabled: options.disabled,
     readOnly: options.readOnly,
     required: options.required,
@@ -1105,15 +1208,18 @@ export function createDatePicker(options: DatePickerOptions): DatePicker {
    */
   effect(() => {
     if (!open.get()) return;
-    const chosen = untrack(() => value.get()) ?? now();
-    if (compareDates(untrack(() => focusedDate.get()), chosen) !== 0) focusedDate.set(chosen);
+    const opening = untrack(openingDate);
+    if (compareDates(untrack(() => focusedDate.get()), opening) !== 0) focusedDate.set(opening);
   });
 
   const onKeyDown = (event: KeyboardEvent): boolean => {
     if (options.disabled?.()) return false;
     // The native date input's gesture, and the only one that does not make a
-    // keyboard user hunt for the button.
+    // keyboard user hunt for the button. Not while read-only: the grid then
+    // answers no keys and takes no presses, which is why the button is
+    // disabled, and the gesture that stands in for the button is too.
     if (event.altKey && event.key === 'ArrowDown') {
+      if (options.readOnly?.()) return false;
       setOpen(true);
       return true;
     }
@@ -1138,7 +1244,8 @@ export function createDatePicker(options: DatePickerOptions): DatePicker {
       type: 'button',
       // The button is a glyph beside a field that already has a name, so it
       // needs one of its own or it announces as "button".
-      'aria-label': labels.trigger ?? 'Choose date',
+      'aria-label':
+        labels.trigger ?? (locale.has('chooseDate') ? locale.t('chooseDate') : 'Choose date'),
       disabled: (options.disabled?.() ?? false) || (options.readOnly?.() ?? false) ? true : undefined,
     }),
 

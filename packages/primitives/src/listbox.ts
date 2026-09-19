@@ -1,11 +1,15 @@
 /**
- * Listbox — a selectable collection of options.
+ * Listbox — a selectable collection of options, with the list on the page.
  *
- * Select, Combobox and MultiSelect are all a listbox with something different
- * attached to the front of it: a button, a text input, a field of chips. The
- * part they share is the whole of the hard part — selection modes, the keyboard
- * map, typeahead, group headings, virtual focus, and counting options that are
- * not in the DOM — so it is built once here rather than three times over.
+ * This is the whole of the hard part of choosing from a list: selection modes,
+ * the keyboard map, typeahead, group headings, virtual focus, and counting
+ * options that are not in the DOM. Select and Combobox are a listbox with a
+ * button or a textbox in front of it, but they are not built on this one: their
+ * options are keyed by a string value rather than by index and exist only
+ * while the popup does, so `combobox.ts` carries its own popup listbox. The
+ * two differ where that shows — a page there is ten options rather than a
+ * viewport, typeahead there goes through `collection.match` rather than a
+ * collator, and every option there states `aria-selected`.
  *
  * This is headless: it owns state, keyboard and ARIA, and returns prop objects
  * to spread onto whatever markup the consumer writes. Nothing here renders.

@@ -401,10 +401,17 @@ a button in a form submits it otherwise.
 | Open | ArrowDown, ArrowUp | Next, previous option |
 | | Home, End | First, last |
 | | PageDown, PageUp | Ten options on |
-| | Enter, Space, Alt+ArrowUp | Choose the highlighted option, close |
-| | Tab | Choose it, close, and let Tab carry on out |
+| | Enter, Space | What a press on the highlighted option does: choose it, toggle it in a `multiple`, and close if `closeOnSelect` |
+| | Alt+ArrowUp | Take the highlighted option and close |
+| | Tab | Take it, close, and let Tab carry on out |
 | | Escape | Close, value unchanged |
 | | Printable characters | Move to the match |
+
+Enter and Space are the press, so a `multiple` select stays open through them
+and the same key takes a value off again. Alt+ArrowUp and Tab are the ways out:
+they always close, and they only ever add — a `multiple` opens with the
+highlight on the first value it holds, and leaving from there leaves that value
+where it was.
 
 Typeahead on a closed trigger reads the native `<select>`: its options are real,
 in document order, with the disabled ones already skipped. Without a native
@@ -511,7 +518,7 @@ would be two writers for one string.
 | PageDown, PageUp | Ten options on, while open |
 | Enter | Take the highlighted option; else the typed text, with `allowCustomValue`; else leave the key to the form |
 | Escape | Close the popup; once it is closed, clear the text |
-| Tab | Take the highlighted option, close, and let Tab carry on out |
+| Tab | Take the highlighted option, close, and let Tab carry on out. It only ever adds: in a `multiple`, Tab on a value already held leaves the chip where it is |
 | Backspace | In an empty box of a `multiple`, remove the last chip |
 | Home, End | Left alone — in a textbox they belong to the caret |
 | Printable characters | Filter, and open if closed |
@@ -529,15 +536,18 @@ Swallowing it is how a combobox stops a one-field form from ever submitting.
 
 When focus leaves, the box goes back to naming the value it holds — anything
 still typed there is not a value, and leaving it would show text the form does
-not hold. With `allowCustomValue`, a single-value combobox first commits what
-was typed — the typed text, even over a highlighted option; see
-[where it falls short](#where-it-falls-short).
+not hold. With `allowCustomValue`, a single-value combobox first commits the
+way Enter does: the option a keyboard highlight, or an inline completion, is
+proposing, and otherwise the text that was typed. A highlight the pointer left
+behind is not a proposal and commits nothing: nothing clears one when the
+pointer leaves the list, so a pointer that merely crossed it on the way to
+another control would otherwise take an option over the typed text.
 
 | Option only Combobox has | Default | Description |
 |---|---|---|
 | `input` | required | The textbox |
 | `autocomplete` | `'list'` | `'list'` filters; `'both'` also completes the text inline; `'none'` shows every option however much is typed |
-| `allowCustomValue` | `false` | Commit the typed text as the value — on Enter when nothing is highlighted, and on blur in a single-value combobox. It is not checked against the options; see [below](#where-it-falls-short) |
+| `allowCustomValue` | `false` | Commit the typed text as the value — on Enter when nothing is highlighted, and on blur in a single-value combobox. Text that is an option's name commits that option |
 | `filter` | case- and accent-insensitive substring, in the locale | `(text, query) => boolean`, what `matches` asks |
 | `search` | — | Fetch the options for a query, through `createResource` |
 | `searchDebounce` | `250` | Quiet time before a changed query is sent, in ms |
@@ -547,9 +557,11 @@ was typed — the typed text, even over a highlighted option; see
 
 `allowCustomValue` is off because a combobox that quietly accepts anything is a
 text field with a list beside it, and the caller has to be able to say which of
-the two they meant. Typed text that names a value already held is refused even
-with it on, since taking it would replace an option's identifier with its
-label behind the form's back.
+the two they meant. Typed text that names an option — a value already held, or
+any option the list has shown — is taken as that option even with it on, since
+taking the string would replace an option's identifier with its label behind
+the form's back: "Cherry" typed in full commits `ch`. When the option it names
+is disabled, nothing is taken and the text stays in the box.
 
 `autocomplete: 'both'` looks at the first enabled option rendered, and only
 that one: when its text starts with what was typed, the box is completed to it,
@@ -827,7 +839,7 @@ translated catalogue has translated these too.
 | `toggle` | `showSuggestions` | Show suggestions |
 | `remove(label)` | `remove`, followed by the label | Remove {label} |
 | `selected(count)` | `selected` | n selected — names the chip list, through `chipsProps()` |
-| `clear` | `clear` | Clear — see [below](#where-it-falls-short) |
+| `clear` | `clear` | Clear |
 
 `suggestions`, `resultsAvailable` and `showSuggestions` are not in the default
 catalogue; a catalogue that adds them is read. The `remove` key is followed by
@@ -862,8 +874,9 @@ calendar actually selects. Two alternatives were turned down.
 January 31 plus a month is March 3 — its local midnight drifts with the
 runtime's zone, its setters mutate, and its months count from zero, which
 nobody reading `month: 3` expects. None of it appears here; `month` runs 1–12.
-The only clock reading is `Date.now()` inside `today()`, turned into a civil
-date through `Intl` rather than through `Date`'s local getters.
+The only clock reading is `Date.now()`, behind `today()` and the calendar's own
+mark for today, turned into a civil date through `Intl` rather than through
+`Date`'s local getters.
 
 **Not `Temporal`, but shaped like it.** `Temporal` is the right answer to date
 arithmetic, and this package cannot assume every browser it supports has it. So
@@ -890,8 +903,8 @@ All pure, all exported, proleptic Gregorian.
 | `compareDates(a, b)` | Negative when `a` is earlier, zero on the same day |
 | `isSameDate(a, b)` | Either may be `null`, which is never the same as anything |
 | `clampDate(date, min?, max?)` | The date, or the bound it crossed |
-| `toIsoDate(date)` | `YYYY-MM-DD` — what the day cells carry and what a form posts |
-| `parseIsoDate(text)` | A date, or `null` for anything else, including a day the month does not have |
+| `toIsoDate(date)` | `YYYY-MM-DD` — what the day cells carry and what a form posts. A year outside 0000–9999 is written `±YYYYYY`, as ISO 8601 and `Temporal` write it: `+010000-01-01` |
+| `parseIsoDate(text)` | A date from `YYYY-MM-DD` or `±YYYYYY-MM-DD`, or `null` for anything else, including a day the month does not have |
 | `firstDayOfWeek(locale)` | The locale's first day of the week, as an ISO weekday |
 | `today(timeZone?)` | Today in that IANA zone, or in the runtime's. A zone name `Intl` does not know throws a `RangeError` |
 
@@ -1016,10 +1029,11 @@ locale.
 | `onFocusedDateChange` / `onVisibleMonthChange` | — | The second fires on a change, not for the month it starts on |
 
 `today` is an option so that a test, a server render and a page pinned to
-another zone agree about which cell is today. Without it, each cell reads the
-clock when its props are computed, and nothing watches the clock: a calendar
-left open across midnight goes on marking yesterday until the grid next
-re-renders.
+another zone agree about which cell is today. Without it, every calendar on the
+page shares one reading of the runtime's clock, and one timer set for when the
+day turns over: a calendar left open across midnight moves its mark with the
+day. A `today` of your own is called as it is, so make it a signal read if the
+mark has to move.
 
 **Bounds and unavailable dates are one question with two answers on screen.**
 A date outside `min` or `max` is never reached — navigation clamps before it
@@ -1027,7 +1041,8 @@ moves, and a month button whose month lies wholly outside the bounds is
 disabled. A date `isDateDisabled` refuses is reached, focused and announced as
 unavailable, which is the only way a keyboard user can find out why it cannot
 be booked. That is the difference between a month that does not exist and a
-night that is full.
+night that is full. In range mode a refused date also ends what a range can
+reach — see [Ranges](#ranges).
 
 ### Keyboard
 
@@ -1134,22 +1149,36 @@ screen at once leave the user unable to tell which one the next press keeps.
 `selectedRange()` is `null` between the presses, and `isInRange` paints the
 pending interval out to the date under the pointer.
 
+A range cannot be drawn across a date `isDateDisabled` refuses: a stay over a
+booked night is not a stay anyone can have. While the grid waits for the second
+press, everything past the nearest refused date on either side of the first end
+is refused as well — `isDisabled` is true for it, its cell says `aria-disabled`
+and "unavailable", a press on it is swallowed, and the pending interval is not
+painted out to it. `select(date)` from code checks the whole interval the same
+way and does nothing when a refused date lies inside it. Once the range closes,
+or `clear()` drops the first end, those dates are ordinary dates again. To start
+again on the far side of a booked night, close the range on the first end
+itself — a range of one day — and press the new start.
+
 ### Calendar labels
 
-| Label | Default | Used for |
-|---|---|---|
-| `previousMonth`, `nextMonth` | the catalogue's `previous`, `next` | The month buttons |
-| `previousYear`, `nextYear` | the catalogue's `previous`, `next` | The year buttons — the same names as the month buttons |
-| `monthChanged(label)` | the month's own name, "September 2026" | Said when the month buttons or `setVisibleMonth` move the view — not when arrowing does |
-| `dateSelected(date)` | "{date} selected" | Said when a date is chosen |
-| `rangeStartSelected(date)` | "{date} selected. Choose an end date." | Said when the first end of a range is chosen |
-| `rangeSelected(start, end)` | "{start} to {end} selected" | Said when a range closes |
-| `unavailable` | "unavailable" | Appended to a disabled cell's name |
-| `today` | "today" | Appended to today's name, since `aria-current="date"` alone is read unevenly |
+Each label falls back to the locale's catalogue, then to English.
 
-The dates handed to these are already localised. The sentences around them,
-and the two suffixes, are English literals rather than catalogue entries — pass
-them through `labels` on a page in any other language.
+| Label | Catalogue key | English | Used for |
+|---|---|---|---|
+| `previousMonth`, `nextMonth` | `previous`, `next` | Previous, Next | The month buttons |
+| `previousYear`, `nextYear` | `previousYear`, `nextYear` | Previous year, Next year | The year buttons |
+| `monthChanged(label)` | — | the month's own name, "September 2026" | Said when the month buttons or `setVisibleMonth` move the view — not when arrowing does |
+| `dateSelected(date)` | `dateSelected` | {date} selected | Said when a date is chosen |
+| `rangeStartSelected(date)` | `rangeStartSelected` | {date} selected. Choose an end date. | Said when the first end of a range is chosen |
+| `rangeSelected(start, end)` | `rangeSelected` | {start} to {end} selected | Said when a range closes |
+| `unavailable` | `unavailable` | unavailable | Appended to a disabled cell's name |
+| `today` | `today` | today | Appended to today's name, since `aria-current="date"` alone is read unevenly |
+
+The dates handed to these are already localised. Only `previous` and `next` are
+in the default catalogue; a catalogue that adds the other keys is read, and its
+sentences place their dates with `{date}`, or `{start}` and `{end}`:
+`dateSelected: '{date} : sélectionné'`.
 
 ## Typing a date or a time
 
@@ -1207,12 +1236,19 @@ Render every segment, separators included; `segmentProps` hides a separator
 from assistive technology, which would otherwise read "slash" between every part
 of the date. The hidden input carries the ISO value — `2026-09-11`, or `14:30`
 for a time — so a plain form post has something a server can read, whatever
-the locale printed.
+the locale printed. It is a visually hidden text input rather than
+`type="hidden"`, which the platform never validates: this one holds a `required`
+form back while the date is missing, and keeps a clipped pixel on the page for
+the browser to point its message at. Focus the platform puts there on a blocked
+submit goes straight to the first segment, so the message names a field and the
+digits typed after it reach the date. It is out of the tab order and hidden from
+assistive technology, since the segments are the control. Render it inside the
+`<form>`, and leave its `type` and `style` to the bag.
 
 | Key | Does |
 |---|---|
 | ArrowUp, ArrowDown | One step on this segment, wrapping at its ends |
-| PageUp, PageDown | A larger step: ten years, three months, a week, two hours, fifteen minutes or seconds. On the minutes it is fifteen `minuteStep`s — see [below](#where-it-falls-short) |
+| PageUp, PageDown | A larger step: ten years, three months, a week, two hours, fifteen minutes or seconds. With a `minuteStep` it is the whole number of steps nearest a quarter hour, and never fewer than one: 15 minutes at a step of 5 or 15, 20 at a step of 20 |
 | ArrowLeft, ArrowRight | Previous, next segment — mirrored under RTL |
 | Home, End | This segment's smallest, largest value |
 | 0–9 | Type into the segment, moving on when it is full |
@@ -1241,16 +1277,21 @@ though it goes through no handler of this one.
 | `granularity` | | `'minute'` | `'second'` adds a seconds segment |
 | `minuteStep` | | `1` | What one arrow press moves the minutes by |
 | `hourCycle` | | the locale's | `'h11'`, `'h12'`, `'h23'` or `'h24'`, to force a clock |
-| `disabled` / `readOnly` / `required` | ✓ | ✓ | Getters. Read-only still moves between segments. `required` is neither enforced nor announced — see [below](#where-it-falls-short) |
-| `name` | ✓ | ✓ | Names the hidden input — see [below](#where-it-falls-short) |
+| `disabled` / `readOnly` / `required` | ✓ | ✓ | Getters. Read-only still moves between segments. `required` puts `aria-required` on every segment and is enforced by the platform through the hidden input; a read-only or disabled field never holds the submit |
+| `min` / `max` | ✓ | | Getters for a `PlainDateValue`. Reported, not enforced: a date typed outside them is still the value, and every segment says `aria-invalid`, with `data-invalid` on the group for a stylesheet |
+| `name` | ✓ | ✓ | Names the hidden input. Without it the input carries no name and posts nothing |
 | `label` / `labelledBy` / `describedBy` | ✓ | ✓ | For the group |
 | `labels` | ✓ | ✓ | `placeholder(type, width)`, `segment(type)`, `empty` |
 | `onChange` | ✓ | ✓ | Called with the composed value, `null` while incomplete |
 
 The year runs from 1 to 9999 rather than to a window around today, because a
 field that refuses 1901 is useless for a birth date and one that refuses 2087
-is useless for a maturity date. Bounds belong to whatever knows what the date
-is for; the field takes none.
+is useless for a maturity date. `min` and `max` narrow nothing: a user typing
+2026 passes through 2020 on the way, so a field that refused the keystroke
+could not be typed into at all, and one that rewrote the date underneath them
+would post something nobody entered. What they do is report — the segments say
+`aria-invalid` and the group carries `data-invalid` — and what to do about an
+invalid date is the form's decision. The time picker takes no bounds at all.
 
 The time picker's clock is the locale's unless forced — American English is
 12-hour and British English 24-hour, and there is no rule connecting the two
@@ -1268,7 +1309,7 @@ what is available nowhere else is segmented entry, and that is all this is.
 |---|---|
 | `placeholder(type, width)` | A run of dashes as wide as the segment |
 | `segment(type)` | The locale's own name for the field, from `Intl.DisplayNames` |
-| `empty` | "Empty" — what an empty segment's `aria-valuetext` says. English |
+| `empty` | The catalogue's `empty`, else "Empty" — what an empty segment's `aria-valuetext` says. `empty` is not in the default catalogue; a catalogue that adds it is read |
 
 ### Members
 
@@ -1280,7 +1321,7 @@ what is available nowhere else is segmented entry, and that is all this is.
 | `focusSegment(type?)` | DOM focus on a segment — the first editable one by default |
 | `onKeyDown(event)` | Returns `true` when consumed |
 | `fieldProps()` / `segmentProps(seg)` | The wrapper, which is a `group`, and each segment |
-| `hiddenInputProps()` | An `<input type="hidden">` carrying the ISO value |
+| `hiddenInputProps()` | A visually hidden `<input>` carrying the ISO value, and what the platform validates when the field is `required` |
 
 A `DateSegment` carries `type`, `key`, `index`, `text`, `isEditable`,
 `isPlaceholder`, `value`, `min` and `max`. `value` is in display units, so a
@@ -1349,15 +1390,18 @@ export class Departure {
 ```
 
 The trigger has no `:click`: its handlers come in through `triggerProps()`.
-Opening puts the grid's tab stop on the date the field holds, or today, and
-takes DOM focus there. Choosing a date closes the popover, and focus goes back
+Opening puts the grid's tab stop on the date the field holds, or today — the
+nearest date inside `min` and `max` when that one is not — and takes DOM focus
+there. Choosing a date closes the popover, and focus goes back
 to whatever held it when the popover opened — the trigger, or the segment
 Alt+ArrowDown was pressed in — unless the user has already moved it somewhere
 else.
 
 Alt+ArrowDown in the field opens the calendar. That is what a native date input
 does, and the only keyboard route to the grid that does not mean finding the
-button first.
+button first. A read-only picker does not answer it, for the reason its button
+is disabled: the grid behind it would take no keys and no presses. Every other
+key still reaches the field, since read-only segments can be moved between.
 
 | Option | Default | Description |
 |---|---|---|
@@ -1370,23 +1414,25 @@ button first.
 | `labels` | | The field's and the calendar's labels, plus `trigger` and `calendar` |
 | `onChange`, `onOpenChange` | — | `onChange` fires once whichever half made the change |
 
-The calendar options `min`, `max`, `isDateDisabled`, `visibleMonths`,
-`firstDayOfWeek` and `fixedWeeks` go to the grid; `required`, `name`,
-`labelledBy` and `describedBy` go to the field; `today` and `label` go to both,
-`label` naming the group of months when `labels.calendar` does not.
+The calendar options `isDateDisabled`, `visibleMonths`, `firstDayOfWeek` and
+`fixedWeeks` go to the grid; `required`, `name`, `labelledBy` and `describedBy`
+go to the field; `min`, `max`, `today` and `label` go to both, `label` naming
+the group of months when `labels.calendar` does not.
 
-**`min` and `max` bound the grid, not the typing.** The field takes no bounds,
-so a date typed outside them becomes the value, and the grid shows it selected
-and unavailable. Check the value where you validate the form. Nor do they move
-where the grid opens: with nothing chosen it opens on today, even when `min`
-is next month, so it shows a month of unavailable cells with the tab stop on
-one of them. The first arrow press jumps to `min`; a pointer user has to page
-forward. Overriding `today` would move the opening month, but it also moves
-the cell marked as today, so it is not a fix.
+**`min` and `max` bind the grid and are reported by the field.** The grid
+refuses a date outside them and opens on the nearest date inside them when the
+date the field holds, or today, is not — with nothing chosen and `min` next
+month, it opens on `min`, in `min`'s month, and the tab stop is never on a cell
+that cannot be reached. Typing is not refused, because it cannot be: every year
+before `min`'s is a prefix of one after it. A date typed outside the bounds
+becomes the value, every segment says `aria-invalid` and the group carries
+`data-invalid`, and the grid shows the date selected and unavailable. The
+platform does not hold the submit back for it, so check the value where you
+validate the form.
 
 | `labels` beyond the field's and the calendar's | Default |
 |---|---|
-| `trigger` | "Choose date" — English. The button is usually a glyph, and a glyph is not a name |
+| `trigger` | The catalogue's `chooseDate`, else "Choose date". The button is usually a glyph, and a glyph is not a name. `chooseDate` is not in the default catalogue; a catalogue that adds it is read |
 | `calendar` | Names the popover, which is otherwise a `dialog` with no name unless a heading carries `picker.popover.titleProps()`. The group of months takes it too, falling back to `label` |
 
 | Member | Description |
@@ -1394,7 +1440,7 @@ the cell marked as today, so it is not a fix.
 | `field` / `calendar` / `popover` | The three parts. Render the field and the grid through the first two; reach for the popover when the members below do not cover it |
 | `value()` / `setValue(v)` | The shared value |
 | `isOpen()` / `open()` / `close()` | The popover |
-| `onKeyDown(event)` | For the field: Alt+ArrowDown, then the field's own keys. Returns `true` when consumed |
+| `onKeyDown(event)` | For the field: Alt+ArrowDown unless read-only, then the field's own keys. Returns `true` when consumed |
 | `triggerProps()` / `contentProps()` | The button and the popover, handlers included |
 
 ## Attribute names
@@ -1473,99 +1519,17 @@ exported name of its own; `Select` and `Combobox` each include it.
   is single-date, and there is no segmented field for a start and an end.
 - **Week numbers.** A `CalendarWeek` is an object so that a week number has
   somewhere to go, but none is computed.
-- **Bounds on typed values.** The date field and the time picker take no `min`
-  or `max`, and the picker's bounds reach only its grid.
+- **A date outside the bounds held back by the platform.** A date typed outside
+  `min` and `max` is reported — `aria-invalid` on every segment — but nothing
+  stops the form being submitted with it, the way a native date input's
+  `rangeUnderflow` does. The hidden input would have to be a native
+  `type="date"` to get that, and one rejects the years outside 0000–9999 that
+  `toIsoDate` writes as `±YYYYYY`, so it would silently post nothing for a date
+  this field can hold. The time picker takes no bounds at all.
 - **Touch and paste entry in a segmented field.** The segments are focusable
   spans driven by `keydown`, not editable elements, so a phone shows no
-  on-screen keyboard for them — `inputmode="numeric"` is set, and only an
-  editable element acts on it. Pasting a whole date is not handled either.
-
-## Where it falls short
-
-What follows is how the code behaves today, recorded so that nobody finds it by
-shipping it.
-
-- **`labels.clear` is not read.** `clearProps()` takes its name from the
-  catalogue's `clear` key alone. To rename the button, put `clear` in the
-  catalogue, or spread a bag of your own — `{ ...this.combo.clearProps(),
-  'aria-label': 'Remove all' }` from a method — since the spread re-applies its
-  `aria-label` over one written in the markup.
-- **`required` on a segmented field does nothing a user meets.** The date
-  field, the time picker and the date picker write it to the hidden input and
-  nowhere else, and the platform does not validate a hidden input: a form
-  with an empty required date submits, and no segment says `aria-required`.
-  Check `value()` in your submit handler, and say "required" in the label.
-- **A segmented field with no `name` names its hidden input "undefined".** The
-  spread assigns `name` as a property, and an `undefined` assigned to it becomes
-  the string. Render `hiddenInputProps()` only when you have passed `name`.
-- **The calendar's year buttons share the month buttons' names.** Both default
-  to the catalogue's `previous` and `next`, so a calendar rendering all four
-  has two buttons called "Previous". Pass `labels.previousYear` and
-  `labels.nextYear` whenever you render the year buttons.
-- **The calendar's sentences, and the picker's trigger and empty-segment
-  names, are English by default** and are not catalogue entries, although the
-  dates inside them are localised. Other languages pass them through `labels`.
-- **A `multiple` select closes on a keyboard choice.** Enter, Space and
-  Alt+ArrowUp choose and close whatever `closeOnSelect` says; only a pointer
-  press honours it. A multiple combobox does not have this difference.
-- **Tab toggles in a `multiple` widget.** Tab takes the highlighted option on
-  its way out, and taking an option a `multiple` already holds removes it. In
-  both Select and Combobox, leaving the popup with Tab while the highlight rests
-  on a chosen value drops that value. A `multiple` Select makes this the common
-  case: it opens with the highlight on the first chosen value, so opening one
-  that holds "Banana" and "Cherry" and pressing Tab straight away leaves it
-  holding "Cherry". Press Escape before Tab, or open with Alt+ArrowDown, which
-  highlights nothing.
-- **PageUp and PageDown on the minutes multiply `minuteStep`.** A page is
-  fifteen arrow steps, and an arrow step is `minuteStep` minutes, wrapped
-  inside the hour. With `minuteStep: 5` that is 75 minutes, which happens to
-  land a quarter hour on; with 15 it lands 45 minutes on; with 4 or 20 it goes
-  all the way round and changes nothing. Leave `minuteStep` at 1 where paging
-  matters, or handle PageUp and PageDown on the minute segment yourself before
-  calling `onKeyDown`.
-- **A range can span dates `isDateDisabled` refuses.** Only the two presses are
-  checked; the dates between them are not, so a stay can be drawn across a
-  booked night, and `isInRange` paints it. Check the interval in
-  `onRangeChange` and `clear()` it when a date inside it is unavailable.
-- **A read-only date picker still opens on Alt+ArrowDown.** Its `onKeyDown`
-  checks `disabled` and not `readOnly`, so the popover appears over a grid that
-  answers no keys and takes no presses. While read-only, drop Alt+ArrowDown in
-  your own handler before handing the event on; the other keys still have to
-  reach it, since read-only segments can be moved between.
-- **With `allowCustomValue`, leaving the box commits what was typed, whatever
-  is highlighted.** Enter and Tab take a highlighted option first; blur does not
-  look. Type "Cher", arrow onto Cherry, click elsewhere, and the value is the
-  string `Cher`. Under `autocomplete: 'both'` the box goes on showing the
-  completion "Cherry" while the value, and the form, hold the `Ch` that was
-  typed. Separately, the guard against swapping an option's identifier for its
-  label looks only at values already held, so "Cherry" typed in full with
-  nothing highlighted is committed as the string `Cherry`, not the option's
-  `ch`. Bind `:blur` to a method of your own that takes the highlighted option
-  before anything else, as below; the last case still needs `onValueChange` to
-  map typed text back to an option.
-
-```ts
-// custom-fruit.ts
-import { Component, Signal } from '@voltdev/core';
-import { createCombobox } from '@voltdev/primitives';
-
-@Component({ selector: 'v-custom-fruit', templateUrl: './custom-fruit.html' })
-export class CustomFruit {
-  input = new Signal.State<Element | null>(null);
-  list = new Signal.State<Element | null>(null);
-  combo = createCombobox({
-    input: () => this.input.get(),
-    listbox: () => this.list.get(),
-    allowCustomValue: true,
-  });
-
-  // Bound as :blur="onBlur()" in place of combo.onInputBlur().
-  onBlur(): void {
-    const active = this.combo.activeValue();
-    if (active === null) return this.combo.onInputBlur();
-    this.combo.select(active);
-    this.combo.close();
-    this.combo.field.markTouched();
-  }
-}
-```
+  on-screen keyboard for them. `inputmode` is not set either: it is a hint to
+  an editing host, and there is none here. Pasting a whole date is not handled.
+  Building it means `contenteditable` segments, `beforeinput` routed through
+  the same typing path, and a decision about what a paste accepts — and a real
+  device to try it on.

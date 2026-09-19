@@ -763,6 +763,41 @@ describe('the select keyboard', () => {
     expect(ui.select.isOpen()).toBe(false);
   });
 
+  it('leaves a multiple open after a keyboard choice, as a pointer choice does', () => {
+    selectOptions = { multiple: true };
+    const ui = selectDemo();
+    const trigger = ui.trigger();
+
+    key(trigger, 'ArrowDown');
+    key(trigger, 'Enter');
+    // `closeOnSelect` defaults to false here, and the pointer honours it:
+    // choosing three things should not mean opening the list three times.
+    expect(ui.select.values()).toEqual(['ap']);
+    expect(ui.select.isOpen()).toBe(true);
+
+    key(trigger, 'ArrowDown');
+    key(trigger, ' ');
+    expect(ui.select.values()).toEqual(['ap', 'ba']);
+    expect(ui.select.isOpen()).toBe(true);
+
+    // The same key takes a value off again, and still leaves the list up.
+    key(trigger, 'Enter');
+    expect(ui.select.values()).toEqual(['ap']);
+    expect(ui.select.isOpen()).toBe(true);
+  });
+
+  it('keeps the list up on a keyboard choice it refuses, as it does for a press', () => {
+    selectOptions = { readOnly: () => true, defaultValue: 'ap' };
+    const ui = selectDemo();
+    const trigger = ui.trigger();
+
+    key(trigger, 'ArrowDown');
+    key(trigger, 'ArrowDown');
+    key(trigger, 'Enter');
+    expect(ui.select.value()).toBe('ap');
+    expect(ui.select.isOpen()).toBe(true);
+  });
+
   it('takes the highlighted option on Tab and leaves the key to the browser', () => {
     const ui = selectDemo();
     key(ui.trigger(), 'ArrowDown');
@@ -772,6 +807,31 @@ describe('the select keyboard', () => {
     expect(key(ui.trigger(), 'Tab')).toBe(false);
     expect(ui.select.value()).toBe('ap');
     expect(ui.select.isOpen()).toBe(false);
+  });
+
+  it('takes the highlighted option on the way out of a multiple, never drops it', () => {
+    selectOptions = { multiple: true, defaultValue: ['ba', 'ch'] };
+    const ui = selectDemo();
+    const trigger = ui.trigger();
+
+    // A multiple opens on the first value it holds, so this is the Tab of a
+    // user leaving having only looked.
+    key(trigger, 'ArrowDown');
+    expect(ui.select.activeValue()).toBe('ba');
+    expect(key(trigger, 'Tab')).toBe(false);
+    expect(ui.select.values()).toEqual(['ba', 'ch']);
+    expect(ui.select.isOpen()).toBe(false);
+
+    // Alt and Up is the other way out, and answers the same way.
+    key(trigger, 'ArrowDown');
+    key(trigger, 'ArrowUp', { altKey: true });
+    expect(ui.select.values()).toEqual(['ba', 'ch']);
+    expect(ui.select.isOpen()).toBe(false);
+
+    // An option it does not hold yet is still taken.
+    key(trigger, 'Home');
+    key(trigger, 'Tab');
+    expect(ui.select.values()).toEqual(['ba', 'ch', 'ap']);
   });
 
   it('closes on Escape with the value untouched', () => {
@@ -1628,6 +1688,13 @@ describe('opening and closing a combobox', () => {
     expect(ui.clear().getAttribute('tabindex')).toBe('-1');
   });
 
+  it('names the clear button from `labels`, the way it names the toggle', () => {
+    comboOptions = { labels: { clear: 'Remove all', toggle: 'Show fruit' } };
+    const ui = comboDemo();
+    expect(ui.toggle().getAttribute('aria-label')).toBe('Show fruit');
+    expect(ui.clear().getAttribute('aria-label')).toBe('Remove all');
+  });
+
   it('puts the text back to the value it holds when focus leaves', () => {
     const ui = comboDemo();
     const input = ui.input();
@@ -2150,6 +2217,104 @@ describe('committing a value', () => {
     expect(ui.combo.labelOf('Kumquat')).toBe('Kumquat');
   });
 
+  it('takes the option whose name was typed, rather than the name as a value', () => {
+    comboOptions = { allowCustomValue: true, name: 'fruit' };
+    const ui = comboDemo();
+    const input = ui.input();
+
+    // Nothing is highlighted, so Enter commits what was typed — and what was
+    // typed is Cherry's name, not a value of its own. Taking the string would
+    // put the label where the option's identifier belongs, which is the swap
+    // the tests above refuse arriving by another route.
+    type(input, 'Cherry');
+    expect(ui.combo.activeValue()).toBeNull();
+    key(input, 'Enter');
+    expect(ui.combo.value()).toBe('ch');
+    expect(new FormData(ui.form()).get('fruit')).toBe('ch');
+    expect(input.value).toBe('Cherry');
+
+    // Leaving the box commits by the same rule.
+    ui.combo.clear();
+    flushSync();
+    type(input, 'Damson');
+    input.dispatchEvent(new FocusEvent('blur'));
+    flushSync();
+    expect(ui.combo.value()).toBe('da');
+    expect(new FormData(ui.form()).get('fruit')).toBe('da');
+  });
+
+  it('does not take an option it cannot choose by having its name typed', () => {
+    comboOptions = { allowCustomValue: true, name: 'fruit' };
+    const ui = comboDemo();
+    const input = ui.input();
+
+    // Blueberry is disabled: its identifier is a choice the list refuses, and
+    // its name is the swap above. Nothing is taken, so the question stands.
+    type(input, 'Blueberry');
+    key(input, 'Enter');
+    expect(ui.combo.value()).toBeNull();
+    expect(new FormData(ui.form()).get('fruit')).toBe('');
+    expect(input.value).toBe('Blueberry');
+  });
+
+  it('takes the highlighted option when focus leaves, before the text typed', () => {
+    comboOptions = { allowCustomValue: true, name: 'fruit' };
+    const ui = comboDemo();
+    const input = ui.input();
+
+    // Enter and Tab take what is highlighted first, and leaving the box is a
+    // commit like either of them.
+    type(input, 'Cher');
+    key(input, 'ArrowDown');
+    expect(ui.combo.activeValue()).toBe('ch');
+    input.dispatchEvent(new FocusEvent('blur'));
+    flushSync();
+
+    expect(ui.combo.value()).toBe('ch');
+    expect(new FormData(ui.form()).get('fruit')).toBe('ch');
+    expect(input.value).toBe('Cherry');
+  });
+
+  it('takes the option an inline completion proposed when focus leaves', () => {
+    comboOptions = { allowCustomValue: true, autocomplete: 'both', name: 'fruit' };
+    const ui = comboDemo();
+    const input = ui.input();
+    input.focus();
+
+    // The box reads "Cherry" with "rry" selected. Committing the "Ch" behind it
+    // would leave the box saying one thing and the form submitting another.
+    type(input, 'Ch');
+    expect(input.value).toBe('Cherry');
+    input.dispatchEvent(new FocusEvent('blur'));
+    flushSync();
+
+    expect(ui.combo.value()).toBe('ch');
+    expect(new FormData(ui.form()).get('fruit')).toBe('ch');
+    expect(input.value).toBe('Cherry');
+  });
+
+  it('leaves the typed text alone when the pointer only crossed the list', () => {
+    // Every option is listed while the question matches none of them, so the
+    // pointer has something to pass over on its way to another control.
+    comboOptions = { allowCustomValue: true, filter: () => true, name: 'fruit' };
+    const ui = comboDemo();
+    const input = ui.input();
+    input.focus();
+    type(input, 'Kumquat');
+
+    // Hovering highlights, and nothing takes the highlight away when the
+    // pointer leaves: a highlight nobody asked for must not commit anything.
+    ui.option('ap').dispatchEvent(new PointerEvent('pointermove', { bubbles: true }));
+    flushSync();
+    expect(ui.combo.activeValue()).toBe('ap');
+
+    input.dispatchEvent(new FocusEvent('blur'));
+    flushSync();
+
+    expect(ui.combo.value()).toBe('Kumquat');
+    expect(new FormData(ui.form()).get('fruit')).toBe('Kumquat');
+  });
+
   it('takes the highlighted option on Tab and carries on out', () => {
     const ui = comboDemo();
     const input = openCombo(ui);
@@ -2311,6 +2476,26 @@ describe('choosing several, with chips', () => {
     key(input, 'Enter');
     expect(ui.combo.values()).toEqual(['ap', 'ba']);
     expect(ui.combo.isOpen()).toBe(true);
+  });
+
+  it('takes the highlighted option on Tab, and never takes a chip away', () => {
+    comboOptions = { multiple: true, name: 'fruit', defaultValue: ['ap'] };
+    const ui = comboDemo();
+    const input = ui.input();
+    input.focus();
+
+    // Down opens on the first option, which is the one already held: leaving
+    // from here is leaving, not a request to drop Apple.
+    key(input, 'ArrowDown');
+    expect(ui.combo.activeValue()).toBe('ap');
+    expect(key(input, 'Tab')).toBe(false);
+    expect(ui.combo.values()).toEqual(['ap']);
+    expect(ui.combo.isOpen()).toBe(false);
+
+    key(input, 'ArrowDown');
+    key(input, 'ArrowDown');
+    key(input, 'Tab');
+    expect(ui.combo.values()).toEqual(['ap', 'ba']);
   });
 
   it('answers a press that removes a value the way both routes answer one that adds', () => {
