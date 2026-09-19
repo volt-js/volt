@@ -333,9 +333,11 @@ views are reused by identity, so `each` writes a value the row already holds
 and notifies no one. That is asserted by counting accessor calls, and holds
 under mutation: defeating the reuse fails exactly those three tests.
 
-Still untouched: grouping, aggregation, pivoting, tree data, master/detail,
-editing of any kind, pinning, variable row height, RTL, drag and drop, export,
-state save/restore, and any data source but the client-side one. Known
+Built since, as layers over the grid rather than options of it: grouping with
+aggregates (`createGrouping`) and cell editing (`createCellEditing`), each with
+its own suite. Still untouched: pivoting, tree data, master/detail, typed
+editors and full-row editing, pinning, variable row height, RTL, drag and drop,
+export, state save/restore, and any data source but the client-side one. Known
 footguns rather than guards: `getRowKey` defaults to the index, and a selection
 held by an index cannot survive a sort — documented, with a test pinning the
 degraded behaviour. `aria-sort` is set on every sorted column, which ARIA says
@@ -903,9 +905,16 @@ nothing is being added to a project that was not there.
       asked it for a page. Doing that finds four things missing, so the pricing
       page above is the intent rather than what happens:
 
-      - The dev server does not route through the handler. Under `vite` every
-        page renders in the browser, and a server-function call is answered
-        404.
+      - Routes are not part of the server render. The router mounts each
+        matched route into its parent's outlet in the browser, so rendering the
+        root on a server produces the shell with an empty outlet; and the
+        template never calls `router.start`, so its pages do not appear in the
+        browser either. Rendering a route on a server means rendering the
+        matched branch outlet by outlet inside one request, and the client
+        router attaching to those segments on its first navigation instead of
+        mounting over them.
+      - The dev server does not route through the handler. Under `vite` the
+        handler is never called, and a server-function call is answered 404.
       - `vite build` builds the client alone; the server entry is built only
         by hand, with `vite build --ssr server.ts`.
       - `createRouter` reads `window.location` when it is created, so the
@@ -1576,9 +1585,13 @@ Built, and each entry says how:
 **Built, as a Volar language plugin rather than a hand-written server** —
 `@voltdev/volar`, which is what the section below argues for. Its mappings are
 derived from `generateTypeCheckBlock`'s existing marks, so the editor and
-`volt check` are one analysis with two consumers rather than two
-implementations that can disagree; the important tests run against the real
-TypeScript 7 checker rather than a stub. Three gaps are recorded in its own
+`volt check` restate every expression the same way rather than through two
+implementations. They are not identical in what they report: the editor reaches
+the class through its module's exports where `volt check` appends to the module
+itself, types a template against one owner where the check tries each, and
+drops what no mapping covers — the editor-support reference lists each
+difference. The important tests run against the real TypeScript 7 checker
+rather than a stub. Three gaps are recorded in its own
 source: there is no VS Code extension, which is packaging rather than
 language-service work; `@volar/typescript`'s integration field is declared
 structurally because that package ships no types for TypeScript 7; and the

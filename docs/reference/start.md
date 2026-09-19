@@ -20,8 +20,13 @@ logic, per-route modes, the partial-hydration decision, static generation and
 the edge check. What is missing is what runs them, and building the `start`
 template and requesting its pages shows where:
 
-- **The dev server does not use it.** Under `vite`, every page is rendered in
-  the browser, and a server-function call is answered 404.
+- **Routes are not part of the server render.** The router mounts each matched
+  route into its parent's outlet in the browser, so rendering the root component
+  on a server produces the application's shell with an empty outlet. The
+  template also never starts its router, so its pages do not appear in the
+  browser either.
+- **The dev server does not use it.** Under `vite`, the handler is never
+  called, and a server-function call is answered 404.
 - **`vite build` builds the client only.** The server entry has to be built
   separately, with `vite build --ssr server.ts`.
 - **The router cannot be created on a server.** `createRouter` reads
