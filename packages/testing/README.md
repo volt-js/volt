@@ -50,8 +50,9 @@ raises it, which is the difference between catching a double-toggle and not.
 Two rules follow the platform rather than convenience: an `aria-disabled`
 control receives every event, because it is the widget's job to ignore them
 and a helper that refused to dispatch would make every "a disabled item does
-nothing" test vacuous; a control with the `disabled` attribute receives none,
-because a browser delivers none.
+nothing" test vacuous; a control with the `disabled` attribute is sent the
+pointer events and a hover but no `mousedown`, `mouseup`, click or key,
+because a browser delivers none of those.
 
 ## Nothing leaked
 
@@ -68,7 +69,7 @@ await clock.advance(200);        // debounce elapsed, effects flushed, DOM settl
 clock.uninstall();
 ```
 
-The clock fakes `setTimeout`, `setInterval`, `requestAnimationFrame`,
+The clock fakes `setTimeout`, `setInterval`, `requestAnimationFrame`, `Date`,
 `Date.now` and `performance.now`, and never `queueMicrotask` or `Promise`.
 Volt coalesces every update onto a microtask, so a fake-timer implementation
 that replaces the microtask queue takes the scheduler's flush with it —

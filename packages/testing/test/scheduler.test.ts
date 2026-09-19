@@ -8,7 +8,15 @@
  * test that quietly always passes.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { Signal, createRoot, effect, flushSync, renderEffect } from '@voltdev/core';
+import {
+  Signal,
+  createRoot,
+  dataEffect,
+  effect,
+  flushSync,
+  measureEffect,
+  renderEffect,
+} from '@voltdev/core';
 import { liveEffectCount, settle } from '../src/scheduler.ts';
 
 const disposers: (() => void)[] = [];
@@ -58,7 +66,7 @@ describe('settle', () => {
 });
 
 describe('live effect count', () => {
-  it('counts both lanes', () => {
+  it('counts every lane', () => {
     const before = liveEffectCount();
     const n = new Signal.State(0);
 
@@ -70,9 +78,20 @@ describe('live effect count', () => {
     // never run is still watched, and is still a leak if nothing disposes it.
     expect(liveEffectCount()).toBe(before + 2);
 
-    flushSync();
-    expect(liveEffectCount()).toBe(before + 2);
+    // The two lanes a leak is easiest to miss in: a resource fetches from the
+    // data lane, and everything that measures the page reads from the measure
+    // lane, so a count blind to either reports a leaked fetch as clean.
+    const stopData = dataEffect(() => void n.get());
+    expect(liveEffectCount()).toBe(before + 3);
 
+    const stopMeasure = measureEffect(() => void n.get());
+    expect(liveEffectCount()).toBe(before + 4);
+
+    flushSync();
+    expect(liveEffectCount()).toBe(before + 4);
+
+    stopMeasure();
+    stopData();
     stopUser();
     stopRender();
     expect(liveEffectCount()).toBe(before);

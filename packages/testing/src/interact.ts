@@ -26,7 +26,10 @@
  *     everywhere, precisely so a disabled control stays reachable by keyboard,
  *     so this is the common case rather than the exotic one.
  *   - **The `disabled` attribute is not.** There the platform really does drop
- *     the event, so dispatching one would test a sequence no user can produce.
+ *     the press — `mousedown`, `mouseup` and the click, and every key — so
+ *     dispatching them would test a sequence no user can produce. The pointer
+ *     events still arrive, and so does a hover, which is how a tooltip on a
+ *     disabled button explains why it is disabled.
  *
  * `click()` does not imply `hover()`. A pointer arriving is a separate thing
  * from a press — keyboard and touch activation produce no hover at all — and a
@@ -34,7 +37,7 @@
  */
 
 import { flushSync } from '@voltdev/core';
-import { isTextField } from './aria.js';
+import { isListSelect, isTextField } from './aria.js';
 
 const tagOf = (element: Element): string => element.tagName.toLowerCase();
 
@@ -50,14 +53,31 @@ const DISABLEABLE = new Set([
 ]);
 
 /**
- * Whether the platform would refuse to deliver a pointer event here.
+ * Whether the platform treats a press here as a press on a disabled control.
  *
  * Checked up the chain: a press lands on the `<span>` inside a disabled
- * button, and a `<fieldset disabled>` disables everything it contains.
+ * button. A `<fieldset disabled>` disables the form controls it contains and
+ * nothing else — a link or a `<div role="button">` inside one is as live as it
+ * is anywhere — and leaves alone the controls in its own first `<legend>`,
+ * which is where the checkbox that enables the rest of it goes.
  */
 function isNativelyDisabled(element: Element): boolean {
-  for (let node: Element | null = element; node; node = node.parentElement) {
-    if (DISABLEABLE.has(tagOf(node)) && node.hasAttribute('disabled')) return true;
+  // Whether the walk has passed a form control yet, which is what a fieldset
+  // further up would disable.
+  let control = false;
+  let child: Element | null = null;
+
+  for (let node: Element | null = element; node; child = node, node = node.parentElement) {
+    const tag = tagOf(node);
+    if (!DISABLEABLE.has(tag)) continue;
+
+    if (tag !== 'fieldset' || node === element) {
+      if (node.hasAttribute('disabled')) return true;
+      control = true;
+    } else if (control && node.hasAttribute('disabled')) {
+      const legend = [...node.children].find((el) => tagOf(el) === 'legend');
+      if (child !== legend) return true;
+    }
   }
   return false;
 }
@@ -100,54 +120,195 @@ const mouse = (type: string, init: MouseEventInit): MouseEvent =>
   new MouseEvent(type, { bubbles: true, cancelable: true, detail: 1, ...init });
 
 /**
+ * The `buttons` bit each `button` holds down: primary, auxiliary, secondary,
+ * back, forward.
+ */
+const BUTTONS = [1, 4, 2, 8, 16];
+
+/** Per list, the option a Shift-press chooses the run from: the last one pressed without it. */
+const anchors = new WeakMap<HTMLSelectElement, HTMLOptionElement>();
+
+/**
+ * A press on an option of a `<select>` drawn as a list, which a browser
+ * answers itself: the selection changes as the button goes down, and is
+ * announced with `input` and `change` as it comes up. A press alone chooses
+ * that option and no other. In a multiple select, Ctrl or Cmd adds or removes
+ * it, and Shift chooses the run from the option last pressed.
+ *
+ * A select drawn as a drop-down keeps its options in a popup of the browser's
+ * own, which no press on the page reaches, so its options are left alone.
+ *
+ * Returns what to do as the button comes up, or null when the press was not
+ * on such an option.
+ */
+function pressOption(element: Element, init: MouseEventInit): (() => void) | null {
+  const option = element.closest('option');
+  const select = option?.closest('select');
+  if (!option || !select || !isListSelect(select)) return null;
+
+  const options = [...select.options];
+  const selection = (): string => [...select.options].map((el) => Number(el.selected)).join('');
+  const before = selection();
+
+  if (select.multiple && (init.ctrlKey || init.metaKey)) {
+    option.selected = !option.selected;
+  } else if (select.multiple && init.shiftKey) {
+    const at = options.indexOf(option);
+    const anchor = options.indexOf(anchors.get(select) ?? option);
+    const [from, to] = anchor < 0 ? [at, at] : [Math.min(at, anchor), Math.max(at, anchor)];
+    options.forEach((el, i) => {
+      el.selected = i >= from && i <= to && !isNativelyDisabled(el);
+    });
+  } else {
+    for (const el of options) el.selected = el === option;
+  }
+  if (!init.shiftKey) anchors.set(select, option);
+
+  return () => {
+    if (selection() === before) return;
+    fire(select, new Event('input', { bubbles: true, composed: true }));
+    fire(select, new Event('change', { bubbles: true }));
+  };
+}
+
+/**
  * A full mouse press: down, focus, up, click.
  *
  * Focus moves on `mousedown` and only if nothing cancelled it, which is how a
  * menu keeps focus on its trigger while its items are pressed — the handler
  * calls `preventDefault()` on the down, and the browser leaves focus alone.
+ *
+ * Cancelling `pointerdown` goes further: the mouse events of that press are
+ * compatibility events, and a browser stops sending them, so there is no
+ * `mousedown` to move focus and no `mouseup`. The click is not one of them and
+ * arrives regardless.
+ *
+ * `init.button` chooses the button, and the sequence follows it: only the
+ * primary button's release is a `click`. Any other is an `auxclick`, and the
+ * secondary one asks for the context menu as it goes down — which is when
+ * macOS and Linux ask; Windows waits for the release.
+ *
+ * A primary press on an option of a `<select>` drawn as a list chooses it, as
+ * a browser does between the button going down and the click.
+ *
+ * A disabled control is sent the pointer events and nothing else. What a
+ * browser withholds from one is `mousedown`, `mouseup` and the click; the
+ * press still happens, and still takes focus to whatever around the control
+ * can hold it, or off everything.
  */
 export function click(element: Element, init: PointerEventInit = {}): void {
-  if (isNativelyDisabled(element)) return;
+  const disabled = isNativelyDisabled(element);
+  const button = init.button ?? 0;
+  const down = { button, buttons: BUTTONS[button] ?? 0, ...init };
+  const up = { button, buttons: 0, ...init };
 
-  fire(element, pointer('pointerdown', { button: 0, buttons: 1, ...init }));
+  const pressed = fire(element, pointer('pointerdown', down));
+  const mouseEvents = pressed && !disabled;
+  let released: (() => void) | null = null;
 
-  if (fire(element, mouse('mousedown', { button: 0, buttons: 1, ...init }))) {
+  if (pressed && (disabled || fire(element, mouse('mousedown', down)))) {
     const target = focusTarget(element);
     if (target) target.focus();
     // A press on nothing focusable takes focus off whatever had it, rather
     // than leaving a stale ring behind — this is how clicking the page
     // background dismisses a focus-driven popover.
     else (element.ownerDocument.activeElement as HTMLElement | null)?.blur();
+    if (!disabled && button === 0) released = pressOption(element, init);
     flushSync();
   }
+  if (button === 2 && !disabled) fire(element, mouse('contextmenu', down));
 
-  fire(element, pointer('pointerup', { button: 0, buttons: 0, ...init }));
-  fire(element, mouse('mouseup', { button: 0, buttons: 0, ...init }));
-  fire(element, mouse('click', { button: 0, buttons: 0, ...init }));
+  fire(element, pointer('pointerup', up));
+  if (disabled) return;
+
+  if (mouseEvents) fire(element, mouse('mouseup', up));
+  released?.();
+  fire(element, mouse(button === 0 ? 'click' : 'auxclick', up));
 }
 
-/** The pointer arriving over an element. */
-export function hover(element: Element, init: PointerEventInit = {}): void {
-  if (isNativelyDisabled(element)) return;
+/**
+ * What the pointer is over: the element it last arrived at and everything
+ * that element was inside, innermost first, or nothing while it is off the
+ * page.
+ *
+ * There is one pointer, so arriving over one element is leaving the last. The
+ * chain is kept rather than walked again when the pointer moves on, because
+ * the element may have been removed in between, and the ancestors it left
+ * behind are still under the pointer.
+ */
+let under: Element[] = [];
 
-  fire(element, pointer('pointerover', init));
-  // `enter` does not bubble; the platform fires one per element entered, and a
-  // handler that cares is on the element being entered.
-  fire(element, pointer('pointerenter', { ...init, bubbles: false }));
-  fire(element, mouse('mouseover', init));
-  fire(element, mouse('mouseenter', { ...init, bubbles: false }));
+/** The element and each of its ancestors, innermost first. */
+function chain(element: Element): Element[] {
+  const nodes: Element[] = [];
+  for (let node: Element | null = element; node; node = node.parentElement) nodes.push(node);
+  return nodes;
+}
+
+/** The boundary events of one move, as pointer events and then as mouse events. */
+const BOUNDARIES = [
+  {
+    out: 'pointerout',
+    leave: 'pointerleave',
+    over: 'pointerover',
+    enter: 'pointerenter',
+    make: pointer,
+  },
+  { out: 'mouseout', leave: 'mouseleave', over: 'mouseover', enter: 'mouseenter', make: mouse },
+] as const;
+
+/**
+ * Move the pointer from where it is to `element`, or off the page for null.
+ *
+ * `out` goes to the element left and `over` to the element arrived at, and
+ * both bubble. `leave` and `enter` do not: each element crossed is sent its
+ * own — a `leave` to everything the pointer is no longer inside, innermost
+ * first, and an `enter` to everything it has come into, outermost first — so
+ * a wrapper around the element hears the pointer arrive, and an ancestor the
+ * pointer never left hears nothing.
+ *
+ * Each names the other end of the move as its `relatedTarget`: `out` and
+ * `leave` where the pointer went, `over` and `enter` where it came from, and
+ * null for the page itself. That is how a tooltip tells the pointer crossing
+ * from its trigger onto it apart from the pointer going away.
+ */
+function moveTo(element: Element | null, init: PointerEventInit): void {
+  if (element !== null && under[0] === element) return;
+
+  const from = under[0]?.isConnected ? under[0] : null;
+  const to = element === null ? [] : chain(element);
+  const left = under.filter((node) => node.isConnected && !to.includes(node));
+  const entered = to.filter((node) => !under.includes(node)).reverse();
+  under = to;
+
+  const going = { relatedTarget: element, ...init };
+  const coming = { relatedTarget: from, ...init };
+  for (const { out, leave, over, enter, make } of BOUNDARIES) {
+    if (from) fire(from, make(out, going));
+    for (const node of left) fire(node, make(leave, { ...going, bubbles: false }));
+    if (element) fire(element, make(over, coming));
+    for (const node of entered) fire(node, make(enter, { ...coming, bubbles: false }));
+  }
+}
+
+/**
+ * The pointer arriving over an element, from wherever it was: the boundary
+ * events of the move, then the move itself.
+ */
+export function hover(element: Element, init: PointerEventInit = {}): void {
+  moveTo(element, init);
   fire(element, pointer('pointermove', init));
   fire(element, mouse('mousemove', init));
 }
 
-/** The pointer leaving an element. */
+/**
+ * The pointer leaving the page from over an element, and with it everything
+ * the element is inside. Where it was over something within the element, it
+ * leaves from there.
+ */
 export function unhover(element: Element, init: PointerEventInit = {}): void {
-  if (isNativelyDisabled(element)) return;
-
-  fire(element, pointer('pointerout', init));
-  fire(element, pointer('pointerleave', { ...init, bubbles: false }));
-  fire(element, mouse('mouseout', init));
-  fire(element, mouse('mouseleave', { ...init, bubbles: false }));
+  if (!under.includes(element)) under = chain(element);
+  moveTo(null, init);
 }
 
 /**
@@ -195,6 +356,42 @@ function nativeActivation(element: Element, key: string): boolean {
   }
 }
 
+/** Whether this control submits its form when it is activated. */
+function isSubmitButton(element: Element): boolean {
+  const tag = tagOf(element);
+  if (tag === 'button') return (element as HTMLButtonElement).type === 'submit';
+  if (tag !== 'input') return false;
+  const type = (element as HTMLInputElement).type;
+  return type === 'submit' || type === 'image';
+}
+
+/**
+ * Implicit submission: what a browser does with Enter in a form's text field.
+ *
+ * The form's default button — its first submit button — is clicked, so a
+ * handler on that button runs as it does for a user who never touched it. A
+ * disabled default button blocks the submission rather than being passed over.
+ * A form with no submit button is submitted directly, unless it holds more
+ * than one text field, where Enter in one of them is not taken to mean the
+ * form is finished.
+ */
+function submitImplicitly(field: HTMLInputElement): void {
+  const form = field.form;
+  if (!form) return;
+
+  const controls = [...form.elements];
+  const button = controls.find(isSubmitButton);
+  if (button) {
+    if (!isNativelyDisabled(button)) fire(button, mouse('click', { detail: 0 }));
+    return;
+  }
+
+  const fields = controls.filter((el) => tagOf(el) === 'input' && isTextField(el));
+  if (fields.length > 1) return;
+  form.requestSubmit();
+  flushSync();
+}
+
 /**
  * Press and release a key.
  *
@@ -213,14 +410,75 @@ export function press(element: Element, key: string, init: KeyboardEventInit = {
     new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init, key }),
   );
 
-  if (alive && key === 'Enter' && nativeActivation(element, key)) {
-    fire(element, mouse('click', { detail: 0 }));
+  if (alive && key === 'Enter') {
+    if (nativeActivation(element, key)) fire(element, mouse('click', { detail: 0 }));
+    else if (tagOf(element) === 'input' && isTextField(element)) {
+      // Enter in a single-line field commits what was typed, with or without
+      // a form around it, and then submits the form if there is one.
+      if (editing?.field === element) commit();
+      submitImplicitly(element as HTMLInputElement);
+    }
   }
 
   fire(element, new KeyboardEvent('keyup', { bubbles: true, cancelable: true, ...init, key }));
 
   if (alive && key === ' ' && nativeActivation(element, key)) {
     fire(element, mouse('click', { detail: 0 }));
+  }
+}
+
+/**
+ * The field being edited, from the first character typed into it until it
+ * commits.
+ *
+ * A browser keeps two things about a field in use that its `value` does not
+ * hold. One is the value it had when the editing began, which is what decides
+ * whether leaving it is a `change`. The other is the text as typed: a number
+ * field holding "-" reports an empty value, and the "3" typed next still makes
+ * "-3". Only one field is edited at a time, so one record is enough.
+ */
+interface Editing {
+  field: TextField;
+  initial: string;
+  typed: string;
+  /** `value` as the last write left it, to notice a handler rewriting it. */
+  written: string;
+}
+
+let editing: Editing | null = null;
+
+function edit(field: TextField): Editing {
+  if (editing?.field !== field) {
+    commit();
+    editing = { field, initial: field.value, typed: field.value, written: field.value };
+    // Leaving the field commits it, however focus leaves: a helper, a handler
+    // that moves it, or a test calling `.blur()` itself. Heard on the document
+    // in the capture phase, ahead of every listener on the field, so the
+    // `change` goes out before anything hears the `blur` — the browser's order.
+    field.ownerDocument.addEventListener('blur', left, true);
+  } else if (field.value !== editing.written) {
+    // A handler rewrote the value — a mask, or a tags input taking what was
+    // typed — so that is the text the next character joins.
+    editing.typed = editing.written = field.value;
+  }
+  return editing;
+}
+
+function left(event: Event): void {
+  if (event.target === editing?.field) commit();
+}
+
+/**
+ * End the editing, with the `change` a browser sends when a field is left, or
+ * Enter is pressed in it, holding something other than what it began with.
+ */
+function commit(): void {
+  const done = editing;
+  if (done === null) return;
+  editing = null;
+  done.field.ownerDocument.removeEventListener('blur', left, true);
+  if (done.field.isConnected && done.field.value !== done.initial) {
+    fire(done.field, new Event('change', { bubbles: true }));
   }
 }
 
@@ -246,7 +504,7 @@ export function typeText(element: Element, text: string): void {
   // character built from a surrogate pair is one keystroke, not two.
   for (const char of text) {
     if (fire(field, new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: char }))) {
-      insert(field, char, 'insertText', field.value + char);
+      insert(field, char, 'insertText', edit(field).typed + char);
     }
     // Released whatever happened above: cancelling a keydown suppresses the
     // character, never the key coming back up.
@@ -263,10 +521,14 @@ export function clear(element: Element): void {
   if (!field || field.value === '') return;
 
   focus(field);
+  edit(field);
   insert(field, null, 'deleteContentBackward', '');
 }
 
 type TextField = HTMLInputElement | HTMLTextAreaElement;
+
+/** The fields `maxlength` limits. A number, date or time field ignores it. */
+const LENGTH_LIMITED = new Set(['textarea', 'text', 'search', 'url', 'tel', 'email', 'password']);
 
 /**
  * The field, or null when the platform would ignore the input anyway.
@@ -287,7 +549,12 @@ function writableField(element: Element, helper: string): TextField | null {
   return element as TextField;
 }
 
-/** `beforeinput`, the write, then `input` — cancelling the first skips both. */
+/**
+ * `beforeinput`, the write, then `input` — cancelling the first skips both,
+ * and so does a field already at its `maxlength`, which offers the character
+ * and then declines it. The limit is on what a user types and not on what a
+ * script assigns, so it has to be kept here.
+ */
 function insert(field: TextField, data: string | null, inputType: string, next: string): void {
   const before = new InputEvent('beforeinput', {
     bubbles: true,
@@ -297,6 +564,15 @@ function insert(field: TextField, data: string | null, inputType: string, next: 
   });
   if (!fire(field, before)) return;
 
+  // `maxLength` is -1 where the attribute is absent, and reflects it on every
+  // type, so whether it applies is asked of the type.
+  const limit = LENGTH_LIMITED.has(field.type) ? field.maxLength : -1;
+  if (limit >= 0 && next.length > Math.max(limit, field.value.length)) return;
+
   field.value = next;
+  if (editing?.field === field) {
+    editing.typed = next;
+    editing.written = field.value;
+  }
   fire(field, new InputEvent('input', { bubbles: true, inputType, data }));
 }

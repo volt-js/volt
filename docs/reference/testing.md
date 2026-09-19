@@ -236,10 +236,10 @@ interface RoleQueryOptions {
 
 A string `name` is a whole match on purpose. A substring match would make
 `name: 'Save'` find "Save as…" and pass a test whose button is the wrong one.
-Reach for a `RegExp` when something looser is what you mean, and leave the `g`
-and `y` flags off it: the query calls `test()` once per element, and with
-either flag `test()` resumes from where its last match ended, so three buttons
-named "Save" and `/save/gi` find two.
+Reach for a `RegExp` when something looser is what you mean. It is applied
+with `search()` rather than `test()`, so every name is searched from its start
+and the pattern's `lastIndex` is neither read nor moved: a `g` flag changes
+nothing, and a `y` flag anchors the pattern to the start of the name.
 
 `hidden` is off by default because a closed dialog's buttons are still in the
 DOM, and finding them is how a test comes to assert on something no user could
@@ -308,18 +308,22 @@ clear(element: Element): void
 | Function | What it dispatches |
 |---|---|
 | `click` | `pointerdown`, `mousedown`, the focus move, `pointerup`, `mouseup`, `click` |
-| `hover` | `pointerover`, `pointerenter`, `mouseover`, `mouseenter`, `pointermove`, `mousemove` |
-| `unhover` | `pointerout`, `pointerleave`, `mouseout`, `mouseleave` |
+| `hover` | The move from wherever the pointer was — `pointerout` and `pointerleave` to what it left, `pointerover` and `pointerenter` to what it entered, then the same four as mouse events, each naming the other end of the move as its `relatedTarget` — then `pointermove`, `mousemove` |
+| `unhover` | `pointerout`, `pointerleave`, `mouseout`, `mouseleave`, with a `relatedTarget` of `null`: the pointer leaves the page, and every element it was inside is left |
 | `focus` / `blur` | A real focus change, through `.focus()` and `.blur()` |
-| `press` | `keydown`, then `click` for Enter, `keyup`, then `click` for Space — the click only where a browser raises one, and only if `keydown` was not cancelled |
+| `press` | `keydown`, then `click` for Enter, `keyup`, then `click` for Space — the click only where a browser raises one, and only if `keydown` was not cancelled. Enter in a text field commits it and submits its form instead |
 | `typeText` | Focus, then per character: `keydown`, `beforeinput`, the write, `input`, `keyup` |
 | `clear` | Focus, then one `beforeinput` and `input` of type `deleteContentBackward`. An empty field is left alone, focus included |
 
 `init` is merged into every pointer or mouse event the helper dispatches, over
-its defaults — modifier keys, coordinates. It changes the fields and not the
-sequence: `click(el, { button: 2 })` still focuses and still sends `click`,
-which a right-button press in a browser does not. `press` puts its `init` on
-the two key events and not on the click it raises.
+its defaults — modifier keys, coordinates. `init.button` changes the sequence
+as well, as it does in a browser. `buttons` holds that button's bit while it is
+down — 1, 4 and 2 for the primary, auxiliary and secondary buttons, 8 and 16
+for back and forward — and a press with any button moves focus, but
+only the primary button's release is a `click`. Any other sends `auxclick`,
+and the secondary one sends `contextmenu` as it goes down, which is when macOS
+and Linux send it. `press` puts its `init` on the two key events and not on the
+click it raises.
 
 Every helper flushes the scheduler after each event it dispatches. A browser
 reaches a microtask checkpoint after every event, so a component that reads a
@@ -336,7 +340,9 @@ What each one gets right is a bug it would otherwise hide.
   takes an element out of the Tab order, not out of reach of the pointer, which
   is the whole basis of roving focus. A press on nothing focusable takes focus
   off whatever had it, which is how clicking the page background dismisses a
-  focus-driven popover.
+  focus-driven popover. Cancelling `pointerdown` goes further: a browser then
+  sends none of that press's mouse events, so there is no `mousedown` to move
+  focus and no `mouseup`, and only the `click` still arrives.
 - **Enter activates on the way down; Space on the way up.** A component that
   cancels Space on `keydown` to stop the page scrolling is also, on a
   `<button>`, cancelling the click that would otherwise arrive on `keyup` and
@@ -349,7 +355,27 @@ What each one gets right is a bug it would otherwise hide.
   that splits on a comma and a masked date field each behave differently for
   "0102" arriving as four events than as one assignment to `value`. A character
   built from a surrogate pair is one keystroke, and cancelling `keydown` or
-  `beforeinput` suppresses the character exactly as a browser does.
+  `beforeinput` suppresses the character exactly as a browser does. So does a
+  field at its `maxlength`, which hears `beforeinput` and then refuses the
+  character, with no `input` after it. The text is kept as typed, the way a
+  browser keeps it: a number field holding "-" reports an empty `value`, and
+  the "3" typed next still makes "-3".
+- **Leaving a field commits it.** Once `typeText` or `clear` has changed a
+  field, focus leaving it sends `change`, before `blur` — however focus
+  leaves: another helper, a handler moving it on, or `.blur()` called by the
+  test. So does Enter in it. A field that ends where it began sends nothing.
+  That is what `:model.lazy` and a `:change` handler listen for, where a plain
+  `:model` listens for `input`.
+- **There is one pointer.** `hover` moves it from wherever it was, so hovering
+  a second element leaves the first: `pointerleave` and `mouseleave` go to
+  every element it is no longer inside, innermost first, and `pointerenter`
+  and `mouseenter` to every element it has come into, outermost first. A
+  wrapper hears the pointer arrive at anything inside it, and an ancestor it
+  never left hears nothing. Each event's `relatedTarget` is the other end of
+  the move, as in a browser: `out` and `leave` name where the pointer went,
+  `over` and `enter` where it came from, and `null` stands for the page. That
+  is how a tooltip tells the pointer crossing from its trigger onto it apart
+  from the pointer going away, so the crossing is safe at any close delay.
 - **`click` does not imply `hover`.** Keyboard and touch activation produce no
   hover at all, and a tooltip that only opens on hover should have to be
   hovered.
@@ -378,6 +404,15 @@ a widget built out of `<div>`s has to handle the key itself, and a helper that
 clicked on its behalf would hide exactly the omission that leaves keyboard users
 stuck.
 
+Enter in a single-line text field is the other thing a browser acts on. It
+commits the field, with `change` if what was typed changed it, and then
+submits the form the field belongs to, as implicit submission does: by
+clicking the form's first submit button, so that button's own handler runs;
+not at all when that button is disabled; and, in a form with no submit button,
+by submitting it directly — unless it holds more than one text field. Enter in
+a `<textarea>` submits nothing, since there it means a new line, and a
+cancelled `keydown` stops all of it.
+
 The key events go to the element you pass, whether or not it has focus. A
 browser sends them to `document.activeElement`, so pass that when the
 difference matters.
@@ -394,17 +429,20 @@ against a component that never checks — which is the bug those tests exist to
 catch. Volt's primitives disable with `aria-disabled` almost everywhere, so a
 disabled control stays reachable by keyboard, which makes this the common case.
 
-**A control with the `disabled` attribute receives nothing** from `click`,
-`press`, `hover` or `unhover` — not even `pointerdown`. A browser does not
-deliver a press to a disabled control, and dispatching one would test a
-sequence no user can produce. Dropping the hover and pointer events as well is
-the helpers' simplification rather than a model of any one browser, and it
-means a tooltip on a disabled `<button>` cannot be opened through `hover`.
+**A control with the `disabled` attribute is sent the pointer events and
+nothing else.** A browser withholds `mousedown`, `mouseup` and the click from
+it, and dispatching them would test a sequence no user can produce. So `click`
+sends `pointerdown` and `pointerup` alone — the press still takes focus to
+whatever around the control can hold it, or off everything — and `press`
+sends nothing, since a disabled control cannot have focus for a key to reach.
+`hover` and `unhover` reach it as they reach anything else, which is how a
+tooltip on a disabled `<button>` explains why it is disabled.
 
 It is checked up the tree: a press on the `<span>` inside a disabled button is
-dropped. So is a press on anything inside a `<fieldset disabled>` — broader than
-the platform, which disables only the form controls in it, so a link or a
-`<div role="button">` inside one is unreachable here and not in a browser.
+a press on a disabled control. A `<fieldset disabled>` disables the form
+controls inside it and nothing else — a link or a `<div role="button">` inside
+one is as live as anywhere — and leaves alone the controls in its own first
+`<legend>`, which is where the checkbox that enables the rest of it goes.
 `typeText` and `clear` on a disabled or `readonly` field do nothing and say
 nothing, which is also what a browser does. `focus` and `blur` check nothing;
 they call `.focus()` and `.blur()` and leave the answer to the DOM.
@@ -419,32 +457,21 @@ they call `.focus()` and `.blur()` and leave the answer to the DOM.
   `<textarea>` or an `<input>` edited by typing, and throw on anything else,
   a `contenteditable` included. For a custom editor, dispatch the input events
   the component listens for directly.
-- **Type a value that is only valid once finished.** Each character is written
-  to `value`, and a number, date or time field sanitises what it is given, so
-  a partial value that is not yet valid is thrown away before the next
-  character arrives. `'-3'` typed into a number field comes out as `3`, and a
-  date or time field ends up empty. For those, set `value` and dispatch `input`
-  yourself.
-- **Enforce `maxlength`**, or send `change`. The value grows past the limit,
-  and a component listening for `change` hears nothing from `typeText` or from
-  `blur()` — nor does a field bound with `:model.lazy`, which syncs on `change`.
-  `input`, which a plain `:model` listens for, arrives as it should.
-- **Choose from a native `<select>`.** Clicking an `<option>` selects nothing
-  here, and no helper opens the list. Set the element's `value` and dispatch
-  `change` yourself. A native checkbox or radio is fine: `click` and
+- **Open a drop-down `<select>`.** Its options live in a popup of the
+  browser's own, which nothing on the page can press, so a `click` on one
+  changes nothing and no helper opens the list. Set the element's `value` and
+  dispatch `input` and `change` yourself. A `<select multiple>`, or one with a
+  `size` above one — the same test that makes it a `listbox` rather than a
+  `combobox` — is drawn as a list, and its options are pressed like
+  anything else: `click` chooses one — Ctrl or Cmd adds or removes it, and
+  Shift chooses the run from the last one pressed — and the select sends
+  `input` and `change`. A native checkbox or radio is fine too: `click` and
   Space both toggle it and send the `change` its `:model` listens for.
 - **Type with `press`.** It sends key events and nothing else: a character key
   pressed on a field inserts nothing. That is `typeText`.
 - **Move focus with Tab.** `press(el, 'Tab')` dispatches the key and moves
   nothing, because there is no Tab order here. A focus trap that handles Tab
   itself can be tested; the browser's own Tab behaviour cannot.
-- **Submit a form from a text field.** Enter in a field does not submit the
-  form around it, as a browser's implicit submission would. A `click` on its
-  submit button — or Enter or Space on that button — does submit it.
-- **Enter ancestors.** `pointerenter` and `mouseenter` go to the element alone.
-  A browser also sends them to every ancestor the pointer crossed into on the
-  way, so a `mouseenter` listener on a wrapper is not reached — hover the
-  wrapper itself.
 
 ## Waiting
 
@@ -500,7 +527,7 @@ an un-awaited one leaves the test asserting while the timers are still running.
 | Member | Description |
 |---|---|
 | `advance(ms)` | Run every timer due in the next `ms`, in time order, settling after each, then land on the target time |
-| `runAll()` | Run every pending timer whatever its delay, and anything they schedule |
+| `runAll()` | Run every pending timer whatever its delay, and anything they schedule, until nothing but intervals is left |
 | `now()` | The current fake time, as `Date.now()` reports it |
 | `pending()` | How many timers are outstanding |
 | `uninstall()` | Put the real timers back and discard any still pending. Safe to call twice |
@@ -534,9 +561,27 @@ expect(view.getAllByRole('listitem')).toHaveLength(2);
 ### What it fakes, and what it leaves alone
 
 It replaces `setTimeout`, `clearTimeout`, `setInterval`, `clearInterval`,
-`requestAnimationFrame`, `cancelAnimationFrame`, `Date.now` and
+`requestAnimationFrame`, `cancelAnimationFrame`, `Date`, `Date.now` and
 `performance.now`, and it never touches `queueMicrotask`, `Promise` or
 `process.nextTick`.
+
+`Date` is replaced so that `new Date()` and `Date()` read the fake clock, as
+`Date.now()` does. Every other form of the constructor — a time, a string, a
+set of parts — goes straight through, and what comes back is a real `Date`, a
+subclass's included. The replacement answers to the name `Date` and takes
+seven arguments, and a date names it as its `constructor`, so code that asks
+what made a value gets `Date`.
+
+What it cannot reach is `new` on the real constructor. A `Date` subclass that a
+source module declares, or a reference to `Date` a module keeps, is taken when
+the module loads — before the test body installs the clock — and `new` on it
+reads real time. `now()` on either reads the fake clock, since `Date.now` is
+replaced on the real constructor, so code that constructs its own dates that
+way should take the time from `now()`: `new Stamp(Stamp.now())`.
+
+A frame is a 16 ms timer, and the time its callback is
+handed is the time `performance.now()` reads, as in a browser, so an animation
+that measures its progress by one against the other sees them agree.
 
 It replaces them when it is installed, so a timer set before
 `installClock()` is a real one: `advance` never reaches it and `pending()` does
@@ -551,18 +596,10 @@ runs, and the test fails on an assertion about rendering while the cause is
 three layers away. Leaving the microtask queue alone is a property of this
 implementation rather than an option the caller has to remember.
 
-It does not fake three more things, and a test can trip over each:
-
-- **`new Date()`.** Only `Date.now` is replaced. A `new Date()` with no
-  arguments, and `Date()`, still read the real clock, so code that takes the
-  current date that way sees real time while its timers run on fake time. Write
-  `new Date(Date.now())` in code that is to be tested against the clock.
-- **`setImmediate` and `requestIdleCallback`.** Neither is replaced; the first
-  runs for real, and the DOM emulation does not provide the second.
-- **The frame timestamp's origin.** A frame is a 16 ms timer, and the time its
-  callback is handed counts from the install, while `performance.now()` counts
-  from the process's own origin. Elapsed times agree; comparing a frame's
-  timestamp with `performance.now()` directly does not.
+`setImmediate` and `requestIdleCallback` are not replaced. The first is
+Node's rather than a browser's, and runs for real; the DOM emulation does not
+provide the second, so a component that calls it fails with or without a
+clock.
 
 ### How it runs timers
 
@@ -576,15 +613,22 @@ next timer runs — which is how a fetcher's follow-up request, scheduled from a
 in a browser. Two advances of 100 end at the same time as one of 200, even when
 the last timer fired before the target.
 
-A timer that keeps rescheduling itself at zero delay is a loop the clock cannot
-see the end of. After 100,000 timers in one call it throws rather than hanging
-the test.
+**`runAll()` leaves intervals set.** An interval is never done, so "every
+pending timer" cannot include running one to its end. While anything else is
+pending, an interval runs each time it falls due, in order with the rest — a
+poll ticking beneath a debounce — and once nothing but intervals is left,
+`runAll()` stops, with them still set and still counted by `pending()`.
 
-**`runAll()` never empties while an interval is set.** An interval is never
-done, so `runAll()` runs it 100,000 times and then throws — with a message about
-something rescheduling itself faster than time passes, which does not describe
-an interval of a second. The same goes for a component that requests an
-animation frame from every frame. A clock, a poller or an animation wants
+A loop that sets a new timer every time it runs is one the clock cannot see
+the end of: a timeout that sets itself again, or a component that requests an
+animation frame from every frame. After 100,000 timers in one call the clock
+throws rather than hanging the test, and says which it was — a loop at no
+delay, which holds time still, or one that lets time pass and never stops. An
+`advance(ms)` long enough to run an interval more than 100,000 times throws
+too, and asks for smaller steps. So does a `runAll()` whose intervals fall due
+that many times before a timer set ahead of it comes due — a poll every 16 ms
+beside a timeout half an hour off — and it says that the timer is only far
+away, not a loop. A clock, a poller or an animation wants
 `advance(ms)`, which stops at a time you chose.
 
 **One clock at a time.** A second `installClock()` throws rather than splitting
@@ -623,8 +667,10 @@ the test itself creates in between counts too, and one it disposes that existed
 before takes one off. It counts an effect from the moment it is created, before
 its first deferred run — an effect that never ran is still watched, and still a
 leak if nothing disposes it. `liveEffectCount()` is the total, every effect the
-scheduler is watching in the process, so compare it with a baseline and never
-with zero.
+scheduler is watching in the process, across all four of its
+[lanes](./reactivity#effects) — so the effect a `createResource` starts its
+fetch from counts, and so does a measurement a collapsible or the virtualizer
+takes. Compare it with a baseline and never with zero.
 
 ```ts
 import { installClock, render } from '@voltdev/testing';
@@ -640,15 +686,6 @@ try {
   clock.uninstall(); // or in afterEach, as above: a failed assertion must not leave it installed
 }
 ```
-
-**What it cannot see: data and measure effects.** The count covers two of the
-scheduler's [four lanes](./reactivity#effects) — the ones `effect` and
-`renderEffect` file into. A `dataEffect` or a `measureEffect` that outlives its
-component is not counted, and `leakedEffects()` reports zero for it. That includes the effect a
-`createResource` starts its fetch from, and the measurements the virtualizer, a
-collapsible's height and an auto-growing text area take. Until the count covers
-all four lanes, a leak in either of the other two has to be caught another way —
-by the fetch it goes on making, or by the timer it leaves in `clock.pending()`.
 
 ## Harnesses
 
@@ -691,10 +728,8 @@ tablist, a button inside its dialog — through the DOM; ownership declared with
 
 The harnesses are tested against the real [primitives](./primitives) rather than
 against fixtures. A fixture is markup written to match the harness, and a
-harness passing against one would prove the opposite of the claim. Those tests
-cover finding each harness's parts, reading them back and its main action; four
-members — `toggle()`, `dismiss()`, `close()` and `isMultiple()` — are not yet
-exercised against a primitive.
+harness passing against one would prove the opposite of the claim. Every
+method of every harness is exercised against a primitive there.
 
 ### Why there is no `getItemAt(n)`
 
@@ -760,10 +795,13 @@ cannot reach it, and a test asserting on its content would pass on a closed
 accordion. An accordion is several disclosures, one harness per section by
 name.
 
-The trigger itself is found by role and name alone. A plain button with the
-right name is accepted, and then reports itself collapsed with no panel however
-often it is clicked — so assert on `panel()`, not only on the harness being
-found.
+The trigger is a button that carries `aria-expanded`, whatever its value. A
+plain button with the same words is passed over — nothing about it says it
+opens anything, and accepted as a trigger it would report itself collapsed
+however often it was clicked — so the harness finds the real trigger beside
+one. When there is only the plain one it throws, and says that it found the
+button and what the button lacks, rather than reporting a trigger that is not
+there.
 
 ### `dialogHarness` and `dialogIsOpen`
 
@@ -777,11 +815,11 @@ found.
 `dialogIsOpen(options?)` answers whether a dialog is in the accessibility tree
 at all, for the assertion after a close, where `dialogHarness` would throw.
 
-Both are built on `queryByRole`, so both throw rather than answer when two
-dialogs are in the accessibility tree at once — a confirmation inside a form's
-dialog, say. Pass a `name`. Without one, a `dialog` is looked for before an
-`alertdialog` and the second is never asked about, so with a form dialog and an
-alert both in the tree, `dialogHarness()` hands back the form. A modal from
+Both look for the two roles together. `dialogHarness` throws when more than
+one dialog of either role matches — a confirmation over a form's dialog, say —
+rather than handing back whichever it happened to look for first and letting
+a test press a button in the wrong one; pass a `name`. `dialogIsOpen` answers
+`true` for two, since nothing is being acted on. A modal from
 [`createDialog`](./primitives-overlays) — modal is its default — hides every
 other top-level element of the page when it opens, so a dialog portalled
 separately behind it is out of the tree; one whose markup contains it is not.
@@ -804,28 +842,21 @@ expect(dialogIsOpen({ name: 'Delete project' })).toBe(false);
 | `isOpen()` | The trigger says `aria-expanded="true"` and a menu is found |
 | `open()` | Click the trigger, unless the menu is open |
 | `close()` | Press Escape on the menu, if it is open |
-| `items()` | The words on every `menuitem`, `menuitemcheckbox` and `menuitemradio`; `[]` when no menu is found |
-| `choose(name)` | Click the first item with these words. Throws when there is none |
+| `items()` | The words on every `menuitem`, `menuitemcheckbox` and `menuitemradio`, in document order; `[]` when no menu is found |
+| `choose(name)` | Click the one item with these words. Throws on none or several |
 
 A menu is usually portalled, so it is looked for through the trigger's
-`aria-controls` rather than under the trigger. When that does not resolve, the
-harness takes the one `menu` in the document instead — and
-[`createMenu`](./primitives-overlays) sets `aria-controls` only while it is
-open. So on a page with two menus, the harness for a closed one reads the
-*other* menu's items, and `choose()` presses one of them. Until that fallback is
-tied to the trigger, call `open()` and assert `isOpen()` before reading or
-choosing.
+`aria-controls` rather than under the trigger. When that does not resolve —
+`aria-controls` is optional on a menu button, and
+[`createMenu`](./primitives-overlays) sets it only while the menu is open — the
+harness takes the one `menu` in the document, but only while its own trigger
+says `aria-expanded="true"`. A closed trigger has no menu, so on a page with
+two menus the harness for the closed one reads `[]` and `choose()` throws,
+rather than reading and pressing the open one's items.
 
-`items()` lists the three item roles one after another rather than
-interleaved, so a menu that mixes plain items with checkbox items reads the
-plain ones first, whatever order they are in.
-
-`choose` is looser than the queries in two ways. It takes the first item whose
-words match rather than throwing on several, in that same grouped order, so two
-items both called "Delete" press whichever is a plain `menuitem`, or the first
-of them. And a string must equal the name exactly: it is not whitespace-collapsed
-the way a query's `name` is, so `choose(' Duplicate ')` finds nothing where
-`view.getByRole('menuitem', { name: ' Duplicate ' })` would.
+`choose` takes a name by the same rule as a query: a string must match the
+whole name after whitespace is collapsed on both sides, and a `RegExp` is
+searched for in it.
 
 ### `tabsHarness`
 
@@ -849,15 +880,14 @@ that is the question, query inside it.
 |---|---|
 | `host` | The listbox |
 | `options()` | The words on every option |
-| `selected()` | The words on every option with `aria-selected="true"`; several when it is multi-select |
+| `selected()` | The words on every selected option; several when it is multi-select |
 | `select(name)` | Click the one option with these words. Throws on none or several |
-| `isMultiple()` | Whether it says `aria-multiselectable="true"` |
+| `isMultiple()` | Whether it says `aria-multiselectable="true"`, or is a native `<select multiple>` |
 
-It is a harness for an ARIA listbox. A native `<select multiple>` is found — its
-role is `listbox` — but `selected()` and `isMultiple()` read only the ARIA
-attributes, which a native control does not carry, so it reports nothing
-selected and single-select whatever its state. Query its options with
-`{ selected: true }` instead, which does read the native property.
+A native `<select multiple>`, or one with a `size` above one, is a listbox too,
+and it is read the way the queries read it: `selected()` takes an `<option>`'s
+own selectedness where there is no `aria-selected`, and `select(name)` presses
+the option as a user does, which chooses it.
 
 ### What there is a harness for
 
@@ -911,18 +941,22 @@ The implicit roles follow the host language where the answer depends on more
 than the tag. An `<a>` without `href` is `generic`, because it is not a link and
 a test that found one anyway would hide the reason keyboard users cannot reach
 it. An `<img alt="">` is `presentation`. A `<section>` is a `region` only once
-it is named with `aria-label` or `aria-labelledby` — a `title` does not count
-here. A `<header>` is a `banner`, and a `<footer>` a `contentinfo`, only
-outside `<article>`, `<aside>`, `<main>`, `<nav>` and `<section>`. A `<select>`
-is a `listbox` when it is `multiple` or has a `size` above one, and a
-`combobox` otherwise. An `<input>` of type `text`, `email`, `tel` or `url`
-becomes a `combobox` when it has a `list`; a `search` one stays a `searchbox`.
-A `<th>` is a `rowheader` with `scope="row"` and a `columnheader` otherwise,
-and an `<input type="hidden">` has no role.
+it is named, by `aria-label`, `aria-labelledby` or `title`. A `<header>` is a
+`banner`, and a `<footer>` a `contentinfo`, only outside `<article>`,
+`<aside>`, `<main>`, `<nav>` and `<section>`. A `<select>` is a `listbox` when
+it is `multiple` or has a `size` above one, and a `combobox` otherwise. An
+`<input>` of type `text`, `email`, `tel`, `url` or `search` becomes a
+`combobox` when it has a `list`. A `<th>` is a `rowheader` with `scope="row"`
+and a `columnheader` otherwise.
 
-An `<input>` of a type it has no entry for — `password`, `date`, `color` and
-`file` among them — comes back as `textbox`. The ARIA mapping gives most of those
-no role at all.
+An `<input>` has the role a browser exposes it with. A `password` field is a
+`textbox`, and a `file` input the `button` that opens the chooser. A `color`
+input and the date and time types — `date`, `time`, `datetime-local`, `month`
+and `week` — are widgets ARIA has no role for, so they have none here, and no
+role query finds one; reach one through `container`. An
+`<input type="hidden">` has no role either, and a type the host language does
+not know is a `textbox`, as the field itself falls back to a text field —
+`isTextField` agrees, and `typeText` types into one.
 
 ### Names
 
@@ -947,19 +981,14 @@ asking for the field called "Age" should keep finding it after someone types.
 
 ### Hidden
 
-`isAccessibilityHidden` asks every ancestor about `aria-hidden="true"`, `hidden`
-and `display: none`, because that is where they are usually set: a closed
-popover hides its whole subtree from one node, and `display` does not inherit.
+`isAccessibilityHidden` asks every ancestor about `aria-hidden="true"`,
+`hidden`, `inert` and `display: none`, because that is where they are usually
+set: a closed popover hides its whole subtree from one node, a modal makes the
+page behind it inert from the top, and `display` does not inherit.
 `visibility` is read from the element alone. It does inherit, so the computed
 value already accounts for every ancestor, and a descendant may set
 `visibility: visible` and come back, shown and announced — walking up for it
 would hide exactly that element.
-
-`inert` is not read. An element inside an `inert` subtree is found as if it
-were reachable, which a screen reader would not agree with. Volt's modal
-dialog sets `aria-hidden="true"` beside `inert` on the page behind it, so the
-page behind a [`createDialog`](./primitives-overlays) modal is hidden here as
-it should be; markup that relies on `inert` alone is not.
 
 ## What is not here
 
@@ -968,13 +997,8 @@ it should be; markup that relies on `inert` alone is not.
   everything in this package runs under one.
 - **Layout.** Nothing is laid out under the emulation, so geometry, anything a
   measure effect reads, and CSS-generated content are out of reach.
-- **The browser's own keyboard and form behaviour.** No caret, no Tab order, no
-  implicit submission, no `change` event, no `maxlength`, no half-typed value
-  held for a number or date field — see
+- **The browser's own keyboard behaviour.** No caret, no Tab order, and no
+  drop-down `<select>` to open — see
   [what they cannot do](#what-they-cannot-do).
-- **`inert`.** The accessibility checks read `aria-hidden`, `hidden`,
-  `display` and `visibility`, and not `inert` — see [hidden](#hidden).
-- **A leak count for the data and measure lanes** — see
-  [nothing left behind](#nothing-left-behind).
 - **Queries by test id, class or tag.** Not a gap. `container` is there for the
   cases that are genuinely about markup.

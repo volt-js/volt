@@ -26,8 +26,8 @@
  * choosing to be brittle and the second reads as the library offering it.
  */
 
-import { getByRole, queryAllByRole, queryByRole } from './queries.js';
-import { getAccessibleName } from './aria.js';
+import { getByRole, matchesName, queryAllByRole, queryByRole } from './queries.js';
+import { getAccessibleName, getRole } from './aria.js';
 import { click, press } from './interact.js';
 
 export interface HarnessOptions {
@@ -51,6 +51,34 @@ function must<T>(value: T | null, what: string, name?: string | RegExp): T {
   );
 }
 
+/**
+ * The one candidate, or null — and an error on several, as a query gives.
+ *
+ * For the parts a single query cannot ask for: a dialog of either role, a
+ * button that carries `aria-expanded` whatever its value, an item of any of
+ * the three menu roles. Taking the first of several instead would hand back
+ * whichever the harness happened to look for first, and let a test act on the
+ * wrong one without a word.
+ */
+function one<T extends Element>(found: T[], what: string, name?: string | RegExp): T | null {
+  if (found.length > 1) {
+    const candidates = found.map((el) => `  ${getRole(el)} "${getAccessibleName(el)}"`).join('\n');
+    throw new Error(
+      `[volt:testing] found ${found.length} ${what}s` +
+        `${name === undefined ? '' : ` named ${String(name)}`}, expected one:\n${candidates}\n\n` +
+        'Narrow it with a name, or with `within`.',
+    );
+  }
+  return found[0] ?? null;
+}
+
+/** Several queries' results as one list, in the order a reader meets them. */
+function inDocumentOrder<T extends Element>(...lists: T[][]): T[] {
+  return lists
+    .flat()
+    .sort((a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+}
+
 // ---------------------------------------------------------------------------
 // Disclosure, and the accordion that is several of them
 // ---------------------------------------------------------------------------
@@ -70,10 +98,30 @@ export interface DisclosureHarness {
  * A trigger and the region it controls, found through `aria-expanded` and
  * `aria-controls` — which is also the only way a screen reader knows they are
  * related, so a harness that can find them is evidence the relationship exists.
+ *
+ * The trigger is a button that says whether it is expanded, and nothing else
+ * is: a plain button with the same words opens nothing, and one accepted as a
+ * trigger would report itself collapsed however often it was pressed. Where
+ * only such buttons are found, that is the error — the button is there, and
+ * what it lacks is the attribute.
  */
 export function disclosureHarness(options: HarnessOptions = {}): DisclosureHarness {
+  const buttons = queryAllByRole(scope(options), 'button', { name: options.name });
+  const triggers = buttons.filter((el) => el.hasAttribute('aria-expanded'));
+  if (triggers.length === 0 && buttons.length > 0) {
+    const named = options.name === undefined ? '' : ` named ${String(options.name)}`;
+    const found =
+      buttons.length === 1
+        ? `a button${named}, but it carries no aria-expanded, so nothing tells a ` +
+          'screen reader that it opens anything'
+        : `${buttons.length} buttons${named}, but none carries aria-expanded, so nothing ` +
+          'tells a screen reader that any of them opens anything';
+    throw new Error(
+      `[volt:testing] found ${found}. A disclosure trigger has to say whether it is expanded.`,
+    );
+  }
   const trigger = must(
-    queryByRole(scope(options), 'button', { name: options.name, expanded: undefined }),
+    one(triggers, 'disclosure trigger', options.name),
     'disclosure trigger',
     options.name,
   );
@@ -117,13 +165,19 @@ export interface DialogHarness {
   dismiss(): void;
 }
 
-export function dialogHarness(options: HarnessOptions = {}): DialogHarness {
-  const host = must(
-    queryByRole(scope(options), 'dialog', { name: options.name }) ??
-      queryByRole(scope(options), 'alertdialog', { name: options.name }),
-    'dialog',
-    options.name,
+/** Every dialog of either role in the scope, in document order. */
+function dialogs(options: HarnessOptions): HTMLElement[] {
+  const within = scope(options);
+  return inDocumentOrder(
+    queryAllByRole(within, 'dialog', { name: options.name }),
+    queryAllByRole(within, 'alertdialog', { name: options.name }),
   );
+}
+
+export function dialogHarness(options: HarnessOptions = {}): DialogHarness {
+  // Both roles in one list, so an alert over a form's dialog is two dialogs
+  // and not a form dialog that happened to be asked about first.
+  const host = must(one(dialogs(options), 'dialog', options.name), 'dialog', options.name);
 
   return {
     host,
@@ -133,13 +187,14 @@ export function dialogHarness(options: HarnessOptions = {}): DialogHarness {
   };
 }
 
-/** Whether a dialog is on screen at all, for the assertion after a close. */
+/**
+ * Whether a dialog is on screen at all, for the assertion after a close.
+ *
+ * Two open at once is an answer — yes — rather than an ambiguity: nothing is
+ * being acted on, so there is no wrong one to pick.
+ */
 export function dialogIsOpen(options: HarnessOptions = {}): boolean {
-  const within = scope(options);
-  return (
-    queryByRole(within, 'dialog', { name: options.name }) !== null ||
-    queryByRole(within, 'alertdialog', { name: options.name }) !== null
-  );
+  return dialogs(options).length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +208,7 @@ export interface MenuHarness {
   close(): void;
   /** The words on every item, in the order a reader meets them. */
   items(): string[];
-  /** Activate an item by its words. */
+  /** Activate the one item with these words. Throws on none or several. */
   choose(name: string | RegExp): void;
 }
 
@@ -164,29 +219,37 @@ export function menuHarness(options: HarnessOptions = {}): MenuHarness {
     options.name,
   );
 
+  const expanded = (): boolean => trigger.getAttribute('aria-expanded') === 'true';
+
   const menu = (): Element | null => {
     const id = trigger.getAttribute('aria-controls');
     const byControls = id === null ? null : trigger.ownerDocument.getElementById(id);
     // A menu is usually portalled, so it is looked for in the document rather
     // than under the trigger — `aria-controls` is what ties them together
     // once the DOM no longer does.
-    return byControls ?? queryByRole(trigger.ownerDocument.body, 'menu');
+    if (byControls !== null) return byControls;
+    // Without it — it is optional on a menu button, and `createMenu` sets it
+    // only while open — the one menu in the document is taken, but only while
+    // this trigger says it is expanded. A closed trigger has no menu, and
+    // taking whichever other menu was open would read its items as this one's
+    // and let `choose()` press one of them.
+    return expanded() ? queryByRole(trigger.ownerDocument.body, 'menu') : null;
   };
 
-  const isOpen = (): boolean =>
-    trigger.getAttribute('aria-expanded') === 'true' && menu() !== null;
+  const isOpen = (): boolean => expanded() && menu() !== null;
 
   const itemsIn = (): Element[] => {
     const host = menu();
     if (host === null) return [];
     // `queryAll`, not `getAll`: a menu holds any mix of the three roles and
     // almost never all of them, and `getAll` treats an absent role as the
-    // test's mistake — which it is at a call site, and is not here.
-    return [
-      ...queryAllByRole(host, 'menuitem'),
-      ...queryAllByRole(host, 'menuitemcheckbox'),
-      ...queryAllByRole(host, 'menuitemradio'),
-    ];
+    // test's mistake — which it is at a call site, and is not here. Merged
+    // back into document order, so a mixed menu reads the way a user meets it.
+    return inDocumentOrder(
+      queryAllByRole(host, 'menuitem'),
+      queryAllByRole(host, 'menuitemcheckbox'),
+      queryAllByRole(host, 'menuitemradio'),
+    );
   };
 
   return {
@@ -200,12 +263,11 @@ export function menuHarness(options: HarnessOptions = {}): MenuHarness {
       if (isOpen()) press(must(menu(), 'menu', options.name), 'Escape');
     },
     choose: (name) => {
-      const host = must(menu(), 'open menu', options.name);
-      const matches = (value: string): boolean =>
-        typeof name === 'string' ? value === name : name.test(value);
-      const item = itemsIn().find((el) => matches(getAccessibleName(el)));
-      click(must(item ?? null, `menu item named ${String(name)}`));
-      void host;
+      must(menu(), 'open menu', options.name);
+      // By the rule a query's `name` follows, and one item or none, as every
+      // other harness action takes its words.
+      const matching = itemsIn().filter((el) => matchesName(getAccessibleName(el), name));
+      click(must(one(matching, 'menu item', name), 'menu item', name));
     },
   };
 }
@@ -273,11 +335,18 @@ export function listboxHarness(options: HarnessOptions = {}): ListboxHarness {
   return {
     host,
     options: () => queryAllByRole(host, 'option').map(getAccessibleName),
-    selected: () =>
-      queryAllByRole(host, 'option')
-        .filter((el) => el.getAttribute('aria-selected') === 'true')
-        .map(getAccessibleName),
+    // Through the query's own reading of the state, which takes a native
+    // `<option>`'s selectedness where there is no `aria-selected`: a
+    // `<select multiple>` is a listbox too, and its markup says nothing about
+    // what is chosen.
+    selected: () => queryAllByRole(host, 'option', { selected: true }).map(getAccessibleName),
     select: (name) => click(getByRole(host, 'option', { name })),
-    isMultiple: () => host.getAttribute('aria-multiselectable') === 'true',
+    isMultiple: () => {
+      // The ARIA attribute where there is one, as the queries read state, and
+      // a native select's own `multiple` where there is not.
+      const multiselectable = host.getAttribute('aria-multiselectable');
+      if (multiselectable !== null) return multiselectable === 'true';
+      return host.tagName.toLowerCase() === 'select' && host.hasAttribute('multiple');
+    },
   };
 }

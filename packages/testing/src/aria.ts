@@ -66,13 +66,31 @@ const IMPLICIT_ROLES: Readonly<Record<string, string>> = {
   ul: 'list',
 };
 
-/** `<input type>` to role. Anything absent is a text field of some kind. */
-const INPUT_ROLES: Readonly<Record<string, string>> = {
+/**
+ * `<input type>` to role, as a browser's accessibility tree exposes it.
+ *
+ * `null` is a type with no ARIA role at all: a colour well and the date and
+ * time pickers are exposed as widgets of their own that no role names, and a
+ * hidden input is not exposed. A type missing from the table — misspelt, or
+ * one the host language does not know — is a text field, because that is what
+ * an `<input>` falls back to.
+ */
+const INPUT_ROLES: Readonly<Record<string, string | null>> = {
   button: 'button',
   checkbox: 'checkbox',
+  color: null,
+  date: null,
+  'datetime-local': null,
   email: 'textbox',
+  // Rendered as, and exposed as, the button that opens the file chooser.
+  file: 'button',
+  hidden: null,
   image: 'button',
+  month: null,
   number: 'spinbutton',
+  // A text field whose characters are not read out. ARIA has no role for
+  // that difference, and a browser exposes it as a textbox.
+  password: 'textbox',
   radio: 'radio',
   range: 'slider',
   reset: 'button',
@@ -80,7 +98,9 @@ const INPUT_ROLES: Readonly<Record<string, string>> = {
   submit: 'button',
   tel: 'textbox',
   text: 'textbox',
+  time: null,
   url: 'textbox',
+  week: null,
 };
 
 /** `<input>` types that are edited by typing, rather than clicked or dragged. */
@@ -166,16 +186,15 @@ function implicitRole(element: Element): string | null {
       return element.getAttribute('alt') === '' ? 'presentation' : 'img';
     case 'input': {
       const type = (element.getAttribute('type') ?? 'text').toLowerCase();
-      if (type === 'hidden') return null;
+      const role = Object.hasOwn(INPUT_ROLES, type) ? (INPUT_ROLES[type] ?? null) : 'textbox';
       // A text field with a suggestion list announces as a combobox, which is
-      // the same widget `createCombobox` builds out of `<div>`s.
-      if (element.hasAttribute('list') && INPUT_ROLES[type] === 'textbox') return 'combobox';
-      return INPUT_ROLES[type] ?? 'textbox';
+      // the same widget `createCombobox` builds out of `<div>`s — a search
+      // field included. `list` does not apply to a password field.
+      const suggests = role === 'searchbox' || (role === 'textbox' && type !== 'password');
+      return suggests && element.hasAttribute('list') ? 'combobox' : role;
     }
     case 'select':
-      return element.hasAttribute('multiple') || Number(element.getAttribute('size') ?? '1') > 1
-        ? 'listbox'
-        : 'combobox';
+      return isListSelect(element) ? 'listbox' : 'combobox';
     case 'th':
       return element.getAttribute('scope') === 'row' ? 'rowheader' : 'columnheader';
     case 'section':
@@ -194,6 +213,15 @@ function implicitRole(element: Element): string | null {
   }
 }
 
+/**
+ * Whether a `<select>` is drawn as a list — `multiple`, or a `size` above one —
+ * rather than as a drop-down. It decides the role and what a press on an
+ * option does, and asking it in one place keeps those two from disagreeing.
+ */
+export function isListSelect(element: Element): boolean {
+  return element.hasAttribute('multiple') || Number(element.getAttribute('size') ?? '1') > 1;
+}
+
 function closestSectioning(element: Element): Element | null {
   for (let node = element.parentElement; node; node = node.parentElement) {
     if (SECTIONING.has(tagOf(node))) return node;
@@ -201,16 +229,26 @@ function closestSectioning(element: Element): Element | null {
   return null;
 }
 
+/**
+ * Whether the author named this element, by any of the attributes that name a
+ * container. `title` is one of them: it is the last thing the name computation
+ * reads, but a section with nothing else is named by it.
+ */
 function hasExplicitLabel(element: Element): boolean {
-  return element.hasAttribute('aria-label') || element.hasAttribute('aria-labelledby');
+  return (
+    element.hasAttribute('aria-label') ||
+    element.hasAttribute('aria-labelledby') ||
+    element.hasAttribute('title')
+  );
 }
 
 /**
  * Whether the accessibility tree contains this element at all.
  *
- * `aria-hidden`, `hidden` and `display: none` are asked of every ancestor,
- * because that is where they are usually set — a closed popover hides its
- * whole subtree from one node, and `display` does not inherit, so a child of a
+ * `aria-hidden`, `hidden`, `inert` and `display: none` are asked of every
+ * ancestor, because that is where they are usually set — a closed popover
+ * hides its whole subtree from one node, a modal makes the page behind it
+ * inert from the top, and `display` does not inherit, so a child of a
  * `display: none` container still computes a display of its own.
  *
  * `visibility` is the exception, and is read from this element alone: it does
@@ -225,7 +263,7 @@ export function isAccessibilityHidden(element: Element): boolean {
 
   for (let node: Element | null = element; node; node = node.parentElement) {
     if (node.getAttribute('aria-hidden') === 'true') return true;
-    if (node.hasAttribute('hidden')) return true;
+    if (node.hasAttribute('hidden') || node.hasAttribute('inert')) return true;
     if (view?.getComputedStyle(node).display === 'none') return true;
   }
   return false;
@@ -383,10 +421,16 @@ function contentName(element: Element, context: NameContext, skip?: Element): st
   return text;
 }
 
-/** Whether typing into this element is something the platform would accept. */
+/**
+ * Whether typing into this element is something the platform would accept.
+ *
+ * Asked of the `type` property rather than the attribute: the property is the
+ * type the field actually is, so a type the host language does not know reads
+ * as the text field it falls back to, as it does for the role.
+ */
 export function isTextField(element: Element): boolean {
   const tag = tagOf(element);
   if (tag === 'textarea') return true;
   if (tag !== 'input') return false;
-  return TEXT_INPUT_TYPES.has((element.getAttribute('type') ?? 'text').toLowerCase());
+  return TEXT_INPUT_TYPES.has((element as HTMLInputElement).type);
 }

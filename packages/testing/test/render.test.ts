@@ -18,6 +18,7 @@ import {
   renderEffect,
 } from '@voltdev/core';
 import { compileTemplate } from '@voltdev/core/jit';
+import { createResource } from '@voltdev/primitives';
 import { cleanup, render } from '../src/render.ts';
 import { liveEffectCount } from '../src/scheduler.ts';
 
@@ -173,6 +174,31 @@ describe('leaked effects', () => {
     }
 
     const view = render(Leaky);
+    view.unmount();
+
+    expect(view.leakedEffects()).toBe(1);
+    stop();
+    expect(view.leakedEffects()).toBe(0);
+  });
+
+  it('count a resource that outlives the component, though it fetches from the data lane', () => {
+    let stop = (): void => {};
+
+    @Component({
+      selector: 'v-leaky-resource',
+      render: compileTemplate('<p>{ user.status() }</p>'),
+    })
+    class LeakyResource {
+      // The same escape as above, made by a resource: its request is started
+      // from a data effect rather than a user one, and a count that watched
+      // only the user and render lanes would call this component clean.
+      user = createRoot((dispose) => {
+        stop = dispose;
+        return createResource(async () => 'Ada');
+      }, null);
+    }
+
+    const view = render(LeakyResource);
     view.unmount();
 
     expect(view.leakedEffects()).toBe(1);

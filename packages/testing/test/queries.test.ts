@@ -38,6 +38,20 @@ describe('by role', () => {
     expect(getByRole(root, 'button', { name: /^save/i }).textContent).toBe('Save as…');
   });
 
+  it('tests a global or sticky pattern against every name from the start', () => {
+    const root = markup('<button>Save</button><button>Save</button><button>Save</button>');
+    const global = /save/gi;
+    const sticky = /Save/y;
+
+    // `test()` on a pattern with either flag resumes from where its last match
+    // ended, so asking it once per element would find every other one — and
+    // the query would leave the caller's pattern part way through a string.
+    expect(queryAllByRole(root, 'button', { name: global })).toHaveLength(3);
+    expect(queryAllByRole(root, 'button', { name: sticky })).toHaveLength(3);
+    expect(global.lastIndex).toBe(0);
+    expect(sticky.lastIndex).toBe(0);
+  });
+
   it('ignores the whitespace a template puts in the markup', () => {
     const root = markup('<button>\n   Save\n   changes\n  </button>');
     expect(getByRole(root, 'button', { name: 'Save changes' })).toBeTruthy();

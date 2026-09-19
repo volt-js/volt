@@ -13,7 +13,14 @@
  * assertable.
  */
 
-import { Signal, effect, flushSync, renderEffect } from '@voltdev/core';
+import {
+  Signal,
+  dataEffect,
+  effect,
+  flushSync,
+  measureEffect,
+  renderEffect,
+} from '@voltdev/core';
 
 /**
  * How many times to hand control back before giving up on things settling.
@@ -48,11 +55,13 @@ let watchers: SchedulerWatcher[] | null = null;
  * The watchers the scheduler runs effects through, found by asking an effect
  * what is watching it.
  *
- * `@voltdev/reactivity` keeps both watchers module-private and exports no
- * count of what is live — which is the single number a leak test needs. Rather
- * than widen that API for tests alone, a throwaway effect of each kind reports
- * its own scheduler: an effect is a computed whose only sink is the watcher
- * that queues it, and `Signal.subtle` already exposes an edge walk.
+ * `@voltdev/reactivity` keeps its watchers module-private — one per lane:
+ * render, data, measure and user — and exports no count of what is live, which
+ * is the single number a leak test needs. Rather than widen that API for tests
+ * alone, a throwaway effect of each kind reports its own lane: an effect is a
+ * computed whose only sink is the watcher that queues it, and `Signal.subtle`
+ * already exposes an edge walk. A lane with no probe here is a lane whose
+ * leaks read as zero, so every kind of effect the package exports has one.
  */
 function schedulerWatchers(): SchedulerWatcher[] {
   if (watchers) return watchers;
@@ -66,21 +75,19 @@ function schedulerWatchers(): SchedulerWatcher[] {
     }
   };
 
-  const stopRender = renderEffect(report);
-  const stopUser = effect(report);
-  // A user effect's first run is deferred, so without a flush only the render
-  // watcher would ever be found — and the effects a leak usually is are the
-  // deferred ones.
+  const probes = [renderEffect(report), dataEffect(report), measureEffect(report), effect(report)];
+  // Every lane but render defers its first run, so without a flush only the
+  // render watcher would ever be found — and the effects a leak usually is are
+  // the deferred ones.
   flushSync();
-  stopUser();
-  stopRender();
+  for (const stop of probes) stop();
 
   watchers = found;
   return found;
 }
 
 /**
- * How many effects the scheduler is still watching, across both lanes.
+ * How many effects the scheduler is still watching, across every lane.
  *
  * Take it before mounting and compare after unmounting: equal means the
  * component released everything it created. It counts every effect in the

@@ -17,6 +17,7 @@ import {
   createListbox,
   createMenu,
   createTabs,
+  type MenuItemRole,
 } from '@voltdev/primitives';
 import {
   dialogHarness,
@@ -101,6 +102,54 @@ describe('a disclosure', () => {
     flushSync();
     expect(panel.isExpanded()).toBe(false);
   });
+
+  it('toggles either way', () => {
+    const root = mountWith(TEMPLATE, build);
+    const panel = disclosureHarness({ within: root, name: 'Details' });
+
+    panel.toggle();
+    expect(panel.isExpanded()).toBe(true);
+    panel.toggle();
+    expect(panel.isExpanded()).toBe(false);
+    expect(panel.panel()).toBeNull();
+  });
+
+  it('takes only a button that says whether it is expanded as the trigger', () => {
+    // A plain button with the same words beside the real trigger. It is not a
+    // disclosure — nothing about it says it opens anything — so it is not a
+    // candidate, and the harness finds the one that is rather than refusing
+    // to choose between them.
+    const root = mountWith(
+      `<div>${TEMPLATE}<button>Details</button></div>`,
+      build,
+    );
+    const panel = disclosureHarness({ within: root, name: 'Details' });
+    expect(panel.trigger.hasAttribute('aria-expanded')).toBe(true);
+
+    panel.expand();
+    expect(panel.panel()?.textContent).toBe('the body');
+  });
+
+  it('refuses a plain button, which would report itself collapsed however often it was pressed', () => {
+    const root = place();
+    root.innerHTML = '<button>Details</button>';
+    // The button is there and reachable, so the error says what it lacks
+    // rather than sending the reader to look for why it is hidden.
+    expect(() => disclosureHarness({ within: root, name: 'Details' })).toThrow(
+      /found a button named Details, but it carries no aria-expanded/,
+    );
+
+    root.innerHTML = '<button>Details</button><button>Details</button>';
+    expect(() => disclosureHarness({ within: root, name: 'Details' })).toThrow(
+      /found 2 buttons named Details, but none carries aria-expanded/,
+    );
+
+    // With no button at all, it is the part that is missing.
+    root.innerHTML = '';
+    expect(() => disclosureHarness({ within: root, name: 'Details' })).toThrow(
+      /no disclosure trigger named Details is present/,
+    );
+  });
 });
 
 describe('tabs', () => {
@@ -152,7 +201,7 @@ describe('a listbox', () => {
     const root = mountWith(TEMPLATE, (el) =>
       createListbox<string>({
         listbox: () => el.get(),
-        values: () => ['Red', 'Green'],
+        items: () => ['Red', 'Green'],
         defaultValue: ['Red'],
       }),
     );
@@ -164,6 +213,49 @@ describe('a listbox', () => {
     list.select('Green');
     flushSync();
     expect(list.selected()).toEqual(['Green']);
+    expect(list.isMultiple()).toBe(false);
+  });
+
+  it('says it is multi-select when the primitive is', () => {
+    const root = mountWith(TEMPLATE, (el) =>
+      createListbox<string>({
+        listbox: () => el.get(),
+        items: () => ['Red', 'Green'],
+        selectionMode: 'multiple',
+        defaultValue: ['Red'],
+      }),
+    );
+    const list = listboxHarness({ within: root });
+
+    expect(list.isMultiple()).toBe(true);
+    list.select('Green');
+    expect(list.selected()).toEqual(['Red', 'Green']);
+  });
+
+  it('reads a native select by its own state, the way the queries do', () => {
+    // A `<select multiple>` is a listbox to a screen reader, and says nothing
+    // about which options are chosen in its markup: the selection is a
+    // property. Reading only the ARIA attributes would report it empty and
+    // single-select whatever the user had picked.
+    const root = place();
+    root.innerHTML =
+      '<select multiple aria-label="Colours">' +
+      '<option>Red</option><option selected>Green</option><option>Blue</option>' +
+      '</select><select size="3" aria-label="Size"><option>S</option><option>M</option></select>';
+    const colours = listboxHarness({ within: root, name: 'Colours' });
+
+    expect(colours.options()).toEqual(['Red', 'Green', 'Blue']);
+    expect(colours.selected()).toEqual(['Green']);
+    expect(colours.isMultiple()).toBe(true);
+
+    root.querySelector('option')!.selected = true;
+    expect(colours.selected()).toEqual(['Red', 'Green']);
+
+    // And chosen from the way a user chooses from one: pressing an option.
+    colours.select('Blue');
+    expect(colours.selected()).toEqual(['Blue']);
+
+    expect(listboxHarness({ within: root, name: 'Size' }).isMultiple()).toBe(false);
   });
 });
 
@@ -205,6 +297,74 @@ describe('a dialog', () => {
     flushSync();
     expect(dialogIsOpen({ within: root })).toBe(false);
   });
+
+  it('dismisses with Escape, which the primitive answers', () => {
+    const root = mountWith(TEMPLATE, build);
+    root.querySelector('button')!.click();
+    flushSync();
+
+    dialogHarness({ within: root }).dismiss();
+    expect(dialogIsOpen({ within: root })).toBe(false);
+  });
+
+  it('will not pick between a dialog and an alert dialog that are both open', () => {
+    const root = mountWith(
+      `<div>
+        ${TEMPLATE}
+        <div role="alertdialog" aria-label="Discard changes?"><button>Discard</button></div>
+      </div>`,
+      (el) => createDialog({ content: () => el.get(), modal: false }),
+    );
+    root.querySelector('button')!.click();
+    flushSync();
+
+    // Two dialogs are in the tree. Handing back whichever role was asked
+    // about first would let a test press "Done" in the form behind the alert
+    // it meant to answer, so this refuses the way a query with two matches
+    // does — and a name settles it.
+    expect(() => dialogHarness({ within: root })).toThrow(/found 2 dialogs/);
+    expect(dialogHarness({ within: root, name: 'Discard changes?' }).title()).toBe(
+      'Discard changes?',
+    );
+
+    // Whether any dialog is open is a question with an answer here, not an
+    // ambiguity.
+    expect(dialogIsOpen({ within: root })).toBe(true);
+  });
+
+  it('answers that a dialog is open when two are, rather than refusing to answer', () => {
+    const root = place();
+    @Component({
+      selector: `v-h-${++selectors}`,
+      render: compileTemplate(`
+        <div>
+          <div :if="form.isPresent()" :ref="formEl" :spread="form.contentProps()">
+            <h2 :spread="form.titleProps()">Edit profile</h2>
+          </div>
+          <div :if="confirm.isPresent()" :ref="confirmEl" :spread="confirm.contentProps()">
+            <h2 :spread="confirm.titleProps()">Leave without saving?</h2>
+          </div>
+        </div>`),
+    })
+    class Fixture {
+      formEl = new Signal.State<Element | null>(null);
+      confirmEl = new Signal.State<Element | null>(null);
+      form = createDialog({ content: () => this.formEl.get(), modal: false, defaultOpen: true });
+      confirm = createDialog({
+        content: () => this.confirmEl.get(),
+        modal: false,
+        defaultOpen: true,
+      });
+    }
+    mounted.push(mount(Fixture, root));
+    flushSync();
+
+    expect(dialogIsOpen({ within: root })).toBe(true);
+    expect(() => dialogHarness({ within: root })).toThrow(/found 2 dialogs/);
+    expect(dialogHarness({ within: root, name: 'Leave without saving?' }).title()).toBe(
+      'Leave without saving?',
+    );
+  });
 });
 
 describe('a menu', () => {
@@ -212,7 +372,7 @@ describe('a menu', () => {
     <div>
       <button :ref="trigger" :spread="parts.triggerProps()" :click="parts.toggle()">Actions</button>
       <div :if="parts.isPresent()" :ref="el" :spread="parts.contentProps()"
-           :keydown="parts.onKeyDown($event)" :click="parts.onItemClick($event)">
+           :keydown="parts.onContentKeyDown($event)" :click="parts.onItemClick($event)">
         <div :for="item in ['Duplicate', 'Delete']" :key="item"
              :spread="parts.itemProps({ value: item })">{ item }</div>
       </div>
@@ -246,6 +406,131 @@ describe('a menu', () => {
     menu.choose('Duplicate');
     flushSync();
     expect(chosen).toEqual(['Duplicate']);
+  });
+
+  /**
+   * Menus built from the primitive, each an `Actions`-style trigger and the
+   * items given, all mounted on one page. What each chose is recorded as
+   * `trigger:value`, so a press that landed in the wrong menu shows.
+   */
+  function menus(
+    spec: Record<string, readonly { label: string; value?: string; role?: MenuItemRole }[]>,
+  ): { root: HTMLElement; chosen: string[] } {
+    const root = place();
+    const chosen: string[] = [];
+    const names = Object.keys(spec);
+    // `:ref` takes a plain property name, so each menu gets properties of its
+    // own — `trigger0`, `content0`, `menu0` — rather than a slot in an array.
+    const template = `<div>${names
+      .map(
+        (name, i) => `
+          <button :ref="trigger${i}" :spread="menu${i}.triggerProps()"
+                  :click="menu${i}.toggle()"
+                  :keydown="menu${i}.onTriggerKeyDown($event)">${name}</button>
+          <div :if="menu${i}.isPresent()" :ref="content${i}"
+               :spread="menu${i}.contentProps()"
+               :keydown="menu${i}.onContentKeyDown($event)" :click="menu${i}.onItemClick($event)">
+            <div :for="item in items${i}" :key="item.value ?? item.label"
+                 :spread="menu${i}.itemProps({ value: item.value ?? item.label, role: item.role })"
+            >{ item.label }</div>
+          </div>`,
+      )
+      .join('')}</div>`;
+
+    @Component({ selector: `v-h-${++selectors}`, render: compileTemplate(template) })
+    class Fixture {
+      constructor() {
+        const self = this as unknown as Record<string, unknown>;
+        names.forEach((name, i) => {
+          const trigger = new Signal.State<Element | null>(null);
+          const content = new Signal.State<Element | null>(null);
+          self[`trigger${i}`] = trigger;
+          self[`content${i}`] = content;
+          self[`items${i}`] = spec[name];
+          self[`menu${i}`] = createMenu({
+            content: () => content.get(),
+            trigger: () => trigger.get(),
+            onSelect: (_item: HTMLElement, value: string | undefined) =>
+              chosen.push(`${name}:${value ?? ''}`),
+          });
+        });
+      }
+    }
+    mounted.push(mount(Fixture, root));
+    flushSync();
+    return { root, chosen };
+  }
+
+  it('reads nothing from another menu while its own is closed', () => {
+    const { chosen } = menus({
+      Alpha: [{ label: 'A one' }],
+      Beta: [{ label: 'B one' }],
+    });
+
+    menuHarness({ name: 'Beta' }).open();
+    const alpha = menuHarness({ name: 'Alpha' });
+
+    // Alpha's trigger controls nothing while it is closed — the primitive
+    // sets `aria-controls` only while open — and a harness that fell back to
+    // "the menu on the page" would read Beta's items as Alpha's, and press
+    // one of them.
+    expect(alpha.isOpen()).toBe(false);
+    expect(alpha.items()).toEqual([]);
+    expect(() => alpha.choose('B one')).toThrow(/no open menu/);
+    expect(chosen).toEqual([]);
+  });
+
+  it('reads the items in the order a user meets them, whatever their roles', () => {
+    menus({
+      Format: [
+        { label: 'Cut' },
+        { label: 'Bold', role: 'menuitemcheckbox' },
+        { label: 'Paste' },
+        { label: 'Left', role: 'menuitemradio' },
+      ],
+    });
+    const menu = menuHarness({ name: 'Format' });
+    menu.open();
+
+    expect(menu.items()).toEqual(['Cut', 'Bold', 'Paste', 'Left']);
+  });
+
+  it('chooses by the same rule a query names by', () => {
+    const { chosen } = menus({ Actions: [{ label: 'Duplicate' }, { label: 'Delete' }] });
+    const menu = menuHarness({ name: 'Actions' });
+    menu.open();
+
+    // Whitespace collapsed and trimmed, as `name` is everywhere else, so the
+    // same words find the same item whichever way they are asked.
+    menu.choose('  Duplicate ');
+    expect(chosen).toEqual(['Actions:Duplicate']);
+  });
+
+  it('will not choose between two items with the same words', () => {
+    const { chosen } = menus({
+      Actions: [
+        { label: 'Delete', value: 'file' },
+        { label: 'Delete', value: 'folder' },
+      ],
+    });
+    const menu = menuHarness({ name: 'Actions' });
+    menu.open();
+
+    // Pressing whichever came first would pass a test that meant the other,
+    // and every other harness action throws on several for that reason.
+    expect(() => menu.choose('Delete')).toThrow(/found 2 menu items/);
+    expect(chosen).toEqual([]);
+  });
+
+  it('closes with Escape on the menu', () => {
+    menus({ Actions: [{ label: 'Duplicate' }] });
+    const menu = menuHarness({ name: 'Actions' });
+    menu.open();
+    expect(menu.isOpen()).toBe(true);
+
+    menu.close();
+    expect(menu.isOpen()).toBe(false);
+    expect(menu.items()).toEqual([]);
   });
 });
 

@@ -19,7 +19,11 @@ import { typeText } from '../src/interact.ts';
 
 let clock: FakeClock | null = null;
 
-const install = (now?: number): FakeClock => {
+/** Taken when this module loads, as a source module takes them: before any clock. */
+class Early extends Date {}
+const Captured = Date;
+
+const install =(now?: number): FakeClock => {
   clock = installClock(now === undefined ? {} : { now });
   return clock;
 };
@@ -90,6 +94,7 @@ describe('installing', () => {
       clearTimeout: globalThis.clearTimeout,
       setInterval: globalThis.setInterval,
       clearInterval: globalThis.clearInterval,
+      Date: globalThis.Date,
       dateNow: Date.now,
       performanceNow: performance.now,
       requestAnimationFrame: globalThis.requestAnimationFrame,
@@ -109,7 +114,9 @@ describe('installing', () => {
     expect(globalThis.clearTimeout).toBe(real.clearTimeout);
     expect(globalThis.setInterval).toBe(real.setInterval);
     expect(globalThis.clearInterval).toBe(real.clearInterval);
+    expect(globalThis.Date).toBe(real.Date);
     expect(Date.now).toBe(real.dateNow);
+    expect(new Date().constructor).toBe(real.Date);
     expect(performance.now).toBe(real.performanceNow);
     expect(globalThis.requestAnimationFrame).toBe(real.requestAnimationFrame);
     expect(globalThis.cancelAnimationFrame).toBe(real.cancelAnimationFrame);
@@ -158,6 +165,64 @@ describe('time', () => {
     const before = performance.now();
     await clock.advance(250);
     expect(performance.now() - before).toBe(250);
+  });
+
+  it('answers a date constructed without a time, not only Date.now()', async () => {
+    const clock = install(1_700_000_000_000);
+
+    // Code that takes the current date as `new Date()` is as common as code
+    // that calls `Date.now()`, and a clock that fakes only the second has its
+    // timers on fake time and its dates on real time.
+    expect(new Date().getTime()).toBe(1_700_000_000_000);
+    expect(Date()).toBe(new Date(1_700_000_000_000).toString());
+
+    await clock.advance(1_500);
+    expect(new Date().getTime()).toBe(1_700_000_001_500);
+
+    // Everything else is the real constructor: a date given a time keeps it,
+    // the statics are there, and what comes back is a date to anything that
+    // asks — a subclass included.
+    expect(new Date(0).toISOString()).toBe('1970-01-01T00:00:00.000Z');
+    expect(new Date(2020, 0, 1).getFullYear()).toBe(2020);
+    expect(Date.UTC(1970, 0, 2)).toBe(86_400_000);
+    expect(Date.parse('1970-01-01T00:00:01Z')).toBe(1_000);
+    expect(new Date()).toBeInstanceOf(Date);
+
+    class Stamp extends Date {}
+    const stamp = new Stamp();
+    expect(stamp).toBeInstanceOf(Stamp);
+    expect(stamp.getTime()).toBe(1_700_000_001_500);
+
+    // And the constructor itself answers as `Date` does, for code that checks
+    // what made a value or how many parts the constructor takes.
+    expect(new Date().constructor).toBe(Date);
+    expect(Date.name).toBe('Date');
+    expect(Date).toHaveLength(7);
+  });
+
+  it('reads fake time through now() on a Date taken before the install', () => {
+    install(1_700_000_000_000);
+
+    // A subclass declared by a module, or a reference held from before, is the
+    // real constructor, and `new` on it cannot be intercepted. `now()` is
+    // replaced on the real one, so asking it for the time reads the clock.
+    expect(Early.now()).toBe(1_700_000_000_000);
+    expect(Captured.now()).toBe(1_700_000_000_000);
+    expect(new Early(Early.now()).getTime()).toBe(1_700_000_000_000);
+  });
+
+  it('hands a frame the time performance.now() reads, not a count of its own', async () => {
+    const clock = install(1_700_000_000_000);
+    const seen: [number, number][] = [];
+    requestAnimationFrame((time) => seen.push([time, performance.now()]));
+
+    await clock.advance(16);
+
+    // A browser's frame timestamp and `performance.now()` share one origin, so
+    // an animation that measures its progress by one against the other — the
+    // usual way to write one — must see them agree here too.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]![0]).toBe(seen[0]![1]);
   });
 });
 
@@ -290,8 +355,9 @@ describe('advance', () => {
 
   it('runs animation frames', async () => {
     const clock = install(0);
+    const start = performance.now();
     const frames: number[] = [];
-    requestAnimationFrame((t) => frames.push(t));
+    requestAnimationFrame((t) => frames.push(t - start));
 
     await clock.advance(16);
     expect(frames).toEqual([16]);
@@ -317,6 +383,74 @@ describe('advance', () => {
     tick();
 
     await expect(clock.runAll()).rejects.toThrow(/rescheduling itself/);
+  });
+
+  it('finishes while an interval is set, and leaves the interval set', async () => {
+    const clock = install(0);
+    const ran: string[] = [];
+    const id = setInterval(() => ran.push(`tick ${clock.now()}`), 1_000);
+    setTimeout(() => ran.push(`done ${clock.now()}`), 2_500);
+
+    await clock.runAll();
+
+    // An interval is never done, so "everything" cannot include running it to
+    // the end. It runs each time it falls due while anything that can finish
+    // is still pending — a poll ticking beneath a timeout, in order — and is
+    // then left as it was: set, and counted.
+    expect(ran).toEqual(['tick 1000', 'tick 2000', 'done 2500']);
+    expect(clock.pending()).toBe(1);
+
+    clearInterval(id);
+    expect(clock.pending()).toBe(0);
+  });
+
+  it('runs nothing for an interval that is all there is', async () => {
+    const clock = install(0);
+    let ticks = 0;
+    setInterval(() => ticks++, 1_000);
+
+    await clock.runAll();
+
+    expect(ticks).toBe(0);
+    expect(clock.now()).toBe(0);
+  });
+
+  it('says it was an animation loop when a frame keeps asking for the next', async () => {
+    const clock = install(0);
+    // An interval in step with the frames, and set first, so it is the timer
+    // about to run when the clock gives up. It is not what kept `runAll()`
+    // going — that stops for intervals — so it is not what gets the blame.
+    setInterval(() => {}, 16);
+    const frame = (): void => {
+      requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+
+    // Time does pass between frames, so the loop is not one that stands still;
+    // what never happens is the queue emptying, and the message has to say
+    // which of the two it was.
+    await expect(clock.runAll()).rejects.toThrow(/animation frame keeps requesting/);
+  });
+
+  it('says a timer was only far off, not a loop, when an interval ran out the steps to it', async () => {
+    const clock = install(0);
+    // A poll every frame beside a session timeout half an hour away: 112,500
+    // turns of the poll before the timeout is due, and nothing that sets a
+    // timer again. The one-shot is what `runAll()` waits for, and it is not
+    // what used the steps up.
+    setInterval(() => {}, 16);
+    setTimeout(() => {}, 30 * 60_000);
+
+    await expect(clock.runAll()).rejects.toThrow(
+      /interval every 16 ms fell due .* on the way to a timer set before runAll\(\) began.*not a loop/,
+    );
+  });
+
+  it('says an advance was too long for an interval, not that it never ends', async () => {
+    const clock = install(0);
+    setInterval(() => {}, 1);
+
+    await expect(clock.advance(200_000)).rejects.toThrow(/interval every 1 ms.*smaller steps/);
   });
 });
 

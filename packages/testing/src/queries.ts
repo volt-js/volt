@@ -58,7 +58,9 @@ export function queryAllByRole(
   for (const element of container.querySelectorAll<HTMLElement>('*')) {
     if (getRole(element) !== role) continue;
     if (!options.hidden && isAccessibilityHidden(element)) continue;
-    if (!matchesName(element, options.name)) continue;
+    if (options.name !== undefined && !matchesName(getAccessibleName(element), options.name)) {
+      continue;
+    }
     if (!matchesState(element, options)) continue;
     found.push(element);
   }
@@ -100,10 +102,19 @@ export function getAllByRole(
   return found;
 }
 
-function matchesName(element: Element, expected: string | RegExp | undefined): boolean {
-  if (expected === undefined) return true;
-  const name = getAccessibleName(element);
-  return typeof expected === 'string' ? name === normalizeText(expected) : expected.test(name);
+/**
+ * Whether a name is the one asked for.
+ *
+ * Exported for the harnesses, so that every action that takes a name reads it
+ * by the same rule as the queries. A pattern is applied with `search()` rather
+ * than `test()`: a global or sticky `test()` resumes from where its last match
+ * ended, so a query that asked it once per element would find every other
+ * button called "Save", and leave the caller's pattern part way through.
+ */
+export function matchesName(name: string, expected: string | RegExp): boolean {
+  return typeof expected === 'string'
+    ? name === normalizeText(expected)
+    : name.search(expected) !== -1;
 }
 
 function matchesState(element: Element, options: RoleQueryOptions): boolean {

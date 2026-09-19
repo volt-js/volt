@@ -69,6 +69,41 @@ describe('role', () => {
     expect(getRole(at('#h'))).toBeNull();
   });
 
+  it('gives an input the role a browser exposes it with, and none where ARIA has none', () => {
+    markup(
+      '<input id="pw" type="password"><input id="file" type="file"><input id="odd" type="nonsense">' +
+        '<input id="color" type="color"><input id="date" type="date"><input id="time" type="time">' +
+        '<input id="local" type="datetime-local"><input id="month" type="month">' +
+        '<input id="week" type="week">',
+    );
+    // What a browser's tree says: a password field is a text field whose
+    // characters are not read out, and a file input is the button that opens
+    // the chooser. A type the host language does not know is a text field.
+    expect(getRole(at('#pw'))).toBe('textbox');
+    expect(getRole(at('#file'))).toBe('button');
+    expect(getRole(at('#odd'))).toBe('textbox');
+    // A colour well and the date and time pickers are exposed as widgets of
+    // their own that no ARIA role names, so there is no role to find them by —
+    // and calling them text boxes would let a test ask for one by a role no
+    // screen reader announces.
+    for (const id of ['#color', '#date', '#time', '#local', '#month', '#week']) {
+      expect(getRole(at(id)), id).toBeNull();
+    }
+  });
+
+  it('makes any field that takes suggestions a combobox, a search field included', () => {
+    markup(
+      '<datalist id="dl"><option value="a"></option></datalist>' +
+        '<input id="s" type="search"><input id="sl" type="search" list="dl">' +
+        '<input id="tl" list="dl"><input id="pl" type="password" list="dl">',
+    );
+    expect(getRole(at('#s'))).toBe('searchbox');
+    expect(getRole(at('#sl'))).toBe('combobox');
+    expect(getRole(at('#tl'))).toBe('combobox');
+    // `list` does not apply to a password field, so it stays what it was.
+    expect(getRole(at('#pl'))).toBe('textbox');
+  });
+
   it('takes a decorative image out of the tree and leaves an informative one in', () => {
     markup('<img id="a" alt=""><img id="b" alt="A cat">');
     expect(getRole(at('#a'))).toBe('presentation');
@@ -79,6 +114,15 @@ describe('role', () => {
     markup('<section id="a">x</section><section id="b" aria-label="Filters">y</section>');
     expect(getRole(at('#a'))).toBe('generic');
     expect(getRole(at('#b'))).toBe('region');
+  });
+
+  it('counts a title as the name that makes a section a region', () => {
+    // A `title` is a name — the name computation here takes it, and a browser
+    // exposes the section as a region called by it — so the role has to agree,
+    // or the landmark is one a test can name and cannot find.
+    markup('<section id="a" title="Filters">x</section>');
+    expect(getRole(at('#a'))).toBe('region');
+    expect(getAccessibleName(at('#a'))).toBe('Filters');
   });
 
   it('scopes banner and contentinfo to the page', () => {
@@ -203,6 +247,19 @@ describe('hidden from the accessibility tree', () => {
         '<div hidden><button id="b">b</button></div>' +
         '<button id="c">c</button>',
     );
+    expect(isAccessibilityHidden(at('#a'))).toBe(true);
+    expect(isAccessibilityHidden(at('#b'))).toBe(true);
+    expect(isAccessibilityHidden(at('#c'))).toBe(false);
+  });
+
+  it('leaves out an inert subtree, which a browser takes out of the tree', () => {
+    markup(
+      '<div inert><button id="a">a</button></div><button id="b" inert>b</button>' +
+        '<button id="c">c</button>',
+    );
+    // Markup that relies on `inert` alone — no `aria-hidden` beside it — is
+    // what a screen reader cannot reach, and a query that found it would let
+    // a test press something no user can.
     expect(isAccessibilityHidden(at('#a'))).toBe(true);
     expect(isAccessibilityHidden(at('#b'))).toBe(true);
     expect(isAccessibilityHidden(at('#c'))).toBe(false);
