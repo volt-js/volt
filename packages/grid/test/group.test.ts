@@ -10,8 +10,8 @@
  * the viewport arrives through a `ResizeObserver` that reports what a test
  * hands it, exactly as in `grid.test.ts`.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { resetAnnouncer } from '@voltdev/primitives';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createLocaleProvider, resetAnnouncer, type MessageCatalog } from '@voltdev/primitives';
 import { compileTemplate } from '@voltdev/core/jit';
 import { Component, Signal, flushSync, mount } from '@voltdev/core';
 import {
@@ -25,6 +25,8 @@ import {
   type GridGroupSpec,
   type GridGroupedRow,
   type GridGrouping,
+  type GridGroupingOptions,
+  type GridOptions,
   type GridRow,
   type GridSort,
 } from '../src/index.ts';
@@ -102,6 +104,12 @@ let groupBy: Signal.State<readonly (string | GridGroupSpec<Person>)[]>;
 let aggregations: Signal.State<readonly GridAggregation<Person>[]>;
 let sortState: Signal.State<readonly GridSort[]>;
 let collapsedState: Signal.State<ReadonlySet<string>>;
+/** Whatever else a test hands the grouping, or takes away from it. */
+let groupingOptions: Partial<GridGroupingOptions<Person>>;
+/** Whatever else a test hands the grid. */
+let gridOptions: Partial<GridOptions<GridGroupedRow<Person>>>;
+/** Translations for a locale provided around the grid, or null for none. */
+let catalogue: MessageCatalog | null;
 
 interface Measurement {
   target: Element;
@@ -167,6 +175,9 @@ beforeEach(() => {
   aggregations = new Signal.State<readonly GridAggregation<Person>[]>([]);
   sortState = new Signal.State<readonly GridSort[]>([]);
   collapsedState = new Signal.State<ReadonlySet<string>>(new Set());
+  groupingOptions = {};
+  gridOptions = {};
+  catalogue = null;
 
   FakeResizeObserver.live = [];
   const view = window as unknown as { ResizeObserver: unknown };
@@ -193,7 +204,7 @@ afterEach(() => {
  * it a group header. Neither knows about the other's attributes.
  */
 const TEMPLATE = `
-  <div class="grid" :ref="grid" :spread="g.gridProps()"
+  <div class="grid" :ref="grid" :spread="gridProps()"
        :keydown="onKey($event)" :focusin="g.onFocusIn($event)">
     <div class="header" :spread="g.headerProps()">
       <div class="header-row" :spread="g.headerRowProps()">
@@ -232,6 +243,8 @@ interface Harness {
 function setup({ height = VIEWPORT_HEIGHT, width = VIEWPORT_WIDTH } = {}): Harness {
   @Component({ selector: `v-group-${++selectors}`, render: compileTemplate(TEMPLATE) })
   class GroupedGrid {
+    // Before the grouping, which reads the nearest locale when it is created.
+    locale = catalogue && createLocaleProvider({ defaultLocale: 'de-DE', messages: catalogue });
     grid = new Signal.State<Element | null>(null);
     scroller = new Signal.State<Element | null>(null);
     container = new Signal.State<Element | null>(null);
@@ -245,6 +258,7 @@ function setup({ height = VIEWPORT_HEIGHT, width = VIEWPORT_WIDTH } = {}): Harne
       getRowKey: (row) => row.id,
       collapsed: collapsedState,
       sort: sortState,
+      ...groupingOptions,
     });
 
     g = createGrid<GridGroupedRow<Person>>({
@@ -257,7 +271,12 @@ function setup({ height = VIEWPORT_HEIGHT, width = VIEWPORT_WIDTH } = {}): Harne
       sort: sortState,
       rowHeight: ROW_HEIGHT,
       label: 'People',
+      ...gridOptions,
     });
+
+    gridProps(): Record<string, unknown> {
+      return { ...this.g.gridProps(), ...this.grouping.gridProps() };
+    }
 
     rowProps(row: GridRow<GridGroupedRow<Person>>): Record<string, unknown> {
       return { ...this.g.rowProps(row), ...this.grouping.rowProps(row.item) };
@@ -333,6 +352,16 @@ function click(el: Element, modifiers: Partial<MouseEventInit> = {}): void {
   flushSync();
 }
 
+/** The polite live region's text, once it has one. */
+async function announced(): Promise<string> {
+  let text = '';
+  await vi.waitFor(() => {
+    text = document.querySelector("[data-volt-announcer='polite']")?.textContent ?? '';
+    expect(text).not.toBe('');
+  });
+  return text;
+}
+
 function userScroll(el: HTMLElement, { top = 0, left = 0 } = {}): void {
   el.scrollTop = top;
   el.scrollLeft = left;
@@ -381,6 +410,29 @@ describe('a group header is a row of the collection', () => {
     expect(rows()[2]!.getAttribute(GRID_GROUP_ATTRIBUTE)).toBeNull();
   });
 
+  it('keeps a group under a blank key apart from a top-level group of the same name', () => {
+    people.set(tableOf([
+      ['', 'london', '1'],
+      ['london', 'paris', '2'],
+    ]));
+    groupBy.set(['c0', 'c1']);
+    const harness = setup();
+
+    const [blank, london] = harness.grouping.tree();
+    const nested = blank!.children[0]!;
+    expect(nested.label).toBe('london');
+    expect(london!.label).toBe('london');
+    // Two groups, so two paths and two row keys — or both would open and shut
+    // together, and the grid would be handed two rows under one key.
+    expect(nested.path).not.toBe(london!.path);
+    const keys = harness.grouping.rows().map((row) => row.key);
+    expect(new Set(keys).size).toBe(keys.length);
+
+    harness.grouping.collapse(london!.path);
+    flushSync();
+    expect(harness.grouping.isExpanded(nested.path)).toBe(true);
+  });
+
   it('counts the headers and the rows as one collection', () => {
     const harness = setup();
     // Six rows and the column header, not four rows and the column header: a
@@ -404,6 +456,19 @@ describe('a group header is a row of the collection', () => {
     // Seven of the nine are rendered, which is what a window of five rows and
     // two of overscan holds.
     expect(attrs('.row', 'aria-level')).toEqual(['1', '2', '3', '2', '3', '1', '2']);
+  });
+
+  it('makes the grid a treegrid, the role ARIA puts levels and expansion on rows for', () => {
+    const harness = setup();
+    expect(harness.root.getAttribute('role')).toBe('treegrid');
+    expect(attrs('.row', 'aria-level')).toEqual(['1', '2', '2', '1', '2', '2']);
+
+    // Ungrouped, it is a grid again, and a grid's rows have no levels.
+    groupBy.set([]);
+    flushSync();
+    expect(harness.root.getAttribute('role')).toBe('grid');
+    expect(attrs('.row', 'aria-level')).toEqual([null, null, null, null]);
+    expect(attrs('.row', 'aria-expanded')).toEqual([null, null, null, null]);
   });
 
   it('nests groups, outermost first', () => {
@@ -437,6 +502,48 @@ describe('a group header is a row of the collection', () => {
     expect(rendered).toContain('group');
     expect(rendered).toContain('data');
     expect(harness.g.rows().find((row) => row.item.kind === 'group')!.index).toBe(21);
+  });
+});
+
+describe('what the grid is told about a grouped collection', () => {
+  it('selects rows by the keys the caller gave them, and never a heading', () => {
+    gridOptions = { rowSelection: 'multiple', selectable: (row) => row.kind === 'data' };
+    const harness = setup();
+    // east, its two rows, west, its two rows.
+    expect(attrs('.row', 'data-group')).toEqual(['', null, null, '', null, null]);
+
+    // Space on a heading selects nothing: a heading is not one of the records.
+    harness.g.focusCell({ row: 0, column: 0 });
+    press(cellAt(0, 0)!, ' ');
+    expect(harness.g.selectedRows().size).toBe(0);
+
+    // On a row it selects the row, under the key `getRowKey` gave it — the
+    // set is the caller's own ids, with nothing to map back.
+    harness.g.focusCell({ row: 1, column: 0 });
+    press(cellAt(1, 0)!, ' ');
+    expect([...harness.g.selectedRows()]).toEqual([0]);
+
+    // Shift-click from there to the last row crosses a heading and leaves it out.
+    click(cellAt(5, 1)!, { shiftKey: true });
+    expect([...harness.g.selectedRows()]).toEqual([0, 1, 2, 3]);
+
+    harness.g.clearRowSelection();
+    press(cellAt(1, 0)!, 'a', { ctrlKey: true });
+    expect([...harness.g.selectedRows()]).toEqual([0, 1, 2, 3]);
+    // A heading says nothing about selection, because it has none to report.
+    expect(attrs('.row', 'aria-selected')).toEqual([null, 'true', 'true', null, 'true', 'true']);
+  });
+
+  it('offers no sort where the grouping was given no sort signal to apply one from', () => {
+    // Ordering happens in the grouping. With nothing to read the order from, a
+    // header that cycled and announced would be describing rows that never move.
+    groupingOptions = { sort: undefined };
+    const harness = setup();
+
+    click(host.querySelectorAll('.th')[1]!);
+    expect(harness.g.sort()).toEqual([]);
+    expect(attrs('.th', 'aria-sort')).toEqual([null, null, null]);
+    expect(columnText(1)).toEqual(['', 'london', 'paris', '', 'london', 'london']);
   });
 });
 
@@ -652,6 +759,27 @@ describe('aggregation', () => {
     expect(harness.grouping.tree()[0]!.aggregates.get('c1')).toBe(3);
   });
 
+  it('skips an invalid date the way it skips a blank', () => {
+    people.set(tableOf([
+      ['east', 'london', '2024-01-01'],
+      ['east', 'paris', 'not a date'],
+      ['west', 'rome', 'not a date'],
+    ]));
+    const when = (row: Person): unknown => new Date(row.cells[2]!.get());
+    aggregations.set([
+      { columnId: 'c2', kind: 'sum', value: when },
+      { columnId: 'c1', kind: 'max', value: when },
+    ]);
+    const harness = setup();
+
+    // One date counts; the one that holds no time at all is not NaN in the
+    // total, and a group of nothing else has nothing to total.
+    const [east, west] = harness.grouping.tree();
+    expect(east!.aggregates.get('c2')).toBe(new Date('2024-01-01').getTime());
+    expect(west!.aggregates.get('c2')).toBeNull();
+    expect(west!.aggregates.get('c1')).toBeNull();
+  });
+
   it('says nothing rather than zero for a group with nothing to total', () => {
     people.set(tableOf([['east', 'london', ''], ['east', 'paris', '']]));
     aggregations.set([{ columnId: 'c2', kind: 'sum', value: amount }]);
@@ -691,6 +819,45 @@ describe('aggregation', () => {
     expect(harness.grouping.tree().map((node) => node.label)).toEqual(['east']);
     expect(rows()).toHaveLength(3);
     expect(harness.root.getAttribute('aria-rowcount')).toBe('4');
+  });
+
+  it('says how many of the rows a filter left, since nothing else will', async () => {
+    const harness = setup();
+    harness.grouping.setFilter('c1', { type: 'text', value: 'london' });
+    flushSync();
+    // The caller's rows, not rows and headings: three of the four it was given.
+    expect(await announced()).toBe('3 of 4 rows');
+    resetAnnouncer();
+
+    harness.grouping.setQuickFilter('west');
+    flushSync();
+    expect(await announced()).toBe('2 of 4 rows');
+    resetAnnouncer();
+
+    harness.grouping.clearFilters();
+    flushSync();
+    expect(await announced()).toBe('All 4 rows');
+  });
+
+  it("says it in the locale's words where the catalogue has them", async () => {
+    catalogue = { gridRowsLeft: '{n} von {m} Zeilen', gridAllRows: 'Alle {m} Zeilen' };
+    const harness = setup();
+    harness.grouping.setFilter('c0', { type: 'text', value: 'east' });
+    flushSync();
+    expect(await announced()).toBe('2 von 4 Zeilen');
+    resetAnnouncer();
+
+    harness.grouping.clearFilters();
+    flushSync();
+    expect(await announced()).toBe('Alle 4 Zeilen');
+  });
+
+  it("says it in the caller's own words when given them", async () => {
+    groupingOptions = { filterAnnouncement: (shown, total) => `${shown}/${total}` };
+    const harness = setup();
+    harness.grouping.setFilter('c0', { type: 'text', value: 'east' });
+    flushSync();
+    expect(await announced()).toBe('2/4');
   });
 
   it('searches every column with the quick filter, before grouping', () => {

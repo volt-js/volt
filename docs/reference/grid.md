@@ -181,18 +181,19 @@ it changes, by different amounts, and the rows drift when both do.
 | `activeCell` | owned | A `Signal.State<GridCell>` to drive the cursor from outside |
 | `onActiveCellChange` | — | Told every time the cursor moves |
 | `onColumnResize` | — | Told the clamped width a resize settled on |
-| `resizeAnnouncement` | `'Name, 180 pixels'` | What a keyboard resize says aloud: `(column, width) => string` |
+| `resizeAnnouncement` | the catalogue's, else `'Name, 180 pixels'` | What a keyboard resize says aloud: `(column, width) => string` |
 | `resizeStep` | `16` | Pixels per Alt+Arrow press |
 | `sort` | owned | A `Signal.State<readonly GridSort[]>` |
 | `onSortChange` | — | Told when the grid changes the sort |
-| `sortAnnouncement` | `'Sorted by Name ascending, then …'`, or `'Not sorted'` | What a sort gesture says aloud: `(sort: readonly GridSortDescriptor<T>[]) => string` |
+| `sortAnnouncement` | the catalogue's, else `'Sorted by Name ascending, then …'`, or `'Not sorted'` | What a sort gesture says aloud: `(sort: readonly GridSortDescriptor<T>[]) => string` |
 | `filters` | owned | A `Signal.State<ReadonlyMap<string, GridFilter>>`, by column id |
 | `quickFilter` | owned | A `Signal.State<string>` searched across every column |
 | `onFilterChange` | — | Told when the grid changes either kind of filter |
-| `filterAnnouncement` | `'3 of 40 rows'`, or `'All 40 rows'` | What a filter change says aloud: `(shown, total) => string` |
+| `filterAnnouncement` | the catalogue's, else `'3 of 40 rows'`, or `'All 40 rows'` | What a filter change says aloud: `(shown, total) => string` |
 | `rowSelection` | `'none'` | A `GridRowSelectionMode`: `'none'`, `'single'` or `'multiple'` |
 | `selectedRows` | owned | A `Signal.State<ReadonlySet<GridRowKey>>` |
 | `onRowSelectionChange` | — | Told when the grid changes the row selection |
+| `selectable` | every row | `(row) => boolean` — whether a gesture, or `selectAllRows`, may select this row |
 | `cellSelection` | `'none'` | A `GridCellSelectionMode`: `'range'` turns on the rectangle of cells |
 | `cellRange` | owned | A `Signal.State<GridCellRange \| null>` |
 | `onCellRangeChange` | — | Told when the grid changes the rectangle |
@@ -203,12 +204,30 @@ already knows gets in; leave it out and the grid owns one. The `on…Change`
 callbacks fire when the grid changes the state — a click, a key, a method — and
 not when you write the signal yourself, since you already know.
 
-The three announcements have English defaults and do not come from the locale's
-message catalogue. They are defaulted rather than left out because the failure
-of a missing one is silence, not a visible gap; for any other language, pass
-your own. A sort sentence is handed `GridSortDescriptor<T>` terms — `{ column,
-direction }`, the term with its column already looked up — so it can read each
-column's `header` rather than its id.
+The three announcements are defaulted rather than left out, because the failure
+of a missing one is silence, not a visible gap. Each default is read from the
+locale's [message catalogue](./primitives-data#messages) where it has the key,
+and is English where it does not; none of these keys is in the default
+catalogue, so a translation that adds them is heard and one that never heard of
+the grid is not made to grow them. A number in a catalogue's sentence is
+formatted for its locale — "1.000" in German — where the English default writes
+it as a plain number.
+
+| Key | Values | English |
+|---|---|---|
+| `gridRowsLeft` | `{n}` shown, `{m}` in all | `3 of 40 rows` |
+| `gridAllRows` | the same, where the two are equal | `All 40 rows` |
+| `gridColumnWidth` | `{column}`, the header; `{n}`, the width | `Name, 180 pixels` |
+| `gridAscending`, `gridDescending` | `{column}` | `Name ascending`, `Name descending` |
+| `gridThen` | `{terms}`, the ones before; `{term}`, the next | `Department ascending, then Name descending` |
+| `gridSortedBy` | `{terms}`, the whole order | `Sorted by …` |
+| `gridNotSorted` | — | `Not sorted` |
+
+A sort sentence is built a term at a time: each term, then each one joined to
+the ones before it by `gridThen`, then the lot by `gridSortedBy`. A function of
+your own replaces the whole sentence. A sort's is handed `GridSortDescriptor<T>`
+terms — `{ column, direction }`, the term with its column already looked up —
+so it can read each column's `header` rather than its id.
 
 **`rowHeight` is one number, not a measurement.** Every row is exactly that
 tall, which makes the vertical geometry arithmetic: nothing is measured,
@@ -352,7 +371,7 @@ wiring of its own. A click that ends a resize drag is not taken as a sort.
 | `data-column` | cell, header cell | Always — the column's `id` |
 | `data-sort` | header cell | Sorted: `ascending` or `descending` |
 | `data-sort-index` | header cell | Its 1-based place in a sort of two or more columns |
-| `data-filtered` | header cell | The column has a filter set — even an unfinished one that filters nothing |
+| `data-filtered` | header cell | The column has a finished filter — an unfinished one filters nothing, and marks nothing |
 | `data-resizing` | resize handle | A drag is in progress |
 | `data-disabled` | resize handle | The column is not resizable |
 | `data-group`, `data-count` | row, from `grouping.rowProps` | It is a group header; how many rows it holds |
@@ -369,7 +388,7 @@ wiring of its own. A click that ends a resize drag is not taken as a sort.
 | `HEADER_ROW` | `-1` | The row index of the column header |
 | `GRID_GROUP_ATTRIBUTE` | `'data-volt-grid-group'` | On a group header row, carrying its path |
 | `GRID_EDITOR_ATTRIBUTE` | `'data-volt-grid-editor'` | On the control an edit is typed into |
-| `VERSION` | `'0.1.0'` | Without the prerelease tag the package is published under |
+| `VERSION` | `'0.1.0-alpha.1'` | The version the package is published under |
 
 ## Moving around
 
@@ -385,10 +404,14 @@ interface GridCell {
 | `activeCell()` | Where the cursor is. `row` is `HEADER_ROW` on the column header |
 | `focusCell(cell)` | Move the cursor, scroll the cell into view, focus it — once rendered, if it is not yet. Clamped into the grid |
 | `scrollToCell(cell)` | Scroll a cell into view without moving the cursor or focus |
+| `rowIndex(key)` | Where the row with this key sits in the view now, or `-1` where the view does not hold it |
+| `columnIndex(id)` | Where the column with this id sits in the column list now, or `-1` where the list does not hold it |
 
 A position is two indices, not a row key and a column id, because the keyboard
 map is arithmetic over it; which row sits at an index changes with every sort
-and filter, and the grid moves the cursor to follow — see below.
+and filter, and the grid moves the cursor to follow — see below. `rowIndex` is
+the way from a record to a position, and `columnIndex` from a column. `rowIndex`
+scans the view, so ask it once per change rather than once per cell.
 
 The keyboard map is the WAI-ARIA grid pattern, plus sorting, resizing and
 selection:
@@ -442,10 +465,11 @@ was on the cursor to begin with, since a sort is usually driven from the header
 where the reader is standing. When the row is filtered away, the cursor stays at
 the position it had, clamped into the grid.
 
-One case gets focus wrong: a reader who focused a cell and then clicked the page
-background. Focus is then nowhere, which the grid cannot tell apart from its
-focused cell having been removed by a re-render, so the next re-sort pulls focus
-back into the grid.
+Focus that leaves the grid is the reader's, wherever it goes — to another
+control, or nowhere, by a click on the page background. The grid hears it leave,
+and the next re-sort moves the cursor without pulling focus back. A focused cell
+removed by the re-render itself is not focus leaving, and focus still follows
+the row.
 
 ## Sorting
 
@@ -461,7 +485,7 @@ type GridSortDirection = 'ascending' | 'descending';
 | Member | Description |
 |---|---|
 | `sort()` | The order, outermost term first |
-| `sortDirection(columnId)` | Which way a column is sorted, or `null` |
+| `sortDirection(columnId)` | Which way a column is sorted, or `null` — also for a term that orders nothing |
 | `setSort(sort)` | Replace the whole order. Silent |
 | `toggleSort(columnId, additive?)` | Cycle ascending, descending, none. Announces |
 
@@ -471,7 +495,10 @@ when it ties. It holds no functions and names columns by id, so it can go into a
 URL or a saved view and come straight back; a term naming a column that no
 longer exists, or one marked `sortable: false`, is left out of the ordering
 rather than thrown over. It is not removed from the signal, though: `sort()` and
-`onSortChange` still carry it, and it still counts towards `data-sort-index`.
+`onSortChange` still carry it, so it comes back with the column. Nothing the
+grid reports counts it — `sortDirection` is `null` for it, it takes no place in
+`data-sort-index`, and the announcement leaves it out — because it is not a
+claim the rows on screen bear out.
 
 The cycle has three states rather than two. A grid that could not be put back
 into its source order would have lost something the reader may want back. A
@@ -495,14 +522,13 @@ so every term is marked and the announcement says the order.
 How values compare:
 
 - **Typed first.** Numbers as numbers, bigints, booleans and `Date`s by value;
-  anything else, and any mix of types, as text. `NaN` sorts after every number
-  ascending, and so before them descending.
-- **An invalid `Date` is not guarded.** It compares as equal to everything, and
-  one in a column is enough to put the valid dates around it out of order. Have
-  `sortValue` return `null` for it, and it sorts last as a blank.
+  anything else, and any mix of types, as text.
 - **Blanks last, both ways.** `null`, `undefined` and `''` sort after everything
   whichever way the column is sorted. Reversing a sort is a request to see the
-  largest values first, not the rows with no value at all.
+  largest values first, not the rows with no value at all. `NaN` and an invalid
+  `Date` are blanks too: neither is ordered against anything, and a comparator
+  that called one equal to every value would let the engine put the rows around
+  it out of order.
 - **Ties keep source order.** `Array#sort` is stable, which is what makes a
   second term a refinement rather than a reshuffle.
 - **Text is collated in the application's locale,** from `useLocale()` — not
@@ -588,11 +614,10 @@ text that appears nowhere on the row.
 A number filter compares numbers whatever the cell holds: numeric strings (a
 value straight out of JSON) are parsed, a `Date` compares by its timestamp, a
 bigint is converted, and an empty string is not zero. A value that is none of
-those never matches — not even `notEquals`, so a blank cell is not "not 5". An
-invalid `Date` slips through as `NaN`, which fails every operator but
-`notEquals`. Text filters fold case in the locale, because Turkish I and
-dotless ı are different letters and the invariant fold runs them together, and
-read a blank as `''`, so `notContains` keeps it. A set filter compares the raw
+those never matches — not even `notEquals`, so a blank cell is not "not 5", and
+neither is an invalid `Date`. Text filters fold case in the locale, because
+Turkish I and dotless ı are different letters and the invariant fold runs them
+together, and read a blank as `''`, so `notContains` keeps it. A set filter compares the raw
 value, not its text: `1` and `'1'` are different members.
 
 ```ts
@@ -673,6 +698,15 @@ filter left.
 `'multiple'` mode, where `false` is what makes the set legible, and only on the
 selected row in `'single'`, where a screenful of "not selected" would bury the
 one that is.
+
+`selectable` keeps rows out of all of it. A row it refuses is not selected by a
+click, by Space — which it still spends, rather than let the page scroll — by a
+Shift-click range that crosses it, or by `selectAllRows`, and it carries no
+`aria-selected`, which is how a row says it cannot be. It is for the rows of a
+collection that are not records, such as a
+[grouped grid's headers](#what-a-layer-above-the-grid-means), and for the
+records a bulk action must not reach. `selectRow` and `toggleRowSelection` take
+a key rather than a row, and do not ask it.
 
 ### Cell ranges
 
@@ -757,10 +791,10 @@ The reader resizes by dragging the handle or with Alt+Arrow on a header. Every
 path clamps to the column's `minWidth` and `maxWidth`, refuses a column marked
 `resizable: false`, and tells `onColumnResize` the width it settled on — during
 a drag, that is every move that changed it, not only the last. Escape during a
-drag puts the width back where the drag started: one gesture, undone whole. It
-does not consume the Escape, though — the key still reaches the grid and
-anything else listening, so a grid inside a dialog that closes on Escape loses
-the dialog as well as the drag.
+drag puts the width back where the drag started: one gesture, undone whole. That
+Escape is the drag's alone: it is heard before anything else on the page and
+goes no further, so a grid inside a dialog that closes on Escape loses the drag
+and keeps the dialog. The next Escape is the dialog's again.
 
 A keyboard resize is announced, because nothing else would report it: the handle
 is hidden, the header text is unchanged and focus has not moved. A resize the
@@ -841,6 +875,11 @@ export class Staff {
     label: 'Staff',
   });
 
+  // A grouped grid is a treegrid; the grouping says so over the grid's own role.
+  gridProps() {
+    return { ...this.table.gridProps(), ...this.grouping.gridProps() };
+  }
+
   rowProps(row: GridRow<GridGroupedRow<Person>>) {
     return { ...this.table.rowProps(row), ...this.grouping.rowProps(row.item) };
   }
@@ -864,8 +903,9 @@ export class Staff {
 ```
 
 ```html
-<!-- staff.html: as for any grid, except the grid element's :keydown is onKey($event),
-     and the body's rows and cells go through the component's own methods -->
+<!-- staff.html: as for any grid, except the grid element's :spread is gridProps() and
+     its :keydown is onKey($event), and the body's rows and cells go through the
+     component's own methods -->
 <div :for="row in table.rows()" :key="row.key" :spread="rowProps(row)">
   <div :for="col in table.columns()" :key="col.key"
        :spread="table.cellProps(row, col)"
@@ -887,10 +927,11 @@ one template serves a grid that can be grouped and ungrouped.
 | `getRowKey` | its place in the grouped order | What identifies one of your rows. [See below](#expansion-and-row-keys) |
 | `collapsed` | owned | A `Signal.State<ReadonlySet<string>>` of collapsed group paths |
 | `onCollapsedChange` | — | Told when a group opens or shuts |
-| `sort` | owned | The sort — pass the grid's signal. See below |
+| `sort` | none: no column can be sorted | The sort — pass the grid's signal. See below |
 | `filters` | owned | Column filters. These belong here, not on the grid |
 | `quickFilter` | owned | The quick filter. Also here, not on the grid |
 | `onFilterChange` | — | Told when either kind of filter changes |
+| `filterAnnouncement` | the catalogue's, else `'3 of 40 rows'`, or `'All 40 rows'` | What a filter change says aloud, counting your rows: `(shown, total) => string`. The same keys as the grid's |
 
 ```ts
 interface GridGroupSpec<T> {
@@ -930,6 +971,7 @@ column shows.
 | `collapseAll()` | Shut every group that exists now. Groups that appear later are open |
 | `filters()`, `setFilter()`, `clearFilters()` | As on the grid |
 | `quickFilter()`, `setQuickFilter()` | As on the grid |
+| `gridProps()` | Spread onto the grid element after the grid's own `gridProps` |
 | `rowProps(row.item)` | Spread onto the row after the grid's own `rowProps` |
 | `onGroupClick(event)` | Toggles the group clicked. Before the grid's `onCellClick` |
 | `onKeyDown(event)` | Opens and shuts from the keyboard. Before the grid's `onKeyDown` |
@@ -948,11 +990,14 @@ became text, its `label`, `depth` (zero outermost), every leaf row under it in
 `rows` and their `count`, its `aggregates` as a map by column id, and its nested
 `children`.
 
-`rowProps` adds `aria-level` and `data-depth` to every row, and to a header
-`aria-expanded`, `data-group`, `data-count` and `GRID_GROUP_ATTRIBUTE` with the
-path. `aria-expanded` is the one thing a collapsed group has that a sighted
-reader gets from the twisty; without it a screen reader is told the rows went
-away and never told they can come back.
+`gridProps` makes a grouped grid `role="treegrid"`, which is the role ARIA
+defines row levels and expansion for; ungrouped, it adds nothing and the grid's
+own `role="grid"` stands. `rowProps` adds `data-depth` to every row and
+`aria-level` to every row of a grouped grid, and to a header `aria-expanded`,
+`data-group`, `data-count` and `GRID_GROUP_ATTRIBUTE` with the path.
+`aria-expanded` is the one thing a collapsed group has that a sighted reader
+gets from the twisty; without it a screen reader is told the rows went away and
+never told they can come back.
 
 On a group header, Enter toggles the group from any cell. ArrowRight opens and
 ArrowLeft shuts it from the first cell only, and only when there is something to
@@ -961,8 +1006,9 @@ like any other row and the reader walks them the same way.
 
 ### What a layer above the grid means
 
-These follow from the grid not knowing it is grouped. None of them is guarded
-against; each is what happens if you do the natural thing.
+These follow from the grid not knowing it is grouped. The grouping guards what
+it can see from where it sits; the rest is wiring the grid and the editing have
+to be given, the way the example above gives the grid `getRowKey`.
 
 **Filter the grouping, never the grid.** The grid's filter runs over whatever it
 is handed, and here that is the flattened list. A grid filter tests each group
@@ -973,25 +1019,16 @@ inside a collapsed group at all. The lifted columns carry no `filterValue`, so a
 grid filter also tests your rows by `value`, not by the `filterValue` you gave. So
 filtering happens in `createGrouping`, before grouping, which is also the only
 order in which an aggregate is over the rows the reader can see. Do not pass
-`filters` or `quickFilter` to the grid, and do not call its `setFilter`. The
+`filters` or `quickFilter` to the grid, and do not call its `setFilter`: nothing
+stops you, which is one of the [known problems](#what-is-not-built) on this page. The
 header's `data-filtered` hook reads the grid's own filters, so on a grouped grid
 it is never set; style a filtered column from `grouping.filters()` instead.
 
-**Filter changes are silent.** The grid announces how many rows a filter left;
-the grouping does not, and nothing else will. Say it from `onFilterChange`:
-
-```ts
-import { announce } from '@voltdev/primitives';
-import { createGrouping } from '@voltdev/grid';
-
-const grouping = createGrouping<Person>({
-  rows: () => people,
-  columns: () => COLUMNS,
-  groupBy: () => ['department'],
-  onFilterChange: () =>
-    announce(`${grouping.filteredRowCount()} of ${grouping.sourceRowCount()} rows`),
-});
-```
+**The grouping announces the count.** The grid says how many rows a filter left,
+but on a grouped grid nothing filters there. The grouping says it instead, from
+its own `setFilter`, `setQuickFilter` and `clearFilters`, counting your rows and
+not the headers — "3 of 40 rows", or the catalogue's `gridRowsLeft` and
+`gridAllRows` — or in your words, from `filterAnnouncement`.
 
 **Hand the same `sort` signal to both.** The header — its click, its
 `aria-sort`, its announcement — belongs to the grid, and duplicating it in the
@@ -999,9 +1036,11 @@ grouping would be a second implementation of what the reader is looking at. The
 ordering has to happen before grouping, or it would scramble the headers out of
 their groups. So `columns()` gives every lifted column a comparator that returns
 zero, the grid's sort becomes a stable copy that moves nothing, and the grouping
-reads the same signal and orders your rows before it groups them. Give the two
-separate signals — or give the grouping none — and a header click marks the
-column `aria-sort="ascending"`, announces "Sorted by Name ascending", and moves
+reads the same signal and orders your rows before it groups them. Give the
+grouping no signal and it has nothing to order by, so every lifted column comes
+back `sortable: false`: no `aria-sort`, and a header click does nothing. Give
+the two separate signals and neither can tell — a header click marks the column
+`aria-sort="ascending"`, announces "Sorted by Name ascending", and moves
 nothing.
 
 That no-op sort is not free. With a sort active, the grid still copies the
@@ -1024,30 +1063,26 @@ count without anyone subtracting them. `table.sourceRowCount()` is the length of
 the flattened list, not your data. For your rows, ask the grouping:
 `filteredRowCount()` and `sourceRowCount()`.
 
-**Row selection sees headers and wrapped keys.** The grid selects by its row
-keys, and those are the wrappers' keys: your key prefixed to keep it apart from
-the group paths (`'r\u001f' + key`), and `'g\u001f' + path` for a header. So
-`selectedRows()` does not hold your ids, and nothing exported maps one back —
-find the wrapper in `grouping.rows()` by `key` and read its `item`. Space on a
-header selects the header; `selectAllRows()` and Ctrl+A select every header the
-flattened list holds, on screen or not, and none of the rows inside a collapsed
-group, because those are not in the collection the grid was given. Route clicks
-through `onGroupClick` first, as above, or a click on a header both toggles it
-and selects it.
+**Tell the grid which rows can be selected.** The grid selects by its row keys,
+and a row of yours is keyed by what your `getRowKey` returned for it, as it is —
+so `selectedRows()` holds your own ids. A header is keyed `'g\u001f' + path`,
+which no key of yours begins with. Headers are rows of the collection all the
+same, so give the grid `selectable: (row) => row.kind === 'data'`, or Space on a
+header selects it and Ctrl+A takes every header in the list. `selectAllRows()`
+takes none of the rows inside a collapsed group: they are not in the collection
+the grid was given, and a select-all never reaches a row the reader cannot see.
+Route clicks through `onGroupClick` first, as above, so a click on a header
+toggles it.
 
 **Editing sees the wrappers too.** A `createCellEditing` over a grouped grid is
-typed over `GridGroupedRow<T>`, and nothing stops it opening a header's cell: it
-opens on the aggregate and commits a change whose `item` is the header. Give
-every editor `editable: (row) => row.kind === 'data'`, and unwrap `change.item`
-in `onCommit`. Put the grouping's `onKeyDown` ahead of the editing one as well.
-With the guard, Enter on a header falls through editing to the grouping either
-way; without it, Enter on a header goes to whichever handler comes first —
-the grouping toggles the group, the editing opens an editor on the aggregate.
-
-**The role stays `grid`.** Rows carry `aria-level` and headers `aria-expanded`,
-but nothing switches the grid to `role="treegrid"`, which is the role ARIA
-defines levels and expansion on rows for. How much of that a screen reader
-reports inside a plain `grid` is up to the screen reader.
+typed over `GridGroupedRow<T>`, and opens whatever its editors allow — a
+header's cell included, on the aggregate, committing a change whose `item` is
+the header. Give every editor `editable: (row) => row.kind === 'data'`, and
+unwrap `change.item` in `onCommit`. Put the grouping's `onKeyDown` ahead of the
+editing one as well. With the guard, Enter on a header falls through editing to
+the grouping either way; without it, Enter on a header goes to whichever handler
+comes first — the grouping toggles the group, the editing opens an editor on the
+aggregate.
 
 ### Group keys, order and aggregates
 
@@ -1060,13 +1095,10 @@ key groups every row together as `[object Object]`. Give a `GridGroupSpec` a
 text is not what the reader should see.
 
 A nested group's path is its key joined to its parents' with U+001F, a character
-no one types, so two `London` groups under different regions are two groups —
-unless the parent's key is blank. A blank key's text is empty, and a child of it
-is given its own text as its path with no separator in front, so a `London`
-city under a blank region has the same path, and the same row key, as a
-top-level `London` region. Both then open and shut together, and the grid is
-handed two rows under one key. Give blank keys a non-empty text from a
-`GridGroupSpec`'s `value` wherever a nested level could repeat an outer one.
+no one types, so two `London` groups under different regions are two groups. So
+are a `London` city under a blank region and a top-level `London` region: a
+child's path always has the separator in front of its own text, even where its
+parent's text is empty.
 
 **Groups come out in the order of their first row.** Sorting by the grouped
 column therefore orders the groups; sorting by anything else orders rows within
@@ -1092,12 +1124,9 @@ Values that are not numbers are skipped rather than counted as zero: a column
 with three numbers and a blank averages the three, because the blank is a row
 with no salary, not a row that earns nothing. Numeric strings count; an empty
 string does not; a `Date` counts as its timestamp, so `min` and `max` of a date
-column come back as numbers. A group with nothing to total gets `null` rather
-than `0`, which would be a number a reader could act on and a claim the data
-does not make. An invalid `Date` is the exception that gets through: it counts,
-as `NaN`, so one in a group makes its `sum` and `average` `NaN`, and a group of
-nothing else gets `min` `Infinity` and `max` `-Infinity` rather than `null`.
-Return `null` for it from the aggregation's `value`.
+column come back as numbers, and an invalid `Date` does not count at all. A
+group with nothing to total gets `null` rather than `0`, which would be a number
+a reader could act on and a claim the data does not make.
 
 **What it costs.** Grouping reads the group key of every row, and an aggregate
 reads its value from every row, so a change to any grouped or aggregated value
@@ -1144,13 +1173,6 @@ to put the old one back when the server said no.
 import { Component, Signal } from '@voltdev/core';
 import { createCellEditing, createGrid, type GridColumnView, type GridRow } from '@voltdev/grid';
 
-/** Leaves unfinished text alone, so `validate` can refuse it — see "Numbers" below. */
-const toNumber = (raw: string): unknown => {
-  const parsed = Number(raw);
-  // '' is not 0, '-' is not NaN, and '-0' on the way to '-0.5' is not 0.
-  return raw.trim() === '' || Number.isNaN(parsed) || Object.is(parsed, -0) ? raw : parsed;
-};
-
 @Component({ selector: 'v-people-editor', templateUrl: './people-editor.html' })
 export class PeopleEditor {
   grid = new Signal.State<Element | null>(null);
@@ -1173,9 +1195,12 @@ export class PeopleEditor {
     editors: () => ({
       name: { validate: (value) => (String(value).trim() === '' ? 'A name is required' : null) },
       salary: {
-        parse: toNumber,
+        // A cleared field is no number, where `Number('')` would make it 0. See "Numbers" below.
+        parse: (raw) => (raw.trim() === '' ? null : Number(raw)),
         validate: (value) =>
-          typeof value !== 'number' ? 'Enter a number' : value < 0 ? 'Cannot be negative' : null,
+          typeof value !== 'number' || Number.isNaN(value) ? 'Enter a number'
+          : value < 0 ? 'Cannot be negative'
+          : null,
       },
     }),
     onCommit: (change) => saveChange(change),
@@ -1211,6 +1236,10 @@ A column with no entry in `editors` cannot be edited at all. There is no
 read-only flag to forget: an editable grid's read-only columns say so with
 `aria-readonly`, rather than silently swallowing a double-click.
 
+Call `createCellEditing` where a component's fields are initialised, as
+`createGrid` is: it creates an effect — the one that abandons a session whose
+cell has gone, below — which is disposed with the component that owns it.
+
 ### `GridEditor`
 
 | Field | Default | Description |
@@ -1228,7 +1257,7 @@ read-only flag to forget: an editable grid's read-only columns say so with
 | `editors` | required | `() => Record<columnId, GridEditor<T>>` — what each column can do when edited |
 | `onCommit` | required | `(change: GridEditChange<T>) => void` — where a change goes, and the only way a value ever changes |
 | `columns` | — | The same column list the grid has. Only Tab uses it, to step over columns with no editor |
-| `onCancel` | — | `(session: GridEditSession<T>) => void` — told when a session is abandoned |
+| `onCancel` | — | `(session: GridEditSession<T>) => void` — told when a session is abandoned, with `-1` for its `row` or `column` where that is what went |
 | `onInvalid` | — | `(message, session) => void` — told when validation refuses, before the message shows |
 
 ### `GridCellEditing`
@@ -1237,11 +1266,11 @@ read-only flag to forget: an editable grid's read-only columns say so with
 |---|---|
 | `begin(row, col)` | Open a session on a rendered cell. `false` where it cannot be edited. Moves neither the cursor nor focus |
 | `beginAt(cell)` | Open by position, if that cell is rendered and editable |
-| `session()` | The open `GridEditSession<T>` — `row`, `column`, `columnId`, `item`, `rowKey`, `initial` — or `null` |
+| `session()` | The open `GridEditSession<T>` — `row`, `column`, `columnId`, `item`, `rowKey`, `initial` — or `null`. `row` and `column` are where its cell sits now |
 | `isEditing(row, column)` | Whether this position is the one open |
 | `isEditable(row, col)` | Whether this cell could be opened at all |
-| `draft()`, `text()` | What has been typed, parsed; and the same as text for the control |
-| `setDraft(value)` | Replace the draft from code — a `<select>`, a picker, a stepper. Does not clear `error()` |
+| `draft()`, `text()` | What has been typed, parsed; and the text itself, as typed, for the control |
+| `setDraft(value)` | Replace the draft, and the control's text with its text, from code — a `<select>`, a picker, a stepper. Clears `error()` |
 | `error()` | The message validation refused with, or `null` |
 | `commit()` | Commit unless validation refuses. Returns whether the session closed. Moves no focus |
 | `cancel()` | Abandon the edit and put focus back on the cell |
@@ -1260,14 +1289,32 @@ assumes you put it there.
 
 A committed change is a `GridEditChange<T>`: your `item` (the object itself,
 not a copy, and not written to), its `rowKey`, the `rowIndex` it had in the view
-when the session opened, the `columnId`, and `previous` and `value`. Apply it by
-`rowKey` or `item`, never by `rowIndex`, which is a position and names whatever
-row is there now. A value the reader left as it was is
+when it was committed, the `columnId`, and `previous` and `value`. Apply it by
+`rowKey` or `item`, never by `rowIndex`, which is a position — and one the
+change itself may move the row from. A value the reader left as it was is
 not a change: the session closes and `onCommit` is not called, because a write
 through a request, an undo entry or a dirty flag for a reader who opened a cell
 and pressed Enter is a write for nothing. The comparison is `Object.is` against
 what the editor opened with, so an editor with no `parse` over a numeric column
 reports a change whenever the reader retypes the same number — as a string.
+
+**A session follows its cell, not its position.** It is held by the row's key
+and the column's id, so a sort or a filter while a cell is open — a click on a
+header will do it — moves the editor with its row, a column list handed over in
+another order moves it with its column, and the commit goes to the cell the
+reader can see it in. A session whose cell goes altogether — its row filtered
+away or gone from your data, its column taken out of the list — is abandoned,
+and `onCancel` is told, with `-1` for the row or the column that went: an edit
+nobody can see is not one to write, nor one to keep claiming every key for.
+Unlike Escape, this puts focus nowhere, because the cell it would go back to is
+what went; focus is where a focused cell a filter hides leaves it in a grid with
+no editing.
+
+Like the cursor, following the row needs `getRowKey`. On the default key, which
+is the index, a sort leaves the editor at its position over whatever row moves
+there — and the commit still goes to the row the session was opened on, not to
+the row the reader sees the editor in. It is listed under
+[what is wrong](#what-is-not-built).
 
 ### The keyboard
 
@@ -1278,6 +1325,12 @@ reports a change whenever the reader retypes the same number — as a string.
 | Shift + Enter | Commit, and move up a row |
 | Escape | Abandon the edit, and stay on the cell |
 | Tab, Shift + Tab | Commit, move to the next or previous editable cell, and open it |
+
+Enter on the last row, and Tab off the last editable cell, commit and stay on
+the cell just committed, focus included: the editor that held focus has gone,
+and the key was taken from the browser, so there is nowhere else for it to be.
+A commit that filters away the last row there was puts the cursor and focus on
+the column header, which is where a grid with no rows keeps them.
 
 Tab is the key that has to be taken from the browser: left alone, it would move
 focus out of a grid whose only tab stop is the cell being edited, and the reader
@@ -1314,10 +1367,8 @@ reaches `onCommit` — a change that failed validation is not a change that
 happened. Enter and Tab will not leave the cell, and no other cell will open.
 The message is rendered into `role="alert"`, which is what makes a refusal
 audible to a reader who cannot see the cell turn red; it clears as soon as the
-reader types again through `onInput`. `setDraft` does not clear it, so a
-`<select>` or a picker driving the draft from code leaves the message up, over a
-value that may already be valid, until the next `commit()` clears or replaces
-it.
+reader answers it — by typing again through `onInput`, or by a `<select>` or a
+picker calling `setDraft`.
 
 ### Keeping one text node per change
 
@@ -1332,23 +1383,15 @@ row's cells. Both are correct; only one is the property this package exists for.
 
 ### Numbers
 
-`parse` runs on every keystroke, and the control's value is bound to `text()`,
-which is the parsed draft as text — so whenever the parsed value changes, the
-binding writes its text back into the control, over what was typed. With
-`parse: Number` the two disagree about unfinished input: `Number('-')` is `NaN`,
-so typing a minus sign replaces the field's text with "NaN", and `Number('')` is
-`0`, so clearing the field fills it with "0". A negative number cannot be typed
-from empty. The same trap is subtler one step on: `Number('-0')` is `-0`, whose
-text is "0", so a parse that only guards blanks and `NaN` drops the minus from
-"-0.5" and commits 0.5. The `toNumber` above returns the text itself in all
-three cases, and leaves `validate` to refuse what is not a number.
-
-The rewrite remains wherever a number reads back differently from how it was
-typed — ".5" becomes "0.5", "1e3" becomes "1000" — and each one puts the caret
-at the end of the field. To keep exactly what the reader typed, leave `parse`
-out, give the editor a `read` that returns the value as text — so an untouched
-value still compares equal and reports nothing — and turn the text into a number
-in `onCommit`.
+`parse` runs on every keystroke, and nothing it returns is written back into the
+control: `text()`, which the control's value is bound to, is what the reader
+typed, as they typed it. So a parse may return anything for text that is not
+finished, and `validate` is where unfinished text is refused. `Number` is most of
+a numeric column's parse. It reads a half-typed "-" as `NaN`, which the
+`validate` above refuses as "Enter a number", and a cleared field as `0`, which
+is the trap `Number('')` sets — hence the guard for a blank. What the reader
+typed stays in the field either way, minus sign, ".5" and all, and the caret
+stays where they left it.
 
 ## What is not built
 
@@ -1379,23 +1422,15 @@ On the roadmap, and not started:
 Absent, and not on the roadmap by name: selecting a range with the pointer,
 ordering groups by their aggregates, and moving focus into an edit control.
 
-Built, and wrong in ways you will hit:
+Built, and wrong in a way you will hit:
 
-- **An edit session is held by position.** Sorting or filtering while a cell is
-  open — a click on a header will do it — leaves the editor at the same index
-  over whichever row has moved there, while the commit still goes to the row the
-  session opened on. Commit or cancel before the view changes.
-- **Enter on the last row and Tab off the last cell lose focus.** The edit
-  commits, the editor closes, and focus lands on the document body rather than
-  on the cell or on whatever follows the grid.
-- **An invalid `Date` scrambles a sort** of the column it is in — see
-  [Sorting](#sorting) for the `sortValue` that avoids it — and turns a group's
-  `sum` and `average` into `NaN`; see
-  [Group keys, order and aggregates](#group-keys-order-and-aggregates).
-- **A blank outer group key lets a nested group take a top-level path.** Under
-  a blank key, a child's path is its own text alone, so it can collide with a
-  top-level group of the same text: one row key for two rows, and one
-  expansion state for two groups. See
-  [Group keys, order and aggregates](#group-keys-order-and-aggregates).
-- **A grouped grid's `aria-level` and `aria-expanded` sit inside `role="grid"`**,
-  not a treegrid.
+- **Nothing stops a grid filter on a grouped grid.** The grid's `setFilter`,
+  `setQuickFilter`, `filters` and `quickFilter` still work on a grouped grid,
+  over the flattened list, and strip the group headers from it. Filter through
+  the grouping; see
+  [What a layer above the grid means](#what-a-layer-above-the-grid-means).
+- **Without `getRowKey`, a sort under an open editor writes to the wrong row.**
+  The default key is the row's index, and an index names whichever row is there:
+  a sort while a cell is open leaves the editor over another row, and the commit
+  goes to the row it was opened on. Give `getRowKey` to an editable grid; see
+  [Editing](#editing).

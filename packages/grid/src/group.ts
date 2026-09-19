@@ -71,9 +71,15 @@
  */
 
 import { Signal } from '@voltdev/core';
-import { useLocale } from '@voltdev/primitives';
-import { GRID_CELL_ATTRIBUTE, type GridColumn, type GridProps } from './grid.js';
+import { announce, useLocale } from '@voltdev/primitives';
 import {
+  GRID_CELL_ATTRIBUTE,
+  describeFilterCount,
+  type GridColumn,
+  type GridProps,
+} from './grid.js';
+import {
+  asNumber,
   asText,
   compileFilter,
   matchesQuickFilter,
@@ -89,7 +95,8 @@ const { untrack } = Signal.subtle;
 export const GRID_GROUP_ATTRIBUTE = 'data-volt-grid-group';
 
 /**
- * What joins a group's key to its parent's, and a row's key to its kind.
+ * What joins a group's key to its parent's, and marks a group header's row key
+ * apart from the keys the caller gave their own rows.
  *
  * A unit separator rather than a slash or a dot, because a path is built out of
  * data — department names contain both of those and no control character at
@@ -101,6 +108,8 @@ const EMPTY_NODES: readonly GridGroupNode<never>[] = [];
 const EMPTY_SORT: readonly GridSort[] = [];
 const EMPTY_FILTERS: ReadonlyMap<string, GridFilter> = new Map();
 const EMPTY_COLLAPSED: ReadonlySet<string> = new Set<string>();
+const TREEGRID_PROPS: GridProps = { role: 'treegrid' };
+const NO_PROPS: GridProps = {};
 
 /** The aggregates that need no function of the caller's. */
 export type GridAggregateKind = 'count' | 'sum' | 'min' | 'max' | 'average';
@@ -189,7 +198,8 @@ export interface GridGroupingOptions<T> {
   aggregations?: () => readonly GridAggregation<T>[];
 
   /**
-   * What identifies one of the caller's rows, for keyed rendering.
+   * What identifies one of the caller's rows, for keyed rendering — and, used
+   * as it is, what the grid's row selection holds for that row.
    *
    * Defaults to the row's place in the grouped collection, counted as though
    * every group were open — so collapsing a group re-keys nothing below it.
@@ -210,7 +220,8 @@ export interface GridGroupingOptions<T> {
 
   /**
    * The sort, which the grid writes and this reads. Hand the same signal to
-   * both: the header is the grid's, and the ordering is applied here.
+   * both: the header is the grid's, and the ordering is applied here. Without
+   * one there is nothing to order by, and `columns()` comes back unsortable.
    */
   sort?: Signal.State<readonly GridSort[]>;
 
@@ -219,6 +230,16 @@ export interface GridGroupingOptions<T> {
   /** One string searched across every column. */
   quickFilter?: Signal.State<string>;
   onFilterChange?: (filters: ReadonlyMap<string, GridFilter>, quickFilter: string) => void;
+  /**
+   * The sentence announced when a filter changes what is on screen: how many
+   * of the caller's rows it left, headings not counted.
+   *
+   * The grid's own announcement for the same thing, said here because the
+   * filtering happens here — the grid is handed rows already filtered, and has
+   * nothing to announce. The default is the grid's too: the locale's
+   * `gridRowsLeft` or `gridAllRows`, then English.
+   */
+  filterAnnouncement?: (shown: number, total: number) => string;
 }
 
 export interface GridGrouping<T> {
@@ -235,7 +256,8 @@ export interface GridGrouping<T> {
    *
    * Also what makes sharing one `sort` signal with the grid safe: every column
    * comes back with a comparator that returns zero, so the grid's own sort is a
-   * stable copy and this module's is the one that orders anything.
+   * stable copy and this module's is the one that orders anything — and with
+   * no `sort` signal to share, every column comes back `sortable: false`.
    */
   columns(): readonly GridColumn<GridGroupedRow<T>>[];
   /** Pass as the grid's `getRowKey`. */
@@ -257,6 +279,14 @@ export interface GridGrouping<T> {
   quickFilter(): string;
   setQuickFilter(text: string): void;
 
+  /**
+   * Spread onto the grid element, after the grid's own `gridProps`.
+   *
+   * A grouped grid is a `treegrid`: that is the role ARIA defines row levels
+   * and expansion for, and the grid, which does not know it is grouped, says
+   * `grid`. Ungrouped, this adds nothing and the grid's own role stands.
+   */
+  gridProps(): GridProps;
   /** Spread onto the row, after the grid's own `rowProps`. */
   rowProps(row: GridGroupedRow<T>): GridProps;
   /** Toggles the group clicked. Wire it before the grid's `onCellClick`. */
@@ -288,10 +318,11 @@ interface CompiledFilter<T> {
 }
 
 export function createGrouping<T>(options: GridGroupingOptions<T>): GridGrouping<T> {
-  // The same two places a grid has to know a locale: ordering text, and folding
-  // it for a filter. Both are wrong in the runtime's own locale rather than the
-  // application's — Swedish sorts o-umlaut after z, and Turkish has a dotless
-  // i the invariant fold runs together with the dotted one.
+  // The places a grid has to know a locale: ordering text, folding it for a
+  // filter, and saying what the filter left. The first two are wrong in the
+  // runtime's own locale rather than the application's — Swedish sorts
+  // o-umlaut after z, and Turkish has a dotless i the invariant fold runs
+  // together with the dotted one.
   const locale = useLocale();
   const compareText = (a: string, b: string): number => locale.compare(a, b);
   const fold = (text: string): string => text.toLocaleLowerCase(locale.code());
@@ -468,7 +499,10 @@ export function createGrouping<T>(options: GridGroupingOptions<T>): GridGrouping
       const nodes: GridGroupNode<T>[] = [];
       for (const id of order) {
         const bucket = buckets.get(id)!;
-        const path = prefix === '' ? id : `${prefix}${SEPARATOR}${id}`;
+        // By depth rather than by whether the prefix is empty: a parent whose
+        // key is blank has an empty path, and a child joined to it without the
+        // separator would take the path of a top-level group of the same name.
+        const path = depth === 0 ? id : `${prefix}${SEPARATOR}${id}`;
         const children =
           depth + 1 < levels.length
             ? build(bucket.rows, depth + 1, path)
@@ -527,11 +561,14 @@ export function createGrouping<T>(options: GridGroupingOptions<T>): GridGrouping
     // Counted across the whole collection rather than per group, so the default
     // key of a row is its place in the data and not its place under a heading.
     let ordinal = 0;
+    // The caller's own key, as it is: the grid selects rows by it, and a
+    // selection is only any use to the caller if it holds the ids they know.
+    // The group headers share this key space and are the ones kept apart, by a
+    // prefix no key a caller wrote begins with.
     const keyOf = (item: T): GridRowKey => {
       const key = options.getRowKey?.(item, ordinal) ?? ordinal;
       ordinal += 1;
-      // Prefixed apart from the group paths, which share this key space.
-      return `r${SEPARATOR}${key}`;
+      return key;
     };
 
     const pushData = (item: T, depth: number): void => {
@@ -602,9 +639,10 @@ export function createGrouping<T>(options: GridGroupingOptions<T>): GridGrouping
   let lifted: readonly GridColumn<GridGroupedRow<T>>[] = [];
   const columns = (): readonly GridColumn<GridGroupedRow<T>>[] => {
     const list = columnList();
-    // Held by identity, because the grid rebuilds its column geometry whenever
-    // the list it is given is a different array — and a fresh list per read
-    // would be a geometry rebuild per read.
+    // Held by identity, because the grid reads this list once per column every
+    // time it rebuilds its column geometry, and again from each thing it
+    // derives from the columns: a fresh list per read would be a whole lifted
+    // list allocated per column, per rebuild.
     if (liftedFrom === list) return lifted;
     liftedFrom = list;
     lifted = list.map((column) => ({
@@ -616,6 +654,10 @@ export function createGrouping<T>(options: GridGroupingOptions<T>): GridGrouping
       sortValue: undefined,
       filterValue: undefined,
       compare: () => 0,
+      // With no sort signal handed in there is no order this module could ever
+      // be asked to apply, and a header that still cycled, marked itself and
+      // announced would be describing rows that never move.
+      sortable: options.sort === undefined ? false : column.sortable,
     }));
     return lifted;
   };
@@ -658,10 +700,23 @@ export function createGrouping<T>(options: GridGroupingOptions<T>): GridGrouping
     setCollapsed(next);
   };
 
+  const filterAnnouncement =
+    options.filterAnnouncement ??
+    ((shown: number, total: number): string => describeFilterCount(locale, shown, total));
+
   const reportFilters = (): void => {
     options.onFilterChange?.(
       untrack(() => filterState.get()),
       untrack(() => quickState.get()),
+    );
+    // The count is the one thing a filter changes that has no other way of
+    // being noticed: the rows that stopped matching are not in the document.
+    // Read after the write, because this is the first pull of the new view.
+    announce(
+      filterAnnouncement(
+        untrack(() => presented.get().length),
+        untrack(() => options.rows().length),
+      ),
     );
   };
 
@@ -728,13 +783,15 @@ export function createGrouping<T>(options: GridGroupingOptions<T>): GridGrouping
     quickFilter: () => quickState.get(),
     setQuickFilter,
 
+    gridProps: () => (specs.get().length > 0 ? TREEGRID_PROPS : NO_PROPS),
+
     rowProps: (row) => {
       if (row.kind === 'data') {
         return {
           // Levels are 1-based in ARIA, and a row two groups deep is at level
-          // three. On an ungrouped row it is level one, which says the same
-          // thing as saying nothing and says it consistently.
-          'aria-level': String(row.depth + 1),
+          // three. A row in no group at all has none: the grid is not a
+          // treegrid then, and a grid's rows have no levels.
+          'aria-level': row.depth === 0 ? undefined : String(row.depth + 1),
           'data-depth': String(row.depth),
         };
       }
@@ -831,23 +888,6 @@ function reduce<T>(
     case 'average':
       return total / count;
   }
-}
-
-/**
- * A value as an aggregate sees it.
- *
- * Strings that look like numbers count, because a value straight out of JSON is
- * one; an empty string does not, which is the trap `Number('')` sets.
- */
-function asNumber(value: unknown): number | null {
-  if (typeof value === 'number') return Number.isNaN(value) ? null : value;
-  if (typeof value === 'bigint') return Number(value);
-  if (value instanceof Date) return value.getTime();
-  if (typeof value === 'string' && value.trim() !== '') {
-    const parsed = Number(value);
-    return Number.isNaN(parsed) ? null : parsed;
-  }
-  return null;
 }
 
 /** Whether a rebuilt group says exactly what the one it replaces said. */

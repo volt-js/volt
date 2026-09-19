@@ -13,14 +13,21 @@
  * the way it does in a browser — through a `ResizeObserver` that reports
  * exactly what a test hands it, after mount.
  */
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { resetAnnouncer } from '@voltdev/primitives';
+import {
+  createDismiss,
+  createLocaleProvider,
+  resetAnnouncer,
+  type MessageCatalog,
+} from '@voltdev/primitives';
 import { compileTemplate } from '@voltdev/core/jit';
-import { Component, Signal, flushSync, mount } from '@voltdev/core';
+import { Component, Signal, createRoot, flushSync, mount } from '@voltdev/core';
 import {
   GRID_CELL_ATTRIBUTE,
   GRID_RESIZER_ATTRIBUTE,
   HEADER_ROW,
+  VERSION,
   createGrid,
   rangeBounds,
   rangeContains,
@@ -121,6 +128,8 @@ let selectors = 0;
 let people: Signal.State<readonly Person[]>;
 let columns: Signal.State<readonly GridColumn<Person>[]>;
 let gridOptions: Omit<GridOptions<Person>, 'grid' | 'scroller' | 'container' | 'rows' | 'columns'>;
+/** Translations for a locale provided around the grid, or null for none. */
+let catalogue: MessageCatalog | null;
 
 interface Measurement {
   target: Element;
@@ -184,6 +193,7 @@ beforeEach(() => {
   people = new Signal.State<readonly Person[]>(makePeople(ROW_COUNT));
   columns = new Signal.State<readonly GridColumn<Person>[]>(makeColumns());
   gridOptions = { rowHeight: ROW_HEIGHT, label: 'People' };
+  catalogue = null;
 
   FakeResizeObserver.live = [];
   const view = window as unknown as { ResizeObserver: unknown };
@@ -253,6 +263,8 @@ interface Harness {
 function setup({ height = VIEWPORT_HEIGHT, width = VIEWPORT_WIDTH } = {}): Harness {
   @Component({ selector: `v-grid-${++selectors}`, render: compileTemplate(TEMPLATE) })
   class GridComponent {
+    // Before the grid, which reads the nearest locale when it is created.
+    locale = catalogue && createLocaleProvider({ defaultLocale: 'de-DE', messages: catalogue });
     grid = new Signal.State<Element | null>(null);
     scroller = new Signal.State<Element | null>(null);
     container = new Signal.State<Element | null>(null);
@@ -617,6 +629,34 @@ describe('columns', () => {
     expect(handle.getAttribute('data-resizing')).toBe(null);
   });
 
+  it('spends the Escape that cancels a drag on the drag, and not on a dialog around it', () => {
+    const harness = setup();
+    // The grid sits in a layer that closes on Escape, the way a dialog does.
+    const dismissed: string[] = [];
+    restores.push(
+      createRoot((dispose) => {
+        createDismiss(() => harness.root, (reason) => dismissed.push(reason));
+        return dispose;
+      }),
+    );
+    const handle = resizerFor('c0');
+    handle.dispatchEvent(pointer('pointerdown', { clientX: 0 }));
+    handle.dispatchEvent(pointer('pointermove', { clientX: 40 }));
+    flushSync();
+
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    harness.root.dispatchEvent(escape);
+    flushSync();
+    // One key, one layer: the drag is undone and the dialog is still open.
+    expect(harness.g.columns()[0]!.width).toBe(COLUMN_WIDTH);
+    expect(dismissed).toEqual([]);
+    expect(escape.defaultPrevented).toBe(true);
+
+    // With no drag in flight, the next Escape is the dialog's again.
+    harness.root.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(dismissed).toEqual(['escape']);
+  });
+
   it('ignores a press that is not the primary button', () => {
     const harness = setup();
     const handle = resizerFor('c0');
@@ -631,13 +671,48 @@ describe('columns', () => {
     const harness = setup();
     const wider = makeColumns();
     wider[0] = { ...wider[0]!, width: 250 };
-    // The same number of columns, so nothing the virtualizer watches changed.
+    // The same number of columns, so only the widths say anything changed.
     columns.set(wider);
     flushSync();
 
     expect(harness.g.columns()[0]!.width).toBe(250);
     expect(harness.g.columns()[1]!.start).toBe(250);
     expect(harness.sizer.style.width).toBe('1350px');
+  });
+
+  it('rebuilds the column geometry once for a resize, and once for a new column list', () => {
+    // A rebuild asks every column how wide it is, so the columns keep count.
+    let asked = 0;
+    const counted = (): GridColumn<Person>[] =>
+      makeColumns().map((column) => {
+        const copy = { ...column };
+        Object.defineProperty(copy, 'width', {
+          enumerable: true,
+          get: () => {
+            asked += 1;
+            return COLUMN_WIDTH;
+          },
+        });
+        return copy;
+      });
+    columns.set(counted());
+    const harness = setup();
+
+    // Every move of a drag is one of these, and each costs a pass over the
+    // columns: the resize asks the column where it starts, and the one rebuild
+    // asks the other eleven, the resized one answering from the width it holds.
+    asked = 0;
+    harness.g.resizeColumn('c0', 150);
+    flushSync();
+    expect(asked).toBe(1 + (COLUMN_COUNT - 1));
+    expect(harness.g.columns()[1]!.start).toBe(150);
+
+    asked = 0;
+    columns.set(counted());
+    flushSync();
+    expect(asked).toBe(COLUMN_COUNT - 1);
+    expect(harness.g.columns()[1]!.start).toBe(150);
+    expect(harness.sizer.style.width).toBe(`${150 + (COLUMN_COUNT - 1) * COLUMN_WIDTH}px`);
   });
 });
 
@@ -1150,6 +1225,38 @@ describe('sorting', () => {
     expect(columnText(1)).toEqual(['10', '7', '3', '']);
   });
 
+  it('sorts an invalid date and NaN with the blanks, last whichever way', () => {
+    // Twelve dates out of order and one that is not a date, which is enough
+    // rows for an engine's sort to be thrown by a comparator that calls the
+    // invalid one equal to everything.
+    const days = [1, 8, -1, 0, 9, 4, 10, 11, 2, 7, 3, 6, 5];
+    tableOf(
+      days.map((day) =>
+        day < 0 ? ['not a date', 'x'] : [`2024-01-${String(day + 1).padStart(2, '0')}`, String(day)],
+      ),
+    );
+    const list = makeColumns(2);
+    list[0] = { ...list[0]!, sortValue: (row) => new Date(row.cells[0]!.get()) };
+    // `Number('x')` is NaN, the other value that is ordered against nothing.
+    list[1] = { ...list[1]!, sortValue: (row) => Number(row.cells[1]!.get()) };
+    columns.set(list);
+    const harness = setup({ height: 400 });
+    const ordered = (column: number) => harness.g.rows().map((row) => row.item.cells[column]!.get());
+
+    harness.g.toggleSort('c0');
+    flushSync();
+    expect(ordered(1)).toEqual(['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', 'x']);
+
+    harness.g.toggleSort('c0');
+    flushSync();
+    expect(ordered(1)).toEqual(['11', '10', '9', '8', '7', '6', '5', '4', '3', '2', '1', '0', 'x']);
+
+    harness.g.setSort([{ columnId: 'c1', direction: 'descending' }]);
+    flushSync();
+    expect(ordered(1)[0]).toBe('11');
+    expect(ordered(1).at(-1)).toBe('x');
+  });
+
   it('sorts by what the cell shows when the column names no other key', () => {
     tableOf(FRUIT);
     columns.set(makeBareColumns(1));
@@ -1173,6 +1280,35 @@ describe('sorting', () => {
     click(headerCells()[1]!);
     expect(harness.g.sort()).toEqual([]);
     expect(harness.g.sortDirection('c1')).toBe(null);
+  });
+
+  it('reports no direction for a term the sort cannot use', async () => {
+    const list = makeColumns(3);
+    list[1] = { ...list[1]!, sortable: false };
+    columns.set(list);
+    const harness = setup();
+
+    harness.g.setSort([
+      { columnId: 'gone', direction: 'ascending' },
+      { columnId: 'c1', direction: 'descending' },
+      { columnId: 'c2', direction: 'ascending' },
+    ]);
+    flushSync();
+
+    // The saved order keeps every term, in case the column comes back...
+    expect(harness.g.sort()).toHaveLength(3);
+    // ...but only one of them orders anything, and that is all the grid says.
+    expect(harness.g.sortDirection('gone')).toBe(null);
+    expect(harness.g.sortDirection('c1')).toBe(null);
+    expect(harness.g.sortDirection('c2')).toBe('ascending');
+    expect(attrs('.th', 'aria-sort')).toEqual(['none', null, 'ascending']);
+    // One term that orders is a sort of one, with no ordinal worth showing.
+    expect(attrs('.th', 'data-sort-index')).toEqual([null, null, null]);
+
+    // And the sentence a gesture speaks names only what the rows are sorted by.
+    harness.g.toggleSort('c2', true);
+    flushSync();
+    expect(await announced()).toBe('Sorted by Column 2 descending');
   });
 
   it('ignores the click that ends a resize drag', () => {
@@ -1277,6 +1413,56 @@ describe('sorting', () => {
     expect(document.activeElement).not.toBe(harness.root);
   });
 
+  it('leaves focus where the reader put it when they clicked away onto nothing', async () => {
+    byId();
+    const harness = setup();
+    press(harness.root, 'ArrowDown');
+    press(harness.root, 'ArrowDown');
+    press(harness.root, 'ArrowDown');
+    expect(document.activeElement).toBe(cellAt(3, 0));
+
+    // A click on the page background: focus goes nowhere, and the cell that
+    // had it is still in the document. The sort is a later gesture.
+    cellAt(3, 0)!.blur();
+    expect(document.activeElement).toBe(document.body);
+    await Promise.resolve();
+
+    harness.g.toggleSort('c0');
+    harness.g.toggleSort('c0');
+    flushSync();
+    // The cursor still follows its row, but focus is the reader's, and they
+    // put it outside the grid.
+    expect(harness.g.activeCell()).toEqual({ row: ROW_COUNT - 4, column: 0 });
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it('still brings focus along when the blur was a re-render taking the cell', async () => {
+    byId();
+    const harness = setup();
+    press(harness.root, 'ArrowDown');
+    press(harness.root, 'ArrowDown');
+    press(harness.root, 'ArrowDown');
+
+    // What an engine that reports a removed cell's blur does: focus is already
+    // on the document and the cell is still in it when the event comes, and
+    // the rows move in the same breath. At that moment it looks exactly like
+    // the reader clicking away.
+    cellAt(3, 0)!.blur();
+    expect(document.activeElement).toBe(document.body);
+    harness.g.toggleSort('c0');
+    harness.g.toggleSort('c0');
+    flushSync();
+    expect(document.activeElement).toBe(cellAt(ROW_COUNT - 4, 0));
+
+    // And the verdict, when it comes, is that the reader never left: the next
+    // re-sort brings focus along as well.
+    await Promise.resolve();
+    harness.g.toggleSort('c0');
+    flushSync();
+    expect(harness.g.activeCell()).toEqual({ row: 3, column: 0 });
+    expect(document.activeElement).toBe(cellAt(3, 0));
+  });
+
   it('cannot follow a row when nothing identifies one', () => {
     // The default key is the row's index, and an index names a different row
     // after every sort. This is the documented cost of leaving `getRowKey` out.
@@ -1373,6 +1559,23 @@ describe('filtering', () => {
     expect(columnText(1)).toEqual(['3', '10', '7']);
   });
 
+  it('reads an invalid date as no number, which not even notEquals keeps', () => {
+    tableOf([
+      ['2024-01-01'],
+      ['not a date'],
+      ['2024-03-01'],
+    ]);
+    const list = makeColumns(1);
+    list[0] = { ...list[0]!, filterValue: (row) => new Date(row.cells[0]!.get()) };
+    columns.set(list);
+    const harness = setup();
+
+    // A blank is not "not 5", and neither is a date that holds no time at all.
+    harness.g.setFilter('c0', { type: 'number', value: 0, operator: 'notEquals' });
+    flushSync();
+    expect(columnText(0)).toEqual(['2024-01-01', '2024-03-01']);
+  });
+
   it('keeps only the values a set filter names', () => {
     tableOf(FRUIT);
     const harness = setup();
@@ -1449,6 +1652,21 @@ describe('filtering', () => {
     expect(attrs('.th', 'data-filtered')).toEqual([null, '', null, null, null]);
   });
 
+  it('does not mark a column whose filter is not finished, since it filters nothing', () => {
+    const harness = setup();
+    // An empty text box and a range missing its far end: both are in the
+    // filters, and neither has removed a row.
+    harness.g.setFilter('c1', { type: 'text', value: '' });
+    harness.g.setFilter('c2', { type: 'number', operator: 'between', value: 1 });
+    flushSync();
+    expect(harness.g.rowCount()).toBe(ROW_COUNT);
+    expect(attrs('.th', 'data-filtered')).toEqual([null, null, null, null, null]);
+
+    harness.g.setFilter('c1', { type: 'text', value: 'r1' });
+    flushSync();
+    expect(attrs('.th', 'data-filtered')).toEqual([null, '', null, null, null]);
+  });
+
   it('says how many rows are left, since nothing else reports it', async () => {
     const harness = setup();
     harness.g.setFilter('c0', { type: 'text', value: 'r99', operator: 'startsWith' });
@@ -1469,6 +1687,23 @@ describe('filtering', () => {
     flushSync();
     expect(harness.g.rowCount()).toBe(1);
     expect(harness.g.activeCell()).toEqual({ row: 0, column: COLUMN_COUNT - 1 });
+  });
+
+  it('finds a row by its key wherever the sort and the filter have put it', () => {
+    byId();
+    tableOf(FRUIT);
+    const harness = setup();
+    expect(harness.g.rowIndex(2)).toBe(2);
+
+    harness.g.toggleSort('c0');
+    flushSync();
+    // apple, fig, pear, plum: plum, the row keyed 2, is last.
+    expect(harness.g.rowIndex(2)).toBe(3);
+
+    harness.g.setFilter('c2', { type: 'set', values: ['green', 'blue'] });
+    flushSync();
+    expect(harness.g.rowIndex(2)).toBe(-1);
+    expect(harness.g.rowIndex(3)).toBe(1);
   });
 
   it('sorts what the filter left, in that order', () => {
@@ -1585,6 +1820,32 @@ describe('selection', () => {
     harness.g.clearRowSelection();
     flushSync();
     expect(harness.g.selectedRows().size).toBe(0);
+  });
+
+  it('selects no row the caller says cannot be, by any gesture', () => {
+    byId();
+    tableOf(FRUIT);
+    gridOptions = {
+      ...gridOptions,
+      rowSelection: 'multiple',
+      // Every row but the green one.
+      selectable: (row) => row.cells[2]!.get() !== 'green',
+    };
+    const harness = setup();
+    expect(columnText(2)).toEqual(['red', 'green', 'red', 'blue']);
+
+    click(cellAt(1, 0)!);
+    expect(harness.g.selectedRows().size).toBe(0);
+    harness.g.focusCell({ row: 1, column: 0 });
+    press(harness.root, ' ');
+    expect(harness.g.selectedRows().size).toBe(0);
+    // Spent all the same: the browser's Space would scroll the page.
+    expect(harness.instance.handled).toBe(true);
+
+    press(harness.root, 'a', { ctrlKey: true });
+    expect([...harness.g.selectedRows()].sort()).toEqual([0, 2, 3]);
+    // Absent rather than false: that is how a row says it cannot be selected.
+    expect(attrs('.row', 'aria-selected')).toEqual(['true', null, 'true', 'true']);
   });
 
   it('keeps a row selected through a re-sort, because it is held by key', () => {
@@ -1979,5 +2240,71 @@ describe('the cursor and the view', () => {
     // Row one is row one whatever the data does, and focus has not left it.
     expect(harness.g.activeCell()).toEqual({ row: HEADER_ROW, column: 0 });
     expect(document.activeElement).toBe(headerCells()[0]);
+  });
+});
+
+describe('what it says, in the language the application speaks', () => {
+  it("takes its sentences from the locale's catalogue, numbers and all", async () => {
+    catalogue = {
+      gridRowsLeft: '{n} von {m} Zeilen',
+      gridAllRows: 'Alle {m} Zeilen',
+      gridColumnWidth: '{column}, {n} Pixel',
+      gridSortedBy: 'Sortiert nach {terms}',
+      gridAscending: '{column} aufsteigend',
+      gridDescending: '{column} absteigend',
+      gridThen: '{terms}, dann {term}',
+      gridNotSorted: 'Nicht sortiert',
+    };
+    const harness = setup();
+
+    // r1, r10 to r19 and r100 to r199: a hundred and eleven, of a thousand
+    // written the way German writes it.
+    harness.g.setFilter('c0', { type: 'text', value: 'r1', operator: 'startsWith' });
+    flushSync();
+    expect(await announced()).toBe('111 von 1.000 Zeilen');
+    resetAnnouncer();
+
+    harness.g.clearFilters();
+    flushSync();
+    expect(await announced()).toBe('Alle 1.000 Zeilen');
+    resetAnnouncer();
+
+    harness.g.toggleSort('c0');
+    harness.g.toggleSort('c1', true);
+    harness.g.toggleSort('c1', true);
+    flushSync();
+    expect(await announced()).toBe('Sortiert nach Column 0 aufsteigend, dann Column 1 absteigend');
+    resetAnnouncer();
+
+    // A plain click on the second of two sorted columns, already descending,
+    // takes the order out altogether.
+    harness.g.toggleSort('c1');
+    flushSync();
+    expect(await announced()).toBe('Nicht sortiert');
+    resetAnnouncer();
+
+    press(harness.root, 'ArrowUp');
+    press(harness.root, 'ArrowRight', { altKey: true });
+    expect(await announced()).toBe(`Column 0, ${COLUMN_WIDTH + 16} Pixel`);
+  });
+
+  it('says it in English where the catalogue has no word for it', async () => {
+    catalogue = { gridRowsLeft: '{n} von {m} Zeilen' };
+    const harness = setup();
+
+    harness.g.toggleSort('c0');
+    flushSync();
+    expect(await announced()).toBe('Sorted by Column 0 ascending');
+  });
+});
+
+describe('the package', () => {
+  it('reports the version it is published as', () => {
+    // A constant nothing compares against the manifest drifts from it, and
+    // then says the wrong thing to everything that asks.
+    const manifest = JSON.parse(
+      readFileSync(`${import.meta.dirname}/../package.json`, 'utf8'),
+    ) as { version: string };
+    expect(VERSION).toBe(manifest.version);
   });
 });

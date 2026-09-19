@@ -48,10 +48,21 @@ export interface GridSortTerm<T> {
  *
  * The empty string counts, because a column showing a formatted value renders
  * a missing one as nothing at all, and a reader sorting that column is asking
- * about the values they can see.
+ * about the values they can see. So do `NaN` and a `Date` holding it: neither
+ * is ordered against anything, and a comparator that let one through would
+ * call it equal to every other value — which entitles the engine's sort to
+ * scramble the whole array rather than just the one row. As a blank it sorts
+ * last in both directions, which is also what a reader reversing the sort is
+ * owed: the largest values first, not the one that is not a value at all.
  */
 function isBlank(value: unknown): boolean {
-  return value === null || value === undefined || value === '';
+  return (
+    value === null ||
+    value === undefined ||
+    value === '' ||
+    Number.isNaN(value) ||
+    (value instanceof Date && Number.isNaN(value.getTime()))
+  );
 }
 
 /**
@@ -67,14 +78,8 @@ function compareValues(
   b: unknown,
   compareText: (a: string, b: string) => number,
 ): number {
-  if (typeof a === 'number' && typeof b === 'number') {
-    // NaN is ordered against nothing, and leaving it to `<` makes the
-    // comparator inconsistent — which entitles the engine's sort to scramble
-    // the whole array rather than just the one row.
-    if (Number.isNaN(a)) return Number.isNaN(b) ? 0 : 1;
-    if (Number.isNaN(b)) return -1;
-    return a - b;
-  }
+  // Neither is NaN, nor an invalid `Date`: both are blanks, and never get here.
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
   if (typeof a === 'bigint' && typeof b === 'bigint') return a < b ? -1 : a > b ? 1 : 0;
   if (typeof a === 'boolean' && typeof b === 'boolean') return (a ? 1 : 0) - (b ? 1 : 0);
   if (a instanceof Date && b instanceof Date) return a.getTime() - b.getTime();
@@ -115,10 +120,10 @@ export function sortRows<T>(
       // Blanks sort last in both directions, before the direction is applied.
       // Reversing a sort is a request to see the largest values first, not a
       // request to be shown the rows that have no value at all.
-      const blank = (isBlank(left) ? 1 : 0) - (isBlank(right) ? 1 : 0);
-      if (blank !== 0) return blank;
+      const leftBlank = isBlank(left);
+      if (leftBlank !== isBlank(right)) return leftBlank ? 1 : -1;
       // Both blank: this term has nothing to say, so the next one decides.
-      if (isBlank(left)) continue;
+      if (leftBlank) continue;
 
       const result = compareValues(left, right, compareText);
       if (result !== 0) return term.direction === 'descending' ? -result : result;

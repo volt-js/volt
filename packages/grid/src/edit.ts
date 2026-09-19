@@ -14,7 +14,13 @@
  *       grid: () => this.table,
  *       editors: () => ({
  *         name: { validate: (value) => (String(value) === '' ? 'A name is required' : null) },
- *         salary: { parse: Number, validate: (value) => (Number(value) < 0 ? 'Not negative' : null) },
+ *         salary: {
+ *           // A cleared field is no number, where `Number('')` would make it 0.
+ *           parse: (raw) => (raw.trim() === '' ? null : Number(raw)),
+ *           validate: (value) =>
+ *             typeof value !== 'number' || Number.isNaN(value) ? 'Enter a number'
+ *             : value < 0 ? 'Not negative' : null,
+ *         },
  *       }),
  *       onCommit: (change) => this.store.write(change.item, change.columnId, change.value),
  *     });
@@ -68,8 +74,9 @@
  * one text node changes.
  */
 
-import { Signal } from '@voltdev/core';
+import { Signal, effect } from '@voltdev/core';
 import { createId } from '@voltdev/primitives';
+import { asText } from './filter.js';
 import type {
   Grid,
   GridCell,
@@ -104,7 +111,13 @@ export interface GridEditor<T> {
   readonly read?: (row: T) => unknown;
   /**
    * What the control produced, as the value to commit. Default: the text
-   * itself. `Number` is the whole implementation for a numeric column.
+   * itself.
+   *
+   * Run on every keystroke, and never written back: the control keeps the text
+   * the reader typed, so a parse may return anything for text they have not
+   * finished. `Number` is most of a numeric column's, but not all of it — it
+   * reads a half-typed "-" as NaN, which `validate` has to refuse, and a
+   * cleared field as 0, which is the trap `Number('')` sets.
    */
   readonly parse?: (raw: string) => unknown;
   /**
@@ -122,9 +135,10 @@ export interface GridEditChange<T> {
   readonly item: T;
   readonly rowKey: GridRowKey;
   /**
-   * Where the row was in the collection when the edit session opened. A sort
-   * or a filter while the cell was open moves rows without moving this, so
-   * find the row by `rowKey` or `item`, not by this.
+   * Where the row was in the view when the change was committed — a place in
+   * the sorted, filtered view and not in the caller's array, and one the
+   * change itself may move the row from. Find the row by `rowKey` or `item`,
+   * not by this.
    */
   readonly rowIndex: number;
   readonly columnId: string;
@@ -132,7 +146,15 @@ export interface GridEditChange<T> {
   readonly value: unknown;
 }
 
-/** The cell being edited, and what it held when the session opened. */
+/**
+ * The cell being edited, and what it held when the session opened.
+ *
+ * `row` is where that row sits in the view now, and `column` where that column
+ * sits in the column list: the session is held by `rowKey` and `columnId`, and
+ * follows its cell through a sort, a filter, or a column list given in another
+ * order. A session abandoned because its cell has gone is reported with -1 for
+ * whichever of the two went.
+ */
 export interface GridEditSession<T> {
   readonly row: number;
   readonly column: number;
@@ -166,7 +188,10 @@ export interface GridCellEditingOptions<T> {
    * to the store the rows came from, and the cell's own binding does the rest.
    */
   onCommit: (change: GridEditChange<T>) => void;
-  /** Called when a session is abandoned, with the cell it was on. */
+  /**
+   * Called when a session is abandoned, with the cell it was on — or, where
+   * the session went because its row or its column did, with -1 in its place.
+   */
   onCancel?: (session: GridEditSession<T>) => void;
   /** Called when validation refused a commit, before the message is shown. */
   onInvalid?: (message: string, session: GridEditSession<T>) => void;
@@ -186,8 +211,15 @@ export interface GridCellEditing<T> {
 
   /** What the reader has typed, parsed. */
   draft(): unknown;
-  /** The draft as text, for the control to show. */
+  /**
+   * What the control should hold: the text the reader typed, as they typed it,
+   * or the draft's own text once code has set it.
+   */
   text(): string;
+  /**
+   * Replace the draft from code — a `<select>`, a picker, a stepper. Clears a
+   * refusal, as typing does.
+   */
   setDraft(value: unknown): void;
   /** The message validation refused with, or null. */
   error(): string | null;
@@ -219,6 +251,15 @@ export interface GridCellEditing<T> {
 export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCellEditing<T> {
   const state = new Signal.State<GridEditSession<T> | null>(null);
   const draft = new Signal.State<unknown>(null);
+  /**
+   * The control's text, held apart from the draft it parses to.
+   *
+   * The control is bound to this, so it has to be what the reader typed and
+   * not the parsed draft read back: `Number('-')` is NaN and `Number('')` is 0,
+   * and a control bound to the draft would write "NaN" over a minus sign and
+   * "0" over a field the reader had just cleared.
+   */
+  const text = new Signal.State('');
   const error = new Signal.State<string | null>(null);
   // Stable across the session's whole life, because `aria-errormessage` on the
   // control has to name an element that will exist by the time it is read.
@@ -235,6 +276,56 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
 
   const grid = (): Grid<T> | null => options.grid() ?? null;
 
+  /**
+   * Where the open session's row sits in the view now, or -1 once the view no
+   * longer holds it.
+   *
+   * A session is held by its row's key, not by the place the row had when it
+   * opened. A sort or a filter while a cell is open — a click on a header is
+   * enough — moves rows under it, and a place would leave the editor over
+   * whichever row slid into it while the commit still went to the row it was
+   * opened on. Found again on every change to the view: a scan of it while a
+   * session is open, and nothing at all while none is.
+   *
+   * Which is only as good as the key. The default key is the row's index, and
+   * finds whatever row is at that index now — so without `getRowKey` a sort
+   * still leaves the editor over another row, the cost `createGrid` documents
+   * for the cursor, here with the commit going to the row it was opened on.
+   */
+  const openRow = new Signal.Computed<number>(() => {
+    const session = state.get();
+    if (session === null) return -1;
+    const table = grid();
+    return table === null ? session.row : table.rowIndex(session.rowKey);
+  });
+
+  /**
+   * Where the open session's column sits in the column list now, or -1 once
+   * the list no longer holds it.
+   *
+   * By id, for the reason the row is found by key: a column list handed over
+   * in another order, or with a column taken out, would otherwise leave the
+   * editor over a different column from the one the commit names.
+   */
+  const openColumn = new Signal.Computed<number>(() => {
+    const session = state.get();
+    if (session === null) return -1;
+    const table = grid();
+    return table === null ? session.column : table.columnIndex(session.columnId);
+  });
+
+  /** The open session, at its cell's place now — null once that cell is gone. */
+  const live = new Signal.Computed<GridEditSession<T> | null>(() => {
+    const session = state.get();
+    if (session === null) return null;
+    const row = openRow.get();
+    const column = openColumn.get();
+    if (row < 0 || column < 0) return null;
+    return row === session.row && column === session.column
+      ? session
+      : { ...session, row, column };
+  });
+
   const open = (row: GridRow<T>, column: GridColumnView<T>): boolean => {
     const editor = editorFor(column.column.id);
     if (editor === null) return false;
@@ -243,7 +334,7 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
     // Whatever is already open is finished first. A reader who clicks from one
     // cell to the next means the first one to stand, and dropping it silently
     // is how an edit disappears without anyone noticing.
-    const current = untrack(() => state.get());
+    const current = untrack(() => live.get());
     if (current !== null) {
       if (current.row === row.index && current.column === column.index) return true;
       if (!commit()) return false;
@@ -259,6 +350,7 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
       initial,
     });
     draft.set(initial);
+    text.set(asText(initial));
     error.set(null);
     return true;
   };
@@ -285,11 +377,45 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
   const close = (): void => {
     state.set(null);
     draft.set(null);
+    text.set('');
     error.set(null);
   };
 
-  function commit(): boolean {
+  // A session whose cell has gone — a filter hid its row, the data no longer
+  // holds it, or its column was taken out of the list — is abandoned. Kept
+  // open, it would claim every key for an editor nobody can see, and commit to
+  // a cell the reader can no longer check. `onCancel` is told where the cell
+  // is now, which for the half that went is nowhere. Unlike Escape, this puts
+  // no focus back: the cell it would go back to is the thing that went, and
+  // focus is left where the grid leaves it when a filter hides a focused cell.
+  effect(() => {
+    if (live.get() !== null) return;
     const session = untrack(() => state.get());
+    if (session === null) return;
+    const gone = {
+      ...session,
+      row: untrack(() => openRow.get()),
+      column: untrack(() => openColumn.get()),
+    };
+    close();
+    options.onCancel?.(gone);
+  });
+
+  /**
+   * Replace the draft, and the text the control shows for it.
+   *
+   * Typing and code come through here alike, and either one is the reader
+   * answering a refusal that is up. Leaving it up until the next commit would
+   * mean a cell that reads as invalid while it is being made valid.
+   */
+  const write = (value: unknown, typed: string): void => {
+    draft.set(value);
+    text.set(typed);
+    if (untrack(() => error.get()) !== null) error.set(null);
+  };
+
+  function commit(): boolean {
+    const session = untrack(() => live.get());
     if (session === null) return true;
 
     const value = untrack(() => draft.get());
@@ -321,7 +447,7 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
   }
 
   const cancel = (): void => {
-    const session = untrack(() => state.get());
+    const session = untrack(() => live.get());
     if (session === null) return;
     close();
     // Focus is in the editor, which is about to stop existing. Putting it back
@@ -336,8 +462,8 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
    *
    * Which is what a reader filling a table in means by Tab, and what makes the
    * last column reachable without a second gesture. Null at either end of the
-   * collection: a Tab out of the last cell is a Tab out of the grid, and moving
-   * the cursor to a row that does not exist is not an improvement on that.
+   * collection, where there is no cell to move to and a row that does not
+   * exist is not one to invent.
    */
   const step = (from: GridCell, delta: number, columns: number, rows: number): GridCell | null => {
     let row = from.row;
@@ -370,7 +496,7 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
    * sent to.
    */
   const commitAndMove = (rowDelta: number, columnDelta: number, reopen: boolean): boolean => {
-    const session = untrack(() => state.get());
+    const session = untrack(() => live.get());
     if (session === null) return false;
     if (!commit()) return true;
 
@@ -379,7 +505,10 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
 
     const columns = untrack(() => table.columnCount());
     const rows = untrack(() => table.rowCount());
-    if (columns === 0 || rows === 0) return true;
+    // No rows left is not nowhere. A commit can filter away the last one, and
+    // the cell focused below is then clamped to the header, which is the one
+    // place a grid with no rows has for focus to be.
+    if (columns === 0) return true;
 
     let target: GridCell | null = null;
     if (columnDelta === 0) {
@@ -401,32 +530,34 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
       }
     }
 
-    if (target === null) return true;
+    // Nowhere to go — the last row for Enter, the last editable cell for Tab —
+    // is still somewhere to be. The editor that held focus has just closed,
+    // and the key was taken from the browser, so focus goes back to the cell
+    // just committed rather than falling to the document.
+    if (target === null) {
+      table.focusCell({ row: session.row, column: session.column });
+      return true;
+    }
     table.focusCell(target);
     if (reopen) beginAt(target);
     return true;
   };
 
   const isEditing = (row: number, column: number): boolean => {
-    const session = state.get();
+    const session = live.get();
     return session !== null && session.row === row && session.column === column;
   };
 
   return {
-    session: () => state.get(),
+    session: () => live.get(),
     isEditing,
     isEditable,
     begin: open,
     beginAt,
 
     draft: () => draft.get(),
-    text: () => {
-      const value = draft.get();
-      return value === null || value === undefined ? '' : String(value);
-    },
-    setDraft: (value) => {
-      draft.set(value);
-    },
+    text: () => text.get(),
+    setDraft: (value) => write(value, asText(value)),
     error: () => error.get(),
 
     commit,
@@ -464,7 +595,7 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
     },
 
     onKeyDown: (event) => {
-      const session = untrack(() => state.get());
+      const session = untrack(() => live.get());
 
       if (session === null) {
         if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return false;
@@ -511,14 +642,10 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
     onInput: (event) => {
       const target = event.target;
       if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLTextAreaElement)) return;
-      const session = untrack(() => state.get());
+      const session = untrack(() => live.get());
       if (session === null) return;
       const parse = editorFor(session.columnId)?.parse;
-      draft.set(parse === undefined ? target.value : parse(target.value));
-      // A refusal the reader is in the middle of answering. Leaving it up until
-      // the next commit means a cell that reads as invalid while it is being
-      // made valid.
-      if (untrack(() => error.get()) !== null) error.set(null);
+      write(parse === undefined ? target.value : parse(target.value), target.value);
     },
   };
 }

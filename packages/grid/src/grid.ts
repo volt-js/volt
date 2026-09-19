@@ -157,7 +157,14 @@
  */
 
 import { Signal, effect, onCleanup } from '@voltdev/core';
-import { announce, createVirtualizer, useLocale, type VirtualOverscan } from '@voltdev/primitives';
+import {
+  announce,
+  createVirtualizer,
+  useLocale,
+  type Locale,
+  type MessageValues,
+  type VirtualOverscan,
+} from '@voltdev/primitives';
 import {
   nextDirection,
   sameSort,
@@ -242,6 +249,7 @@ const EMPTY_FILTERS: ReadonlyMap<string, GridFilter> = new Map();
 
 /** A column's filter, resolved to an accessor and a predicate. */
 interface CompiledFilter<T> {
+  readonly columnId: string;
   readonly value: (row: T) => unknown;
   readonly test: (value: unknown) => boolean;
 }
@@ -384,9 +392,9 @@ export interface GridOptions<T> {
    * The sentence announced when a column is resized from the keyboard.
    *
    * A default is given rather than left to the consumer, because the failure
-   * mode of not having one is silence rather than a visible gap. It is not
-   * localized here: this package takes its strings from the caller, and a
-   * width is one of the few that a caller can compose without a catalogue.
+   * mode of not having one is silence rather than a visible gap. It is the
+   * locale's `gridColumnWidth` — `{column}` the header, `{n}` the width — or,
+   * where the catalogue has none, English.
    */
   resizeAnnouncement?: (column: GridColumn<T>, width: number) => string;
   /** How much one Alt+Arrow press resizes by, in px. Default 16. */
@@ -406,8 +414,9 @@ export interface GridOptions<T> {
    * Defaulted rather than left to the consumer for the same reason the resize
    * announcement is: without one the gesture is silent, and a sort's only other
    * evidence — rows in a different order — is exactly what a screen-reader user
-   * cannot see. It is not localized here; this package takes its strings from
-   * the caller.
+   * cannot see. The default is built from the locale's `gridSortedBy`,
+   * `gridAscending`, `gridDescending`, `gridThen` and `gridNotSorted`, each
+   * falling back to English where the catalogue has none.
    */
   sortAnnouncement?: (sort: readonly GridSortDescriptor<T>[]) => string;
 
@@ -423,7 +432,9 @@ export interface GridOptions<T> {
    *
    * The count is the whole point of it: the rows that stopped matching are not
    * in the DOM, and in a virtualized grid they never all were, so there is
-   * nothing for a screen reader to notice going away.
+   * nothing for a screen reader to notice going away. The default is the
+   * locale's `gridRowsLeft`, or `gridAllRows` where nothing was left out —
+   * `{n}` shown, `{m}` in all — or, where the catalogue has none, English.
    */
   filterAnnouncement?: (shown: number, total: number) => string;
 
@@ -441,6 +452,16 @@ export interface GridOptions<T> {
    */
   selectedRows?: Signal.State<ReadonlySet<GridRowKey>>;
   onRowSelectionChange?: (keys: ReadonlySet<GridRowKey>) => void;
+  /**
+   * Whether this particular row can be selected. Default: all of them.
+   *
+   * For the rows of a collection that are not records — a group header, a
+   * subtotal — and for the records a bulk action must not reach. Every gesture
+   * asks it, and so does `selectAllRows`; a row it refuses carries no
+   * `aria-selected`, which is how ARIA says a row cannot be. `selectRow` and
+   * `toggleRowSelection` take a key and not a row, and are the caller's own.
+   */
+  selectable?: (row: T) => boolean;
 
   /** Default `none`. `range` turns on the keyboard-driven rectangle of cells. */
   cellSelection?: GridCellSelectionMode;
@@ -464,6 +485,24 @@ export interface Grid<T> {
   /** How many rows were handed in, before any filter. */
   sourceRowCount(): number;
   columnCount(): number;
+  /**
+   * Where the row with this key sits in the view — sorted and filtered — or
+   * -1 if the view does not hold it.
+   *
+   * The way from a record to a position: a position is what `focusCell` and
+   * `scrollToCell` take, and which row is at one changes with every sort. A
+   * scan of the view, so ask it once per change rather than once per cell.
+   */
+  rowIndex(key: GridRowKey): number;
+  /**
+   * Where the column with this id sits in the column list, or -1 if the list
+   * does not hold it.
+   *
+   * The way from a column to a position, as `rowIndex` is from a record: a
+   * column list handed over in another order, or without a column it had,
+   * moves the columns after the change to other indices.
+   */
+  columnIndex(id: string): number;
 
   /** Where the cursor is. `HEADER_ROW` means the column header. */
   activeCell(): GridCell;
@@ -554,23 +593,8 @@ export interface Grid<T> {
 }
 
 export function createGrid<T>(options: GridOptions<T>): Grid<T> {
-  const rowHeight = options.rowHeight ?? DEFAULT_ROW_HEIGHT;
-  const resizeStep = options.resizeStep ?? DEFAULT_RESIZE_STEP;
-  const resizeAnnouncement =
-    options.resizeAnnouncement ??
-    ((column: GridColumn<T>, width: number): string =>
-      `${column.header}, ${Math.round(width)} pixels`);
-  const sortAnnouncement = options.sortAnnouncement ?? describeSortOrder;
-  const filterAnnouncement =
-    options.filterAnnouncement ??
-    ((shown: number, total: number): string =>
-      shown === total ? `All ${total} rows` : `${shown} of ${total} rows`);
-
-  const rowSelectionMode = options.rowSelection ?? 'none';
-  const cellSelectionMode = options.cellSelection ?? 'none';
-
   /**
-   * The locale, for the two places a grid has to know one.
+   * The locale, for ordering and folding text and for what the grid says.
    *
    * `String#localeCompare` and `String#toLowerCase` with no argument both use
    * the *runtime's* locale rather than the application's, and both are wrong
@@ -582,6 +606,21 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
   const locale = useLocale();
   const compareText = (a: string, b: string): number => locale.compare(a, b);
   const fold = (text: string): string => text.toLocaleLowerCase(locale.code());
+
+  const rowHeight = options.rowHeight ?? DEFAULT_ROW_HEIGHT;
+  const resizeStep = options.resizeStep ?? DEFAULT_RESIZE_STEP;
+  const resizeAnnouncement =
+    options.resizeAnnouncement ??
+    ((column: GridColumn<T>, width: number): string => describeWidth(locale, column, width));
+  const sortAnnouncement =
+    options.sortAnnouncement ??
+    ((sort: readonly GridSortDescriptor<T>[]): string => describeSortOrder(locale, sort));
+  const filterAnnouncement =
+    options.filterAnnouncement ??
+    ((shown: number, total: number): string => describeFilterCount(locale, shown, total));
+
+  const rowSelectionMode = options.rowSelection ?? 'none';
+  const cellSelectionMode = options.cellSelection ?? 'none';
 
   const columnList = (): readonly GridColumn<T>[] => options.columns();
   const columnCount = (): number => columnList().length;
@@ -596,27 +635,43 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
   const quickState = options.quickFilter ?? new Signal.State('');
 
   /**
+   * The terms of the sort that order anything: those naming a column that is
+   * still in the list and can be sorted.
+   *
+   * The others stay in the signal rather than being thrown over, because a
+   * saved view outlives the column list it was saved against. But everything
+   * the grid reports about the sort — a direction, `aria-sort`, a place in the
+   * order — reads this, since a term that orders nothing is not a claim the
+   * rows on screen bear out.
+   */
+  const activeSort = new Signal.Computed<readonly GridSort[]>(() => {
+    const list = columnList();
+    const entries = sortState.get();
+    const kept = entries.filter((entry) => {
+      const column = list.find((candidate) => candidate.id === entry.columnId);
+      return column !== undefined && column.sortable !== false;
+    });
+    // The signal's own array when nothing was left out, so the common case
+    // hands every header the value it would have read from the signal.
+    return kept.length === entries.length ? entries : kept;
+  });
+
+  /**
    * The sort, resolved against the columns it names.
    *
    * Resolved once per change rather than once per comparison — a comparator
-   * that looked its own accessor up would do so `n log n` times — and a term
-   * naming a column that is no longer in the list is dropped rather than
-   * throwing, because a saved view outlives the column list it was saved
-   * against.
+   * that looked its own accessor up would do so `n log n` times.
    */
   const sortTerms = new Signal.Computed<readonly GridSortTerm<T>[]>(() => {
     const list = columnList();
-    const terms: GridSortTerm<T>[] = [];
-    for (const entry of sortState.get()) {
-      const column = list.find((candidate) => candidate.id === entry.columnId);
-      if (!column || column.sortable === false) continue;
-      terms.push({
+    return activeSort.get().map((entry) => {
+      const column = list.find((candidate) => candidate.id === entry.columnId)!;
+      return {
         direction: entry.direction,
         value: column.sortValue ?? column.value,
         compare: column.compare,
-      });
-    }
-    return terms;
+      };
+    });
   });
 
   /**
@@ -638,7 +693,7 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
       if (filter === undefined) continue;
       const test = compileFilter(filter, fold);
       if (test === null) continue;
-      compiled.push({ value: column.filterValue ?? column.value, test });
+      compiled.push({ columnId: column.id, value: column.filterValue ?? column.value, test });
     }
     return compiled;
   });
@@ -700,9 +755,21 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
 
   const rowKeyOf = (row: T, index: number): GridRowKey =>
     options.getRowKey?.(row, index) ?? index;
-  const rowKeyAt = (index: number): GridRowKey | null => {
-    const row = rowList()[index];
-    return row === undefined ? null : rowKeyOf(row, index);
+
+  /**
+   * Where a key's row sits in a list of rows, or -1.
+   *
+   * A linear scan. A map from key to index would have to be rebuilt every time
+   * the view changes, at an allocation per row, to save a walk that is asked
+   * for once per change. Rows identified only by their index — the default —
+   * find themselves where they already were, which is the documented cost of
+   * not giving `getRowKey`.
+   */
+  const indexOfKey = (rows: readonly T[], key: GridRowKey): number => {
+    for (let i = 0; i < rows.length; i++) {
+      if (rowKeyOf(rows[i]!, i) === key) return i;
+    }
+    return -1;
   };
 
   /**
@@ -728,19 +795,21 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
   /**
    * The width the geometry should use for a column.
    *
-   * Read untracked, and only ever from the virtualizer's `itemSize`. Column
-   * geometry is declared rather than measured — a column's width is state the
-   * grid holds, being exactly what a resize writes — so the one path that
-   * changes it is `resizeColumn` telling the virtualizer to rebuild. Letting
-   * the geometry subscribe to the widths as well would give the same change
-   * two ways in, arriving a frame apart.
+   * Read tracked, as the virtualizer's `itemSize`: the column geometry is
+   * rebuilt whenever anything a size reads changes, so a resize writing
+   * `widths` and a consumer handing in a new column list both rebuild it, once,
+   * with nothing having to ask. Column geometry is declared rather than
+   * measured — a column's width is state the grid holds, being exactly what a
+   * resize writes — so this is the only way in.
    */
-  const widthOf = (index: number): number =>
-    untrack(() => {
-      const column = columnList()[index];
-      if (!column) return 0;
-      return clampWidth(column, widths.get().get(column.id) ?? column.width ?? DEFAULT_COLUMN_WIDTH);
-    });
+  const sizeOf = (index: number): number => {
+    const column = columnList()[index];
+    if (!column) return 0;
+    return clampWidth(column, widths.get().get(column.id) ?? column.width ?? DEFAULT_COLUMN_WIDTH);
+  };
+
+  /** The same width, read from a handler that must not subscribe to it. */
+  const widthOf = (index: number): number => untrack(() => sizeOf(index));
 
   // --- The two axes --------------------------------------------------------
 
@@ -754,8 +823,8 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     // that index, and a sort changes which row that is without changing how
     // many there are — so a window that did not depend on the view would hand
     // `:for` last order's keys and reuse the wrong row's elements. The column
-    // axis can afford to untrack because a resize tells it to rebuild; nothing
-    // tells it a row moved.
+    // axis can afford to untrack its keys: its sizes read the column list the
+    // keys come from, so the keys are read again whenever that list changes.
     getItemKey: (index) => {
       const item = rowList()[index];
       return item === undefined ? index : rowKeyOf(item, index);
@@ -769,36 +838,18 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
 
   const columnAxis = createVirtualizer({
     scroller: options.scroller,
-    // Deliberately empty: nothing may observe a header cell and quietly
-    // overrule the width the grid is holding. A function `itemSize` is what
-    // turns `remeasure()` on, and `remeasure()` is how a resize gets the
-    // geometry rebuilt — the virtualizer otherwise rebuilds only when the
-    // count changes, and a resize does not change how many columns there are.
+    // Deliberately empty, and nothing measured: nothing may observe a header
+    // cell and quietly overrule the width the grid is holding. The sizes are
+    // the grid's own, and rebuild the geometry by being read.
     container: () => null,
     count: columnCount,
-    itemSize: widthOf,
+    itemSize: sizeOf,
+    measure: false,
     overscan: options.overscan,
     getItemKey: (index) => untrack(() => columnList()[index]?.id ?? index),
     counting: 'column',
     indexBase: 1,
     axis: 'horizontal',
-  });
-
-  /**
-   * Rebuild the column geometry when the definitions themselves change.
-   *
-   * A consumer swapping in a list of the same length with different widths
-   * changes nothing the virtualizer watches: the count is what it rebuilds on.
-   * Identity is enough to spot it, because a column list is data the consumer
-   * replaces rather than mutates.
-   */
-  let lastColumns: readonly GridColumn<T>[] | null = null;
-  effect(() => {
-    const list = columnList();
-    if (lastColumns === list) return;
-    const first = lastColumns === null;
-    lastColumns = list;
-    if (!first) columnAxis.remeasure();
   });
 
   /**
@@ -962,13 +1013,39 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
   /**
    * Whether focus was last put on the cell the cursor names.
    *
-   * Every path that focuses a cell sets it, and `cursorHeldFocus` clears it
-   * once it sees focus somewhere else. The one case it gets wrong is a reader
-   * who focused a cell and then clicked the page background: focus is nowhere,
-   * which is indistinguishable from a cell having been removed underneath it,
-   * so a re-sort would pull focus back into the grid.
+   * Every path that focuses a cell sets it, and focus leaving the grid clears
+   * it — heard as it leaves, below, because afterwards a reader who clicked the
+   * page background and a cell removed from under them look the same: focus
+   * is nowhere in both.
    */
   let focusOnCursor = false;
+
+  effect(() => {
+    const root = options.grid();
+    if (!root) return;
+    const onFocusOut = (event: Event): void => {
+      // `Element` has no typed map entry for focusout, so the event arrives
+      // as a bare `Event` and `relatedTarget` has to be asked for. Focus moving
+      // from one cell to the next is every arrow key, and costs nothing more.
+      const next = 'relatedTarget' in event ? event.relatedTarget : null;
+      if (next instanceof Node && root.contains(next)) return;
+      const target = event.target;
+      // Judged a microtask later, because at this moment the two cases still
+      // look alike: an engine that reports a cell removed by a re-render does
+      // so before the cell has gone. By then the flush doing the removing has
+      // finished — the cell is out of the document, or following the row has
+      // put focus back in the grid — and neither is the reader leaving. Nor is
+      // the window losing focus, which blurs the cell and leaves it the
+      // document's active element.
+      queueMicrotask(() => {
+        if (root.contains(root.ownerDocument.activeElement)) return;
+        if (target instanceof Node && !target.isConnected) return;
+        focusOnCursor = false;
+      });
+    };
+    root.addEventListener('focusout', onFocusOut);
+    onCleanup(() => root.removeEventListener('focusout', onFocusOut));
+  });
 
   effect(() => {
     // Read both windows: this effect exists to run again when either moves.
@@ -1023,7 +1100,11 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     const described: GridSortDescriptor<T>[] = [];
     for (const entry of entries) {
       const column = list.find((candidate) => candidate.id === entry.columnId);
-      if (column) described.push({ column, direction: entry.direction });
+      // Only the terms that order anything, as everywhere else the sort is
+      // reported.
+      if (column && column.sortable !== false) {
+        described.push({ column, direction: entry.direction });
+      }
     }
     return described;
   };
@@ -1040,7 +1121,7 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
   };
 
   const sortDirection = (columnId: string): GridSortDirection | null =>
-    sortState.get().find((entry) => entry.columnId === columnId)?.direction ?? null;
+    activeSort.get().find((entry) => entry.columnId === columnId)?.direction ?? null;
 
   const toggleSort = (columnId: string, additive = false): void => {
     const column = untrack(() => columnById(columnId));
@@ -1147,6 +1228,13 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
   };
 
   const isRowSelected = (key: GridRowKey): boolean => selectedRowKeys.get().has(key);
+  const isSelectable = (row: T): boolean => options.selectable?.(row) ?? true;
+
+  /** The key a gesture on this row selects by, or null where there is no row to select. */
+  const selectableKeyAt = (index: number): GridRowKey | null => {
+    const row = rowList()[index];
+    return row === undefined || !isSelectable(row) ? null : rowKeyOf(row, index);
+  };
 
   const selectRow = (key: GridRowKey, additive = false): void => {
     if (rowSelectionMode === 'none') return;
@@ -1184,7 +1272,9 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     if (rowSelectionMode !== 'multiple') return;
     const rows = untrack(rowList);
     const next = new Set<GridRowKey>();
-    for (let i = 0; i < rows.length; i++) next.add(rowKeyOf(rows[i]!, i));
+    for (let i = 0; i < rows.length; i++) {
+      if (isSelectable(rows[i]!)) next.add(rowKeyOf(rows[i]!, i));
+    }
     setSelectedRows(next);
   };
 
@@ -1215,7 +1305,7 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     }
     const next = new Set<GridRowKey>();
     for (let i = Math.min(from, to); i <= Math.max(from, to); i++) {
-      next.add(rowKeyOf(rows[i]!, i));
+      if (isSelectable(rows[i]!)) next.add(rowKeyOf(rows[i]!, i));
     }
     // The anchor deliberately stays where it was, so shift-clicking back and
     // forth grows and shrinks one range rather than leaving a trail of them.
@@ -1251,7 +1341,8 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     // Still somewhere in the grid: the reader has not gone anywhere.
     if (root && focused && root.contains(focused)) return true;
     // Or nowhere at all, which is where focus lands when the element holding
-    // it is removed — which is precisely what the re-sort just did.
+    // it is removed — which is precisely what the re-sort just did. A reader
+    // who sent it nowhere themselves cleared the flag on the way out.
     if (focused === null || focused === root?.ownerDocument.body) return true;
     // Anywhere else is the reader having tabbed out, and focus is theirs now.
     focusOnCursor = false;
@@ -1282,21 +1373,7 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
 
     const was = previous[cursor.row];
     if (was === undefined) return;
-    const key = rowKeyOf(was, cursor.row);
-
-    // A linear scan, once per change of the view rather than once per row
-    // rendered. A map from key to index would have to be rebuilt on the same
-    // schedule and would cost an allocation per row to save this walk. Rows
-    // identified only by their index — the default — find themselves again
-    // where they already were, which is the documented cost of not giving
-    // `getRowKey`.
-    let index = -1;
-    for (let i = 0; i < rows.length; i++) {
-      if (rowKeyOf(rows[i]!, i) === key) {
-        index = i;
-        break;
-      }
-    }
+    const index = indexOfKey(rows, rowKeyOf(was, cursor.row));
 
     // The row was filtered away. The clamp below keeps the cursor legal, and it
     // stays at the position it had, which is where a reader watching rows
@@ -1348,10 +1425,9 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
 
     const map = new Map(untrack(() => widths.get()));
     map.set(id, next);
+    // Every offset after this column moves with it: the geometry reads the
+    // widths, and rebuilds once for this write.
     widths.set(map);
-    // The one path that gets the column geometry rebuilt. Without it the
-    // widths would change and every offset after this column would not.
-    columnAxis.remeasure();
     options.onColumnResize?.(id, next);
     return next;
   };
@@ -1388,8 +1464,16 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
       resizeColumn(id, startWidth + (move.clientX - startX));
     };
 
+    // Heard on the window, capturing, so it is the first thing to hear the key
+    // and can keep it: a drag in flight is the topmost thing Escape can undo,
+    // and a grid inside a dialog that also closed on it would lose the dialog
+    // with the drag.
+    const view = handle.ownerDocument.defaultView;
+
     const onCancelKey = (key: KeyboardEvent): void => {
       if (key.key !== 'Escape') return;
+      key.preventDefault();
+      key.stopPropagation();
       // A drag is a single gesture, so cancelling it puts the width back where
       // it started rather than undoing the last increment.
       resizeColumn(id, startWidth);
@@ -1401,7 +1485,7 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
       handle.removeEventListener('pointerup', stop);
       handle.removeEventListener('pointercancel', stop);
       handle.removeEventListener('lostpointercapture', stop);
-      handle.ownerDocument.removeEventListener('keydown', onCancelKey, true);
+      view?.removeEventListener('keydown', onCancelKey, true);
       if (handle.hasPointerCapture?.(event.pointerId)) {
         handle.releasePointerCapture(event.pointerId);
       }
@@ -1413,7 +1497,7 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     handle.addEventListener('pointerup', stop);
     handle.addEventListener('pointercancel', stop);
     handle.addEventListener('lostpointercapture', stop);
-    handle.ownerDocument.addEventListener('keydown', onCancelKey, true);
+    view?.addEventListener('keydown', onCancelKey, true);
     stopResize = stop;
   };
 
@@ -1480,9 +1564,11 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     // above by the sort.
     if (event.key === ' ' && !modified && !event.shiftKey) {
       if (rowSelectionMode === 'none' || cursor.row < 0) return false;
-      const key = untrack(() => rowKeyAt(cursor.row));
-      if (key === null) return false;
-      toggleRowSelection(key);
+      const key = untrack(() => selectableKeyAt(cursor.row));
+      // A row that cannot be selected still spends the key. Left to the
+      // browser, Space scrolls the page — under a reader who pressed it to
+      // select, in a grid where it does.
+      if (key !== null) toggleRowSelection(key);
       event.preventDefault();
       return true;
     }
@@ -1599,7 +1685,7 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     if (rowSelectionMode === 'none') return false;
     const cell = cellFrom(event.target);
     if (cell === null || cell.row < 0) return false;
-    const key = untrack(() => rowKeyAt(cell.row));
+    const key = untrack(() => selectableKeyAt(cell.row));
     if (key === null) return false;
 
     if (rowSelectionMode === 'multiple' && event.shiftKey) selectRowRange(key);
@@ -1617,6 +1703,8 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     rowCount,
     sourceRowCount,
     columnCount,
+    rowIndex: (key) => indexOfKey(rowList(), key),
+    columnIndex: (id) => columnList().findIndex((column) => column.id === id),
 
     activeCell: () => active.get(),
     focusCell,
@@ -1709,7 +1797,7 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
       const sortable = column.column.sortable !== false;
       // Read only where it means something, so a grid that never sorts adds no
       // dependency on the sort to every one of its header cells.
-      const entries = sortable ? sortState.get() : EMPTY_SORT;
+      const entries = sortable ? activeSort.get() : EMPTY_SORT;
       const at = entries.findIndex((entry) => entry.columnId === column.column.id);
       const direction = at < 0 ? null : entries[at]!.direction;
 
@@ -1730,7 +1818,12 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
         'data-sort': direction ?? undefined,
         // Which of several. A single-column sort has no ordinal worth showing.
         'data-sort-index': at >= 0 && entries.length > 1 ? String(at + 1) : undefined,
-        'data-filtered': filterState.get().has(column.column.id) ? '' : undefined,
+        // From the compiled filters and not the signal: a filter the reader has
+        // started and not finished is in the signal and removes no row, and a
+        // header marked for it would be pointing at nothing.
+        'data-filtered': columnFilters.get().some((filter) => filter.columnId === column.column.id)
+          ? ''
+          : undefined,
         'data-column': column.column.id,
         style: { width: `${column.width}px` },
       };
@@ -1763,7 +1856,8 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     }),
 
     rowProps: (row) => {
-      const selected = rowSelectionMode !== 'none' && isRowSelected(row.key);
+      const selectable = rowSelectionMode !== 'none' && isSelectable(row.item);
+      const selected = selectable && isRowSelected(row.key);
       return {
         // Carries `aria-rowindex` and the row's height, and marks the element
         // for the virtualizer that owns it.
@@ -1774,7 +1868,11 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
         // "not selected" for the one that is; where any number of rows can be
         // chosen, that false is what makes the set legible.
         'aria-selected':
-          rowSelectionMode === 'multiple' ? String(selected) : selected ? 'true' : undefined,
+          selectable && rowSelectionMode === 'multiple'
+            ? String(selected)
+            : selected
+              ? 'true'
+              : undefined,
         'data-selected': selected ? '' : undefined,
       };
     },
@@ -1825,14 +1923,60 @@ function clamp(value: number, low: number, high: number): number {
 }
 
 /**
+ * A sentence the grid says aloud: the locale's catalogue where it has the key,
+ * then English.
+ *
+ * None of the grid's keys is in the library's own catalogue, so a translation
+ * that has never heard of a grid is not made to grow them: one that declares
+ * them is heard, numbers formatted for its locale, and without them the English
+ * stands. Asked when the sentence is said, so a catalogue swapped later is
+ * heard from then on.
+ */
+function said(locale: Locale, key: string, english: string, values?: MessageValues): string {
+  return locale.has(key) ? locale.t(key, values) : english;
+}
+
+/** A column's new width, after a resize from the keyboard. */
+function describeWidth<T>(locale: Locale, column: GridColumn<T>, width: number): string {
+  const n = Math.round(width);
+  return said(locale, 'gridColumnWidth', `${column.header}, ${n} pixels`, {
+    column: column.header,
+    n,
+  });
+}
+
+/**
  * The whole order, not just the column that changed.
  *
  * "Sorted by Department ascending, then Salary descending" is the sentence a
  * reader needs, because the column they just clicked is the one thing they
  * already know: what they cannot see is what it did to the terms around it.
+ * Built a term at a time, each joined to the ones before it, so a catalogue
+ * can put the words of every piece in its own language's order.
  */
-function describeSortOrder<T>(sort: readonly GridSortDescriptor<T>[]): string {
-  if (sort.length === 0) return 'Not sorted';
-  const terms = sort.map((entry) => `${entry.column.header} ${entry.direction}`);
-  return `Sorted by ${terms.join(', then ')}`;
+function describeSortOrder<T>(locale: Locale, sort: readonly GridSortDescriptor<T>[]): string {
+  if (sort.length === 0) return said(locale, 'gridNotSorted', 'Not sorted');
+  const terms = sort
+    .map(({ column: { header: column }, direction }) =>
+      direction === 'ascending'
+        ? said(locale, 'gridAscending', `${column} ascending`, { column })
+        : said(locale, 'gridDescending', `${column} descending`, { column }),
+    )
+    .reduce((before, term) =>
+      said(locale, 'gridThen', `${before}, then ${term}`, { terms: before, term }),
+    );
+  return said(locale, 'gridSortedBy', `Sorted by ${terms}`, { terms });
+}
+
+/**
+ * How many rows a filter left, out of how many there were.
+ *
+ * Shared with `createGrouping`, which filters a grouped grid in the grid's
+ * place and has the same count to say.
+ */
+export function describeFilterCount(locale: Locale, shown: number, total: number): string {
+  const values = { n: shown, m: total };
+  return shown === total
+    ? said(locale, 'gridAllRows', `All ${total} rows`, values)
+    : said(locale, 'gridRowsLeft', `${shown} of ${total} rows`, values);
 }

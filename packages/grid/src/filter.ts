@@ -124,12 +124,12 @@ export function compileFilter(filter: GridFilter, fold: TextFold): ((value: unkn
         const low = Math.min(value, upper);
         const high = Math.max(value, upper);
         return (candidate) => {
-          const number = toNumber(candidate);
+          const number = asNumber(candidate);
           return number !== null && number >= low && number <= high;
         };
       }
       return (candidate) => {
-        const number = toNumber(candidate);
+        const number = asNumber(candidate);
         if (number === null) return false;
         switch (operator) {
           case 'equals':
@@ -198,17 +198,23 @@ export function matchesQuickFilter(texts: readonly string[], terms: readonly str
 }
 
 /**
- * A value as a number filter sees it.
+ * A value as a number filter or an aggregate sees it, or null for one that is
+ * not a number at all.
  *
  * A numeric column whose accessor returns strings is common enough — it is
  * what a value straight out of JSON looks like — that refusing to compare one
  * would make the number filter silently match nothing. An empty string is not
- * zero, which is the trap `Number('')` sets.
+ * zero, which is the trap `Number('')` sets, and an invalid `Date` is no
+ * number either: read as the NaN it holds, it would pass a `notEquals` that a
+ * blank fails and turn every total it reached into NaN.
  */
-function toNumber(value: unknown): number | null {
+export function asNumber(value: unknown): number | null {
   if (typeof value === 'number') return Number.isNaN(value) ? null : value;
   if (typeof value === 'bigint') return Number(value);
-  if (value instanceof Date) return value.getTime();
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isNaN(time) ? null : time;
+  }
   if (typeof value === 'string' && value.trim() !== '') {
     const parsed = Number(value);
     return Number.isNaN(parsed) ? null : parsed;
