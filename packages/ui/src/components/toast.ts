@@ -2,8 +2,9 @@
  * Toast — the styled half of `createToaster`.
  *
  * The primitive writes `data-state` (`open` or `closed`) and `data-type`
- * (`info`, `success`, `warning`, `error`) on each toast, and `data-paused` on
- * the region while the countdown is stopped.
+ * (`info`, `success`, `warning`, `error`) on each toast. It also writes
+ * `data-paused` on the region while the countdown is stopped, which nothing
+ * here selects on: a paused toast looks like any other.
  *
  * Type is the hard part. In the default palette it is a colour down the
  * leading edge, and colour is the one channel a forced palette does not have
@@ -22,9 +23,12 @@ const title = 'volt-toast-title';
 const description = 'volt-toast-description';
 const actions = 'volt-toast-actions';
 
-export const toastStyles: ComponentStyles = {
+/** Part to class, on its own so that a bundle can take it without the rules. */
+export const toastClasses = { region, root, title, description, actions } as const;
+
+export const toastStyles = /* @__PURE__ */ ((): ComponentStyles => ({
   name: 'toast',
-  classes: { region, root, title, description, actions },
+  classes: toastClasses,
 
   keyframes: [
     {
@@ -160,4 +164,4 @@ export const toastStyles: ComponentStyles = {
     },
     { selector: `.${region}:focus-visible`, declarations: { ...forcedFocusRing } },
   ],
-};
+}))();

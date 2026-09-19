@@ -7,15 +7,15 @@
  */
 
 import type { ComponentStyles } from '../css.js';
-import { accordionStyles } from './accordion.js';
-import { buttonStyles } from './button.js';
-import { checkboxStyles } from './checkbox.js';
-import { dialogStyles } from './dialog.js';
-import { menuStyles } from './menu.js';
-import { popoverStyles } from './popover.js';
-import { tabsStyles } from './tabs.js';
-import { tooltipStyles } from './tooltip.js';
-import { toastStyles } from './toast.js';
+import { accordionClasses, accordionStyles } from './accordion.js';
+import { buttonClasses, buttonStyles } from './button.js';
+import { checkboxClasses, checkboxStyles } from './checkbox.js';
+import { dialogClasses, dialogStyles } from './dialog.js';
+import { menuClasses, menuStyles } from './menu.js';
+import { popoverClasses, popoverStyles } from './popover.js';
+import { tabsClasses, tabsStyles } from './tabs.js';
+import { tooltipClasses, tooltipStyles } from './tooltip.js';
+import { toastClasses, toastStyles } from './toast.js';
 
 export {
   accordionStyles,
@@ -46,8 +46,20 @@ export const componentStyles: readonly ComponentStyles[] = [
  * Part name to class name, per component.
  *
  * The one thing a consumer needs at runtime: `classes.dialog.content` is what
- * goes in the `class` attribute. Written out of the same objects the rules
- * are built from, so a class cannot be renamed in one place only.
+ * goes in the `class` attribute. These are the same objects the rules are
+ * built from, so a class cannot be renamed in one place only — and they are
+ * written out by name rather than gathered from `componentStyles`, so that the
+ * type knows which components and parts there are, and so that a bundle which
+ * wants the names does not have to take every rule along with them.
  */
-export const classes: Readonly<Record<string, Readonly<Record<string, string>>>> =
-  Object.fromEntries(componentStyles.map((component) => [component.name, component.classes]));
+export const classes = {
+  accordion: accordionClasses,
+  button: buttonClasses,
+  checkbox: checkboxClasses,
+  dialog: dialogClasses,
+  menu: menuClasses,
+  popover: popoverClasses,
+  tabs: tabsClasses,
+  toast: toastClasses,
+  tooltip: tooltipClasses,
+} as const;

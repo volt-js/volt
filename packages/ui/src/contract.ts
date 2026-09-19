@@ -20,7 +20,7 @@
 export const contractProperties: ReadonlySet<string> = new Set([
   /**
    * The measured height of a collapsible's content, in pixels with a unit.
-   * Written by `createDisclosure` and `createAccordion` in
+   * Written by `createCollapsible` and `createAccordion` in
    * `@voltdev/primitives`, which measure `scrollHeight` in the measure lane
    * and publish it as `COLLAPSIBLE_HEIGHT_PROPERTY`. There is no height to
    * animate to without it: `auto` does not interpolate.

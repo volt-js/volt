@@ -39,6 +39,15 @@ export interface Keyframes {
   readonly steps: readonly KeyframeStep[];
 }
 
+/**
+ * One component's styles.
+ *
+ * Each of these is built inside a call marked pure. The package is published
+ * as a single module, and a bundler has to assume that a call at module level
+ * does something — `animation()`, `transition()`, even a spread — so without
+ * the mark every rule would stay in an application that imported one class
+ * name. `test/entry.test.ts` bundles the published module to check.
+ */
 export interface ComponentStyles {
   /** The component's name, as the generator will know it. */
   readonly name: string;

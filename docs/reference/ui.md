@@ -21,8 +21,8 @@ from the workspace.
 `0.1.0-alpha.1` and styles nine components. It is designed to be copied into
 your repository by a CLI, as source you own and edit rather than a dependency
 you override; that CLI does not exist, so today the sheet is a string you
-generate and write to a file. What is missing, and what is wrong in what is
-here, is listed [at the end](#what-is-not-here-yet).
+generate and write to a file. What is missing is listed
+[at the end](#what-is-not-here-yet).
 
 ## Primitives alone, or with this on top
 
@@ -41,13 +41,13 @@ theming would become something to fight rather than use.
 
 For the same reason this package does not import `@voltdev/primitives`. It
 restates the contract between them — the `data-` attributes each primitive
-writes, and the one custom property a primitive measures — in its own source.
-**Nothing checks that restatement against the primitives.** Read side by side
-today the two agree — every `data-` attribute a rule expects from a primitive is
-one that primitive writes, with the values the rule expects — but the tests
-hold the sheet only to itself: every class it declares has a rule, every
-`var()` names a token or a known contract property. A primitive that renamed an attribute would leave a rule selecting on
-nothing, and no test in this package would fail.
+writes, and the one custom property a primitive measures — in its own source,
+and its tests hold that restatement against the primitives themselves. Each
+component's documented markup is mounted with a real primitive's props spread
+onto it, through every state the rules distinguish, on an engine with anchor
+positioning and on one without, and every selector in the sheet has to match
+something the primitive rendered. A primitive that renamed an attribute would
+leave a rule selecting on nothing, and that test would fail.
 
 ## Getting the styles onto the page
 
@@ -73,21 +73,21 @@ node scripts/volt-css.ts > src/volt.css
 Only a recent Node runs a `.ts` file without a flag. The script has no types
 in it, so on an older one it runs unchanged renamed to `.mjs`.
 
-The emitted sheet is 34.8 kB as written and 3.6 kB minified and gzipped.
+The emitted sheet is 36.9 kB as written and 3.8 kB minified and gzipped.
 
 It is a file rather than a call at runtime because the data the sheet is built
 from weighs more than the sheet. Calling `stylesheet()` in the browser ships
-every component's rules as JavaScript — about 32 kB minified, 4.9 kB gzipped —
+every component's rules as JavaScript — about 33 kB minified, 5.1 kB gzipped —
 and then assembles the string at startup, to arrive at CSS the build could
 have written once.
 
-That weight comes with any runtime import from the package, not only with
-`stylesheet`. The package is bundled into one module that computes `classes`
-and its token sets as it loads, so a bundler cannot prove any of the style data
-unused: an application that imports a single layer name ships about 30 kB
-minified, 4.3 kB gzipped, of rules it never runs. Keep the package in build
-scripts, as a dev dependency, and put only the generated file in front of the
-browser.
+That weight comes with the exports that hold rules — `stylesheet` and
+`componentStyles` carry every component's, a `*Styles` object its own
+component's — and with nothing else. Each component's rules are built in a
+call marked pure, so a bundler leaves them behind when nothing reads them:
+[`classes`](#classes) costs about 1.2 kB minified, 0.5 kB gzipped, and a layer
+name costs its own string. Keep the package in build scripts all the same, and
+put only the generated file in front of the browser.
 
 The cost of the file is that it is a copy. It does not follow the package: an
 upgrade changes nothing on your page until you generate it again.
@@ -99,20 +99,17 @@ bundler happened to see first.
 ### Only some components
 
 ```ts
-import { buttonStyles, componentStyles, dialogStyles, stylesheet } from '@voltdev/ui';
+import { buttonStyles, dialogStyles, popoverStyles, stylesheet } from '@voltdev/ui';
 
-const css = stylesheet([buttonStyles, dialogStyles]);
-
-// accordion, menu and tooltip have no export of their own
-const menu = componentStyles.filter((component) => component.name === 'menu');
-const withMenu = stylesheet([buttonStyles, ...menu]);
+const css = stylesheet([buttonStyles, dialogStyles, popoverStyles]);
 ```
 
-A subset still carries the whole token table and the reduced-motion override;
-only component rules are left out. Build a subset with `stylesheet` rather than
-assembling one from `tokensCss` and `componentCss`. Those two are there for the
-generator, and a sheet built from them has no cascade layers and no
-reduced-motion block unless you add both yourself.
+Each of the nine components is exported as `<component>Styles`. A subset still
+carries the whole token table and the reduced-motion override; only component
+rules are left out. Build a subset with `stylesheet` rather than assembling one
+from `tokensCss` and `componentCss`. Those two are there for the generator, and
+a sheet built from them has no cascade layers and no reduced-motion block
+unless you add both yourself.
 
 ## Putting classes on the markup
 
@@ -169,8 +166,7 @@ off is bound by hand from `dialog.state()`. It comes before the content
 because both sit at the same `z-index`, and document order is what puts the
 dialog on top. Everything else the sheet reads, the primitive wrote.
 `:spread`, `:ref` and `:portal` are described in
-[template syntax](./template-syntax). As written, this dialog is not centred
-on the screen — see [dialog](#dialog) for why, and for the rule that fixes it.
+[template syntax](./template-syntax).
 
 ### Which props go on which class
 
@@ -182,9 +178,9 @@ on the screen — see [dialog](#dialog) for why, and for the rule that fixes it.
 | `volt-accordion-trigger` | `triggerProps(value)`, on a `<button>` |
 | `volt-accordion-panel` | `contentProps(value)` |
 | `volt-button` | — a `<button>` |
-| `volt-checkbox-field` | — the `<label>` around the box and its text |
-| `volt-checkbox` | `controlProps()` |
-| `volt-checkbox-indicator` | — the mark, inside the box |
+| `volt-checkbox-field` | — the `<label>` around the control |
+| `volt-checkbox` | `controlProps()`, around the box and its words |
+| `volt-checkbox-indicator` | — the box, with the mark inside it |
 | `volt-dialog-overlay` | — bind `data-state` to `state()` |
 | `volt-dialog-content` | `contentProps()` |
 | `volt-dialog-title` | `titleProps()` |
@@ -212,16 +208,20 @@ they are buttons you write, and `volt-button` is one way to draw them.
 ### `classes`
 
 ```ts
-const classes: Readonly<Record<string, Readonly<Record<string, string>>>>
+const classes: {
+  readonly dialog: { readonly overlay: 'volt-dialog-overlay'; readonly content: 'volt-dialog-content'; … };
+  …
+}
 ```
 
-Part name to class name, per component, built from the same objects the rules
-are, so it cannot disagree with the sheet.
+Part name to class name, per component — the same objects the rules are built
+from, so it cannot disagree with the sheet. Its type names every component and
+every part, down to the string each one is.
 
 ```ts
 import { classes } from '@voltdev/ui';
 
-classes.dialog?.content; // 'volt-dialog-content'
+const content: string = classes.dialog.content; // 'volt-dialog-content'
 ```
 
 | Component | Parts |
@@ -239,15 +239,16 @@ classes.dialog?.content; // 'volt-dialog-content'
 A `root` part is `volt-<component>`; every other part is
 `volt-<component>-<part>`.
 
-Reaching for `classes` instead of writing the class out costs three things.
-It is a runtime import, so it carries every component's style data into the
-client bundle — about 30 kB minified, 4.3 kB gzipped, for the reason given
-[above](#getting-the-styles-onto-the-page). Its type says nothing about which
-components or parts exist, so a misspelt name is not a compile error, and under
-`noUncheckedIndexedAccess`, which every [`create-volt`](./create-volt) template
-turns on, `classes.dialog.content` does not compile without a `?.` or an
-assertion. And a template reads its names from the component instance, not
-from imports, so each component that uses it needs a field holding it.
+A misspelt component or part is a compile error, and
+`classes.dialog.content` compiles as it is under `noUncheckedIndexedAccess`,
+which every [`create-volt`](./create-volt) template turns on. The tests compile
+an application that uses it under each template's own compiler options.
+
+Reaching for `classes` instead of writing the class out costs two things. It
+is a runtime import — the class names of all nine components, about 1.2 kB
+minified, 0.5 kB gzipped, and none of the rules. And a template reads its names
+from the component instance, not from imports, so each component that uses it
+needs a field holding it.
 
 A class written out in the template costs nothing: it is part of the markup
 the template clones. What it gives up is the link. If a later version changes
@@ -258,9 +259,10 @@ a class name, `classes` follows it and the written-out string does not.
 Every colour a component draws is a semantic token — a `var(--volt-color-*)`,
 or the focus ring's own colour — and the tests refuse any other colour value in
 a colour property, `transparent` and `currentColor` aside. Shadows are outside
-that rule: a shadow's colour is part of its token's value, and no role changes
-it. Every duration is a `var(--volt-duration-*)`. The tokens come in two
-layers.
+that rule: a shadow's colour is part of its token's value, and no colour role
+changes it. Every shadow is read from an elevation role instead, and the tests
+refuse one read from anywhere else. Every duration is a `var(--volt-duration-*)`.
+The tokens come in two layers.
 
 | Layer | Holds | Example |
 |---|---|---|
@@ -311,16 +313,15 @@ at other roles:
 | Other | `--volt-disabled-opacity`, `--volt-elevation-raised`, `--volt-elevation-overlay` |
 
 An `on-` role is the foreground guaranteed legible on the surface of the same
-name. Four roles are defined and read by no component today —
-`surface-sunken`, `accent-muted`, `danger-muted` and `elevation-raised` — and
-are there for your own markup.
+name. Three roles are defined and read by no component today —
+`surface-sunken`, `accent-muted` and `danger-muted` — and are there for your
+own markup.
 
-Only colour goes through the semantic layer. Spacing, type, radii, border
-widths, `z-index`, durations and easing are read from the primitive tokens
-directly, and so are two shadows: the dialog, popover and toast read
-`--volt-elevation-overlay`, but the menu reads `--volt-shadow-2` and the
-tooltip `--volt-shadow-1`, so repointing the elevation role leaves those two
-where they were.
+Only colour and elevation go through the semantic layer. The dialog, menu,
+popover and toast read `--volt-elevation-overlay`, and the tooltip
+`--volt-elevation-raised`, so repointing either role moves every surface that
+floats at that height. Spacing, type, radii, border widths, `z-index`,
+durations and easing are read from the primitive tokens directly.
 
 **The names are public API.** `--volt-<category>-<name>`, lowercase,
 hyphen-separated. Renaming one is a breaking change, which is the point: a
@@ -414,22 +415,17 @@ like it will do something.
 
 ### Checkbox
 
-The box is a fixed square that holds only the mark, so the text cannot go
-inside the control the way the primitive's own example puts it. Put the text
-beside the box, and name the control with `labelledBy`:
+The control holds the box and the words that name it, the way the primitive's
+own example writes it, so the control takes its name from its contents and
+needs no `labelledBy`:
 
 ```ts
 import { Signal } from '@voltdev/core';
-import { createCheckbox, createId } from '@voltdev/primitives';
+import { createCheckbox } from '@voltdev/primitives';
 
 class Terms {
-  labelId = createId('terms-label');
   input = new Signal.State<Element | null>(null);
-  agree = createCheckbox({
-    input: () => this.input.get(),
-    name: 'terms',
-    labelledBy: this.labelId,
-  });
+  agree = createCheckbox({ input: () => this.input.get(), name: 'terms' });
 }
 ```
 
@@ -438,129 +434,102 @@ class Terms {
   <input :ref="input" :spread="agree.inputProps()">
   <span class="volt-checkbox" :spread="agree.controlProps()">
     <span class="volt-checkbox-indicator" aria-hidden="true">✓</span>
+    I accept the terms
   </span>
-  <span :id="labelId">I accept the terms</span>
 </label>
 ```
 
-The id is generated rather than written out because an id names one element in
-the whole page, and a component rendered twice would otherwise name both boxes
-with the first label.
+The box is drawn on the indicator, and the control is the row the box and the
+words sit on — its focus ring goes round both. A control with no words of its
+own, named with `label`, is the box alone.
 
 The sheet draws the box, its fill and its border; it does not draw a tick.
-There are no pseudo-elements anywhere in it, so the mark is yours — a glyph
-or an SVG — and it is shown for `checked` and `indeterminate` with
-`visibility`, so the box does not change size between states. Reading
-`agree.isIndeterminate()` is how you draw a different mark for the third
-state. The rules select on `data-state` and `data-disabled` only, and on no
-ARIA attribute: ARIA is there to be spoken, not styled against.
+There are no pseudo-elements anywhere in it, so the mark is yours — a glyph,
+or an SVG drawn in `currentColor` — and it is shown for `checked` and
+`indeterminate` by its colour: an unchecked box draws it in `transparent`, so
+the box does not change size between states. A mark with a colour of its own
+shows in every state. Reading `agree.isIndeterminate()` is how you draw a
+different mark for the third state. The rules select on `data-state` and
+`data-disabled` only, and on no ARIA attribute: ARIA is there to be spoken, not
+styled against.
 
 ### Dialog
 
-The content is fixed to the viewport, at most 30rem wide, and never taller than
-the viewport less a margin — it scrolls instead, because a dialog taller than
-the screen with no way to scroll is a dialog with an unreachable confirm
-button. The overlay is yours, as in [the example above](#putting-classes-on-the-markup).
-The content has a focus ring of its own, since it takes focus itself when
-nothing inside it wants to.
+The content is fixed to the centre of the viewport, at most 30rem wide, and
+never taller than the viewport less a margin — it scrolls instead, because a
+dialog taller than the screen with no way to scroll is a dialog with an
+unreachable confirm button. The overlay is yours, as in
+[the example above](#putting-classes-on-the-markup). The content has a focus
+ring of its own, since it takes focus itself when nothing inside it wants to.
 
-**It is not centred today.** The rule centres the content with
-`translate: -50% -50%`, and the entry animation animates `translate` too,
-ending at `0 0`. An animation's value beats a rule's, and the animation fills
-forwards, so once it has run the content sits with its top-left corner at the
-centre of the viewport — and a dialog tall enough to scroll runs off the bottom
-of the screen, confirm button included. Reduced motion does not help: an
-animation of zero length still fills. Until the sheet is fixed, centre it
-without `translate` in your own CSS, which beats the layer:
-
-```css
-.volt-dialog-content {
-  inset-block: 0;
-  inset-inline: 0;
-  margin: auto;
-  inline-size: fit-content;
-  block-size: fit-content;
-}
-```
-
-The animation still ends at `translate: 0 0`, which now moves nothing, and the
-entrance keeps its short rise.
+The centring is a `translate`, and the entry and exit animations move
+`translate` too — rising into the centre and sinking out of it. An animation's
+value beats a rule's, and these fill forwards, so their keyframes carry the
+centring with them and end exactly where the rule puts the content. The same
+fill beats a `translate` of your own on the content, so a dialog you want
+somewhere else wants new keyframes as well as a new rule.
 
 ### Popover, menu and tooltip
 
 All three are positioned by the primitive through CSS anchor positioning, which
-writes `position-anchor` and `position-area` inline and marks the element
-`data-anchored="true"`. Where the browser has no anchor positioning it writes
-`data-anchored="false"` and no position at all, and the sheet falls back to
-placing the element against its nearest positioned ancestor — below it for
-the popover and the menu, above it for the tooltip. That is not correct
-placement, and it is only near the trigger at all when the element sits inside
-a `position: relative` wrapper shared with its trigger.
+writes the positioning scheme, `position-anchor` and `position-area` inline,
+so where they go is none of the sheet's business and `:portal` is safe for all
+three, as the primitives' own examples use it. The `data-anchored="false"` a
+primitive writes where the browser cannot anchor gets no rule: every current
+engine anchors, and a portalled element has no positioned ancestor near its
+trigger that a rule could place it against.
 
-That rules out `:portal`, which the primitives' own examples use for all
-three. A portalled element with nothing positioned above it is placed against
-the page: the fallback puts a popover or a menu at the start edge below the
-first screenful, and a tooltip above the top of the page, where it cannot be
-seen. On an engine without anchor positioning, choose between the portal and
-the fallback.
+The gap the sheet leaves between a popover and its trigger is a margin on the
+side that faces the trigger — above and below it for a `top` or `bottom`
+placement, beside it for a `left` or `right` one, and none across it, where it
+would push a popover aligned to one of the trigger's edges off that edge. Pass
+`offset` to `createPopover` and the primitive writes the gap inline instead.
 
 The popover arrow is drawn from `data-placement`, which the primitive writes
-on it, and only for the `top` and `bottom` placements: the sheet moves it onto
-the edge that faces the trigger and hides the two borders that would show
-inside the popover. Along that edge nothing places it, so it sits at the start
-of the content box — under the trigger for a `-start` placement, and not for a
-centred one. On a `left` or `right` placement it is drawn as a full square with
-no offset. And `data-placement` is the placement asked for: when the browser
-flips the popover to the other side it does not say so, and the arrow stays on
-the edge that now faces away.
+on it, for all twelve placements: the sheet moves it onto the edge that faces
+the trigger, hides the two borders that would show inside the popover, and sets
+it along that edge where the trigger is — the middle for a centred placement,
+and near the aligned end for a `-start` or `-end` one. It is right only while
+two things hold.
 
-The gap the sheet leaves between a popover and its trigger is a margin above
-and below it, so a `left` or `right` popover sits against its trigger. Pass
-`offset` to `createPopover` and the primitive writes the gap on whichever side
-faces the trigger instead.
+- **The browser uses the placement asked for.** `data-placement` is that
+  placement, not the one in use. When the popover would overflow, the browser
+  may move it to the other side, or to another alignment — a centred popover
+  to one lined up with either edge of the trigger — and nothing on the
+  element changes to say so. The arrow stays where the requested placement put
+  it, pointing at nothing. Chrome can tell a stylesheet which fallback it took,
+  through anchored container queries (`@container anchored(fallback: …)`);
+  Firefox cannot, and the sheet does not use them. Nor can you rule the
+  fallbacks out: `flip: false` stops the move to the other side, but
+  `createPopover` still offers the browser the other alignments.
+- **The trigger's writing direction is the page's.** The sheet sets a
+  `-start` or `-end` arrow against the direction of the popover, which is
+  portalled to `<body>` and takes the page's. The primitive aligns the popover
+  itself against the trigger's direction. A trigger inside a `dir="rtl"`
+  region of a left-to-right page gets a popover aligned to its right edge and
+  an arrow near the popover's left one.
 
 The menu marks the item under keyboard focus with `:focus-visible`. Roving
 focus moves real focus between items, so there is no highlighted-item attribute
 to style, and in a menu opened with the pointer, focus that follows the pointer
-draws no ring — the hover background is what is meant to mark that item, and
-**today it does not**. The rule is emitted as
-`.volt-menu-item:disabled, .volt-menu-item[aria-disabled='true']:hover`: it
-selects disabled items where it means enabled ones, and its first half has no
-`:hover` at all. An enabled item gets no highlight in either palette; an item
-disabled through `itemProps` never matches, because the sheet also switches off
-its pointer events; and an item that is a natively `disabled` `<button>` is
-painted in the hover colour — `Highlight`, under forced colours — all the time.
-Until that rule is fixed, write the hover yourself:
+draws no ring — the hover background is what marks that item, and
+`Highlight` under forced colours. An item that is unavailable, through
+`itemProps({ disabled: true })` or as a natively `disabled` `<button>`, is
+drawn in the muted text colour, `GrayText` under forced colours, and takes no
+hover: a control that lights up under the pointer looks like it will do
+something. An item written as a `<button>`, as the primitive's own example
+writes it, loses the browser's button border.
 
-```css
-.volt-menu-item:not(:disabled):not([data-disabled]):hover {
-  background-color: var(--volt-color-surface-hover);
-}
+A context menu — `createMenu` with no `trigger` — is not anchored, and
+`position()` reports the press in viewport coordinates, so the sheet makes the
+menu `position: fixed` to match: set its `left` and `top` from `position()`
+and it opens at the press on a scrolled page too. A dropdown menu is not
+affected, since the primitive writes its own scheme inline.
 
-@media (forced-colors: active) {
-  .volt-menu-item:not(:disabled):not([data-disabled]):hover {
-    background-color: Highlight;
-    color: HighlightText;
-  }
-}
-```
-
-A menu item written as a `<button>`, as the primitive's own example writes it,
-also keeps the browser's button border; [tabs](#tabs) has the rule that clears
-it.
-
-A context menu — `createMenu` with no `trigger` — is not anchored and carries no
-`data-anchored`, so neither placement rule applies. The sheet still makes it
-`position: absolute`, while `position()` reports the press in viewport
-coordinates, so give it `position: fixed` in your own CSS before placing it
-there, or it opens in the wrong place on a scrolled page.
-
-The tooltip is `pointer-events: none`, deliberately — a tooltip that can be
-hovered can be hovered off the control it describes. That overrides the
-primitive, which lets the pointer travel onto the tooltip so a long
-description can be read without it closing, as WCAG's Content on Hover or
-Focus criterion (1.4.13) asks. With this sheet the pointer cannot reach it.
-Keep tooltips short, or set `pointer-events` back to `auto` in your own CSS.
+The tooltip can be hovered. The primitive keeps it open while the pointer is
+on it, so a long description can be read without it closing, as WCAG's Content
+on Hover or Focus criterion (1.4.13) asks, and the sheet leaves pointer events
+on for that to work.
 
 ### Tabs
 
@@ -568,31 +537,17 @@ The primitive hides inactive panels with the `hidden` attribute rather than
 unmounting them, so nothing in the sheet sets `display` on a panel, and
 nothing in yours should: a `display` of any kind beats `hidden` and shows every
 panel at once. The selected tab is marked three ways — weight, colour and an
-underline — so that the selection does not rest on colour, which a forced
-palette replaces; under forced colours the text and the underline take
-`Highlight`. Panels have a focus ring, since each is in the tab order.
+edge — so that the selection does not rest on colour, which a forced palette
+replaces; under forced colours the text and the edge take `Highlight`. Panels
+have a focus ring, since each is in the tab order.
 
-The tab rule draws only the bottom edge. A tab written as a `<button>`, as the
-primitive's own example writes it, keeps the browser's button border on the
-other three sides, and a `<button>` menu item keeps it on all four, because the
-item rule sets no border at all. Until the sheet resets them, do it in your own
-CSS:
-
-```css
-.volt-tabs-tab {
-  border-block-start-style: none;
-  border-inline-start-style: none;
-  border-inline-end-style: none;
-}
-
-.volt-menu-item {
-  border-style: none;
-}
-```
-
-A vertical list moves its edge to the inline end, but nothing changes for the
-tabs in it: the selected one is still underlined along its bottom edge rather
-than marked on the edge beside the panels.
+The edge is the one that faces the panels: beneath a tab in a horizontal list,
+and at the inline end of a tab in a vertical one, where the list draws its own
+edge too. A tab draws that edge and no other, so a tab written as a `<button>`,
+as the primitive's own example writes it, loses the browser's button border.
+An unselected tab keeps its edge clear with `transparent`, which a forced
+palette paints like any other colour, so under forced colours the sheet takes
+that edge away instead, and only the selected tab has one.
 
 ### Toast
 
@@ -617,18 +572,11 @@ number there is nothing to animate between. The primitive keeps a closing panel
 present until that animation has run, so render the panel under
 `:if="isPresent(value)"` and the collapse is seen before it goes.
 
-The expand animation fills forwards, so an open panel is held at the height
-measured when it opened rather than going back to `auto`. The primitive
-measures again when the panel's own box changes size, which a new width does,
-but content that grows inside it without that — an image arriving — is clipped
-until then. In your own CSS, a `backwards` fill on the open panel lets it go
-back to `auto` once the animation has run:
-
-```css
-.volt-accordion-panel[data-state='open'] {
-  animation-fill-mode: backwards;
-}
-```
+The expand animation fills backwards only. Once it has run, the open panel
+goes back to the height of its content rather than staying at the height
+measured when it opened, so content that grows inside it later — an image
+arriving — is not clipped. The collapse fills forwards, and holds the panel
+shut until the primitive lets it go.
 
 `contractProperties`, a `ReadonlySet<string>`, is the list of such properties —
 the ones a primitive writes and a rule may read — and
@@ -640,16 +588,19 @@ It is not a token: nobody decides in advance how tall a panel's content is.
 **Forced colours.** Each component restates, under
 `@media (forced-colors: active)`, the states it shows in colour, in a channel
 the user's palette does not flatten: a checked box takes a thicker border, a
-danger button a double one, the selected tab `Highlight` on its text and
-underline, and a floating panel a border in place of the shadow forced-colors
-mode does not paint. The dialog's scrim is dropped — a colour with an alpha
-would become an opaque `Canvas` over the page — and the content's border
-separates the two surfaces instead. Two states are not carried across: a tab's
-hover is drawn only in colour and never restated, and the menu item's hover is
-restated in the same broken selector as its ordinary rule. Inside that block a
-colour is a system colour, `transparent` or `currentColor`, and the tests
-refuse any other: any other colour is replaced by whichever system colour the
-browser guesses fits, which is the guess the block exists to take away.
+danger button a double one, the selected tab `Highlight` on its text and edge,
+a hovered button or tab an underline, a hovered menu item the `Highlight` pair,
+and a floating panel a border in place of the shadow forced-colors mode does
+not paint. The dialog's scrim is dropped — a colour with an alpha would become
+an opaque `Canvas` over the page — and the content's border separates the two
+surfaces instead. Inside that block a colour is a system colour, `transparent`
+or `currentColor`, and the tests refuse any other: any other colour is replaced
+by whichever system colour the browser guesses fits, which is the guess the
+block exists to take away. `transparent` hides nothing there except as a
+background: an edge, an outline or text drawn in it is painted like any other
+colour. So what the sheet hides with `transparent` in the ordinary palette —
+an unselected tab's edge, an unchecked box's mark — is taken away, or given a
+system colour, under forced colours.
 
 **Reduced motion.** Every transition and animation reads its duration from
 `--volt-duration-fast` or `--volt-duration-medium`, and
@@ -665,28 +616,47 @@ outline is the one focus indicator forced-colors mode keeps drawing.
 ### How much of that is checked
 
 Each component has fixtures — pairs of markup that differ by one state a user
-has to be able to see, such as checked and unchecked. Each pair is mounted with
-the ordinary palette and with a forced one, and has to compute to something
-different in both. Each fixture is mounted again with reduced motion on, and
-every duration it computes has to be zero.
+has to be able to see, such as checked and unchecked, or an item with the
+pointer on it and one without. Each pair is mounted with the ordinary palette
+and with a forced one, and has to compute to something different in both. In
+the forced one a colour that is not a system colour counts as the palette's
+choice rather than the sheet's, so a pair that differs only in colours the
+palette would replace fails. Each fixture is mounted again with reduced motion
+on, and every duration it computes has to be zero.
 
 A difference in any of the measured properties counts, animation name
 included. Where a component's only pair is open against closed — the dialog
 and the tooltip — the two sides differ by which animation is on them in either
-palette, so for those two the forced-colours check passes without saying
-anything about colour.
+palette, so for those two the pair check passes without saying anything about
+colour.
+
+Two things a pair cannot see are checked across every fixture under the forced
+palette, since both are about which colour the palette would paint. Nothing is
+drawn in `transparent` — no edge, outline or text — because the palette would
+show it. And every element that casts a shadow in the ordinary palette — the
+dialog, menu, popover, toast and tooltip — draws an edge on all four sides in
+a system colour other than its own fill, since that edge is all that is left
+to tell it from the page.
+
+Beside the fixtures, each primitive is mounted with its documented markup and
+the sheet in the document, as described [at the top](#primitives-alone-or-with-this-on-top),
+and what the two do together is measured there: the hover on a menu item, the
+gap and the arrow of a popover in each of its twelve placements, the edge of a
+tab in either orientation, the box and mark of a checkbox with its words
+inside, and the scheme a context menu is placed with.
 
 The limits are those of the environment. The tests run in happy-dom, which
 supports both preferences as device settings and resolves `var()` through the
 token chain, but drops `@layer` blocks whole — so the fixtures are measured
 against an unlayered copy of the sheet built from the same data, and the claim
 that your CSS beats the sheet is checked by walking the emitted text for
-anything outside a layer, not by a browser deciding a cascade. happy-dom lays
-nothing out and gives a `<button>` none of a browser's own styling, so no test
-can see where a rule puts an element or what a button brings with it — which is
-how the dialog's position and the borders on `<button>` tabs got through. A
-state with no fixture is not checked at all: no fixture hovers anything, which
-is how the menu's hover rule got through. Nothing runs in a real browser, and
+anything outside a layer, not by a browser deciding a cascade. It never matches
+`:hover`, so that copy spells it `[data-hover]`, which is exactly as specific.
+It gives a `<button>` none of a browser's own styling, so the checks on button
+borders add the border a browser gives one. And it lays nothing out: no test
+can see where an element ends up, only what the rules placing it compute to —
+which is why the dialog's centring is checked by holding its keyframes to the
+rule they animate, not by measuring a box. Nothing runs in a real browser, and
 nothing is a visual test.
 
 ## Styles as data
@@ -743,6 +713,14 @@ The rules keep to a few constraints, each checked by the tests:
 - **Keyframes of its own.** Every animation name a component uses is defined
   by that component, so a component copied on its own does not name an
   animation that was left behind.
+- **Every shadow an elevation role**, so that repointing
+  `--volt-elevation-overlay` reaches every surface drawn at that height.
+- **Animations that end where the rule rests.** An animation's value beats a
+  rule's and these fill, so an entry animation has to end, and an exit start,
+  at whatever value the component's own rule gives the property — the check
+  that keeps the dialog centred. And an entry animation to a height a primitive
+  measured fills backwards only, so the open element does not keep that height
+  once it has run.
 - **A forced-colours block.** Every component has one. The test checks only
   that it is not empty; what is in it is checked through the fixtures, as
   [above](#how-much-of-that-is-checked).
@@ -750,13 +728,13 @@ The rules keep to a few constraints, each checked by the tests:
 | Export | Description |
 |---|---|
 | `componentStyles` | Every component, alphabetical |
-| `buttonStyles`, `checkboxStyles`, `dialogStyles`, `popoverStyles`, `tabsStyles`, `toastStyles` | One component each |
+| `accordionStyles`, `buttonStyles`, `checkboxStyles`, `dialogStyles`, `menuStyles`, `popoverStyles`, `tabsStyles`, `toastStyles`, `tooltipStyles` | One component each |
 | `componentCss(component, indent?)` | One component's CSS, in no layer |
 | `rulesToCss(rules, indent?)` | Serialise rules, a blank line between each |
 | `keyframesToCss(frames, indent?)` | Serialise `@keyframes` blocks |
 | `wrap(prelude, body, indent?)` | Wrap serialised CSS in an at-rule block |
 | `FORCED_COLORS_QUERY` | `'@media (forced-colors: active)'` |
-| `VERSION` | `'0.1.0'` — behind the package's own `0.1.0-alpha.1` |
+| `VERSION` | `'0.1.0-alpha.1'`, the version the package is published as |
 
 `componentCss` is what the generator will use, and its output is in no layer.
 Written into a page as it is, it beats all of your layered CSS and fights your
@@ -776,37 +754,7 @@ const css = wrap(`@layer ${LAYER_COMPONENTS}`, componentCss(dialogStyles, '  '))
   intended distribution, and the reason the styles are data. Nothing ships it.
 - **A `.css` file in the package.** Generate one with `stylesheet()`.
 - **A release.** The package is not on npm.
-- **Individual exports for three components.** `accordionStyles`,
-  `menuStyles` and `tooltipStyles` exist in the source but are not exported
-  from the package; the three are reachable through `componentStyles`,
-  `classes` and the sheet.
-- **Typed class names.** `classes` is a string-keyed record; there is no type
-  that knows `dialog` has a `content`.
 - **A second palette**, and a `color-scheme` to go with one.
 - **Most of the primitives.** Nine are styled. Switch, radio group, select,
   combobox and the rest of the collections, form, display and data primitives
   have no styles here; the package covers a subset on purpose.
-
-## Known problems
-
-Each is described under its component, with a rule of your own that works
-around it where there is one.
-
-- **The dialog is not centred.** Its entry animation replaces the `translate`
-  that centres it — [dialog](#dialog).
-- **The menu has no hover highlight**, and paints a natively disabled
-  `<button>` item in the hover colour all the time —
-  [popover, menu and tooltip](#popover-menu-and-tooltip).
-- **A `<button>` tab or menu item keeps the browser's border** — [tabs](#tabs).
-- **An open accordion panel is held at its measured height**, so content that
-  grows later is clipped — [accordion](#accordion).
-- **The tooltip's `pointer-events: none`** switches off the primitive's
-  hoverable content — [popover, menu and tooltip](#popover-menu-and-tooltip).
-- **The popover arrow** has no rules for `left` or `right` placements, sits at
-  the start of its edge rather than under the trigger, and stays on the
-  requested side after a flip — [popover, menu and tooltip](#popover-menu-and-tooltip).
-- **The no-anchor fallback** cannot work for the portalled markup the
-  primitives' own examples use — [popover, menu and tooltip](#popover-menu-and-tooltip).
-- **A vertical tab list** still underlines its selected tab — [tabs](#tabs).
-- **A tab's hover** is not restated for forced colours —
-  [accessibility](#accessibility-the-sheet-carries).

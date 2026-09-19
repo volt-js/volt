@@ -1,15 +1,19 @@
 /**
  * Checkbox — the styled half of `createCheckbox`.
  *
- * The box is drawn on the element the user operates, and the tick lives in a
- * child so the consumer can put whatever mark they like in it. The primitive
- * writes `data-state` as `checked`, `unchecked` or `indeterminate` and
- * `data-disabled` when it is off, and those are the only hooks these rules
- * select on — nothing here reads ARIA, which is there to be spoken rather
- * than styled against.
+ * The control holds the box and, as the primitive's own example writes it, the
+ * words that name it. So the box is drawn on the indicator, a child, and the
+ * control is only the row the two sit on; whatever mark the consumer likes
+ * goes inside the indicator. The primitive writes `data-state` as `checked`,
+ * `unchecked` or `indeterminate` and `data-disabled` when it is off, all on
+ * the control, and those are the only hooks these rules select on — nothing
+ * here reads ARIA, which is there to be spoken rather than styled against.
  *
- * The mark is hidden with `visibility` rather than `display`, so that the box
- * does not resize between states and a mark drawn as an SVG keeps its layout.
+ * The mark is hidden by drawing it in no colour rather than with `display`, so
+ * that the box does not resize between states and a mark drawn as an SVG keeps
+ * its layout. `visibility` would take the box with it: the mark has no element
+ * of its own that a selector here could name. It follows that the mark has to
+ * be drawn in `currentColor`, which a glyph is and an SVG can be.
  */
 
 import type { ComponentStyles } from '../css.js';
@@ -19,17 +23,25 @@ const root = 'volt-checkbox';
 const indicator = 'volt-checkbox-indicator';
 const field = 'volt-checkbox-field';
 
-const CHECKED = `.${root}[data-state='checked'], .${root}[data-state='indeterminate']`;
+/** The box of a control that is checked, or part-checked. */
+function checkedBox(): string {
+  return ['checked', 'indeterminate']
+    .map((state) => `.${root}[data-state='${state}'] .${indicator}`)
+    .join(', ');
+}
 
-export const checkboxStyles: ComponentStyles = {
+/** Part to class, on its own so that a bundle can take it without the rules. */
+export const checkboxClasses = { root, indicator, field } as const;
+
+export const checkboxStyles = /* @__PURE__ */ ((): ComponentStyles => ({
   name: 'checkbox',
-  classes: { root, indicator, field },
+  classes: checkboxClasses,
   keyframes: [],
 
   rules: [
-    // The row a checkbox and its label sit on. Optional, and separate from
-    // the control, because a label is the consumer's text in the consumer's
-    // element — this only says how the two line up.
+    // The `<label>` around the control. Optional: it sets the type the words
+    // are read in, and lines them up with the control when they sit beside it
+    // rather than inside it.
     {
       selector: `.${field}`,
       declarations: {
@@ -46,33 +58,18 @@ export const checkboxStyles: ComponentStyles = {
     {
       selector: `.${root}`,
       declarations: {
-        'box-sizing': 'border-box',
         display: 'inline-flex',
         'align-items': 'center',
-        'justify-content': 'center',
-        'flex-shrink': '0',
-        'inline-size': 'var(--volt-space-5)',
-        'block-size': 'var(--volt-space-5)',
-        'border-width': 'var(--volt-border-width-1)',
-        'border-style': 'solid',
-        'border-color': 'var(--volt-color-border-strong)',
+        'column-gap': 'var(--volt-space-2)',
+        // The focus ring follows these corners: it hugs the box when the
+        // control holds nothing else, and rounds the row when the words are in
+        // it too.
         'border-radius': 'var(--volt-radius-1)',
-        'background-color': 'var(--volt-color-surface)',
-        color: 'var(--volt-color-on-accent)',
         cursor: 'pointer',
-        ...transition('background-color, border-color'),
       },
     },
 
     { selector: `.${root}:focus-visible`, declarations: { ...focusRing } },
-
-    {
-      selector: CHECKED,
-      declarations: {
-        'background-color': 'var(--volt-color-accent)',
-        'border-color': 'var(--volt-color-accent)',
-      },
-    },
 
     {
       selector: `.${root}[data-disabled]`,
@@ -85,30 +82,44 @@ export const checkboxStyles: ComponentStyles = {
     {
       selector: `.${indicator}`,
       declarations: {
+        'box-sizing': 'border-box',
         display: 'inline-flex',
         'align-items': 'center',
         'justify-content': 'center',
-        'inline-size': '100%',
-        'block-size': '100%',
-        color: 'currentColor',
-        visibility: 'hidden',
+        'flex-shrink': '0',
+        'inline-size': 'var(--volt-space-5)',
+        'block-size': 'var(--volt-space-5)',
+        'border-width': 'var(--volt-border-width-1)',
+        'border-style': 'solid',
+        'border-color': 'var(--volt-color-border-strong)',
+        'border-radius': 'var(--volt-radius-1)',
+        'background-color': 'var(--volt-color-surface)',
+        color: 'transparent',
+        ...transition('background-color, border-color'),
       },
     },
     {
-      selector: `.${root}[data-state='checked'] .${indicator}, .${root}[data-state='indeterminate'] .${indicator}`,
-      declarations: { visibility: 'visible' },
+      selector: checkedBox(),
+      declarations: {
+        'background-color': 'var(--volt-color-accent)',
+        'border-color': 'var(--volt-color-accent)',
+        color: 'var(--volt-color-on-accent)',
+      },
     },
   ],
 
   forcedColors: [
     // `Field` and `FieldText` rather than `Canvas`: this is an input, and the
     // forced palette keeps a separate pair for the things a user fills in.
+    // The mark takes the colour of the fill it sits on, because `transparent`
+    // is a colour like any other to this mode, and would be replaced with one
+    // that shows.
     {
-      selector: `.${root}`,
+      selector: `.${indicator}`,
       declarations: {
         'background-color': 'Field',
         'border-color': 'FieldText',
-        color: 'FieldText',
+        color: 'Field',
       },
     },
 
@@ -118,7 +129,7 @@ export const checkboxStyles: ComponentStyles = {
     // inside is the other half, and it is `HighlightText` so it stays legible
     // against the fill it sits on.
     {
-      selector: CHECKED,
+      selector: checkedBox(),
       declarations: {
         'background-color': 'Highlight',
         'border-color': 'Highlight',
@@ -127,15 +138,12 @@ export const checkboxStyles: ComponentStyles = {
       },
     },
 
+    { selector: `.${root}[data-disabled]`, declarations: { color: 'GrayText', opacity: '1' } },
     {
-      selector: `.${root}[data-disabled]`,
-      declarations: {
-        'border-color': 'GrayText',
-        color: 'GrayText',
-        opacity: '1',
-      },
+      selector: `.${root}[data-disabled] .${indicator}`,
+      declarations: { 'border-color': 'GrayText' },
     },
 
     { selector: `.${root}:focus-visible`, declarations: { ...forcedFocusRing } },
   ],
-};
+}))();

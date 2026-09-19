@@ -21,9 +21,21 @@ const title = 'volt-dialog-title';
 const description = 'volt-dialog-description';
 const footer = 'volt-dialog-footer';
 
-export const dialogStyles: ComponentStyles = {
+/**
+ * Where the content rests, and where it rises from. The keyframes carry the
+ * centring as well as the rule: an animation's value beats a rule's and these
+ * fill forwards, so keyframes that ended at `0 0` would leave the dialog's
+ * corner where its middle belongs.
+ */
+const CENTRED = '-50% -50%';
+const LOWERED = '-50% calc(-50% + var(--volt-space-2))';
+
+/** Part to class, on its own so that a bundle can take it without the rules. */
+export const dialogClasses = { overlay, content, title, description, footer } as const;
+
+export const dialogStyles = /* @__PURE__ */ ((): ComponentStyles => ({
   name: 'dialog',
-  classes: { overlay, content, title, description, footer },
+  classes: dialogClasses,
 
   keyframes: [
     {
@@ -43,15 +55,15 @@ export const dialogStyles: ComponentStyles = {
     {
       name: 'volt-dialog-content-in',
       steps: [
-        { offset: 'from', declarations: { opacity: '0', translate: '0 var(--volt-space-2)' } },
-        { offset: 'to', declarations: { opacity: '1', translate: '0 0' } },
+        { offset: 'from', declarations: { opacity: '0', translate: LOWERED } },
+        { offset: 'to', declarations: { opacity: '1', translate: CENTRED } },
       ],
     },
     {
       name: 'volt-dialog-content-out',
       steps: [
-        { offset: 'from', declarations: { opacity: '1', translate: '0 0' } },
-        { offset: 'to', declarations: { opacity: '0', translate: '0 var(--volt-space-2)' } },
+        { offset: 'from', declarations: { opacity: '1', translate: CENTRED } },
+        { offset: 'to', declarations: { opacity: '0', translate: LOWERED } },
       ],
     },
   ],
@@ -85,7 +97,7 @@ export const dialogStyles: ComponentStyles = {
         position: 'fixed',
         'inset-block-start': '50%',
         'inset-inline-start': '50%',
-        translate: '-50% -50%',
+        translate: CENTRED,
         // The viewport, less a margin, is the ceiling — a dialog taller than
         // the screen with no way to scroll is a dialog with an unreachable
         // confirm button.
@@ -170,4 +182,4 @@ export const dialogStyles: ComponentStyles = {
     },
     { selector: `.${content}:focus-visible`, declarations: { ...forcedFocusRing } },
   ],
-};
+}))();

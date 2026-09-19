@@ -22,9 +22,12 @@ import {
 
 const root = 'volt-button';
 
-export const buttonStyles: ComponentStyles = {
+/** Part to class, on its own so that a bundle can take it without the rules. */
+export const buttonClasses = { root } as const;
+
+export const buttonStyles = /* @__PURE__ */ ((): ComponentStyles => ({
   name: 'button',
-  classes: { root },
+  classes: buttonClasses,
   keyframes: [],
 
   rules: [
@@ -145,10 +148,11 @@ export const buttonStyles: ComponentStyles = {
       },
     },
 
-    // `transparent` is one of the few colours forced-colors mode leaves
-    // alone, so a ghost button keeps its missing edge unless it is given one
-    // back here — and it has to be given back at the same specificity that
-    // took it away, since a media query adds none.
+    // A ghost button's edge is `transparent`, which this mode paints like any
+    // other colour, so the edge comes back whatever is said here. Saying
+    // `ButtonBorder` makes it the edge every other button has rather than one
+    // the palette guesses at — and it has to be said at the same specificity
+    // as the rule that made it transparent, since a media query adds none.
     {
       selector: `.${root}[data-variant='ghost']`,
       declarations: {
@@ -207,4 +211,4 @@ export const buttonStyles: ComponentStyles = {
     { selector: `.${root}:focus-visible`, declarations: { ...forcedFocusRing } },
     { selector: disabledSelector(`.${root}`), declarations: { ...forcedDisabled } },
   ],
-};
+}))();

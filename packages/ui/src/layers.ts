@@ -15,7 +15,7 @@
  * wants to stay overridable by the application importing it.
  */
 
-/** Resets and the token table. */
+/** The token table, and what a reduced-motion preference changes about it. */
 export const LAYER_BASE = 'volt.base';
 /** Everything a component draws. */
 export const LAYER_COMPONENTS = 'volt.components';

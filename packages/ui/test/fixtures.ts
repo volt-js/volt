@@ -11,6 +11,9 @@
  *
  * `test/forced-colors.test.ts` requires an entry here for every component in
  * the registry, so a seventh component cannot arrive without one.
+ *
+ * The pointer is `data-hover`, which the harness's copy of the sheet reads in
+ * place of `:hover` — happy-dom never matches the real thing.
  */
 
 import type { Fixture } from './harness.ts';
@@ -55,9 +58,9 @@ const dialog = (state: string): Fixture => ({
   ],
 });
 
-const popover = (state: string, anchored = 'true', focus = false): Fixture => ({
+const popover = (state: string, focus = false): Fixture => ({
   classes: ['volt-popover-content'],
-  attributes: { 'data-state': state, 'data-anchored': anchored, tabindex: '-1' },
+  attributes: { 'data-state': state, 'data-placement': 'bottom', tabindex: '-1' },
   focus,
   children: [
     { tag: 'h2', classes: ['volt-popover-title'] },
@@ -121,15 +124,15 @@ const menuItem = (attributes: Record<string, string> = {}, focus = false): Fixtu
   focus,
 });
 
-const menu = (state: string, anchored = 'true'): Fixture => ({
+const menu = (state: string): Fixture => ({
   classes: ['volt-menu-content'],
-  attributes: { role: 'menu', 'data-state': state, 'data-anchored': anchored },
+  attributes: { role: 'menu', 'data-state': state },
   children: [menuItem(), { classes: ['volt-menu-separator'] }, menuItem()],
 });
 
-const tooltip = (state: string, anchored = 'true'): Fixture => ({
+const tooltip = (state: string): Fixture => ({
   classes: ['volt-tooltip-content'],
-  attributes: { 'data-state': state, 'data-anchored': anchored },
+  attributes: { 'data-state': state },
 });
 
 const region = (focus = false): Fixture => ({
@@ -163,6 +166,7 @@ export const fixtures: Readonly<Record<string, ComponentFixtures>> = {
       },
       { state: 'disabled', off: button(), on: button({ 'aria-disabled': 'true' }) },
       { state: 'focus', off: button(), on: button({}, true) },
+      { state: 'hover', off: button(), on: button({ 'data-hover': '' }) },
     ],
     extra: [
       button({ 'data-variant': 'ghost' }),
@@ -191,9 +195,8 @@ export const fixtures: Readonly<Record<string, ComponentFixtures>> = {
   popover: {
     states: [
       { state: 'presence', off: popover('closed'), on: popover('open') },
-      { state: 'focus', off: popover('open'), on: popover('open', 'true', true) },
+      { state: 'focus', off: popover('open'), on: popover('open', true) },
     ],
-    extra: [popover('open', 'false')],
   },
 
   tabs: {
@@ -213,8 +216,15 @@ export const fixtures: Readonly<Record<string, ComponentFixtures>> = {
         off: tab({ 'data-state': 'inactive' }),
         on: tab({ 'data-state': 'inactive' }, true),
       },
+      {
+        state: 'hover',
+        off: tab({ 'data-state': 'inactive' }),
+        on: tab({ 'data-state': 'inactive', 'data-hover': '' }),
+      },
     ],
     extra: [
+      tab({ 'data-state': 'active', 'data-orientation': 'vertical' }),
+      tab({ 'data-state': 'inactive', 'data-orientation': 'vertical' }),
       { classes: ['volt-tabs-list'], attributes: { 'data-orientation': 'horizontal' } },
       { classes: ['volt-tabs-list'], attributes: { 'data-orientation': 'vertical' } },
       { classes: ['volt-tabs-panel'], attributes: { tabindex: '0' } },
@@ -227,15 +237,27 @@ export const fixtures: Readonly<Record<string, ComponentFixtures>> = {
       { state: 'presence', off: menu('closed'), on: menu('open') },
       // Disabled has to survive the palette: the muted colour it is drawn in
       // is one of the first things a forced palette takes away.
-      { state: 'disabled', off: menuItem(), on: menuItem({ 'data-disabled': '' }) },
+      {
+        state: 'disabled',
+        off: menuItem(),
+        on: menuItem({ 'aria-disabled': 'true', 'data-disabled': '' }),
+      },
+      // The primitive treats a `<button>` item that is natively `disabled` as
+      // unavailable too, and writes nothing on it to say so.
+      {
+        state: 'natively disabled',
+        off: { ...menuItem(), tag: 'button' },
+        on: { ...menuItem({ disabled: '' }), tag: 'button' },
+      },
       { state: 'focus', off: menuItem(), on: menuItem({}, true) },
+      // Focus follows the pointer through a menu without drawing a ring, so the
+      // hover background is the only thing marking the item a pointer is on.
+      { state: 'hover', off: menuItem(), on: menuItem({ 'data-hover': '' }) },
     ],
-    extra: [menu('open', 'false')],
   },
 
   tooltip: {
     states: [{ state: 'presence', off: tooltip('closed'), on: tooltip('open') }],
-    extra: [tooltip('open', 'false')],
   },
 
   toast: {

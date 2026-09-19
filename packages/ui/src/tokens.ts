@@ -152,11 +152,15 @@ export const reducedMotionTokens: TokenTable = {
   '--volt-duration-medium': '0ms',
 };
 
-/** Every token name the sheet defines. */
-export const tokenNames: ReadonlySet<string> = new Set([
-  ...Object.keys(primitiveTokens),
-  ...Object.keys(semanticTokens),
-]);
+/**
+ * Every token name the sheet defines.
+ *
+ * Built inside a call marked pure, for the reason `ComponentStyles` gives in
+ * `css.ts`: left at module level, the two `Object.keys` calls would keep both
+ * tables in every bundle that imported anything from the package.
+ */
+export const tokenNames: ReadonlySet<string> = /* @__PURE__ */ (() =>
+  new Set([...Object.keys(primitiveTokens), ...Object.keys(semanticTokens)]))();
 
 /** The `:root` block, primitives first so the semantic layer reads top-down. */
 export function tokensCss(indent = ''): string {

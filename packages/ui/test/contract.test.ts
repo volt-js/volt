@@ -16,6 +16,7 @@ import {
   type ComponentStyles,
   type Rule,
 } from '../src/index.ts';
+import { SYSTEM_COLORS } from './harness.ts';
 
 /** Properties whose value is a colour, and so has to come from somewhere. */
 const COLOR_PROPERTIES = new Set([
@@ -33,33 +34,7 @@ const COLOR_PROPERTIES = new Set([
   'stroke',
 ]);
 
-/**
- * The forced palette, as CSS spells it. Only these mean anything inside a
- * `forced-colors` block: any other colour is replaced by the user agent with
- * whichever of these it thinks fits, which is exactly the guess the block
- * exists to take away.
- */
-const SYSTEM_COLORS = new Set([
-  'AccentColor',
-  'AccentColorText',
-  'ActiveText',
-  'ButtonBorder',
-  'ButtonFace',
-  'ButtonText',
-  'Canvas',
-  'CanvasText',
-  'Field',
-  'FieldText',
-  'GrayText',
-  'Highlight',
-  'HighlightText',
-  'LinkText',
-  'Mark',
-  'MarkText',
-  'SelectedItem',
-  'SelectedItemText',
-  'VisitedText',
-]);
+const SYSTEM_COLOR_NAMES = new Set(SYSTEM_COLORS);
 
 /**
  * Shorthands that reset properties they do not name. A consumer overriding
@@ -205,6 +180,20 @@ describe('every component', () => {
     });
   });
 
+  it('takes every shadow from an elevation role', () => {
+    each((component) => {
+      for (const rule of component.rules) {
+        const value = rule.declarations['box-shadow'];
+        if (value === undefined || value === 'none') continue;
+        // A shadow read straight from the primitive ramp is one that stays
+        // where it was when a theme repoints the role.
+        expect(value, `${component.name}: ${rule.selector}`).toMatch(
+          /^var\(--volt-elevation-[\w-]+\)$/,
+        );
+      }
+    });
+  });
+
   it('takes every forced-colours colour from the forced palette', () => {
     each((component) => {
       for (const rule of component.forcedColors) {
@@ -212,9 +201,10 @@ describe('every component', () => {
           if (!COLOR_PROPERTIES.has(property)) continue;
           if (NON_COLOR_KEYWORDS.has(value)) continue;
 
-          expect(SYSTEM_COLORS, `${component.name}: ${rule.selector} { ${property} }`).toContain(
-            value,
-          );
+          expect(
+            SYSTEM_COLOR_NAMES,
+            `${component.name}: ${rule.selector} { ${property} }`,
+          ).toContain(value);
         }
       }
     });
@@ -267,6 +257,56 @@ describe('every component', () => {
         // The generator copies one component at a time, so a name defined in
         // a file the consumer did not take resolves to nothing.
         expect(declared, `${component.name}: ${rule.selector}`).toContain(name);
+      }
+    });
+  });
+
+  it('ends an entry animation, and starts an exit, where the rule has the element', () => {
+    each((component) => {
+      const keyframes = new Map(component.keyframes.map((frames) => [frames.name, frames]));
+      for (const rule of component.rules) {
+        const name = rule.declarations['animation-name'];
+        const state = /\[data-state='(open|closed)'\]$/.exec(rule.selector);
+        if (name === undefined || !state) continue;
+
+        const resting = component.rules.find(
+          (other) => other.selector === rule.selector.slice(0, state.index),
+        );
+        const step = keyframes
+          .get(name)
+          ?.steps.find((each) => each.offset === (state[1] === 'open' ? 'to' : 'from'));
+
+        // An animation's value beats a rule's, and these fill forwards, so a
+        // property that ends anywhere but where the rule has it stays there: a
+        // dialog centred with `translate` and animated to `translate: 0 0`
+        // comes to rest with its corner where its middle should be.
+        for (const [property, value] of Object.entries(step?.declarations ?? {})) {
+          const rest = resting?.declarations[property];
+          if (rest === undefined) continue;
+          expect(value, `${component.name}: ${name} { ${property} }`).toBe(rest);
+        }
+      }
+    });
+  });
+
+  it('never holds an open element at a size a primitive measured once', () => {
+    each((component) => {
+      const keyframes = new Map(component.keyframes.map((frames) => [frames.name, frames]));
+      for (const rule of component.rules) {
+        const name = rule.declarations['animation-name'];
+        if (name === undefined || !rule.selector.endsWith("[data-state='open']")) continue;
+
+        const end = keyframes.get(name)?.steps.find((each) => each.offset === 'to');
+        const measured = Object.values(end?.declarations ?? {})
+          .flatMap(tokensIn)
+          .some((token) => contractProperties.has(token));
+        if (!measured) continue;
+
+        // Filling forwards would keep the measurement for as long as the
+        // element is open, and clip whatever grows inside it afterwards.
+        expect(rule.declarations['animation-fill-mode'], `${component.name}: ${name}`).toBe(
+          'backwards',
+        );
       }
     });
   });

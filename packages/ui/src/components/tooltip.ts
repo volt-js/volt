@@ -5,9 +5,10 @@
  * hint about a control that already has a name, so nothing here draws
  * attention to itself the way the popover does.
  *
- * It is `pointer-events: none` deliberately. A tooltip that can be hovered is
- * a tooltip that can be hovered *off* the control it describes, and a pointer
- * that lands on it while travelling somewhere else takes the hint with it.
+ * The pointer can reach it. The primitive keeps the tooltip open while the
+ * pointer is on the content, so that a long description can be read without
+ * it closing underneath — WCAG's Content on Hover or Focus — and a rule here
+ * switching pointer events off would switch that off with them.
  */
 
 import type { ComponentStyles } from '../css.js';
@@ -15,9 +16,12 @@ import { animation, forcedPanel } from './shared.js';
 
 const content = 'volt-tooltip-content';
 
-export const tooltipStyles: ComponentStyles = {
+/** Part to class, on its own so that a bundle can take it without the rules. */
+export const tooltipClasses = { content } as const;
+
+export const tooltipStyles = /* @__PURE__ */ ((): ComponentStyles => ({
   name: 'tooltip',
-  classes: { content },
+  classes: tooltipClasses,
 
   keyframes: [
     {
@@ -68,14 +72,9 @@ export const tooltipStyles: ComponentStyles = {
         'border-start-end-radius': 'var(--volt-radius-1)',
         'border-end-start-radius': 'var(--volt-radius-1)',
         'border-end-end-radius': 'var(--volt-radius-1)',
-        'box-shadow': 'var(--volt-shadow-1)',
+        'box-shadow': 'var(--volt-elevation-raised)',
         'z-index': 'var(--volt-z-index-overlay)',
-        'pointer-events': 'none',
       },
-    },
-    {
-      selector: `.${content}[data-anchored='false']`,
-      declarations: { 'inset-block-end': '100%', 'inset-inline-start': '0' },
     },
     {
       selector: `.${content}[data-state='open']`,
@@ -93,4 +92,4 @@ export const tooltipStyles: ComponentStyles = {
       declarations: { ...forcedPanel, 'background-color': 'Canvas', color: 'CanvasText' },
     },
   ],
-};
+}))();

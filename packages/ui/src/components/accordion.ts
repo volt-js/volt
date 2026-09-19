@@ -25,9 +25,12 @@ const header = 'volt-accordion-header';
 const trigger = 'volt-accordion-trigger';
 const panel = 'volt-accordion-panel';
 
-export const accordionStyles: ComponentStyles = {
+/** Part to class, on its own so that a bundle can take it without the rules. */
+export const accordionClasses = { root, item, header, trigger, panel } as const;
+
+export const accordionStyles = /* @__PURE__ */ ((): ComponentStyles => ({
   name: 'accordion',
-  classes: { root, item, header, trigger, panel },
+  classes: accordionClasses,
 
   keyframes: [
     {
@@ -125,9 +128,15 @@ export const accordionStyles: ComponentStyles = {
         color: 'var(--volt-color-on-surface)',
       },
     },
+    // Backwards only. Filling forwards would hold the panel at the height
+    // measured as it opened, and clip whatever grew inside it afterwards; once
+    // the animation has run the panel goes back to the height of its content.
     {
       selector: `.${panel}[data-state='open']`,
-      declarations: { ...animation('volt-accordion-expand', 'fast') },
+      declarations: {
+        ...animation('volt-accordion-expand', 'fast'),
+        'animation-fill-mode': 'backwards',
+      },
     },
     {
       selector: `.${panel}[data-state='closed']`,
@@ -144,4 +153,4 @@ export const accordionStyles: ComponentStyles = {
     // muted colour above is one of the first things it takes away.
     { selector: `.${trigger}[data-disabled]`, declarations: { color: 'GrayText' } },
   ],
-};
+}))();

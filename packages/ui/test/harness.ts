@@ -16,6 +16,20 @@
  * device setting, and resolves `var()` through as many hops as the token
  * table has. Those two are what make the accessibility and theming claims
  * checkable at all.
+ *
+ * Three things it does not do are made up for here, each in the copy of the
+ * sheet rather than in any assertion, so that what is measured is still the
+ * cascade deciding between the package's own rules:
+ *
+ * - It never matches `:hover`. The copy spells it `[data-hover]`, which is
+ *   exactly as specific, so a fixture can carry the pointer as an attribute.
+ * - It does not parse system colours: `color: CanvasText` is dropped as
+ *   though it were a typo, and the rule beneath it shows through. The copy
+ *   spells each one as a stand-in colour happy-dom keeps.
+ * - It does not force anything. A document with the forced palette on still
+ *   computes the sheet's own blues and greys, where a browser would have
+ *   replaced them. `snapshot` marks every such colour as replaced, and
+ *   `differences` does not count a colour the palette would have chosen.
  */
 
 import { Window } from 'happy-dom';
@@ -27,7 +41,85 @@ import {
   tokensCss,
   wrap,
   FORCED_COLORS_QUERY,
+  type Rule,
 } from '../src/index.ts';
+
+/**
+ * The forced palette, as CSS spells it. Only these mean anything inside a
+ * `forced-colors` block: any other colour is replaced by the user agent with
+ * whichever of these it thinks fits, which is exactly the guess the block
+ * exists to take away.
+ */
+export const SYSTEM_COLORS: readonly string[] = [
+  'AccentColor',
+  'AccentColorText',
+  'ActiveText',
+  'ButtonBorder',
+  'ButtonFace',
+  'ButtonText',
+  'Canvas',
+  'CanvasText',
+  'Field',
+  'FieldText',
+  'GrayText',
+  'Highlight',
+  'HighlightText',
+  'LinkText',
+  'Mark',
+  'MarkText',
+  'SelectedItem',
+  'SelectedItemText',
+  'VisitedText',
+];
+
+/** One colour per system colour, none of them a colour the tokens use. */
+const STAND_INS = new Map(SYSTEM_COLORS.map((name, index) => [name, `rgb(1, 2, ${index + 3})`]));
+const STAND_IN_VALUES = new Set(STAND_INS.values());
+
+/** What a system colour the sheet names computes to in these documents. */
+export function standIn(name: string): string {
+  const value = STAND_INS.get(name);
+  if (value === undefined) throw new Error(`${name} is not a system colour`);
+  return value;
+}
+
+/** What `snapshot` reports for a colour the forced palette would replace. */
+export const REPLACED = '(replaced by the forced palette)';
+
+/**
+ * Properties whose value is a colour, and which a forced palette replaces.
+ *
+ * `background-color` alone keeps its alpha, so a transparent background stays
+ * transparent; a transparent border or outline is forced like any other colour,
+ * which is why a transparent outline is the usual way to draw a focus ring
+ * that only forced colours can see.
+ */
+const FORCED_PROPERTIES = new Set([
+  'color',
+  'background-color',
+  'border-block-start-color',
+  'border-block-end-color',
+  'border-inline-start-color',
+  'border-inline-end-color',
+  'border-top-color',
+  'border-right-color',
+  'border-bottom-color',
+  'border-left-color',
+  'outline-color',
+  'text-decoration-color',
+]);
+
+function testRules(rules: readonly Rule[]): Rule[] {
+  return rules.map((rule) => ({
+    selector: rule.selector.replaceAll(':hover', '[data-hover]'),
+    declarations: Object.fromEntries(
+      Object.entries(rule.declarations).map(([property, value]) => [
+        property,
+        STAND_INS.get(value) ?? value,
+      ]),
+    ),
+  }));
+}
 
 export interface Fixture {
   readonly tag?: string;
@@ -65,9 +157,9 @@ export function unlayeredCss(): string {
 
   for (const component of componentStyles) {
     if (component.keyframes.length > 0) blocks.push(keyframesToCss(component.keyframes));
-    blocks.push(rulesToCss(component.rules));
+    blocks.push(rulesToCss(testRules(component.rules)));
     if (component.forcedColors.length > 0) {
-      blocks.push(wrap(FORCED_COLORS_QUERY, rulesToCss(component.forcedColors, '  ')));
+      blocks.push(wrap(FORCED_COLORS_QUERY, rulesToCss(testRules(component.forcedColors), '  ')));
     }
   }
 
@@ -119,7 +211,11 @@ export function styledDocument(
       for (const [path, element] of walk(root)) {
         const style = window.getComputedStyle(element);
         for (const property of properties) {
-          values.set(`${path}:${property}`, style.getPropertyValue(property));
+          const value = style.getPropertyValue(property);
+          values.set(
+            `${path}:${property}`,
+            options.forcedColors ? underForcedPalette(property, value) : value,
+          );
         }
       }
       return values;
@@ -135,7 +231,13 @@ export function styledDocument(
   };
 }
 
-/** Every `path:property` the two trees disagree on, with both values. */
+/**
+ * Every `path:property` the two trees disagree on, with both values.
+ *
+ * A colour the forced palette replaces on either side is not a disagreement:
+ * the browser chooses it, not the sheet, and nothing promises that it will
+ * choose differently for the two.
+ */
 export function differences(
   before: Map<string, string>,
   after: Map<string, string>,
@@ -143,9 +245,24 @@ export function differences(
   const changed = new Map<string, { before: string; after: string }>();
   for (const [key, value] of before) {
     const other = after.get(key) ?? '';
+    if (value === REPLACED || other === REPLACED) continue;
     if (other !== value) changed.set(key, { before: value, after: other });
   }
   return changed;
+}
+
+/**
+ * The value as a browser with the forced palette on would use it: a system
+ * colour the sheet chose is kept, and every other colour — including one left
+ * unset, which the browser fills from the palette too — is replaced.
+ */
+function underForcedPalette(property: string, value: string): string {
+  if (!FORCED_PROPERTIES.has(property) || STAND_IN_VALUES.has(value)) return value;
+  // Unset, a background is transparent, and a background keeps its alpha.
+  if (property === 'background-color' && (value === '' || value === 'transparent')) {
+    return 'transparent';
+  }
+  return REPLACED;
 }
 
 function build(document: Document, fixture: Fixture): Element {

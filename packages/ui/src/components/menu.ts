@@ -1,12 +1,10 @@
 /**
  * Menu — the styled half of `createMenu`.
  *
- * The primitive anchors through `createAnchor`, which writes `position-anchor`
- * and `position-area` inline where the browser has CSS anchor positioning and
- * marks the content `data-anchored="false"` where it does not. Both are drawn,
- * for the same reason the popover draws both: a menu that lands in the corner
- * of the page is what leaving the fallback to the consumer looks like from
- * the outside.
+ * The primitive anchors a dropdown through `createAnchor`, which writes the
+ * positioning scheme, `position-anchor` and `position-area` inline, so where
+ * the menu goes is not this file's business. Nothing is said for
+ * `data-anchored="false"`, as nothing is for the popover.
  *
  * There is no highlighted-item attribute to style. Roving focus moves real
  * focus between items, so the item under the cursor is the focused one and
@@ -15,15 +13,29 @@
  */
 
 import type { ComponentStyles } from '../css.js';
-import { animation, disabledSelector, focusRing, forcedFocusRing, forcedPanel } from './shared.js';
+import { animation, focusRing, forcedFocusRing, forcedPanel } from './shared.js';
 
 const content = 'volt-menu-content';
 const item = 'volt-menu-item';
 const separator = 'volt-menu-separator';
 
-export const menuStyles: ComponentStyles = {
+/**
+ * An item that can be chosen. The primitive marks a disabled item with
+ * `data-disabled`, and treats a natively `disabled` one the same way.
+ */
+const ENABLED_ITEM = ':not(:disabled):not([data-disabled])';
+
+/** Both of them, for the rules that draw an item as unavailable. */
+function disabledItem(): string {
+  return `.${item}:disabled, .${item}[data-disabled]`;
+}
+
+/** Part to class, on its own so that a bundle can take it without the rules. */
+export const menuClasses = { content, item, separator } as const;
+
+export const menuStyles = /* @__PURE__ */ ((): ComponentStyles => ({
   name: 'menu',
-  classes: { content, item, separator },
+  classes: menuClasses,
 
   keyframes: [
     {
@@ -47,7 +59,10 @@ export const menuStyles: ComponentStyles = {
       selector: `.${content}`,
       declarations: {
         'box-sizing': 'border-box',
-        position: 'absolute',
+        // For the context menu, which the consumer places from `position()` —
+        // and that is measured against the viewport, not the page. A dropdown
+        // never reads this: the primitive writes its own scheme inline.
+        position: 'fixed',
         'min-inline-size': 'var(--volt-space-20)',
         'max-inline-size': 'min(var(--volt-space-80), calc(100vw - var(--volt-space-8)))',
         'max-block-size': 'calc(100vh - var(--volt-space-8))',
@@ -74,17 +89,9 @@ export const menuStyles: ComponentStyles = {
         'border-start-end-radius': 'var(--volt-radius-2)',
         'border-end-start-radius': 'var(--volt-radius-2)',
         'border-end-end-radius': 'var(--volt-radius-2)',
-        'box-shadow': 'var(--volt-shadow-2)',
+        'box-shadow': 'var(--volt-elevation-overlay)',
         'z-index': 'var(--volt-z-index-overlay)',
       },
-    },
-    // Without anchor positioning the primitive writes no placement at all, so
-    // the menu would sit wherever `position: absolute` put it. Pinning it to
-    // the top of its containing block is not correct placement, but it is a
-    // menu on the page rather than one in the corner of the document.
-    {
-      selector: `.${content}[data-anchored='false']`,
-      declarations: { 'inset-block-start': '100%', 'inset-inline-start': '0' },
     },
     {
       selector: `.${content}[data-state='open']`,
@@ -112,6 +119,12 @@ export const menuStyles: ComponentStyles = {
         'line-height': 'var(--volt-line-height-normal)',
         color: 'var(--volt-color-on-surface)',
         'background-color': 'transparent',
+        // An item is a `<button>` as often as not, and a button arrives with
+        // a border of the browser's own.
+        'border-block-start-width': '0',
+        'border-block-end-width': '0',
+        'border-inline-start-width': '0',
+        'border-inline-end-width': '0',
         'border-start-start-radius': 'var(--volt-radius-1)',
         'border-start-end-radius': 'var(--volt-radius-1)',
         'border-end-start-radius': 'var(--volt-radius-1)',
@@ -122,12 +135,12 @@ export const menuStyles: ComponentStyles = {
       },
     },
     {
-      selector: `${disabledSelector(`.${item}`)}:hover`,
+      selector: `.${item}${ENABLED_ITEM}:hover`,
       declarations: { 'background-color': 'var(--volt-color-surface-hover)' },
     },
     { selector: `.${item}:focus-visible`, declarations: { ...focusRing } },
     {
-      selector: `.${item}[data-disabled]`,
+      selector: disabledItem(),
       declarations: {
         color: 'var(--volt-color-on-surface-muted)',
         'pointer-events': 'none',
@@ -150,17 +163,21 @@ export const menuStyles: ComponentStyles = {
       selector: `.${content}`,
       declarations: { ...forcedPanel, 'background-color': 'Canvas', color: 'CanvasText' },
     },
+    // Said outright rather than left to the palette, which would give a
+    // `<button>` item `ButtonText` and its neighbours `CanvasText`, and leave
+    // the grey of a disabled item standing against a colour nobody chose.
+    { selector: `.${item}`, declarations: { color: 'CanvasText' } },
     // Hover is the only thing telling a pointer user which item they are on,
     // and the forced palette flattens the background it was drawn with.
     // `Highlight` is the pair the palette guarantees for exactly this.
     {
-      selector: `${disabledSelector(`.${item}`)}:hover`,
+      selector: `.${item}${ENABLED_ITEM}:hover`,
       declarations: { 'background-color': 'Highlight', color: 'HighlightText' },
     },
     { selector: `.${item}:focus-visible`, declarations: { ...forcedFocusRing } },
     // Grey is the one thing a forced palette says about unavailability, and
     // it has to be said here because the muted colour above is gone.
-    { selector: `.${item}[data-disabled]`, declarations: { color: 'GrayText' } },
+    { selector: disabledItem(), declarations: { color: 'GrayText' } },
     { selector: `.${separator}`, declarations: { 'background-color': 'CanvasText' } },
   ],
-};
+}))();

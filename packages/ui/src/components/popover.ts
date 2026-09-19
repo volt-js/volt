@@ -1,15 +1,18 @@
 /**
  * Popover — the styled half of `createPopover`.
  *
- * The primitive positions with CSS anchor positioning where the browser has
- * it, and says so on the content: `data-anchored="true"` when it wrote
- * `position-anchor` and `position-area` inline, `"false"` when it left the
- * placement to CSS. Both cases are drawn here, because a popover that lands
- * in the top-left corner of the page is what "the fallback is the consumer's
- * problem" looks like from the outside.
+ * The primitive positions with CSS anchor positioning: it writes the scheme,
+ * `position-anchor` and `position-area` inline, so where the popover goes is
+ * not this file's business. Nothing is said for `data-anchored="false"`. Every
+ * current engine anchors, and a popover portalled to `<body>`, as the
+ * primitive's own example portals it, has no positioned ancestor that a rule
+ * here could place it against.
  *
- * `data-placement` is on the content and on the arrow, so the arrow can point
- * back at the trigger without JavaScript measuring anything.
+ * `data-placement` is on the content and on the arrow, so the gap can be left
+ * on the side that faces the trigger and the arrow can point back at it
+ * without JavaScript measuring anything. It is the placement that was asked
+ * for: when the engine takes a fallback instead, nothing on the element
+ * changes, and only some engines let a stylesheet ask which it took.
  */
 
 import type { ComponentStyles } from '../css.js';
@@ -20,9 +23,23 @@ const title = 'volt-popover-title';
 const description = 'volt-popover-description';
 const arrow = 'volt-popover-arrow';
 
-export const popoverStyles: ComponentStyles = {
+/** How far out of the popover's edge the arrow's box is set: half of it. */
+const ARROW_OUT = 'calc(var(--volt-space-1) * -1)';
+/** The middle of an edge, less half the arrow's box with its borders on. */
+const ARROW_CENTRE = 'calc(50% - var(--volt-space-1) - var(--volt-border-width-1))';
+/** Clear of the corner's radius, and under all but the narrowest trigger. */
+const ARROW_INSET = 'var(--volt-space-3)';
+
+function arrowAt(...placements: string[]): string {
+  return placements.map((placement) => `.${arrow}[data-placement='${placement}']`).join(', ');
+}
+
+/** Part to class, on its own so that a bundle can take it without the rules. */
+export const popoverClasses = { content, title, description, arrow } as const;
+
+export const popoverStyles = /* @__PURE__ */ ((): ComponentStyles => ({
   name: 'popover',
-  classes: { content, title, description, arrow },
+  classes: popoverClasses,
 
   keyframes: [
     {
@@ -63,21 +80,22 @@ export const popoverStyles: ComponentStyles = {
         'line-height': 'var(--volt-line-height-normal)',
         'box-shadow': 'var(--volt-elevation-overlay)',
         'z-index': 'var(--volt-z-index-overlay)',
-        // The gap between the trigger and the popover, read by the anchored
-        // path through `position-area` and by the fallback below.
+        // The gap between the trigger and a popover above or below it. An
+        // `offset` given to the primitive is written inline and replaces it.
         'margin-block-start': 'var(--volt-space-2)',
         'margin-block-end': 'var(--volt-space-2)',
       },
     },
-
-    // No anchor positioning: the popover has no idea where its trigger is, so
-    // it is placed against the nearest positioned ancestor and the consumer
-    // is told, in one place, what to make relative.
+    // Beside the trigger the gap is on the other axis, and none is left on
+    // this one, where it would push a popover aligned to one of the trigger's
+    // edges off that edge.
     {
-      selector: `.${content}[data-anchored='false']`,
+      selector: `.${content}[data-placement^='left'], .${content}[data-placement^='right']`,
       declarations: {
-        'inset-block-start': '100%',
-        'inset-inline-start': '0',
+        'margin-block-start': '0',
+        'margin-block-end': '0',
+        'margin-inline-start': 'var(--volt-space-2)',
+        'margin-inline-end': 'var(--volt-space-2)',
       },
     },
 
@@ -122,21 +140,64 @@ export const popoverStyles: ComponentStyles = {
         'border-color': 'var(--volt-color-border)',
       },
     },
+    // The edge that faces the trigger, and the two borders that would show
+    // inside the popover left undrawn. Physical where the rest of the sheet is
+    // logical: `rotate` turns the square the same way whichever way the text
+    // runs, and the primitive's `left` and `right` are physical too.
     {
       selector: `.${arrow}[data-placement^='bottom']`,
       declarations: {
-        'inset-block-start': 'calc(var(--volt-space-1) * -1)',
-        'border-block-end-style': 'none',
-        'border-inline-end-style': 'none',
+        top: ARROW_OUT,
+        'border-bottom-style': 'none',
+        'border-right-style': 'none',
       },
     },
     {
       selector: `.${arrow}[data-placement^='top']`,
       declarations: {
-        'inset-block-end': 'calc(var(--volt-space-1) * -1)',
-        'border-block-start-style': 'none',
-        'border-inline-start-style': 'none',
+        bottom: ARROW_OUT,
+        'border-top-style': 'none',
+        'border-left-style': 'none',
       },
+    },
+    {
+      selector: `.${arrow}[data-placement^='right']`,
+      declarations: {
+        left: ARROW_OUT,
+        'border-top-style': 'none',
+        'border-right-style': 'none',
+      },
+    },
+    {
+      selector: `.${arrow}[data-placement^='left']`,
+      declarations: {
+        right: ARROW_OUT,
+        'border-bottom-style': 'none',
+        'border-left-style': 'none',
+      },
+    },
+    // Along that edge, where the trigger is: the middle for a centred
+    // placement, and near the end the popover is aligned to for the others.
+    // That end is read in the popover's own direction, which a portalled
+    // popover takes from the page; the primitive aligns it in the trigger's,
+    // and says nothing here about which physical end that turned out to be.
+    { selector: arrowAt('top', 'bottom'), declarations: { 'inset-inline-start': ARROW_CENTRE } },
+    {
+      selector: arrowAt('top-start', 'bottom-start'),
+      declarations: { 'inset-inline-start': ARROW_INSET },
+    },
+    {
+      selector: arrowAt('top-end', 'bottom-end'),
+      declarations: { 'inset-inline-end': ARROW_INSET },
+    },
+    { selector: arrowAt('left', 'right'), declarations: { 'inset-block-start': ARROW_CENTRE } },
+    {
+      selector: arrowAt('left-start', 'right-start'),
+      declarations: { 'inset-block-start': ARROW_INSET },
+    },
+    {
+      selector: arrowAt('left-end', 'right-end'),
+      declarations: { 'inset-block-end': ARROW_INSET },
     },
   ],
 
@@ -161,4 +222,4 @@ export const popoverStyles: ComponentStyles = {
     },
     { selector: `.${content}:focus-visible`, declarations: { ...forcedFocusRing } },
   ],
-};
+}))();

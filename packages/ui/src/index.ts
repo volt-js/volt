@@ -8,11 +8,11 @@
  * Distribution is by CLI into the consuming repository, so these are source
  * files someone owns and edits, not a dependency to override.
  *
- * Until that CLI exists, the way in is the sheet and the class names: import
- * `stylesheet()` and write it to a `.css` file (the package's build does
- * exactly that, to `dist/styles.css`), then put `classes.dialog.content` and
- * the rest on the markup you spread the primitives' props onto. README.md has
- * a worked example per component.
+ * Until that CLI exists, the way in is the sheet and the class names: call
+ * `stylesheet()` from a build script and write what it returns to a `.css`
+ * file — the package ships none — then put `classes.dialog.content` and the
+ * rest on the markup you spread the primitives' props onto. The reference
+ * page, `docs/reference/ui.md`, has the markup each component expects.
  *
  * What holds the two halves together is the token contract. Every colour a
  * component draws is a `var(--volt-color-*)`, every duration a
@@ -21,7 +21,7 @@
  * the behaviour" a property that can be checked rather than a promise.
  */
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.1.0-alpha.1';
 
 export {
   type Declarations,
@@ -52,12 +52,15 @@ export {
 } from './layers.js';
 
 export {
+  accordionStyles,
   buttonStyles,
   checkboxStyles,
   dialogStyles,
+  menuStyles,
   popoverStyles,
   tabsStyles,
   toastStyles,
+  tooltipStyles,
   componentStyles,
   classes,
 } from './components/index.js';
