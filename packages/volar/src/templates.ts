@@ -20,10 +20,16 @@
  * language plugin uses. Nothing here watches a filesystem.
  */
 
-import { readdir, readFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { access, readdir, readFile } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { FileMap } from '@volar/language-core';
-import { findComponentTemplates } from '@voltdev/vite-plugin/components';
+import {
+  findComponentTemplates,
+  findKeyword,
+  matchDelimiter,
+  readIdent,
+  skipTrivia,
+} from '@voltdev/vite-plugin/components';
 
 /** A template, and the class it renders against. */
 export interface ComponentBinding {
@@ -53,10 +59,13 @@ export interface TemplateIndex {
   /** Whether anything claims `template`. The plugin's activation test. */
   owns(template: string): boolean;
   /**
-   * Read every module under `dir` and index what they claim.
+   * Read every module under `dir` and index what they claim now, which
+   * withdraws what a module claimed before and no longer does — or claimed
+   * before it was deleted.
    *
-   * Returns the modules that claimed at least one template. Descends the tree
-   * once; directories that cannot hold first-party source are skipped.
+   * Returns the modules whose claims changed — on a first scan, every module
+   * that claims a template. Descends the tree once; directories that cannot
+   * hold first-party source are skipped.
    */
   scan(dir: string): Promise<string[]>;
   /**
@@ -70,7 +79,13 @@ export interface TemplateIndex {
    * call on every keystroke.
    */
   update(module: string, code: string | null): string[];
-  /** Every template currently claimed, absolute, in no particular order. */
+  /**
+   * Every template currently claimed, absolute, in no particular order.
+   *
+   * Whatever its extension, because the build and `volt check` accept a
+   * `templateUrl` naming any file. Which of these a language plugin serves is
+   * the plugin's decision, not the index's.
+   */
   templates(): string[];
 }
 
@@ -78,16 +93,21 @@ export interface TemplateIndexOptions {
   /**
    * Whether two paths differing only in case are two files.
    *
-   * Defaults to the platform's answer. It is an option because the host, not
-   * this index, is the one that knows — a case-insensitive volume mounted on
-   * Linux is still case-insensitive.
+   * Defaults to what the platform's default volume does: not on Windows or
+   * macOS, yes everywhere else. It is an option because the host, not this
+   * index, is the one that knows — a case-insensitive volume mounted on Linux
+   * is still case-insensitive, and a macOS volume can be formatted to care.
    */
   caseSensitive?: boolean;
   /** Directory names never descended into. */
   ignore?: Iterable<string>;
 }
 
-/** Extensions a component class can be declared in. */
+/**
+ * Extensions a component class can be declared in: the ones the build
+ * transforms by default, and `volt check` reads. A `.cts` module is neither,
+ * so a scan passes it over, though a host can still report one to `update`.
+ */
 const MODULE = /\.m?ts$/;
 
 /**
@@ -99,8 +119,11 @@ const MODULE = /\.m?ts$/;
 const IGNORED = ['node_modules', 'dist', 'build', 'coverage', '.git', '.tsc', '.cache'];
 
 export function createTemplateIndex(options: TemplateIndexOptions = {}): TemplateIndex {
-  const caseSensitive = options.caseSensitive ?? process.platform !== 'win32';
+  const caseSensitive =
+    options.caseSensitive ?? (process.platform !== 'win32' && process.platform !== 'darwin');
   const ignore = new Set(options.ignore ?? IGNORED);
+  /** A path as the maps below compare it. */
+  const key = (path: string): string => (caseSensitive ? path : path.toLowerCase());
 
   /** What each module claims, so a re-read knows what to withdraw. */
   const byModule = new FileMap<ComponentBinding[]>(caseSensitive);
@@ -119,7 +142,11 @@ export function createTemplateIndex(options: TemplateIndexOptions = {}): Templat
     if (!previous) return [];
     byModule.delete(module);
     for (const binding of previous) {
-      const claims = byTemplate.get(binding.template)?.filter((b) => b.module !== module) ?? [];
+      // The bindings themselves rather than their module's path: an index
+      // that ignores case can be told about a module under a spelling other
+      // than the one it stored, and comparing strings would keep every claim
+      // that spelling made.
+      const claims = byTemplate.get(binding.template)?.filter((b) => !previous.includes(b)) ?? [];
       if (claims.length === 0) byTemplate.delete(binding.template);
       else byTemplate.set(binding.template, claims);
     }
@@ -170,15 +197,34 @@ export function createTemplateIndex(options: TemplateIndexOptions = {}): Templat
     update,
 
     async scan(dir) {
-      const claimed: string[] = [];
-      for (const file of await walk(resolve(dir), ignore)) {
+      const root = resolve(dir);
+      const seen = new Set<string>();
+      const changed: string[] = [];
+
+      for (const file of await walk(root, ignore)) {
         const code = await readFile(file, 'utf8').catch(() => null);
-        // A module that never says the word cannot claim anything, and a
-        // scan is dominated by files like that.
-        if (code === null || !code.includes('templateUrl')) continue;
-        if (update(file, code).length > 0) claimed.push(file);
+        if (code === null) continue;
+        seen.add(key(file));
+        // A module that never says the word cannot claim anything, and a scan
+        // is dominated by files like that, so it is not read for claims. It is
+        // still reported as claiming nothing, which withdraws whatever it
+        // claimed the last time it did say it.
+        if (update(file, code.includes('templateUrl') ? code : null).length > 0) {
+          changed.push(file);
+        }
       }
-      return claimed;
+
+      // A module indexed under `dir` that this scan did not read, and that is
+      // no longer on disk, has been deleted since it was. One it only passed
+      // over — under an ignored directory, or refused to it — is left as it
+      // was told.
+      for (const module of [...byModule.keys()]) {
+        if (seen.has(key(module)) || !within(key(root), key(module))) continue;
+        if (!(await gone(module))) continue;
+        if (update(module, null).length > 0) changed.push(module);
+      }
+
+      return changed;
     },
 
     templates() {
@@ -204,6 +250,20 @@ async function walk(dir: string, ignore: ReadonlySet<string>): Promise<string[]>
   return found;
 }
 
+/** Whether `path` is `dir` or somewhere under it. */
+function within(dir: string, path: string): boolean {
+  const rel = relative(dir, path);
+  return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+}
+
+/** Whether nothing is at `path` any more — which is not the same as unreadable. */
+function gone(path: string): Promise<boolean> {
+  return access(path).then(
+    () => false,
+    (err: NodeJS.ErrnoException) => err.code === 'ENOENT' || err.code === 'ENOTDIR',
+  );
+}
+
 /** Whether two readings of a module claim the same templates in the same way. */
 function same(a: readonly ComponentBinding[], b: readonly ComponentBinding[]): boolean {
   return (
@@ -224,52 +284,112 @@ function same(a: readonly ComponentBinding[], b: readonly ComponentBinding[]): b
 // ---------------------------------------------------------------------------
 
 /**
- * A `class` declaration and the modifiers in front of it.
- *
- * `declare` and `abstract` may appear between `export` and `class` in either
- * order, and `export default class` is the third arrangement.
- */
-const DECLARATION = /(?:\bexport\s+((?:default|abstract|declare)\s+)*)?\bclass\s+([A-Za-z_$][\w$]*)/g;
-
-/** `export { a, b as c }`, whose braces cannot contain another brace. */
-const CLAUSE = /\bexport\s*\{([^}]*)\}/g;
-
-/** `export default Counter;` — the class declared, then exported by name. */
-const DEFAULT = /\bexport\s+default\s+([A-Za-z_$][\w$]*)\s*[;\n]/g;
-
-/**
  * The name `className` is reachable by from outside `code`, or null.
  *
- * Read from the text rather than from a parse, which is the bargain
+ * Read with the build's scan rather than from a parse, which is the bargain
  * `findComponentTemplates` makes and for the same reason: a language plugin
- * runs this on every keystroke in a template. Both ways it can be wrong are
- * harmless. A name that looks exported but is not leaves `_ctx` as the error
- * type, whose diagnostics land on generated code no mapping covers and are
- * dropped; a name that is exported but does not look it types `_ctx` as
- * `any`, which offers no completion and reports nothing false.
+ * runs this on every keystroke in a template. The scan passes over comments,
+ * strings, template text and regular expressions, so an `export` it lands on
+ * is code, and three shapes are read from there — the declaration itself,
+ * with any decorators and modifiers on either side of the `export`; an
+ * `export { … }` clause naming the class; and `export default` followed by
+ * its name alone.
+ *
+ * Both ways it can still be wrong are harmless. A name that looks exported but
+ * is not leaves `_ctx` as the error type, whose diagnostics land on generated
+ * code no mapping covers and are dropped; a name that is exported but does not
+ * look it types `_ctx` as `any`, which offers no completion and reports
+ * nothing false.
  */
 export function exportedName(code: string, className: string): string | null {
-  DECLARATION.lastIndex = 0;
-  for (let m = DECLARATION.exec(code); m !== null; m = DECLARATION.exec(code)) {
-    if (m[2] !== className) continue;
-    // No `export` in front of the declaration: the class may still leave
-    // through a clause below, so keep looking rather than answering here.
-    if (!m[0].startsWith('export')) break;
-    return m[1]?.includes('default') ? 'default' : className;
-  }
+  for (const at of findKeyword(code, 'export')) {
+    let i = skipTrivia(code, at + 'export'.length);
+    if (code[i] === '{') {
+      const name = clauseName(code, i, className);
+      if (name !== null) return name;
+      continue;
+    }
 
-  CLAUSE.lastIndex = 0;
-  for (let m = CLAUSE.exec(code); m !== null; m = CLAUSE.exec(code)) {
-    for (const specifier of m[1]!.split(',')) {
-      const [local, exported] = specifier.split(/\bas\b/).map((part) => part.trim());
-      if (local === className) return exported || className;
+    // A decorator can stand after `export` as well as before it, and
+    // `abstract` or `declare` between it and `class`. Anything else is an
+    // export of something other than a class.
+    let name = className;
+    for (;;) {
+      if (code[i] === '@') {
+        i = skipTrivia(code, decoratorEnd(code, i));
+        continue;
+      }
+      const word = readIdent(code, i);
+      const next = skipTrivia(code, i + word.length);
+      if (word === 'class') {
+        if (readIdent(code, next) === className) return name;
+        break;
+      }
+      if (word === 'default') {
+        // `export default Counter;` — the class declared first, then exported
+        // by name.
+        if (readIdent(code, next) === className && endsStatement(code, next + className.length)) {
+          return 'default';
+        }
+        name = 'default';
+      } else if (word !== 'abstract' && word !== 'declare') {
+        break;
+      }
+      i = next;
     }
   }
-
-  DEFAULT.lastIndex = 0;
-  for (let m = DEFAULT.exec(code); m !== null; m = DEFAULT.exec(code)) {
-    if (m[1] === className) return 'default';
-  }
-
   return null;
+}
+
+/**
+ * The name `className` leaves under through the `export { … }` whose brace is
+ * at `open`, or null when the clause does not name it.
+ *
+ * A specifier is `local` or `local as exported`. A clause followed by `from`
+ * re-exports another module's names, which are not this one's classes.
+ */
+function clauseName(code: string, open: number, className: string): string | null {
+  const close = matchDelimiter(code, open) - 1;
+  if (readIdent(code, skipTrivia(code, close + 1)) === 'from') return null;
+
+  let i = skipTrivia(code, open + 1);
+  while (i < close) {
+    const local = readIdent(code, i);
+    i = skipTrivia(code, i + local.length);
+    let exported = local;
+    if (readIdent(code, i) === 'as') {
+      i = skipTrivia(code, i + 'as'.length);
+      exported = readIdent(code, i);
+    }
+    // A name written as a string reads as no identifier at all, and is not one
+    // the restatement could write after a dot.
+    if (local === className && exported !== '') return exported;
+
+    while (i < close && code[i] !== ',') i = skipTrivia(code, i + 1);
+    i = skipTrivia(code, i + 1);
+  }
+  return null;
+}
+
+/**
+ * Index just past the decorator whose `@` is at `at`: a name, dotted or not,
+ * and the arguments it is called with, if it is called. `@(expression)` has
+ * no name, only the parenthesised expression.
+ */
+function decoratorEnd(code: string, at: number): number {
+  let i = skipTrivia(code, at + 1);
+  let end = i;
+  for (let name = readIdent(code, i); name !== ''; name = readIdent(code, i)) {
+    end = i + name.length;
+    i = skipTrivia(code, end);
+    if (code[i] !== '.') break;
+    i = skipTrivia(code, i + 1);
+  }
+  return code[i] === '(' ? matchDelimiter(code, i) : end;
+}
+
+/** Whether a semicolon, a line break or the end of the module follows `after`. */
+function endsStatement(code: string, after: number): boolean {
+  const next = skipTrivia(code, after);
+  return next === code.length || code[next] === ';' || code.slice(after, next).includes('\n');
 }

@@ -169,9 +169,9 @@ const plugin = createVoltLanguagePlugin<URI>({
 });
 ```
 
-Whatever `toFileName` returns is what the index is asked about, so it has to
-spell a path the way the index stored it. See
-[the case of a path](#the-case-of-a-path) for where that goes wrong.
+Whatever `toFileName` returns is what the index is asked about, so it has to be
+an absolute path on disk. Whether its case matters is the index's
+[`caseSensitive`](#createtemplateindex) option.
 
 ### Keeping it current
 
@@ -229,16 +229,17 @@ is asked for loses the template instead. Without `moduleChanged`, a component
 that starts pointing at a template is not noticed until something else makes
 the editor rebuild that file.
 
-**Deletions are not found by scanning again.** `scan` updates only the modules
-it reads, and it skips a file that does not contain the word `templateUrl`
-before updating anything. So a module deleted since the last scan, or one that
-no longer mentions `templateUrl` at all, keeps its templates claimed until
-`update` hears about it — through `moduleChanged`, or through the plugin
-reading the module's text when it next rebuilds the template. That second path
-catches an edit but not a deletion: a deleted module has no text to read, so
-its template goes on being claimed by a class that is gone, and goes quiet. A
-stale entry is worse than a missing one, which is why the host has to report
-changes rather than rescan for them.
+**Scanning again updates the index, not the editor.** A second `scan` of the
+same directory withdraws what a module claimed once it has been deleted, or no
+longer mentions `templateUrl` at all, and counts it among the modules whose
+claims changed. But it tells no Volar language about it: a template whose owner
+a scan withdrew keeps the virtual code it was built with until something
+rebuilds it. `moduleChanged` does both halves. The plugin reading the module's
+text when it next rebuilds a template is no substitute either — it catches an
+edit but not a deletion, because a deleted module has no text to read, so its
+template goes on being claimed by a class that is gone, and goes quiet. A stale
+entry is worse than a missing one, which is why the host reports changes as
+they happen rather than rescanning for them.
 
 ## `createTemplateIndex`
 
@@ -255,15 +256,15 @@ module and remember.
 
 | Member | Description |
 |---|---|
-| `scan(dir)` | Read every `.ts` and `.mts` module under `dir` and index what it claims. Resolves to the modules whose claims changed — every claiming module on a first scan, and on a repeat only those that changed since. A `dir` that does not exist or cannot be read resolves to an empty list, not an error |
+| `scan(dir)` | Read every `.ts` and `.mts` module under `dir` and index what it claims, withdrawing what a module under it claimed if it has since been deleted or stopped mentioning `templateUrl`. Resolves to the modules whose claims changed — every claiming module on a first scan, and on a repeat only those that changed since. A `dir` that does not exist or cannot be read is not an error |
 | `update(module, code)` | Replace what `module` claims with what `code` says it claims, or drop it when `code` is `null`. Returns the templates whose owner changed |
 | `lookup(template)` | The `ComponentBinding` that owns `template`, or `undefined` |
 | `owns(template)` | Whether anything claims `template` |
-| `templates()` | Every template currently claimed, as absolute paths, in no particular order |
+| `templates()` | Every template currently claimed, as absolute paths, in no particular order — whatever its extension, so it can list files [the plugin never claims](#which-files-it-claims) |
 
 | Option | Type | Default |
 |---|---|---|
-| `caseSensitive` | `boolean` — whether two paths differing only in case are two files | `false` on Windows, `true` everywhere else |
+| `caseSensitive` | `boolean` — whether two paths differing only in case are two files | `false` on Windows and macOS, `true` everywhere else |
 | `ignore` | `Iterable<string>` — directory names `scan` never descends into | `node_modules`, `dist`, `build`, `coverage`, `.git`, `.tsc`, `.cache` |
 
 **Nothing in it watches a filesystem.** It is only as current as what it has
@@ -284,16 +285,23 @@ from `@voltdev/core/jit` has no template file and nothing to claim, so a
 template written as a string gets no editor support at all.
 
 `caseSensitive` is an option because the host, not the index, is the one that
-knows: a case-insensitive volume mounted on Linux is still case-insensitive.
-The default is decided by platform alone, so on macOS — whose default volume is
-not case-sensitive — it is `true`, and a host there should pass what the file
-system actually does.
+knows. The default is decided by platform alone — what the platform's default
+volume does — so a case-insensitive volume mounted on Linux, or a macOS volume
+formatted to be case-sensitive, is one where a host should pass what the file
+system actually does. On an index that ignores case, a module reported under a
+different spelling from the one it was stored under — a scan that found
+`C:\app\counter.ts` and an editor URI that says `c:\app\counter.ts` — is the
+same module, and moving its `templateUrl` or deleting it withdraws what it
+claimed under either spelling.
 
 `ignore` replaces the default list rather than adding to it. Anything whose
 name starts with `.` is skipped whatever the list says, and a symbolic link to
 a directory is not followed, so components reached only through one are not
 indexed. `scan` reads every module it finds in full; files that never contain
-the word `templateUrl` are skipped after that read.
+the word `templateUrl` are not looked at further, beyond withdrawing whatever
+they claimed before. A module a scan does not read — one under a skipped
+directory, or one it may not open — keeps what it was last known to claim; only
+one that is gone from the disk is withdrawn.
 
 ### Two owners of one template
 
@@ -304,18 +312,6 @@ the template is typed against that class alone. `volt check` checks the
 template once for each class that points at it, so an error only the second
 class would raise is one the check reports and the editor does not. When the
 first withdraws, the second takes over.
-
-### The case of a path
-
-On a case-insensitive index, looking a path up ignores case, but withdrawing a
-module's old claims does not: they are matched against the path exactly as it
-was first stored. So a module indexed under one spelling and later reported
-under another — a scan that found `C:\app\counter.ts` and an editor URI that
-says `c:\app\counter.ts` — does not lose its old claims when it moves its
-`templateUrl` or is deleted. The template it used to point at stays claimed by
-a stale entry. Until that is fixed, a host has to report every module under
-the same spelling the scan used, which on Windows means normalising the drive
-letter.
 
 ### `ComponentBinding`
 
@@ -401,7 +397,12 @@ rather than imported. That package declares them by augmenting
 TypeScript 7 ships a native compiler with no such definitions, so the
 augmentation cannot be typed here. The shape is what `@volar/typescript` reads
 at runtime; no test in this package runs it through that integration, and the
-only assertions on it are the values in the table. `TypeScriptIntegration` is
+only assertions on it are the values in the table. Nor could one on the
+TypeScript this repository uses: `@volar/typescript` works by wrapping
+TypeScript's JavaScript language service and its `createProgram`, and
+TypeScript 7's `typescript` entry point exports a version number and neither of
+those. So these two members serve a host running an earlier TypeScript, and are
+unproven there. `TypeScriptIntegration` is
 not exported, so a host that needs to name the type writes
 `ReturnType<typeof createVoltLanguagePlugin>['typescript']`.
 
@@ -515,36 +516,42 @@ is a module of its own, so `_ctx` is typed as `any`: no completion and no
 errors, rather than invented errors on every line. Export the class to get the
 rest back.
 
-`exportedName(code, className)` is how the index decides, and it reads the
-module's text rather than parsing it, because it runs on every rebuild of a
-template:
+`exportedName(code, className)` is how the index decides. It does not parse
+the module, because it runs on every rebuild of a template. It reads it with
+the scan the build finds `@Component` with, which passes over comments,
+strings, the text of template literals and regular expressions, so nothing
+that merely mentions the class can pass for its declaration or its export:
 
 ```ts
 import { exportedName } from '@voltdev/volar';
 
 exportedName('export default class Counter {}', 'Counter');         // 'default'
 exportedName('class Counter {}\nexport { Counter as Tally };', 'Counter'); // 'Tally'
+exportedName('export @Component({}) abstract class Counter {}', 'Counter'); // 'Counter'
 exportedName('class Counter {}', 'Counter');                        // null
 ```
+
+It reads three shapes: `export` in front of the declaration, with `default`,
+`abstract`, `declare` and decorators wherever the language allows them; an
+`export { … }` clause naming the class, `as` included; and
+`export default Counter` followed by a semicolon, a line break or the end of
+the file. A type-only export — `export type { Counter }`,
+`export { type Counter }` — and an export name written as a string are read as
+not exported.
 
 Getting it wrong costs completion, never a false error. A name that looks
 exported but is not leaves `_ctx` as TypeScript's error type, whose diagnostics
 land in the header no mapping covers; a name that is exported but does not
 look it gives `any`. Either way the whole template is untyped — no completion,
 no errors, and `any` on hover — and `volt check`, which does not go through
-the exports, goes on checking it. Four spellings it currently misreads:
+the exports, goes on checking it.
 
-- `export default abstract class Counter` is read as exported under
-  `Counter`, not `default`.
-- `export @Component({ ... }) class Counter` — a decorator between `export`
-  and `class` — is read as not exported at all. Writing the decorator first,
-  as everywhere in these docs, avoids it.
-- A comment or string containing the words `class Counter` anywhere before the
-  declaration — `/** The class Counter renders a number. */` — is taken for
-  the declaration, which has no `export` in front of it, and the class is read
-  as not exported.
-- `export default Counter` with neither a semicolon nor a line break after it
-  — the last line of a file with no final newline — is not seen.
+What the scan misreads, this misreads with it — the build does too. A `/`
+written after `)` or `]` is taken to divide, because `(a + b) / 2` is far
+commoner than a regular expression there. So a regular expression that is a
+whole statement after a condition — ``if (ready) /`/.test(text);`` — is read as
+a division, and if it holds a quote or a backtick, what follows is read as a
+string that swallows the declaration. The class then reads as not exported.
 
 ### `textSnapshot`
 
@@ -577,6 +584,3 @@ fresh snapshot on every question regenerates every template on every question.
   template passed to `compileTemplate()` gets nothing.
 - **One owner per template.** A template two classes point at is typed against
   the first, and errors that only the second would raise are not shown.
-- **Paths must be spelled one way.** A case-insensitive index can keep a stale
-  claim when one module is reported under two spellings of its path — see
-  [the case of a path](#the-case-of-a-path).

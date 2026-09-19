@@ -21,6 +21,11 @@ import {
   skipTrivia,
 } from './scan.js';
 
+// The language plugin reads how a class leaves its module from the same text,
+// and has to agree with the pairing below about what is code. It reads it with
+// the same scan rather than with one of its own.
+export { findKeyword, matchDelimiter, readIdent, skipTrivia } from './scan.js';
+
 export interface ComponentTemplate {
   /** The class the template renders against, as named in its own module. */
   className: string;

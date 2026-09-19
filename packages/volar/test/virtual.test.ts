@@ -155,10 +155,12 @@ describe('the positions it claims', () => {
     const at = source.indexOf('count');
 
     // What the checker says about `_ctx.count` — an argument of the wrong
-    // type, a signal where its value was meant — is reported from a character
-    // the template does not have, the `_` of the instance the printer put in
-    // front of the name. It still comes back as the five characters a person
-    // wrote.
+    // type, say — is reported from a character the template does not have,
+    // the `_` of the instance the printer put in front of the name. It still
+    // comes back as the five characters a person wrote. A signal where its
+    // value was meant is not one of these: that rule is carried by the marker
+    // argument after the expression, which no mapping covers, so it never
+    // reaches the template at all.
     expect(readBack(map, source, node(out, at, 'count'.length))).toBe('count');
   });
 

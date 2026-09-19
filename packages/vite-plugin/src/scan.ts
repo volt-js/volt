@@ -151,13 +151,34 @@ export function isRegexStart(code: string, slash: number): boolean {
   if (i < 0) return true;
 
   const ch = code[i]!;
+  // Two of the preceders are also written after an operand, and what follows
+  // an operand divides: `!` as a non-null assertion, and a sign doubled into a
+  // postfix `++` or `--`. Doubled is always postfix here, because a regex
+  // cannot be incremented.
+  if (ch === '!' && endsOperand(code, i - 1)) return false;
+  if ((ch === '+' || ch === '-') && code[i - 1] === ch) return false;
   if (REGEX_PRECEDERS.has(ch)) return true;
-  if (isIdentChar(ch)) {
-    let j = i;
-    while (j >= 0 && isIdentChar(code[j]!)) j--;
-    return REGEX_KEYWORDS.has(code.slice(j + 1, i + 1));
-  }
-  return false;
+  return isIdentChar(ch) && REGEX_KEYWORDS.has(wordEndingAt(code, i));
+}
+
+/**
+ * Whether the character at `end` closes an operand: a name, a call or an
+ * index. A keyword does not — `return !/x/.test(s)` negates.
+ *
+ * No whitespace is skipped, because none is written before an assertion, and
+ * a negation opening a line after an unterminated one is not asserting it.
+ */
+function endsOperand(code: string, end: number): boolean {
+  const ch = code[end];
+  if (ch === ')' || ch === ']') return true;
+  return isIdentChar(ch) && !REGEX_KEYWORDS.has(wordEndingAt(code, end));
+}
+
+/** The identifier whose last character is at `end`. */
+function wordEndingAt(code: string, end: number): string {
+  let start = end;
+  while (start >= 0 && isIdentChar(code[start])) start--;
+  return code.slice(start + 1, end + 1);
 }
 
 /** Index of the next real code character, skipping whitespace and comments. */
