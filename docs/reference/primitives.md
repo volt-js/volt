@@ -71,8 +71,9 @@ hides the fact that a label is missing. Focus moves in on open, is held there,
 and goes back on close to whatever held it before. Escape and a press outside
 both close it, and only the topmost layer hears Escape. Every other child of
 `<body>` is made `inert` and `aria-hidden` while it is open, except one that
-carries `aria-live`, so an announcement raised meanwhile is still heard; and
-scrolling is locked without the page shifting sideways as the scrollbar goes.
+carries `aria-live` or is a toaster's region (`data-volt-toaster`), so an
+announcement or a toast raised meanwhile is still heard; and scrolling is
+locked without the page shifting sideways as the scrollbar goes.
 Content under a `[data-state='closed']` exit animation stays mounted until the
 animation ends.
 
@@ -165,25 +166,31 @@ instead, and fires however the change came about.
 Anything a primitive would put in front of a user — a close button's name,
 "3 of 12 selected", a live-region sentence — comes from a `labels` option,
 English when you pass nothing. A library that hard-codes English has to be
-forked to ship anywhere else. The one string found not to honour its option is
-the select and combobox clear button's; see
-[what is not finished](#what-is-not-finished).
+forked to ship anywhere else.
 
 `createLocaleProvider` supplies a locale, a direction and a message catalogue
 down the scope, and the primitives use it unevenly. The catalogue's strings are
-read by the calendar (its month and year buttons, from `previous` and `next`),
-the listbox (its selected count), the select and combobox, the tree (loading
-and empty), and the number, password, pin, tags and rating inputs — a `labels`
-entry still wins over the catalogue there. The date field, time picker, slider
-and file upload take the locale's code, direction and formatters from the
-provider — digits, the names of a date's fields, percentages, file sizes — and
-none of its strings, so what they say in sentences, an upload's rejection or a
-date picker's "Choose date", stays English until you pass `labels`. Everything
-else takes its strings through `labels` alone: a provider that says
-`next: 'Weiter'` names the calendar's next-month button in German and leaves a
-pager's saying "Next page". Four entries of the catalogue itself — `close`,
-`pageOf`, `sortedAscending` and `sortedDescending` — are read by no primitive
-yet, so translating them changes nothing. See [data](./primitives-data).
+read by the calendar (its month and year buttons, and what it announces), the
+listbox (its selected count), the select and combobox, the tree (loading and
+empty), the number, password, pin, tags and rating inputs, the date field's
+and time picker's empty segments and the date picker's button, the popover's
+close button, the menu's name, the toaster's region and close buttons, the
+file upload's remove buttons, the clipboard, drag and drop, and the display
+family — progress, badge, chip, keyboard key, code, chat, alert, skeleton,
+spinner and empty state, each naming its keys under
+[display primitives](./primitives-display#before-you-start). A `labels` entry
+still wins over the catalogue wherever both are read. The slider takes the
+locale's code, direction and formatters from the provider — digits,
+percentages — and none of its strings. The date field, time picker and file
+upload take the same, and beyond the entries named above none of their strings
+either: the names of a date's fields and a file's size come from the
+formatters, but what they say in sentences, and an upload's rejection, stay
+English until you pass `labels`. Everything else takes its strings through
+`labels` alone: a provider that says `next: 'Weiter'` names the calendar's
+next-month button in German and leaves a pager's saying "Next page". Three
+entries of the catalogue itself — `pageOf`, `sortedAscending` and
+`sortedDescending` — are read by no primitive yet, so translating them changes
+nothing. See [data](./primitives-data).
 
 ### State is written where CSS can reach it
 
@@ -249,21 +256,20 @@ createPresence(open: () => boolean, node: () => Element | null | undefined): Pre
 | `isPresent()` | Whether the content should be in the DOM now — put it on the `:if` |
 | `state()` | `'open'` or `'closed'` — put it on `data-state` |
 
-Keeps content mounted until its exit animation has finished. On close it
-writes `closed`, asks the element's computed style whether an animation or
-transition will run, and releases the node when the element's own
-`animationend`, `animationcancel`, `transitionend` or `transitioncancel`
-arrives — the first of them, so an exit that fades `opacity` over 150 ms and
-moves `transform` over 300 ms is removed at 150 ms. Give the parts of one exit
-the same duration. Nothing is animating — none declared, or a
-`prefers-reduced-motion` rule turning it off — and the node goes at once, so a
-library that never animates pays nothing. Reopening mid-exit cancels the
-release. An end event from a descendant is ignored, so a child's own transition
-finishing cannot release the panel early.
+Keeps content mounted until its exit animation has finished. `state()` is
+derived from `open`, so the element already carries `closed` when the close is
+acted on; presence then asks the element what `getAnimations()` reports
+running, and releases the node once all of it has settled — not the first to
+end, so an exit that fades `opacity` over 150 ms and moves `transform` over
+300 ms runs its full 300 ms. Nothing running — none declared, a
+`prefers-reduced-motion` rule turning it off, or something declared that
+closing does not start — and the node goes at once, so a library that never
+animates pays nothing. An animation with no end is a loop rather than an exit
+and is not waited for. Reopening mid-exit cancels the release, and only the
+element's own animations count, so a child's cannot end the panel's exit.
 
 The duration comes from CSS rather than a timer, so there is nothing to keep in
-step. The cost is that the release waits for an event, and it takes the
-computed style's word that one is coming. Scope both halves to the state:
+step. Scope the exit to the state:
 
 ```css
 [data-state='open']   { animation: fade-in  150ms; }
@@ -271,9 +277,9 @@ computed style's word that one is coming. Scope both halves to the state:
 ```
 
 An `animation` left on the element in every state has finished long before the
-close, and does not run again because its name has not changed; a `transition`
-the closed state does not actually set off never starts. Either sends no event,
-and there is no timeout behind it — the content stays mounted.
+close and does not run again, and a `transition` the closed state does not set
+off never starts. Neither is running when presence asks, so neither holds the
+node.
 
 ```ts
 import { Component, Signal } from '@voltdev/core';
@@ -321,8 +327,8 @@ submenu. Called
 from a field initialiser it would sit on the stack closed and take the Escape
 meant for the layer below. Three rules come with it:
 
-- **Only the topmost layer hears Escape.** A popover open inside a dialog closes
-  on the first press and the dialog on the second.
+- **Only the topmost layer that takes Escape hears it.** A popover open inside
+  a dialog closes on the first press and the dialog on the second.
 - **Outside is judged on pointer down and acted on at pointer up**, and both
   ends have to be outside. Selecting text in a dialog and releasing past its
   edge does not close it.
@@ -330,11 +336,15 @@ meant for the layer below. Three rules come with it:
   dialog is not a DOM descendant of it, and a press in it is still inside the
   dialog.
 
-The first rule is stricter than it sounds, and applies to presses as well as to
-Escape: only the topmost layer is ever asked. A press outside everything closes
-the popover and leaves the dialog under it open. And a top layer with
-`escape: false` does not pass Escape down — nothing below it closes either,
-until it goes. The same holds for `outsidePointer: false`.
+The first rule applies to presses as well as to Escape: a press outside
+everything closes the popover and leaves the dialog under it open, and the next
+press closes the dialog. Topmost means topmost of the layers that take that
+kind of dismissal — a layer registered with `escape: false` is passed over and
+the key goes to the layer beneath, and `outsidePointer: false` does the same
+for a press. A layer that has to keep either from everything below it takes it
+and declines in `onDismiss`, which is what the dialog, the popover, the menu,
+the select and the combobox do for `closeOnEscape: false` and
+`closeOnOutsidePointer: false`.
 
 The listeners are on `document` in the capture phase, so a layer still
 dismisses when something inside the page stops propagation. They are added by
@@ -360,12 +370,13 @@ reimplementation gets right across shadow roots and `tabindex`. Watching where
 focus lands catches every route out — keyboard, pointer, script. A focus that
 escapes is pulled back to `initialFocus` when you gave one, else to the first
 focusable element, else to the container itself, which is given
-`tabindex="-1"` when it has nothing focusable inside. The cost of not owning
-Tab is that recovery does not know which way focus left: it always goes back to
-the start, so Shift+Tab off the first element returns to the first rather than
-wrapping round to the last. Inside a modal dialog the page behind is inert and
-cannot take focus at all, so there Tab past either end leaves the document for
-the browser's own controls, and comes back in on the dialog.
+`tabindex="-1"` when it has nothing focusable inside. Recovery reads which way
+focus was heading from the Tab press itself, which is still down while focus
+moves: Shift+Tab off the first element wraps round to the last, and an escape
+by a press or by script goes back to the start. Inside a modal dialog the page
+behind is inert and cannot take focus at all, so there Tab past either end
+leaves the document for the browser's own controls, and comes back in on the
+dialog.
 
 Focus is restored only to an element still in the document; one that was
 removed is left alone rather than chased.
@@ -377,15 +388,16 @@ registered. Create the scope from an effect that runs once the layer is
 rendered, as the dialog does, and the effect's cleanup is what releases it. On a
 server it does nothing.
 
-`focusableWithin` is the query the scope uses: links with an `href`, enabled
+`focusableWithin` is the query the scope uses, and returns the tab sequence: a
+positive `tabindex` first, lowest first and document order among equals, then
+the rest in document order. The candidates are links with an `href`, enabled
 form controls, media with controls, `contenteditable` and anything with a
-`tabindex` other than `-1`, in document order — not tab order, so a positive
-`tabindex` does not move anything up. It is a fixed selector list, so what it
-leaves out is left out: a `<summary>` or an `<iframe>` with no `tabindex` of its
-own is focusable and not listed, and a native control with `tabindex="-1"` is
-listed though Tab never reaches it. Hidden is judged on each element's own
-attribute and computed style, so an element inside a `display: none` ancestor is
-still listed, and focusing it does nothing.
+`tabindex` — less any whose `tabindex` is negative, a native control included,
+since that is how a roving group keeps its resting items out of the tab
+sequence. It is a fixed selector list, so a `<summary>` or an `<iframe>` with no
+`tabindex` of its own is focusable and not listed. Rendering is judged with
+`checkVisibility()`, which asks the ancestors too, so an element inside a
+`display: none` or `hidden` ancestor is left out.
 
 A trap is not a modal. A screen reader's own cursor is not bound by focus, so
 the page behind is still readable and still clickable; the dialog adds `inert`
@@ -819,6 +831,7 @@ Alongside them, the layout helpers that return styles rather than behaviour:
 | `exponentialBackoff` | The retry delay `createResource` uses by default |
 | `createLocaleProvider` | A locale, direction and message catalogue, provided down the scope |
 | `useLocale` | The nearest provided locale, or the document's |
+| `useProvidedLocale` | The nearest provided locale, or `null` |
 | `createLocale` | A locale with nothing provided |
 | `createFormatters` | `Intl` formatters bound to a locale accessor |
 
@@ -906,8 +919,7 @@ the limits a user will meet, recorded rather than hidden.
   newest exports.** They were held back for several rounds of review, and
   released when a round found no defect in behaviour; the gaps in their tests
   that rounds found along the way were closed by writing the tests. That is
-  what the round found, not a promise that nothing is left — the clear-button
-  label below is in the combobox module.
+  what the round found, not a promise that nothing is left.
 - **A combobox given a value it cannot name shows an empty box.** A
   `defaultValue` or `value` is an identifier, not text, and a textbox holds text
   somebody could have typed, so the box stays empty until something names the
@@ -918,37 +930,15 @@ the limits a user will meet, recorded rather than hidden.
   `readOnly`**, where `removeAt` refuses. That is deliberate — `clear()` is
   your own call, the same write you could make through the value signal — and
   it is pinned by a test so that changing it is a decision.
-- **The tags input's `clear()` says nothing.** `removeAt` announces the tag it
-  removed; emptying the row, the largest change the field makes, is silent,
-  because saying it needs a label the field does not have yet.
-- **A slider's value can be written behind its back.** A script or a session
-  restore that assigns a hidden input's `value` makes the slider dirty — it
-  compares what a submit would send with what a reset would restore — but does
-  not move the thumb. The form can report itself unsaved while showing a value
-  it will not submit. Adopting the written value is the open question.
-- **A slider's rendered `data-dirty` updates on `input`, `change` and
-  `pageshow`.** Autofill and a session restore announce themselves with one of
-  those, and the back-forward cache with the last; a script that assigns
-  `value` and fires nothing shows up on the next render for any other reason.
-  `isDirty()` itself is right the moment it is asked.
-- **The select and combobox clear button ignores `labels.clear`.** The option
-  is declared, and documented with its default, but `clearProps()` names the
-  button from the locale catalogue's `clear` entry and nowhere else, and no test
-  sets the label. Until that is fixed, a locale provider's `clear` message is
-  the only way to rename it — an `aria-label` of your own on the button is
-  overwritten by the spread.
-- **A calendar's month and year buttons share a default name.** Without
-  `labels`, the previous-month and previous-year buttons are both named from the
-  catalogue's `previous` and the next pair from `next`, so a calendar that
-  renders both pairs has two buttons called "Previous" — and a translation of
-  `previous` as "previous month" misnames the year button. Pass
-  `labels.previousYear` and `labels.nextYear` whenever the year buttons are
-  rendered.
-- **Presence has no timeout behind the event it waits for.** What is built on
-  it — the overlays, the collapsible, the select and combobox popups, alerts —
-  stays mounted after closing if its CSS promises an exit animation that never
-  runs. See [presence](#presence-createpresence) for the two ways to write that
-  by accident.
+- **A slider cannot hear a write nobody announces.** A value written into a
+  hidden input and announced with `input` or `change`, or by `pageshow`, moves
+  the thumb — autofill and a session restore announce themselves with one of
+  those, and the back-forward cache with the last — and the rendered
+  `data-dirty` follows those and either reset. A script that assigns `value`
+  and fires nothing leaves the thumb where it was until the slider next writes,
+  and `data-dirty` as it was until the next render for any other reason; the
+  platform says nothing when a property is assigned. `isDirty()` counts the
+  write either way, the moment it is asked.
 - **Not every string is localised through the provider**, as said
   [above](#strings-are-options).
 - **Not every primitive has a stylesheet in `@voltdev/ui`**, and that is by

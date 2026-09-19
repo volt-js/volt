@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { compileTemplate } from '@voltdev/core/jit';
 import { Component, Signal, flushSync, mount } from '@voltdev/core';
 import { createToaster, type Toast, type ToasterOptions } from '../src/toast.ts';
+import { createLocaleProvider } from '../src/i18n.ts';
 
 interface Message {
   title: string;
@@ -232,6 +233,88 @@ describe('what a screen reader is told', () => {
 
     // Announcing by taking focus would interrupt whatever the user was doing.
     expect(document.activeElement).toBe(raiseButton());
+  });
+
+  it('names the region and the close control in the language the locale provider speaks', () => {
+    @Component({
+      selector: 'v-toasts-de',
+      render: compileTemplate(`
+        <div class="region" :ref="region" :spread="toaster.regionProps()">
+          <div class="toast" :for="toast in toaster.visible()" :key="toast.id"
+               :spread="toaster.toastProps(toast)">
+            <button class="close" :spread="toaster.closeProps()">x</button>
+          </div>
+        </div>
+      `),
+    })
+    class German {
+      locale = createLocaleProvider({
+        defaultLocale: 'de-DE',
+        messages: { notifications: 'Meldungen', closeNotification: 'Meldung schließen' },
+      });
+      region = new Signal.State<Element | null>(null);
+      toaster = createToaster<Message>({ region: () => this.region.get(), duration: 0 });
+    }
+
+    const handle = mount(German, host);
+    mounted.push(handle);
+    const page = handle.instance as German;
+    page.toaster.add({ title: 'Gespeichert' });
+    flushSync();
+
+    const region = host.querySelector('.region')!;
+    const close = host.querySelector('.close')!;
+    expect(region.getAttribute('aria-label')).toBe('Meldungen');
+    expect(close.getAttribute('aria-label')).toBe('Meldung schließen');
+
+    page.locale.setMessages({ notifications: 'Hinweise', closeNotification: 'Hinweis schließen' });
+    flushSync();
+    expect(region.getAttribute('aria-label')).toBe('Hinweise');
+    expect(close.getAttribute('aria-label')).toBe('Hinweis schließen');
+  });
+
+  it('keeps its own English under a provider with no word for it, and a label over both', () => {
+    // Neither key is among the catalogue's defaults, and `t` answers a key it
+    // cannot find with the key itself.
+    @Component({
+      selector: 'v-toasts-de-bare',
+      render: compileTemplate(`
+        <div class="region" :ref="region" :spread="toaster.regionProps()">
+          <div class="toast" :for="toast in toaster.visible()" :key="toast.id"
+               :spread="toaster.toastProps(toast)">
+            <button class="close" :spread="toaster.closeProps()">x</button>
+          </div>
+        </div>
+      `),
+    })
+    class Bare {
+      locale = createLocaleProvider({
+        defaultLocale: 'de-DE',
+        messages: { notifications: 'Meldungen', closeNotification: 'Meldung schließen' },
+      });
+      region = new Signal.State<Element | null>(null);
+      toaster = createToaster<Message>({
+        region: () => this.region.get(),
+        duration: 0,
+        labels: { region: 'Hinweise' },
+      });
+    }
+
+    const handle = mount(Bare, host);
+    mounted.push(handle);
+    const page = handle.instance as Bare;
+    page.toaster.add({ title: 'Gespeichert' });
+    flushSync();
+
+    const region = host.querySelector('.region')!;
+    const close = host.querySelector('.close')!;
+    expect(region.getAttribute('aria-label')).toBe('Hinweise');
+    expect(close.getAttribute('aria-label')).toBe('Meldung schließen');
+
+    page.locale.setMessages({});
+    flushSync();
+    expect(region.getAttribute('aria-label')).toBe('Hinweise');
+    expect(close.getAttribute('aria-label')).toBe('Close notification');
   });
 });
 

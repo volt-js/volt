@@ -172,7 +172,11 @@ export interface ComboboxLabels {
   clear?: string;
   /** Names the button that opens the popup. Default `Show suggestions`. */
   toggle?: string;
-  /** Names the button that removes one chip. Default `Remove {label}`. */
+  /**
+   * Names the button that removes one chip. Default the locale's `removeItem`
+   * with the label as `{label}`, else its `remove` followed by the label:
+   * `Remove Apple`.
+   */
   remove?: (label: string) => string;
   /** Announced when the popup has options. Default `n results available`. */
   results?: (count: number) => string;
@@ -666,11 +670,11 @@ function createListboxCore(
         setOpen(false);
       },
       {
-        // Escape is always claimed here and filtered in the callback above, so
-        // that a layer configured not to close still stops the press reaching
-        // the layer underneath it.
+        // Both kinds of dismissal are always claimed here and declined in the
+        // callback above, so that a popup configured not to close on one
+        // still stops the key or the press reaching the layer underneath it.
         escape: true,
-        outsidePointer: options.closeOnOutsidePointer !== false,
+        outsidePointer: true,
         // The control is not "outside": dismissing on it would close the popup
         // and the control's own handler would open it again. Nor is anything
         // else that claims to control the popup — see `popupControllers`.
@@ -2219,7 +2223,11 @@ export function createCombobox<T = unknown>(options: ComboboxOptions<T>): Combob
         // costs one keyboard pattern the user has to discover, and Backspace
         // from the textbox already covers removing the one just added.
         tabindex: '0',
-        'aria-label': options.labels?.remove?.(label) ?? `${core.message('remove', 'Remove')} ${label}`,
+        // A whole phrase where the catalogue has one, so the language decides
+        // whether the name comes first.
+        'aria-label':
+          options.labels?.remove?.(label) ??
+          core.message('removeItem', `${core.message('remove', 'Remove')} ${label}`, { label }),
         'data-value': value,
       };
     },

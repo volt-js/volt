@@ -717,8 +717,8 @@ list is not left narrowed to the chip it has taken.
 | `flip` | `true` | Let the browser flip it when it would overflow |
 | `loop` | `false` | Arrow keys wrap past the ends |
 | `closeOnSelect` | `true`, `false` when `multiple` | Choosing closes the popup |
-| `closeOnEscape` | `true` | |
-| `closeOnOutsidePointer` | `true` | |
+| `closeOnEscape` | `true` | Escape closes the popup. Turned off, the key is still kept from any layer beneath — a dialog the popup is in |
+| `closeOnOutsidePointer` | `true` | A press outside closes the popup. Turned off, the press is still kept from any layer beneath |
 | `typeaheadTimeout` | `500` | In ms. Select only: a combobox's typing filters rather than jumps, and never reads it |
 | `field` | — | The label, description, error element and validation, handed to [`createFormField`](./primitives-forms) |
 | `labels` | the catalogue | Every user-visible string — see [labels](#labels-for-select-and-combobox) |
@@ -837,14 +837,15 @@ translated catalogue has translated these too.
 | `loading` | `loading` | Loading… |
 | `results(count)` | `resultsAvailable` | "1 result available", "n results available" |
 | `toggle` | `showSuggestions` | Show suggestions |
-| `remove(label)` | `remove`, followed by the label | Remove {label} |
+| `remove(label)` | `removeItem`, else `remove` followed by the label | Remove {label} |
 | `selected(count)` | `selected` | n selected — names the chip list, through `chipsProps()` |
 | `clear` | `clear` | Clear |
 
-`suggestions`, `resultsAvailable` and `showSuggestions` are not in the default
-catalogue; a catalogue that adds them is read. The `remove` key is followed by
-the label rather than containing it, so a language that puts the object first
-needs `labels.remove`.
+`suggestions`, `resultsAvailable`, `showSuggestions` and `removeItem` are not in
+the default catalogue; a catalogue that adds them is read. `removeItem` is a
+whole phrase with the label as `{label}` — `'{label} entfernen'` — so a
+language that puts the verb last says so there; without it the `remove` key is
+followed by the label.
 
 ## Dates are plain records
 

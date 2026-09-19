@@ -1223,6 +1223,10 @@ export interface FileUploadLabels {
   itemProgress?: (item: UploadItem) => string;
   cancel?: (item: UploadItem) => string;
   retry?: (item: UploadItem) => string;
+  /**
+   * Default the locale's `removeItem` with the file's name as `{label}`, else
+   * its `remove` followed by the name: `Remove holiday.png`.
+   */
   remove?: (item: UploadItem) => string;
   /** Why a file was refused. */
   typeRejected?: (file: File, accept: string) => string;
@@ -2469,10 +2473,14 @@ export function createFileUpload(options: FileUploadOptions): FileUpload {
       type: 'button',
       // "Remove" is one of the words the catalogue carries, and every other
       // remove button in the library takes it from there, so a German page
-      // does not have one row of English buttons in it.
+      // does not have one row of English buttons in it. Where the catalogue
+      // has a whole phrase for it, that is used instead, so the language
+      // decides whether the name comes first.
       'aria-label':
         labels.remove?.(item) ??
-        `${locale.has('remove') ? locale.t('remove') : 'Remove'} ${item.file.name}`,
+        (locale.has('removeItem')
+          ? locale.t('removeItem', { label: item.file.name })
+          : `${locale.has('remove') ? locale.t('remove') : 'Remove'} ${item.file.name}`),
       'data-status': item.status,
     }),
   };

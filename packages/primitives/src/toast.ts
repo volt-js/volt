@@ -44,6 +44,7 @@
 import { Signal, createRoot, effect, onCleanup } from '@voltdev/core';
 import { createPresence, type PresenceState } from './presence.js';
 import { createId } from './id.js';
+import { useProvidedLocale } from './i18n.js';
 
 const { untrack } = Signal.subtle;
 
@@ -75,9 +76,12 @@ export const TOASTER_ATTRIBUTE = 'data-volt-toaster';
  * hard-coded English name is not something a consumer can work around.
  */
 export interface ToastLabels {
-  /** Accessible name for the region. Default `Notifications`. */
+  /** Accessible name for the region. Default the locale's `notifications`, or `Notifications`. */
   region?: string;
-  /** Accessible name for a close control. Default `Close notification`. */
+  /**
+   * Accessible name for a close control. Default the locale's
+   * `closeNotification`, or `Close notification`.
+   */
   close?: string;
 }
 
@@ -194,6 +198,15 @@ export function createToaster<T = unknown>(options: ToasterOptions<T>): Toaster<
   const max = options.max ?? 3;
   const defaultDuration = options.duration ?? 5000;
   const labels = options.labels ?? {};
+  const locale = useProvidedLocale();
+
+  /**
+   * A default name: the provider's word for it where its catalogue has one,
+   * then English. Neither key is among the catalogue's defaults, and `t`
+   * answers a key it cannot find with the key itself.
+   */
+  const word = (key: string, english: string): string =>
+    locale?.has(key) ? locale.t(key) : english;
 
   /** Live entries by id — where the writable half of each toast lives. */
   const live = new Map<string, Entry<T>>();
@@ -582,7 +595,7 @@ export function createToaster<T = unknown>(options: ToasterOptions<T>): Toaster<
 
     regionProps: () => ({
       role: 'region',
-      'aria-label': labels.region ?? 'Notifications',
+      'aria-label': labels.region ?? word('notifications', 'Notifications'),
       // Focusable by the hotkey, out of the tab order the rest of the time.
       tabindex: '-1',
       'data-paused': isPaused() ? '' : undefined,
@@ -610,7 +623,7 @@ export function createToaster<T = unknown>(options: ToasterOptions<T>): Toaster<
     },
 
     closeProps: () => ({
-      'aria-label': labels.close ?? 'Close notification',
+      'aria-label': labels.close ?? word('closeNotification', 'Close notification'),
     }),
   };
 }

@@ -398,9 +398,10 @@ createPasswordInput(options?: PasswordInputOptions): PasswordInput
 
 Adds `revealed` / `defaultRevealed` / `onRevealedChange`, and `isRevealed()`,
 `show()`, `hide()`, `toggle()` and `statusText()`. Its `labels` take `show` and
-`hide` for the button's name ("Show password", "Hide password") and `shown`
-and `hidden` for what the live region says ("Password shown", "Password
-hidden"), alongside the form field's own.
+`hide` for the button's name — the locale's `showPassword` and `hidePassword`,
+else "Show password" and "Hide password" — and `shown` and `hidden` for what
+the live region says — the locale's `passwordShown` and `passwordHidden`, else
+"Password shown" and "Password hidden" — alongside the form field's own.
 
 | Prop object | Goes on |
 |---|---|
@@ -450,7 +451,7 @@ A hidden input carries the canonical value, so what reaches the server is
 | `clampOnBlur` | `true` | Pull an out-of-range value back into range when the field is left |
 | `formatOptions` | grouping, at the step's precision | `Intl.NumberFormatOptions` for display |
 | `locale` | the ambient locale | For a field that is deliberately not localised |
-| `labels` | — | Adds `increase`, `decrease`, `notANumber`, `tooSmall(min)`, `tooLarge(max)`, `notAStep(step)` |
+| `labels` | — | Adds `increase`, `decrease`, `notANumber` (each also the locale's key of that name, else "Increase", "Decrease" and "Enter a number."), `tooSmall(min)`, `tooLarge(max)`, `notAStep(step)` |
 
 Plus the common `label`, `description`, `errorMessage`, `id`, `placeholder`,
 `required`, `disabled`, `readOnly`, `validate`, `validateOn`, `revalidateOn`
@@ -573,7 +574,7 @@ before it are filled; a filled box can still be pressed and typed over.
 | `mask` | `false` | Render dots. A code copied off a screen is not a secret |
 | `autoComplete` | `'one-time-code'` | Given to the first box only, which is what autofill expects |
 | `onComplete` | — | Called with the code whenever a change leaves every box filled — again if a character of a full code is replaced |
-| `labels` | — | Adds `box(position, length)` ("Digit 3 of 6") and `incomplete` |
+| `labels` | — | Adds `box(position, length)` ("Digit 3 of 6") and `incomplete` (the locale's `incomplete`, else "Enter all the characters.") |
 
 Plus the common `label`, `description`, `errorMessage`, `value`,
 `defaultValue` (the starting code, and what a reset goes back to), `id`,
@@ -663,7 +664,7 @@ so a field holding twenty tags costs two Tab presses rather than twenty-one.
 | `transform` | trim | Clean a tag before it is added |
 | `validateTag` | — | Refuse a tag outright |
 | `onReject` | — | `(tag, reason)` — `'duplicate'`, `'invalid'` or `'full'` |
-| `labels` | — | Adds `list` (the locale's `tags`, else "Tags"), `remove(tag)`, `added(tag)`, `removed(tag)`, `duplicate(tag)`, `empty` (the locale's `tagsEmpty`, else "Add at least one tag.") |
+| `labels` | — | Adds `list` (the locale's `tags`, else "Tags"), `remove(tag)` (the locale's `removeItem` with the tag as `{label}`, else its `remove` and the tag), `added(tag)`, `removed(tag)`, `duplicate(tag)`, `cleared` (the locale's `tagsCleared`, else "All tags removed"), `empty` (the locale's `tagsEmpty`, else "Add at least one tag.") |
 
 Plus the common `label`, `description`, `errorMessage`, `id`, `placeholder`,
 `required`, `disabled`, `readOnly`, `validate`, `validateOn`, `revalidateOn`
@@ -674,7 +675,7 @@ and `onValueChange`.
 | `tags()` / `draft()` / `setDraft(text)` | The tags, and what is half-typed |
 | `add(text?)` | Add the draft, or a tag given outright. Returns whether it went in; refused while disabled or read-only |
 | `removeAt(i)` / `removeLast()` | Refused while disabled or read-only |
-| `clear()` | Empties the row — allowed while disabled, and silent; see below. The draft is left alone |
+| `clear()` | Empties the row — allowed while disabled, and says so when it took any tags away; see below. The draft is left alone |
 | `isFull()` | Whether `max` tags are in |
 | `duplicateIndex()` | The tag a refused duplicate collided with, until the next edit — for flashing it |
 | `onKeyDown` / `onTagKeyDown` / `onPaste` / `onBlur` | Wire on the text input and on each tag |
@@ -734,10 +735,11 @@ signal you own.
 
 Adding and removing a tag changes the page without moving focus, which is
 silence to a screen reader, so `statusProps()` is a live region that says what
-happened. Two things about `clear()` are as they are on purpose: it empties the
-row while disabled or read-only, because it is your call rather than something
-the user pressed, and it says nothing to the live region — emptying the row is
-the largest change the field makes and the only one it makes silently.
+happened, `clear()` included — it says `cleared` when it took any tags away,
+and nothing when the row was already empty. `clear()` also empties the row
+while disabled or read-only, on purpose, because it is your call rather than
+something the user pressed. A form reset puts the tags back silently, as the
+platform resets every other control.
 
 Enter adds the draft, and is left to the form when there is no draft, so a form
 can still be submitted from its last field. A delimiter typed ends the tag;
@@ -1299,7 +1301,7 @@ zone is the shortcut, not the mechanism.
 | `paste` / `fullPage` | — | Take files pasted anywhere on the page; take a drop anywhere on the page |
 | `blockSubmitWhileBusy` | `true` | A form that posts half an upload is worse than one that waits |
 | `label` / `description` / `errorMessage` / `required` / `disabled` | — | Passed to the form field |
-| `labels` | — | Every string: the drop zone's and the bars' names, the three refusal reasons, `uploadFailed`, `busy`, and the three announcements |
+| `labels` | — | Every string: the drop zone's and the bars' names, the cancel, retry and remove buttons' names, the three refusal reasons, `uploadFailed`, `busy`, and the three announcements. `remove(item)` defaults to the locale's `removeItem` with the file's name as `{label}`, else its `remove` and the name |
 | `on…` | — | `onFilesAdded`, `onReject`, `onItemProgress`, `onItemComplete`, `onItemError`, `onComplete` |
 
 Without a `transport` nothing is sent, and the files sit at `'pending'` for

@@ -26,6 +26,7 @@ import {
   resetLocaleCaches,
   resolveDirection,
   useLocale,
+  useProvidedLocale,
   type LocaleOptions,
   type MessageCatalog,
 } from '../src/i18n.ts';
@@ -238,6 +239,35 @@ describe('flowing through the reactive scope', () => {
 
   it('hands back one ambient locale rather than building one per call', () => {
     expect(useLocale()).toBe(useLocale());
+  });
+
+  it('gives useProvidedLocale the provider, and nothing in its place without one', () => {
+    @Component({
+      selector: 'v-i18n-provided-child',
+      render: compileTemplate(`<span class="provided">{ locale.t('close') }</span>`),
+    })
+    class Child {
+      locale = useProvidedLocale()!;
+    }
+
+    @Component({
+      selector: 'v-i18n-provided-parent',
+      imports: [Child],
+      render: compileTemplate(`<div><v-i18n-provided-child></v-i18n-provided-child></div>`),
+    })
+    class Parent {
+      locale = createLocaleProvider({ defaultLocale: 'de-DE', messages: { close: 'Schließen' } });
+    }
+
+    track(mount(Parent, host));
+    flushSync();
+    expect(host.querySelector('.provided')!.textContent).toBe('Schließen');
+
+    // The document names a language, which is what `useLocale` would fall back
+    // on. This reader has no fallback, so a component that keeps English of
+    // its own is not handed a whole ambient locale to say it with.
+    document.documentElement.setAttribute('lang', 'de-DE');
+    expect(useProvidedLocale()).toBeNull();
   });
 
   it('refuses to provide outside a reactive scope', () => {
@@ -932,6 +962,35 @@ describe('formatting', () => {
         now: new Date(2026, 7, 16, 0, 30),
       }),
     ).toBe('2 days ago');
+  });
+
+  it('names a gap that rounds up to the next unit in that unit', () => {
+    const locale = en();
+    const now = new Date(2026, 7, 16, 12, 0);
+
+    // The last half-unit before each boundary rounds to the boundary itself,
+    // and "in 60 seconds" is a minute said the long way round.
+    expect(locale.format.relativeTime(new Date(2026, 7, 16, 12, 0, 59, 600), { now })).toBe(
+      'in 1 minute',
+    );
+    expect(locale.format.relativeTime(new Date(2026, 7, 16, 11, 0, 20), { now })).toBe(
+      '1 hour ago',
+    );
+    // 23 hours 40 minutes, and the next calendar day.
+    expect(locale.format.relativeTime(new Date(2026, 7, 17, 11, 40), { now })).toBe('tomorrow');
+    expect(relativeTimeParts(new Date(2026, 7, 15, 12, 20), now)).toEqual([-1, 'day']);
+  });
+
+  it('keeps the hours when a day by the clock is not a day by the calendar', () => {
+    const locale = en();
+    // Just after midnight to just before the next one: the gap rounds to 24
+    // hours and both ends are on one date, so "tomorrow" would be false and
+    // "today" would say nothing about when.
+    const now = new Date(2026, 7, 16, 0, 10);
+    expect(locale.format.relativeTime(new Date(2026, 7, 16, 23, 50), { now })).toBe(
+      'in 24 hours',
+    );
+    expect(relativeTimeParts(now, new Date(2026, 7, 16, 23, 50))).toEqual([-24, 'hour']);
   });
 
   it('says weeks until a whole month has passed, wherever the month boundary falls', () => {

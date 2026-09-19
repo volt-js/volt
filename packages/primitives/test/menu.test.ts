@@ -28,6 +28,7 @@ import {
 import { createMenu, type MenuOptions } from '../src/menu.ts';
 import { createDialog } from '../src/dialog.ts';
 import { createDismiss } from '../src/dismiss.ts';
+import { createLocaleProvider } from '../src/i18n.ts';
 
 let host: HTMLElement;
 let mounted: { unmount(): void }[] = [];
@@ -382,6 +383,65 @@ describe('what assistive technology is told', () => {
     );
     // A separator lies across the menu, so it turns with it.
     expect(document.querySelector('.rule')!.getAttribute('aria-orientation')).toBe('vertical');
+  });
+
+  it('takes the menu label from the locale provider, when it has one', () => {
+    @Component({
+      selector: 'v-menu-de',
+      render: compileTemplate(
+        `<div><button :click="menu.open()">go</button>` +
+          `<div :if="menu.isPresent()" :ref="content" :spread="menu.contentProps()">x</div></div>`,
+      ),
+    })
+    class German {
+      locale = createLocaleProvider({ defaultLocale: 'de-DE', messages: { menu: 'Menü' } });
+      content = new Signal.State<Element | null>(null);
+      menu = createMenu({ content: () => this.content.get() });
+    }
+
+    const instance = track(mount(German, host)).instance as German;
+    clickOn(host.querySelector('button')!);
+    const el = document.querySelector('[role="menu"]')!;
+    expect(el.getAttribute('aria-label')).toBe('Menü');
+
+    // Read when it is said, so a catalogue that arrives later renames a menu
+    // already on screen.
+    instance.locale.setMessages({ menu: 'Aktionen' });
+    flushSync();
+    expect(el.getAttribute('aria-label')).toBe('Aktionen');
+  });
+
+  it('keeps its own English under a provider with no word for it, and a label over both', () => {
+    // `menu` is not among the catalogue's defaults, and `t` answers a key it
+    // cannot find with the key itself — the word "menu", lower-cased, as the
+    // menu's name.
+    @Component({
+      selector: 'v-menu-de-bare',
+      render: compileTemplate(
+        `<div><button :click="plain.open()">a</button>` +
+          `<div :if="plain.isPresent()" :ref="plainContent" :spread="plain.contentProps()">x</div>` +
+          `<button :click="named.open()">b</button>` +
+          `<div :if="named.isPresent()" :ref="namedContent" :spread="named.contentProps()">y</div></div>`,
+      ),
+    })
+    class Bare {
+      locale = createLocaleProvider({ defaultLocale: 'de-DE', messages: { menu: 'Menü' } });
+      plainContent = new Signal.State<Element | null>(null);
+      namedContent = new Signal.State<Element | null>(null);
+      plain = createMenu({ content: () => this.plainContent.get() });
+      named = createMenu({ content: () => this.namedContent.get(), labels: { menu: 'Aktionen' } });
+    }
+
+    const instance = track(mount(Bare, host)).instance as Bare;
+    const [plainButton, namedButton] = host.querySelectorAll('button');
+    clickOn(namedButton!);
+    expect(document.querySelector('[role="menu"]')!.getAttribute('aria-label')).toBe('Aktionen');
+    instance.named.close();
+    flushSync();
+
+    instance.locale.setMessages({});
+    clickOn(plainButton!);
+    expect(document.querySelector('[role="menu"]')!.getAttribute('aria-label')).toBe('Menu');
   });
 });
 

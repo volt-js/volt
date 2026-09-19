@@ -11,6 +11,7 @@ import { compileTemplate } from '@voltdev/core/jit';
 import { Signal, createRoot, defineComponent, flushSync, mount } from '@voltdev/core';
 import { createPopover, type PopoverOptions } from '../src/popover.ts';
 import { createDismiss, dismissStackSize } from '../src/dismiss.ts';
+import { createLocaleProvider } from '../src/i18n.ts';
 
 let host: HTMLElement;
 let mounted: { unmount(): void }[] = [];
@@ -397,6 +398,32 @@ describe('what assistive technology is told', () => {
     // tab order wrong.
     expect(trigger().hasAttribute('role')).toBe(false);
     expect(trigger().hasAttribute('tabindex')).toBe(false);
+  });
+
+  it('names the close control in the language the locale provider speaks', () => {
+    class German {
+      locale = createLocaleProvider({ defaultLocale: 'de-DE', messages: { close: 'Schließen' } });
+      trigger = new Signal.State<Element | null>(null);
+      content = new Signal.State<Element | null>(null);
+      popover = createPopover({
+        trigger: () => this.trigger.get(),
+        content: () => this.content.get(),
+      });
+    }
+    seq += 1;
+    defineComponent(German, { selector: `v-popover-${seq}`, render: compileTemplate(TEMPLATE) });
+    const instance = track(mount(German, host)).instance as German;
+    host.querySelector<HTMLElement>('[aria-haspopup]')!.click();
+    flushSync();
+
+    // The catalogue already has a word for this; a provider that translates
+    // it should not have to translate it again for every popover.
+    const close = document.querySelector('[role="dialog"] .close')!;
+    expect(close.getAttribute('aria-label')).toBe('Schließen');
+
+    instance.locale.setMessages({ close: 'Zumachen' });
+    flushSync();
+    expect(close.getAttribute('aria-label')).toBe('Zumachen');
   });
 });
 

@@ -30,6 +30,7 @@ import {
   type SelectOptions,
 } from '../src/combobox.ts';
 import { createDismiss, dismissStackSize } from '../src/dismiss.ts';
+import { createLocaleProvider, type MessageCatalog } from '../src/i18n.ts';
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -77,6 +78,8 @@ let ownFilter = false;
 let prefill = '';
 /** Put the textbox behind an `:if`, so a test can have it rendered again. */
 let remountable = false;
+/** A catalogue for a locale provider around the combobox, when there is one. */
+let catalogue: MessageCatalog | null = null;
 let seq = 0;
 
 beforeEach(() => {
@@ -92,6 +95,7 @@ beforeEach(() => {
   ownFilter = false;
   prefill = '';
   remountable = false;
+  catalogue = null;
 });
 
 afterEach(() => {
@@ -395,6 +399,9 @@ function comboDemo(): ComboHarness {
      */
     nativeInput = comboOptions.multiple !== true || inputBacked;
     nativeSelect = comboOptions.multiple === true && !inputBacked;
+    // Declared before the combobox, so it is provided by the time the
+    // combobox asks for it.
+    locale = catalogue && createLocaleProvider({ defaultLocale: 'de-DE', messages: catalogue });
 
     combo = createCombobox<Fruit>({
       ...comboOptions,
@@ -2448,6 +2455,19 @@ describe('choosing several, with chips', () => {
     expect(ui.combo.values()).toEqual(['ch']);
   });
 
+  it('names a remove button with the catalogue\'s whole phrase, where it has one', () => {
+    // German puts the verb last. A phrase with the label in it lets the
+    // language choose the order, which `remove` followed by the label cannot.
+    catalogue = { remove: 'Entfernen', removeItem: '{label} entfernen' };
+    comboOptions = {
+      multiple: true,
+      defaultValue: ['ch'],
+      labelFor: (value) => FRUITS.find((fruit) => fruit.value === value)?.label,
+    };
+    const ui = comboDemo();
+    expect(ui.removeButton('ch').getAttribute('aria-label')).toBe('Cherry entfernen');
+  });
+
   it('empties the query after each choice, so the list is not narrowed to the new chip', () => {
     const ui = comboDemo();
     const input = ui.input();
@@ -2984,11 +3004,7 @@ describe('an option whose whole content is the guard that reads it', () => {
 
   it('stays open on an outside press when told not to close on one', () => {
     // The option had no test of any kind — its name appeared nowhere in this
-    // file. It is enforced where the layer is configured, by not listening for
-    // outside presses at all, which makes the matching branch in the dismiss
-    // callback unreachable rather than merely uncovered. The escape branch
-    // beside it is not: `escape: true` is always claimed so that a layer which
-    // will not close still stops the press reaching the one beneath it.
+    // file.
     comboOptions = { closeOnOutsidePointer: false };
     const ui = comboDemo();
     openCombo(ui);
@@ -2996,6 +3012,33 @@ describe('an option whose whole content is the guard that reads it', () => {
 
     press(document.querySelector<HTMLElement>('#outside')!);
     expect(ui.combo.isOpen()).toBe(true);
+  });
+
+  it('keeps an outside press it will not close on from the layer beneath', () => {
+    // Dismissal goes to the topmost layer that takes a press, so a popup that
+    // did not take them would let this one through to close whatever it was
+    // opened from — a dialog, here — while the popup itself stayed open.
+    const beneath = layerAround(host);
+    comboOptions = { closeOnOutsidePointer: false };
+    const ui = comboDemo();
+    openCombo(ui);
+    expect(ui.combo.isOpen()).toBe(true);
+
+    press(document.querySelector<HTMLElement>('#outside')!);
+    expect(ui.combo.isOpen()).toBe(true);
+    expect(beneath).not.toHaveBeenCalled();
+  });
+
+  it('keeps it from the layer beneath a select as well', () => {
+    const beneath = layerAround(host);
+    selectOptions = { closeOnOutsidePointer: false };
+    const ui = selectDemo();
+    press(ui.trigger());
+    expect(ui.select.isOpen()).toBe(true);
+
+    press(document.querySelector<HTMLElement>('#outside')!);
+    expect(ui.select.isOpen()).toBe(true);
+    expect(beneath).not.toHaveBeenCalled();
   });
 
   it('still closes on an outside press by default, so the option is doing the work', () => {

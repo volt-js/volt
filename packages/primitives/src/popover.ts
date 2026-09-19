@@ -63,6 +63,7 @@ import { createDismiss, isInsideLayer, type DismissReason } from './dismiss.js';
 import { createFocusScope, focusableWithin } from './focus-scope.js';
 import { createAnchor, type AnchorPlacement } from './anchoring.js';
 import { createId } from './id.js';
+import { useProvidedLocale } from './i18n.js';
 
 // The proposal's own name for reading without subscribing; Volt adds no second
 // spelling for it.
@@ -86,7 +87,7 @@ export type PopoverPlacement = AnchorPlacement;
 export interface PopoverLabels {
   /** Name for the popover itself, used when no title element is rendered. */
   content?: string;
-  /** Name for the close control. Default `Close`. */
+  /** Name for the close control. Default the locale's `close`, or `Close`. */
   close?: string;
 }
 
@@ -207,6 +208,7 @@ export function createPopover(options: PopoverOptions): Popover {
   const state = options.open ?? new Signal.State(options.defaultOpen ?? false);
   const modal = options.modal === true;
   const labels = options.labels ?? {};
+  const locale = useProvidedLocale();
 
   const contentId = createId('popover-content');
   const titleId = createId('popover-title');
@@ -408,7 +410,7 @@ export function createPopover(options: PopoverOptions): Popover {
       // A close control is usually a glyph, and a glyph is not a name. If yours
       // has visible text, pass that text as `labels.close` so that the name and
       // the text cannot disagree — or be in different languages.
-      'aria-label': labels.close ?? 'Close',
+      'aria-label': labels.close ?? locale?.t('close') ?? 'Close',
       onclick: onCloseClick,
     }),
 

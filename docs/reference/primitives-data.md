@@ -4,8 +4,9 @@ Two things in `@voltdev/primitives` are not widgets but the state widgets are
 built from: the state of one remote call, and the locale a page is spoken and
 formatted in. The combobox's async search and the tree's lazy children are
 built on the first, and so is each entry in the [query cache](./query). The
-calendar, date picker, combobox, listbox, tree, form inputs and grid read the
-second for their strings, their numbers and their sort order.
+calendar, date picker, combobox, listbox, tree, form inputs, overlays, display
+primitives and grid read the second for their strings, their numbers and their
+sort order.
 
 ::: warning Not on npm yet
 Part of `@voltdev/primitives`, which is not published yet — see
@@ -24,6 +25,7 @@ back prop objects, and nothing here renders. Both are imported from
 | [`createLocaleProvider`](#createlocaleprovider) | A locale provided to everything below it in the reactive scope |
 | [`createLocale`](#createlocale-and-uselocale) | The same locale with nothing provided — for code outside the component tree |
 | [`useLocale`](#createlocale-and-uselocale) | The nearest provided locale, or an ambient one |
+| [`useProvidedLocale`](#createlocale-and-uselocale) | The nearest provided locale, or `null` — for a component with English of its own |
 | [`createFormatters`](#formatting) | Number, currency, percent, date, relative time, list and byte formatting bound to a tag |
 | [`relativeTimeParts`](#relativetime) | The amount and the unit `relativeTime` would say, for code that is not a formatter |
 | [`getNumberFormat` and the other `get*`](#cached-intl-instances) | Cached `Intl` constructors |
@@ -707,7 +709,7 @@ pl.t('files', { n: 5 });        // '5 plików'
 pl.t('pageOf', { n: 2, m: 9 }); // 'Page 2 of 9' — untranslated, so the English default
 ```
 
-The strings the library itself speaks are `DEFAULT_MESSAGES`:
+The strings the library speaks with an English default are `DEFAULT_MESSAGES`:
 
 | Key | English |
 |---|---|
@@ -727,20 +729,34 @@ a Polish catalogue has the slots it needs; the shape of the default is what a
 translator copies.
 
 Not every key is read by a component yet. The calendar, combobox, listbox,
-tree and form inputs read `previous`, `next`, `noResults`, `selected`,
-`remove`, `loading`, `required` and `clear`. Nothing in Volt reads `close`,
-`pageOf`, `sortedAscending` or `sortedDescending` today: they are there for the
-markup an application writes around a primitive — a dialog's close button is
-yours to write — and a translation of them shows only where your own templates
-call `t`. That includes the grid, the component the sort keys were written for:
-it announces its sort order in its own English ("Sorted by Name ascending"),
-and a catalogue's `sortedAscending` does not reach it. Its `sortAnnouncement`
-option is the way to translate that sentence.
+tree, form inputs and display primitives read `previous`, `next`, `noResults`,
+`selected`, `remove`, `loading`, `required` and `clear`, and the popover names
+its close button from `close`. Nothing in Volt reads `pageOf`,
+`sortedAscending` or `sortedDescending` today: a translation of them shows only
+where your own templates call `t`. That includes the pager, which says "Page 3
+of 12" in its own English unless `labels.status` says otherwise, and the grid,
+the component the sort keys were written for: it announces its sort order in
+its own English ("Sorted by Name ascending"), and a catalogue's
+`sortedAscending` does not reach it. Its `sortAnnouncement` option is the way
+to translate that sentence.
 
 Going the other way, several components ask for keys that are not in the
 defaults — `resultsAvailable` and `suggestions` in a combobox, `increase` and
-`decrease` on a number input — and use their own English when `has(key)` says
-the catalogue lacks one. A catalogue that defines them translates those too.
+`decrease` on a number input, `tagsCleared` when a tags input is emptied,
+`menu`, `notifications` and `closeNotification` for the overlays — and use
+their own English when `has(key)` says the catalogue lacks one. A catalogue
+that defines them translates those too. They stay out of `DEFAULT_MESSAGES`
+because a key there is always found, and its English would take the place of
+what the component says without it, so copying the defaults does not show a
+translator these keys: each component's page lists the ones it asks for. The
+plugin's report of unused messages spares only the defaults, so it calls an
+entry for one of these unused. Its [`ignore`](./vite-plugin#messages) option
+quiets that, and replaces the list rather than adding to it, so name the
+defaults you translate there as well. Every remove button asks
+for `removeItem` before `remove`: a whole phrase with the thing removed as
+`{label}`, so a language that puts the verb last says
+`removeItem: '{label} entfernen'` where `remove` alone could only ever come
+first.
 The cost is that there is one flat namespace, shared with your own keys: the
 number input asks for `increase` to name its stepper button, so a catalogue
 that defines `increase` for something else relabels that button as well.
@@ -885,12 +901,16 @@ to `createRelativeTime`, and both are exported from the same package root.
 | `style` | As `Intl.RelativeTimeFormat` |
 
 Below a day the unit is chosen by elapsed time, which is what "in 3 hours"
-means. From a day up it is counted by the calendar: 23:30 on Wednesday to 00:30
-on Friday is 25 hours, and "yesterday" would be a lie that dividing by
-86,400,000 tells every night — it is "2 days ago". Counting by calendar also
-absorbs the 23- and 25-hour days daylight saving makes. Pass
-`numeric: 'always'` for a live countdown, where a word that does not change
-every second reads as a frozen clock.
+means, and by the amount once it is rounded: 59 minutes 40 seconds is "in 1
+hour", not "in 60 minutes". From a day up it is counted by the calendar: 23:30
+on Wednesday to 00:30 on Friday is 25 hours, and "yesterday" would be a lie that
+dividing by 86,400,000 tells every night — it is "2 days ago". Counting by
+calendar also absorbs the 23- and 25-hour days daylight saving makes. A gap that
+rounds to a day by the clock but lies within one date — just after midnight to
+just before the next — keeps its hours, "in 24 hours", since "tomorrow" would be
+false and "today" would not say when. Pass `numeric: 'always'` for a live
+countdown, where a word that does not change every second reads as a frozen
+clock.
 
 From seven days the answer is in weeks until a whole month has gone by — the
 day of the month has to have come round — so eight days back from the 8th is
@@ -932,15 +952,10 @@ paces its own clock by the unit, or a sentence built around the number.
 
 A relative time that keeps itself current as the clock moves is
 `createRelativeTime`, on [display primitives](./primitives-display#relative-time).
-It is a separate implementation, not this formatter on a timer. The two choose
-a unit the same way — weeks until a whole month has gone by, then whole months
-— but do not agree everywhere. It does not read the locale — it takes a `locale`
-option and otherwise formats in the runtime's language. It truncates amounts
-under a day where this rounds them, so 90 seconds from now is "in 2 minutes"
-here and "in 1 minute" there. And it counts years in twelve-month spans rather
-than by the calendar, so December 2024 seen from January 2026 is "2 years ago"
-here and "last year" there. A page that shows both — a live timestamp beside a
-formatted one in a tooltip, say — can show two answers for the same moment.
+It is this choice on a shared ticker rather than a second implementation of it:
+it calls `relativeTimeParts` for the amount and the unit, reads the locale
+through `useLocale` unless it is given one, and formats through the same cached
+`Intl.RelativeTimeFormat`. The two say the same thing about the same moment.
 
 ### `bytes`
 
@@ -992,6 +1007,7 @@ the ambient locale. It is a test seam.
 ```ts
 function createLocale(options?: LocaleOptions): LocaleProvider
 function useLocale(): Locale
+function useProvidedLocale(): Locale | null
 ```
 
 `createLocale` is the same object as `createLocaleProvider` with nothing
@@ -1017,6 +1033,24 @@ import { useLocale } from '@voltdev/primitives';
 export class FileSize {
   @Prop() size = 0;
   locale = useLocale();
+}
+```
+
+`useProvidedLocale()` is the nearest provided locale and nothing else: with no
+provider it returns `null` rather than building an ambient one. It is for a
+component that only wants a provider's words and has English of its own
+otherwise — the popover, the menu and the toaster read their names through it.
+The ambient locale is a whole locale, formatters and direction included, and
+`useLocale` brings all of it into a bundle; this brings in only the context it
+reads.
+
+```ts
+import { useProvidedLocale } from '@voltdev/primitives';
+
+class CloseButton {
+  locale = useProvidedLocale();
+  label = () =>
+    this.locale?.has('dismiss') ? this.locale.t('dismiss') : 'Dismiss';
 }
 ```
 

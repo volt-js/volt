@@ -2040,6 +2040,39 @@ describe('tags input', () => {
     expect(remove(0).type).toBe('button');
   });
 
+  it("names a remove control with the catalogue's whole phrase, where it has one", () => {
+    @Component({
+      selector: `v-tags-${++selectors}`,
+      render: compileTemplate(`
+        <ul :ref="list" :spread="tags.listProps()">
+          <li :for="(tag, i) in tags.tags()" :key="tag" :spread="tags.tagProps(i)">
+            <button class="remove" :spread="tags.removeProps(i)">x</button>
+          </li>
+        </ul>
+        <input :ref="input" :spread="tags.inputProps()">
+      `),
+    })
+    class GermanTags {
+      list = new Signal.State<Element | null>(null);
+      input = new Signal.State<Element | null>(null);
+      // German puts the verb last. A phrase with the label in it lets the
+      // language choose the order, which `remove` followed by the label cannot.
+      locale = createLocaleProvider({
+        defaultLocale: 'de-DE',
+        messages: { remove: 'Entfernen', removeItem: '{label} entfernen' },
+      });
+      tags = createTagsInput({
+        defaultValue: ['ada'],
+        input: () => this.input.get(),
+        list: () => this.list.get(),
+      });
+    }
+
+    track(mount(GermanTags, host));
+    flushSync();
+    expect(host.querySelector('.remove')!.getAttribute('aria-label')).toBe('ada entfernen');
+  });
+
   it('removes on a press, and says so out loud', () => {
     tagsOptions = { defaultValue: ['ada', 'grace'] };
     const { instance, remove, status, labels } = tagsInput();
@@ -2096,7 +2129,7 @@ describe('tags input', () => {
     expect(instance.tags.tags()).toEqual([]);
   });
 
-  it('says nothing when the row is emptied, where removing one tag speaks', () => {
+  it('says so when the row is emptied, as it does when one tag goes', () => {
     tagsOptions = { defaultValue: ['ada', 'grace'] };
     const { instance, status } = tagsInput();
 
@@ -2104,13 +2137,62 @@ describe('tags input', () => {
     flushSync();
     expect(status().textContent).toBe('ada removed');
 
-    // Pinned as it stands rather than as it should be. Emptying the row is the
-    // largest change the field makes and the only silent one, and there is no
-    // label to say it with yet; this line is what makes closing that a change
-    // somebody made rather than one that happened.
+    // The largest change the field makes. Left silent, it would be the one
+    // change a screen-reader user never heard about.
     instance.tags.clear();
     flushSync();
-    expect(status().textContent).toBe('ada removed');
+    expect(status().textContent).toBe('All tags removed');
+  });
+
+  it('says it in the words it is given, and says nothing when there was nothing to empty', () => {
+    tagsOptions = { defaultValue: ['ada'], labels: { cleared: 'Row emptied' } };
+    const { instance, status } = tagsInput();
+
+    instance.tags.clear();
+    flushSync();
+    expect(status().textContent).toBe('Row emptied');
+
+    instance.tags.add('grace');
+    instance.tags.removeAt(0);
+    flushSync();
+    expect(status().textContent).toBe('grace removed');
+
+    instance.tags.clear();
+    flushSync();
+    expect(status().textContent).toBe('grace removed');
+  });
+
+  it('says it in the language the locale provider speaks, when it has the words', () => {
+    @Component({
+      selector: `v-tags-${++selectors}`,
+      render: compileTemplate(`
+        <ul :ref="list" :spread="tags.listProps()">
+          <li :for="(tag, i) in tags.tags()" :key="tag" :spread="tags.tagProps(i)">{ tag }</li>
+        </ul>
+        <input :ref="input" :spread="tags.inputProps()">
+        <p class="status" :spread="tags.statusProps()">{ tags.statusText() }</p>
+      `),
+    })
+    class GermanTags {
+      list = new Signal.State<Element | null>(null);
+      input = new Signal.State<Element | null>(null);
+      locale = createLocaleProvider({
+        defaultLocale: 'de-DE',
+        messages: { tagsCleared: 'Alle Tags entfernt' },
+      });
+      tags = createTagsInput({
+        defaultValue: ['ada', 'grace'],
+        input: () => this.input.get(),
+        list: () => this.list.get(),
+      });
+    }
+
+    const instance = track(mount(GermanTags, host)).instance;
+    flushSync();
+
+    instance.tags.clear();
+    flushSync();
+    expect(host.querySelector('.status')!.textContent).toBe('Alle Tags entfernt');
   });
 
   it('stops flashing a duplicate when the row it pointed into is cleared', () => {

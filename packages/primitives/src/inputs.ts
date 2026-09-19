@@ -1801,7 +1801,10 @@ export function createPinInput(options: PinInputOptions): PinInput {
 export interface TagsInputLabels extends FormFieldLabels {
   /** Name for the list of tags. Default `Tags`. */
   list?: string;
-  /** Name for one tag's remove control. Default `Remove ada`. */
+  /**
+   * Name for one tag's remove control. Default the locale's `removeItem` with
+   * the tag as `{label}`, else its `remove` followed by the tag: `Remove ada`.
+   */
   remove?: (tag: string) => string;
   /** Announced when a tag is added. */
   added?: (tag: string) => string;
@@ -1809,6 +1812,11 @@ export interface TagsInputLabels extends FormFieldLabels {
   removed?: (tag: string) => string;
   /** Announced when one is refused for already being there. */
   duplicate?: (tag: string) => string;
+  /**
+   * Announced when `clear()` empties the row. Default the locale's
+   * `tagsCleared`, or `All tags removed`.
+   */
+  cleared?: string;
   /** Shown when `required` and there are no tags. */
   empty?: string;
 }
@@ -2275,7 +2283,8 @@ export function createTagsInput(options: TagsInputOptions): TagsInput {
   // through the text input; the tags are the half the platform knows nothing
   // about, and left alone they would go on submitting from a form that has
   // just been put back. Written directly, as `clear()` is, since the platform
-  // resets a disabled control too; and silently, for the same reason.
+  // resets a disabled control too; and silently, as the platform resets every
+  // other control in the form.
   const initial = untrack(() => state.get());
 
   effect(() => {
@@ -2316,8 +2325,12 @@ export function createTagsInput(options: TagsInputOptions): TagsInput {
     removeAt,
     removeLast: () => removeAt(untrack(() => state.get()).length - 1),
     clear: () => {
+      const emptied = untrack(() => state.get()).length > 0;
       write([]);
       duplicate.set(null);
+      // Said as removing one tag is, and only when a tag went: a clear that
+      // found the row already empty changed nothing worth hearing about.
+      if (emptied) status.set(label(options.labels?.cleared, 'tagsCleared', 'All tags removed'));
     },
     isFull,
     duplicateIndex: () => duplicate.get(),
@@ -2462,7 +2475,13 @@ export function createTagsInput(options: TagsInputOptions): TagsInput {
       const tag = state.get()[index] ?? '';
       return defined({
         type: 'button',
-        'aria-label': options.labels?.remove?.(tag) ?? `${label(undefined, 'remove', 'Remove')} ${tag}`,
+        // A whole phrase where the catalogue has one, so the language decides
+        // whether the name comes first.
+        'aria-label':
+          options.labels?.remove?.(tag) ??
+          (locale.has('removeItem')
+            ? locale.t('removeItem', { label: tag })
+            : `${label(undefined, 'remove', 'Remove')} ${tag}`),
         // Not a tab stop of its own: the tag is one, and Backspace on it does
         // the same job. It stays reachable by pointer and by a screen reader.
         tabindex: '-1',

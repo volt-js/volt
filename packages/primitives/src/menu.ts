@@ -91,6 +91,7 @@ import { createCollection, ITEM_ATTRIBUTE } from './collection.js';
 import { createRovingFocus, type Orientation } from './roving-focus.js';
 import { createAnchor, type AnchorPlacement } from './anchoring.js';
 import { createId } from './id.js';
+import { useProvidedLocale } from './i18n.js';
 
 // The proposal's own name for reading without subscribing; Volt adds no second
 // spelling for it.
@@ -114,7 +115,7 @@ export interface MenuPosition {
 export interface MenuLabels {
   /**
    * The menu's accessible name, used when no trigger names it — a context
-   * menu, most often. Default "Menu".
+   * menu, most often. Default the locale's `menu`, or "Menu".
    */
   menu?: string;
 }
@@ -247,7 +248,12 @@ export interface Menu {
 export function createMenu(options: MenuOptions): Menu {
   const state = options.open ?? new Signal.State(options.defaultOpen ?? false);
   const orientation = options.orientation ?? 'vertical';
-  const label = options.labels?.menu ?? 'Menu';
+  const locale = useProvidedLocale();
+  // Asked for when it is said, so a catalogue that arrives later renames a
+  // menu already on screen. `menu` is not among the catalogue's defaults, and
+  // `t` answers a key it cannot find with the key itself.
+  const label = (): string =>
+    options.labels?.menu ?? (locale?.has('menu') ? locale.t('menu') : 'Menu');
 
   const contentId = createId('menu-content');
   const triggerId = createId('menu-trigger');
@@ -498,7 +504,7 @@ export function createMenu(options: MenuOptions): Menu {
         // saying when it is not true.
         'aria-orientation': orientation === 'horizontal' ? 'horizontal' : undefined,
         'aria-labelledby': triggerNamesMenu.get() ? triggerId : undefined,
-        'aria-label': triggerNamesMenu.get() ? undefined : label,
+        'aria-label': triggerNamesMenu.get() ? undefined : label(),
         'data-state': presence.state(),
         // Focusable so the menu can hold focus itself when it opens with no
         // item highlighted, and so focus has somewhere to go that is not the

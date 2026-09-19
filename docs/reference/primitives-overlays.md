@@ -108,6 +108,18 @@ development build says so on the console; outside a component — a test, a
 script — wrap the call in `createRoot` from `@voltdev/core` and keep the
 disposer.
 
+**Their words come from a provider when there is one.** The popover's close
+button, the menu's name and the toaster's region and close buttons read the
+catalogue of the nearest
+[`createLocaleProvider`](./primitives-data#createlocaleprovider) — `close`,
+`menu`, `notifications` and `closeNotification` — when it has an entry, and
+are said in English otherwise; a `labels` entry wins over both. They ask a
+provider and nothing else, not the document's `lang` as `useLocale` would, so
+an overlay does not bring a whole locale into a bundle to say one word. Each
+name is read when it is said, so a catalogue swapped later renames what is
+already on screen. The dialog has no default string of its own: it is named
+by its title.
+
 **Not every prop bag carries its handlers.** The popover and the tooltip put
 their event handlers in the props, so spreading them is the whole of the
 wiring. The others leave the events to you, and a trigger with no `:click`
@@ -260,7 +272,7 @@ dialog, and it is a difference of behaviour rather than appearance.
 | `restoreFocus` | `true` | Put focus back when it closes |
 | `initialFocus` | — | What to focus first, instead of the first focusable element |
 | `labels.content` | — | A name for the popover, used only when no title is rendered |
-| `labels.close` | `'Close'` | The close button's accessible name |
+| `labels.close` | the locale's `close`, else `'Close'` | The close button's accessible name |
 | `onOpenChange` | — | Called with the new state when the popover changes it |
 
 | Member | Description |
@@ -521,7 +533,7 @@ opens at the pointer, has no trigger, and needs a name of its own.
 | `closeOnEscape` | `true` | Escape closes it |
 | `closeOnOutsidePointer` | `true` | A press outside closes it |
 | `closeOnSelect` | `true` | Choosing an item closes it |
-| `labels.menu` | `'Menu'` | The menu's name when no trigger names it |
+| `labels.menu` | the locale's `menu`, else `'Menu'` | The menu's name when no trigger names it |
 | `onOpenChange` | — | Called with the new state when the menu changes it |
 | `onSelect` | — | `(item, value)` — the chosen element and the `value` its props were given |
 
@@ -709,8 +721,8 @@ whatever you want each toast to carry — a title, a message, an action.
 | `max` | `3` | How many are on screen at once. The rest wait their turn |
 | `duration` | `5000` | Default lifetime, in ms |
 | `hotkey` | `'F6'` | The key that moves focus to the region, matched with no modifier held; or a predicate |
-| `labels.region` | `'Notifications'` | The region's accessible name |
-| `labels.close` | `'Close notification'` | A close button's accessible name |
+| `labels.region` | the locale's `notifications`, else `'Notifications'` | The region's accessible name |
+| `labels.close` | the locale's `closeNotification`, else `'Close notification'` | A close button's accessible name |
 | `onDismiss` | — | `(toast, reason)` — `'timeout'` for its own clock, `'api'` for a call |
 
 | Member | Description |
@@ -1410,10 +1422,10 @@ and what the props learn from the rendered DOM is missing from that markup
 until the client runs: a dialog's or popover's `aria-labelledby` and
 `aria-describedby`, which wait for the title and description to be found — a
 popover given `labels.content` carries that as its name meanwhile, title or
-not; a menu's name, which is the `labels.menu` fallback until the trigger has
-been checked; a `<div>` popover trigger's `role="button"` and `tabindex`,
-which wait for the trigger element; and the collapsible's
-`--volt-collapsible-height`.
+not; a menu's name, which is its own — `labels.menu`, the provider's or
+English — until the trigger has been checked; a `<div>` popover trigger's
+`role="button"` and `tabindex`, which wait for the trigger element; and the
+collapsible's `--volt-collapsible-height`.
 
 Anchor positions are resolved left-to-right, because the effect that reads
 `dir` off the trigger does not run. `createAnchor` takes `dir` for exactly

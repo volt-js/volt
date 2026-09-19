@@ -3347,6 +3347,40 @@ describe('upload: what assistive technology is told', () => {
     expect(host.querySelector('.remove')!.getAttribute('aria-label')).toBe('Entfernen urlaub.png');
   });
 
+  it("names the remove button with the catalogue's whole phrase, where it has one", async () => {
+    @Component({
+      selector: `v-upload-${++selectors}`,
+      render: compileTemplate(`
+        <div class="upload">
+          <input class="picker" :ref="input" :spread="upload.inputProps()">
+          <ul>
+            <li :for="entry of upload.items()" :key="entry.id">
+              <button class="remove" :spread="upload.removeProps(entry)"></button>
+            </li>
+          </ul>
+        </div>
+      `),
+    })
+    class GermanUpload {
+      input = new Signal.State<Element | null>(null);
+      // German puts the verb last. A phrase with the label in it lets the
+      // language choose the order, which `remove` followed by the label cannot.
+      locale = createLocaleProvider({
+        defaultLocale: 'de-DE',
+        messages: { remove: 'Entfernen', removeItem: '{label} entfernen' },
+      });
+      upload = createFileUpload({ input: () => this.input.get() });
+    }
+
+    const handle = mount(GermanUpload, host);
+    mounted.push(handle);
+    flushSync();
+    (handle.instance as GermanUpload).upload.add([file('urlaub.png')]);
+    await settle();
+
+    expect(host.querySelector('.remove')!.getAttribute('aria-label')).toBe('urlaub.png entfernen');
+  });
+
   it('announces politely, and never as an emergency', () => {
     const harness = buildUpload({});
     expect(harness.live.getAttribute('role')).toBe('status');

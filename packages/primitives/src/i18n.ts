@@ -88,7 +88,14 @@ export type Message = string | PluralMessage;
 export type MessageValues = Readonly<Record<string, string | number>>;
 
 /**
- * Every string the library itself emits.
+ * The strings the library speaks with an English default in the catalogue.
+ *
+ * Components ask for more keys than these — `removeItem`, `menu`,
+ * `tagsCleared` — through `has()`, and say English of their own when a
+ * catalogue has no entry. Those are kept out of here because a key here is
+ * always found, and its English would take the place of what the component
+ * says without it: a translated `remove` followed by the label, in the case of
+ * `removeItem`.
  *
  * A type alias rather than an interface, deliberately: TypeScript only gives
  * an implicit index signature to the former, and a catalogue has to be
@@ -127,7 +134,9 @@ export type MessageCatalog = Partial<LibraryMessages> & {
  *
  * `selected` is a plural record even though English does not inflect it, so
  * that a Polish catalogue has the four slots it needs to override. The shape
- * of the default is what a translator copies.
+ * of the default is what a translator copies, and it is not every key: the
+ * ones components ask for through `has()` are not here, as `LibraryMessages`
+ * explains.
  */
 export const DEFAULT_MESSAGES: LibraryMessages = {
   close: 'Close',
@@ -394,13 +403,23 @@ export function relativeTimeParts(
   base: Date,
 ): [number, 'second' | 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year'] {
   const ms = target.getTime() - base.getTime();
-  const abs = Math.abs(ms);
 
-  if (abs < MINUTE) return [Math.round(ms / SECOND), 'second'];
-  if (abs < HOUR) return [Math.round(ms / MINUTE), 'minute'];
-  if (abs < DAY) return [Math.round(ms / HOUR), 'hour'];
+  // The amount that is reported is the amount that chooses the unit. Chosen
+  // from the raw gap instead, the last half-unit before each boundary rounds
+  // up to the boundary itself and reads "in 60 seconds" or "24 hours ago".
+  const seconds = Math.round(ms / SECOND);
+  if (Math.abs(seconds) < 60) return [seconds, 'second'];
+  const minutes = Math.round(ms / MINUTE);
+  if (Math.abs(minutes) < 60) return [minutes, 'minute'];
+  const hours = Math.round(ms / HOUR);
+  if (Math.abs(hours) < 24) return [hours, 'hour'];
 
   const days = calendarDays(target, base);
+  // A day by the clock need not be a day by the calendar: just after midnight
+  // to just before the next one rounds to 24 hours on one date, and so can a
+  // day that daylight saving lengthens. "Tomorrow" would be false there and
+  // "today" says nothing about when, so the hours stand.
+  if (days === 0) return [hours, 'hour'];
   if (Math.abs(days) < 7) return [days, 'day'];
 
   // The count that chose the unit is the count reported. Boundaries crossed
@@ -904,6 +923,19 @@ export function createLocaleProvider(options: LocaleOptions = {}): LocaleProvide
 }
 
 /**
+ * The nearest provided locale, or null when nothing provides one.
+ *
+ * For a component that only wants a provider's words, and has English of its
+ * own otherwise. It builds nothing when there is no provider, and so carries
+ * nothing into a bundle beyond the context it reads: `useLocale`'s fallback is
+ * a whole locale, with its formatters and its direction watching, which is
+ * weight a close button's name does not need.
+ */
+export function useProvidedLocale(): Locale | null {
+  return useContext(LocaleContext);
+}
+
+/**
  * The nearest provided locale.
  *
  * With no provider anywhere, the document's own `lang` — then the browser's —
@@ -911,7 +943,7 @@ export function createLocaleProvider(options: LocaleOptions = {}): LocaleProvide
  * ever speaks one language needs no provider at all.
  */
 export function useLocale(): Locale {
-  return useContext(LocaleContext) ?? requestState(AMBIENT, () => createLocale());
+  return useProvidedLocale() ?? requestState(AMBIENT, () => createLocale());
 }
 
 /**
