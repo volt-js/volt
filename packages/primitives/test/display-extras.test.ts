@@ -25,6 +25,10 @@ import {
   type KbdOptions,
   type RelativeTimeOptions,
 } from '../src/display-extras.ts';
+import { createLocaleProvider } from '../src/i18n.ts';
+import { resetAnnouncer } from '../src/announcer.ts';
+import { createCollection } from '../src/collection.ts';
+import { createRovingFocus } from '../src/roving-focus.ts';
 
 let host: HTMLElement;
 let mounted: { unmount(): void }[] = [];
@@ -129,6 +133,29 @@ describe('badge naming', () => {
     expect(el()!.textContent?.trim()).toBe('99');
   });
 
+  it('spells out an overflow in the language the locale provider speaks', () => {
+    @Component({
+      selector: 'v-inbox-de',
+      render: compileTemplate(`<span class="badge" :spread="badge.badgeProps()"></span>`),
+    })
+    class GermanInbox {
+      locale = createLocaleProvider({
+        defaultLocale: 'de-DE',
+        messages: { badgeOverflow: 'Über {n} {what}', badgeOverflowBare: 'Über {n}' },
+      });
+      unread = new Signal.State<number | null>(150);
+      badge = createBadge({ count: this.unread, describes: 'ungelesene Nachrichten', max: 99 });
+      bare = createBadge({ count: this.unread, max: 99 });
+    }
+
+    const handle = track(mount(GermanInbox, host));
+    flushSync();
+    expect(host.querySelector('.badge')!.getAttribute('aria-label')).toBe(
+      'Über 99 ungelesene Nachrichten',
+    );
+    expect((handle.instance as GermanInbox).bare.label()).toBe('Über 99');
+  });
+
   it('takes both strings from labels', () => {
     const { badge, el } = mountBadge({
       max: 9,
@@ -225,19 +252,94 @@ describe('badge counting', () => {
 });
 
 describe('badge announcements', () => {
-  it('says nothing spontaneously by default', () => {
-    const { el } = mountBadge();
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    resetAnnouncer();
+  });
+
+  /** What the document's shared region for `priority` is holding. */
+  function spoken(priority: 'polite' | 'assertive' = 'polite'): string {
+    return [...document.querySelectorAll(`[data-volt-announcer='${priority}']`)]
+      .map((region) => region.textContent ?? '')
+      .join('')
+      .trim();
+  }
+
+  /** Let the render land, then the shared region's own settling delay. */
+  function settle(): void {
     flushSync();
+    vi.advanceTimersByTime(50);
+    flushSync();
+  }
+
+  it('says nothing spontaneously by default', () => {
+    const { badge, el } = mountBadge();
+    settle();
+    badge.setCount(4);
+    settle();
+    expect(spoken()).toBe('');
     expect(el()!.hasAttribute('aria-live')).toBe(false);
   });
 
-  it('re-announces the whole badge when asked to, not just the digits', () => {
-    const { el } = mountBadge({ live: 'polite' });
-    flushSync();
-    expect(el()!.getAttribute('aria-live')).toBe('polite');
-    // Without atomic, what is announced is the changed text node — "4" — and
-    // the label that gives it meaning is never read.
-    expect(el()!.getAttribute('aria-atomic')).toBe('true');
+  it('says the label of a changed count when asked to, not just the digits', () => {
+    const { badge } = mountBadge({ live: 'polite' });
+    settle();
+    // The count the badge arrived with is not a change, and a page load that
+    // announced every badge on it would talk over everything else.
+    expect(spoken()).toBe('');
+
+    badge.setCount(4);
+    settle();
+    expect(spoken()).toBe('4 unread messages');
+  });
+
+  it('announces the first arrival of a badge rendered under :if', () => {
+    const { instance, el } = mountBadge({ live: 'polite' });
+    instance.unread.set(0);
+    settle();
+    expect(el()).toBeNull();
+
+    // The badge and its first count land in one mutation. A region that
+    // arrived holding its words would say nothing, which is the one change
+    // that matters most.
+    instance.unread.set(1);
+    settle();
+    expect(el()).not.toBeNull();
+    expect(spoken()).toBe('1 unread messages');
+  });
+
+  it('announces a count coming back to a badge kept mounted while empty', () => {
+    @Component({
+      selector: 'v-kept-live',
+      render: compileTemplate(
+        `<span class="badge" :spread="badge.badgeProps()">{ badge.text() }</span>`,
+      ),
+    })
+    class KeptLive {
+      unread = new Signal.State<number | null>(0);
+      badge = createBadge({ count: this.unread, describes: 'unread messages', live: 'assertive' });
+    }
+
+    const handle = track(mount(KeptLive, host));
+    settle();
+    (handle.instance as KeptLive).unread.set(2);
+    settle();
+    expect(spoken('assertive')).toBe('2 unread messages');
+  });
+
+  it('does not say the same thing twice when the label has not changed', () => {
+    const { badge } = mountBadge({ live: 'polite', max: 99 });
+    badge.setCount(150);
+    settle();
+    resetAnnouncer();
+
+    badge.setCount(200);
+    settle();
+    // Still "More than 99 unread messages", which the reader has heard.
+    expect(spoken()).toBe('');
   });
 });
 
@@ -369,6 +471,32 @@ describe('chip wiring', () => {
   it('falls back to a bare name when there is nothing to name it after', () => {
     const chip = inRoot(() => createChip({ chip: () => null }));
     expect(chip.removeProps()['aria-label']).toBe('Remove');
+  });
+
+  it('names the remove control in the language the locale provider speaks', () => {
+    @Component({
+      selector: 'v-tag-de',
+      render: compileTemplate(
+        `<span :ref="el" :spread="chip.chipProps()">Ada<button class="remove" :spread="chip.removeProps()">x</button></span>`,
+      ),
+    })
+    class GermanTag {
+      locale = createLocaleProvider({
+        defaultLocale: 'de-DE',
+        messages: { remove: 'Entfernen', removeItem: '{label} entfernen' },
+      });
+      el = new Signal.State<Element | null>(null);
+      chip = createChip({ chip: () => this.el.get(), label: () => 'Ada' });
+      unnamed = createChip({ chip: () => null });
+    }
+
+    const handle = track(mount(GermanTag, host));
+    flushSync();
+    // A whole phrase rather than the verb and the name run together, because
+    // which comes first is the language's business: in German the name does.
+    expect(host.querySelector('.remove')!.getAttribute('aria-label')).toBe('Ada entfernen');
+    // With no name to put in it, the verb alone.
+    expect((handle.instance as GermanTag).unnamed.removeProps()['aria-label']).toBe('Entfernen');
   });
 
   it('takes the remove control name from labels', () => {
@@ -540,8 +668,92 @@ describe('chip keys it must not answer', () => {
   it('leaves the tab order alone when a group owns it', () => {
     const chip = inRoot(() => createChip({ chip: () => null, focusable: false }));
     expect(chip.chipProps().tabindex).toBeUndefined();
-    // With no chip-level stop, the control has to be reachable itself.
-    expect(chip.removeProps().tabindex).toBe('0');
+    // The group's chip is the stop, and Delete and Backspace on it remove it,
+    // so the control is not one either.
+    expect(chip.removeProps().tabindex).toBe('-1');
+  });
+
+  it('warns in development when nothing gives a removable chip a tab stop', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    @Component({
+      selector: 'v-unreachable-tags',
+      render: compileTemplate(`
+        <div>
+          <span class="chip" :ref="adaEl" :spread="ada.chipProps()">Ada<button
+                class="remove" :spread="ada.removeProps()">x</button></span>
+          <span class="chip" :ref="graceEl" :spread="grace.chipProps()">Grace</span>
+        </div>
+      `),
+    })
+    class UnreachableTags {
+      adaEl = new Signal.State<Element | null>(null);
+      graceEl = new Signal.State<Element | null>(null);
+      // `focusable: false` with no group to give it a stop: neither the chip
+      // nor its remove control can be reached from the keyboard.
+      ada = createChip({ chip: () => this.adaEl.get(), label: () => 'Ada', focusable: false });
+      // Nothing to remove, so nothing is lost by it being out of the order.
+      grace = createChip({
+        chip: () => this.graceEl.get(),
+        label: () => 'Grace',
+        focusable: false,
+        removable: false,
+      });
+    }
+
+    track(mount(UnreachableTags, host));
+    flushSync();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain('focusable: false');
+    warn.mockRestore();
+  });
+
+  it('costs one Tab press for a whole row handed to roving focus', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    @Component({
+      selector: 'v-roving-tags',
+      render: compileTemplate(`
+        <div class="row" :ref="row" :keydown="roving.onKeyDown($event)">
+          <span class="chip" :ref="adaEl" :spread="ada.chipProps()"
+                :tabindex="roving.itemProps(adaEl.get()).tabindex">Ada<button
+                class="remove" :spread="ada.removeProps()">x</button></span>
+          <span class="chip" :ref="graceEl" :spread="grace.chipProps()"
+                :tabindex="roving.itemProps(graceEl.get()).tabindex">Grace<button
+                class="remove" :spread="grace.removeProps()">x</button></span>
+          <span class="chip" :ref="alanEl" :spread="alan.chipProps()"
+                :tabindex="roving.itemProps(alanEl.get()).tabindex">Alan<button
+                class="remove" :spread="alan.removeProps()">x</button></span>
+        </div>
+      `),
+    })
+    class RovingTags {
+      row = new Signal.State<Element | null>(null);
+      adaEl = new Signal.State<Element | null>(null);
+      graceEl = new Signal.State<Element | null>(null);
+      alanEl = new Signal.State<Element | null>(null);
+      active = new Signal.State<Element | null>(null);
+      roving = createRovingFocus(
+        createCollection(() => this.row.get()),
+        () => this.active.get(),
+        (el) => this.active.set(el),
+        { orientation: 'horizontal' },
+      );
+      ada = createChip({ chip: () => this.adaEl.get(), label: () => 'Ada', focusable: false });
+      grace = createChip({ chip: () => this.graceEl.get(), label: () => 'Grace', focusable: false });
+      alan = createChip({ chip: () => this.alanEl.get(), label: () => 'Alan', focusable: false });
+    }
+
+    track(mount(RovingTags, host));
+    flushSync();
+
+    // The group's one stop, and nothing else: ten chips must not be eleven
+    // Tab presses because every remove control put itself in the order.
+    const stops = [...host.querySelectorAll('[tabindex="0"]')];
+    expect(stops).toHaveLength(1);
+    expect(stops[0]!.classList.contains('chip')).toBe(true);
+    // The group is what `focusable: false` was for, so it is not a mistake.
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
 
@@ -837,6 +1049,21 @@ describe('keyboard key', () => {
     expect(shortcut.label()).toBe('Commande puis K');
   });
 
+  it('names the keys in the language the locale provider speaks', () => {
+    const shortcut = inRoot(() => {
+      createLocaleProvider({
+        defaultLocale: 'de-DE',
+        messages: { keyCommand: 'Befehl', keyArrowUp: 'Pfeil nach oben', keyWindows: 'Windows-Taste' },
+      });
+      return createKbd({ keys: () => ['Meta', 'Shift', 'ArrowUp'], platform: 'apple' });
+    });
+    // `keyWindows` is the other platform's name for the same key, and says
+    // nothing about what an Apple keyboard calls it. A name the catalogue
+    // leaves out stays in English.
+    expect(shortcut.label()).toBe('Befehl Shift Pfeil nach oben');
+    expect(shortcut.parts()[0]).toEqual({ key: 'Meta', text: '⌘', label: 'Befehl' });
+  });
+
   it('breaks the chord into parts for markup that draws each key', () => {
     const shortcut = kbd({ platform: 'apple' });
     expect(shortcut.parts()).toEqual([
@@ -869,6 +1096,16 @@ class FakeResizeObserver {
   fire(): void {
     this.callback();
   }
+}
+
+/**
+ * The frame after the changes made so far, which is when a change of content
+ * is measured. A mutation is delivered in a microtask, and asks for its frame
+ * from there, so the frame waited for here is asked for after that.
+ */
+async function nextFrame(): Promise<void> {
+  await Promise.resolve();
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 }
 
 function useFakeResizeObserver() {
@@ -955,27 +1192,72 @@ describe('code blocks that scroll', () => {
     expect(pre().getAttribute('tabindex')).toBe('0');
     expect(pre().getAttribute('role')).toBe('region');
     // And a tab stop that announces nothing when it takes focus is its own
-    // kind of dead end.
-    expect(pre().getAttribute('aria-label')).toBe('TypeScript code');
+    // kind of dead end. Named as a chat names a code part, so the same block
+    // is not called two different things on one page.
+    expect(pre().getAttribute('aria-label')).toBe('Code, TypeScript');
   });
 
-  it('watches the code inside as well as the box around it', () => {
+  it('notices code that grows inside a box that stays the same size', async () => {
+    const { measure, pre, code } = mountSample();
+    measure(200, 400);
+    expect(pre().hasAttribute('tabindex')).toBe(false);
+
+    // A highlighter rewrites the content after mount. The <pre> keeps its
+    // size, and the <code> is inline, so no resize is ever reported — the
+    // observer here is never fired, which is exactly what a browser does.
+    Object.defineProperty(pre(), 'scrollWidth', { value: 900, configurable: true });
+    code().innerHTML = '<span class="keyword">const</span> x = 1; // and a long comment';
+    await nextFrame();
+    flushSync();
+    expect(pre().getAttribute('tabindex')).toBe('0');
+  });
+
+  it('measures content that changes a piece at a time once a frame', async () => {
+    const { measure, pre, code } = mountSample();
+    measure(200, 400);
+    let reads = 0;
+    Object.defineProperty(pre(), 'scrollWidth', {
+      get: () => {
+        reads++;
+        return 900;
+      },
+      configurable: true,
+    });
+
+    // Streamed in, or highlighted a token at a time. Reading the width forces
+    // a layout, so each change is not measured as it comes.
+    for (const piece of [' // and', ' a long', ' comment']) {
+      code().append(piece);
+      await Promise.resolve();
+    }
+    expect(reads).toBe(0);
+
+    await nextFrame();
+    flushSync();
+    expect(reads).toBe(1);
+    expect(pre().getAttribute('tabindex')).toBe('0');
+  });
+
+  it('notices a child that was replaced after it was wired', async () => {
     const { measure, pre, code } = mountSample();
     measure(200, 400);
 
-    const observer = FakeResizeObserver.live.at(-1)!;
-    // Highlighting rewrites the content after mount, and the <pre> can stay
-    // exactly the same size while what is inside it grows.
-    expect(observer.targets).toContain(pre());
-    expect(observer.targets).toContain(code());
+    // Some highlighters swap the whole <code> for one of their own.
+    const replacement = document.createElement('code');
+    replacement.textContent = 'const x = 1; // and a long comment';
+    Object.defineProperty(pre(), 'scrollWidth', { value: 900, configurable: true });
+    code().replaceWith(replacement);
+    await nextFrame();
+    flushSync();
+    expect(pre().getAttribute('tabindex')).toBe('0');
   });
 
-  it('notices when the content grows later', () => {
+  it('notices when the box it has to fit into changes', () => {
     const { measure, pre } = mountSample();
     measure(200, 400);
     expect(pre().hasAttribute('tabindex')).toBe(false);
 
-    Object.defineProperty(pre(), 'scrollWidth', { value: 900, configurable: true });
+    Object.defineProperty(pre(), 'clientWidth', { value: 100, configurable: true });
     FakeResizeObserver.live.at(-1)!.fire();
     flushSync();
     expect(pre().getAttribute('tabindex')).toBe('0');
@@ -986,6 +1268,30 @@ describe('code blocks that scroll', () => {
     instance.lang.set(null);
     measure(900, 400);
     expect(pre().getAttribute('aria-label')).toBe('Code');
+  });
+
+  it('names the block in the language the locale provider speaks', () => {
+    @Component({
+      selector: 'v-sample-de',
+      render: compileTemplate(`<pre class="pre" :ref="preEl" :spread="sample.preProps()"></pre>`),
+    })
+    class GermanSample {
+      locale = createLocaleProvider({
+        defaultLocale: 'de-DE',
+        messages: { codeBlockLanguage: 'Quelltext, {language}' },
+      });
+      preEl = new Signal.State<Element | null>(null);
+      sample = createCode({ block: true, pre: () => this.preEl.get(), language: () => 'Rust' });
+    }
+
+    track(mount(GermanSample, host));
+    const pre = host.querySelector('.pre') as HTMLElement;
+    Object.defineProperty(pre, 'scrollWidth', { value: 900, configurable: true });
+    Object.defineProperty(pre, 'clientWidth', { value: 400, configurable: true });
+    FakeResizeObserver.live.at(-1)!.fire();
+    flushSync();
+    // The same keys a chat names its code parts by.
+    expect(pre.getAttribute('aria-label')).toBe('Quelltext, Rust');
   });
 
   it('takes the name from labels, and from label over both', () => {
@@ -1097,6 +1403,54 @@ describe('relative time text', () => {
   it('looks forward as readily as back', () => {
     const { texts } = mountTimes([new Date(NOW + 10 * 60 * 1000)]);
     expect(texts()).toEqual(['in 10 minutes']);
+  });
+
+  it('reads a half unit the way the locale formatter reads it', () => {
+    const ahead = new Date(NOW + 90 * 1000);
+    const { texts } = mountTimes([ahead]);
+    const locale = inRoot(() => createLocaleProvider({ defaultLocale: 'en-US' }));
+
+    // A minute and a half. Two answers for one moment is what a second copy of
+    // this arithmetic produces, so the timestamp and the formatter round it
+    // the same way.
+    expect(texts()).toEqual([locale.format.relativeTime(ahead, { now: NOW })]);
+    expect(texts()).toEqual(['in 2 minutes']);
+  });
+
+  it('speaks the language the locale provider speaks', () => {
+    @Component({
+      selector: 'v-stamp-de',
+      render: compileTemplate(`<time class="stamp">{ posted.text() }</time>`),
+    })
+    class GermanStamp {
+      locale = createLocaleProvider({ defaultLocale: 'de-DE' });
+      posted = createRelativeTime({ date: () => new Date(NOW - 3 * 60 * 1000) });
+    }
+
+    track(mount(GermanStamp, host));
+    flushSync();
+    // Without the provider it is the runtime's own language, which is the
+    // failure a locale provider exists to stop.
+    expect(host.querySelector('.stamp')!.textContent).toBe('vor 3 Minuten');
+  });
+
+  it('looks its formatters up once, rather than on every tick', () => {
+    const now = new Signal.State(NOW);
+    const time = inRoot(() => createRelativeTime({ date: () => NOW - 5 * 1000, now }));
+    time.text();
+    time.timeProps();
+
+    // The shared cache keys a formatter by its options, and working the key
+    // out is a serialisation. That is for a change of language to pay, not
+    // for every timestamp on the page once a second.
+    const serialise = vi.spyOn(JSON, 'stringify');
+    for (let tick = 1; tick <= 5; tick++) {
+      now.set(NOW + tick * 1000);
+      expect(time.text()).toBe(`${5 + tick} seconds ago`);
+      time.timeProps();
+    }
+    expect(serialise).not.toHaveBeenCalled();
+    serialise.mockRestore();
   });
 
   it('hands both strings over to labels', () => {

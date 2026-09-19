@@ -17,11 +17,35 @@
  */
 
 import { Signal, effect, measureEffect, onCleanup } from '@voltdev/core';
+import { announce } from './announcer.js';
 import { createCollection, ITEM_ATTRIBUTE } from './collection.js';
+import {
+  getDateTimeFormat,
+  getRelativeTimeFormat,
+  relativeTimeParts,
+  useLocale,
+  type Locale,
+  type MessageValues,
+} from './i18n.js';
+
+/** See `@voltdev/core`'s own declaration: true while developing, false in production. */
+declare const __VOLT_DEV__: boolean;
 
 // The proposal's own name for reading without subscribing; Volt adds no second
 // spelling for it.
 const { untrack } = Signal.subtle;
+
+/**
+ * A default word: the locale's catalogue where it has one, then English.
+ *
+ * `remove` is one of the library's own keys and always resolves; the rest
+ * here are not, so a catalogue that declares one is heard and without it the
+ * English stands. Read on every call, so a catalogue swapped later reaches
+ * words already on screen.
+ */
+function word(locale: Locale, key: string, fallback: string, values?: MessageValues): string {
+  return locale.has(key) ? locale.t(key, values) : fallback;
+}
 
 // ---------------------------------------------------------------------------
 // Badge
@@ -40,7 +64,11 @@ export interface BadgeLabels {
    * consumer who needs "1 unread message" supplies both forms here.
    */
   count?: (count: number, describes: string) => string;
-  /** The accessible name past `max`. Default `More than 99 unread messages`. */
+  /**
+   * The accessible name past `max`. Default the locale's `badgeOverflow`, with
+   * `{n}` and `{what}`, or `More than 99 unread messages` — and with nothing
+   * to describe, `badgeOverflowBare`, or `More than 99`.
+   */
   overflow?: (max: number, describes: string) => string;
 }
 
@@ -70,9 +98,10 @@ export interface BadgeOptions {
    *
    * A badge is a summary of something already on the page, so announcing every
    * change is usually repetition — and a counter that ticks during a page load
-   * interrupts continuously. Turning it on sets `aria-atomic`, so the whole
-   * badge is re-announced and what is heard is the label rather than the bare
-   * digits that changed.
+   * interrupts continuously. Turned on, each change is said as the label
+   * rather than the bare digits, through the document's shared announcer at
+   * this priority. The count the badge was created with is not a change and is
+   * not said.
    */
   live?: BadgeLive;
 
@@ -122,11 +151,17 @@ export function createBadge(options: BadgeOptions = {}): Badge {
   const max = options.max ?? Number.POSITIVE_INFINITY;
   const describes = options.describes ?? '';
   const live = options.live ?? 'off';
+  const locale = useLocale();
 
   const countLabel = options.labels?.count ?? ((n, what) => (what ? `${n} ${what}` : String(n)));
   const overflowLabel =
     options.labels?.overflow ??
-    ((limit, what) => (what ? `More than ${limit} ${what}` : `More than ${limit}`));
+    ((limit, what) =>
+      // A whole phrase with both in it, because where the noun goes is the
+      // language's to decide.
+      what
+        ? word(locale, 'badgeOverflow', `More than ${limit} ${what}`, { n: limit, what })
+        : word(locale, 'badgeOverflowBare', `More than ${limit}`, { n: limit }));
 
   const count = (): number | null => {
     const raw = state.get();
@@ -161,6 +196,23 @@ export function createBadge(options: BadgeOptions = {}): Badge {
     if (current === null) return describes;
     return isOverflowed() ? overflowLabel(max, describes) : countLabel(current, describes);
   };
+
+  // Said through the shared announcer rather than by making the badge a live
+  // region of its own. A region has to be on the page before its words are,
+  // and a badge never is: under `:if` it arrives holding its first count, and
+  // kept mounted it is hidden at zero, so either way the change that matters
+  // most — from nothing to one — would land with its region and go unheard.
+  if (live !== 'off') {
+    /** What was last said, or would have been; null before the first run. */
+    let said: string | null = null;
+    effect(() => {
+      const sentence = isVisible() ? label() : '';
+      if (said !== null && sentence !== '' && sentence !== said) {
+        announce(sentence, { priority: live });
+      }
+      said = sentence;
+    });
+  }
 
   return {
     count,
@@ -199,11 +251,6 @@ export function createBadge(options: BadgeOptions = {}): Badge {
         props['aria-label'] = name;
       }
 
-      if (live !== 'off') {
-        props['aria-live'] = live;
-        props['aria-atomic'] = 'true';
-      }
-
       return props;
     },
   };
@@ -215,9 +262,12 @@ export function createBadge(options: BadgeOptions = {}): Badge {
 
 export interface ChipLabels {
   /**
-   * Accessible name for the remove control. Default `Remove Ada`, or plain
-   * `Remove` when the chip has no label to name — five controls all called
-   * "Remove" is the reason `label` is worth supplying.
+   * Accessible name for the remove control. Default the locale's `removeItem`
+   * with the label as `{label}` — a whole phrase, so the language decides
+   * whether the name comes first — and without one the locale's `remove`
+   * followed by the label: `Remove Ada`. With no label to name, the `remove`
+   * verb alone. Five controls all called "Remove" is the reason `label` is
+   * worth supplying.
    */
   remove?: (label: string) => string;
 }
@@ -251,7 +301,10 @@ export interface ChipOptions {
    * ten tags costs ten Tab presses rather than twenty. The cost is that the
    * remove control cannot be reached by Tab at all, which is why Delete and
    * Backspace on the chip do the same job. Set this false when the chips are
-   * wrapped in `createRovingFocus` and the group owns the tab order instead.
+   * wrapped in `createRovingFocus` and the group owns the tab order instead:
+   * the whole row is then one Tab press. The remove control stays out of the
+   * order either way, so a chip nothing else makes focusable cannot be
+   * reached from the keyboard at all.
    */
   focusable?: boolean;
 
@@ -320,7 +373,35 @@ export interface Chip {
 export function createChip(options: ChipOptions): Chip {
   const focusable = options.focusable !== false;
   const removable = options.removable !== false;
-  const removeLabel = options.labels?.remove ?? ((name) => (name ? `Remove ${name}` : 'Remove'));
+  const locale = useLocale();
+  const removeLabel =
+    options.labels?.remove ??
+    ((name: string) => {
+      if (!name) return locale.t('remove');
+      if (locale.has('removeItem')) return locale.t('removeItem', { label: name });
+      return `${locale.t('remove')} ${name}`;
+    });
+
+  if (__VOLT_DEV__ && !focusable && removable) {
+    // The remove control is never a tab stop, so `focusable: false` leaves a
+    // removable chip reachable from the keyboard only through a group that
+    // gives it a stop of its own. Without one it is silently out of reach,
+    // and a pointer is the only way to remove it.
+    let warned = false;
+    effect(() => {
+      const el = options.chip();
+      if (warned || !el || el.hasAttribute('tabindex')) return;
+      warned = true;
+      if (typeof console !== 'undefined') {
+        console.warn(
+          '[volt] createChip: a removable chip made with `focusable: false` has no tabindex, ' +
+            'so neither it nor its remove control can be reached from the keyboard. ' +
+            '`focusable: false` is for a chip in a group that gives it a tab stop — ' +
+            'createRovingFocus — so leave it out when there is no such group.',
+        );
+      }
+    });
+  }
 
   const containerOf = (): Element | null =>
     options.container?.() ?? options.chip()?.parentElement ?? null;
@@ -420,9 +501,11 @@ export function createChip(options: ChipOptions): Chip {
         // Inside a form, a button with no type submits it.
         type: 'button',
         'aria-label': removeLabel(label()),
-        // Not a tab stop of its own when the chip is one — see `focusable`.
-        // It stays reachable by pointer and by a screen reader's own cursor.
-        tabindex: focusable ? '-1' : '0',
+        // Never a tab stop of its own. The chip is the stop — its own, or the
+        // one a roving group gives it — and Delete and Backspace there do this
+        // control's job. It stays reachable by pointer and by a screen
+        // reader's own cursor.
+        tabindex: '-1',
       };
       if (isDisabled()) props['aria-disabled'] = 'true';
       if (!removable) props['data-disabled'] = '';
@@ -729,7 +812,13 @@ export interface KbdPart {
 export interface KbdLabels {
   /** What each key is drawn as, by `KeyboardEvent.key` name. Merged over the defaults. */
   symbols?: Readonly<Record<string, string>>;
-  /** What each key is called aloud, by `KeyboardEvent.key` name. Merged over the defaults. */
+  /**
+   * What each key is called aloud, by `KeyboardEvent.key` name. Merged over the
+   * defaults, which are the locale's `key` and the key's own name —
+   * `keyArrowUp`, `keyCapsLock`, `keySpace` for the space bar — or English.
+   * The two modifiers the platforms name differently are `keyCommand` and
+   * `keyOption` on Apple platforms, and `keyWindows` and `keyAlt` elsewhere.
+   */
   names?: Readonly<Record<string, string>>;
   /** Drawn between the keys. Default '' on Apple platforms, '+' elsewhere. */
   separator?: string;
@@ -791,6 +880,7 @@ export function createKbd(options: KbdOptions): Kbd {
   const platform = options.platform ?? detectPlatform();
   const symbols = platform === 'apple' ? APPLE_SYMBOLS : OTHER_SYMBOLS;
   const names = platform === 'apple' ? APPLE_NAMES : OTHER_NAMES;
+  const locale = useLocale();
   const separator = options.labels?.separator ?? (platform === 'apple' ? '' : '+');
   const join = options.labels?.join ?? ' ';
 
@@ -802,11 +892,18 @@ export function createKbd(options: KbdOptions): Kbd {
       .filter(Boolean);
   };
 
+  const spoken = (key: string): string => {
+    const given = options.labels?.names?.[key];
+    if (given !== undefined) return given;
+    const known = names[key];
+    return known ? word(locale, known[0], known[1]) : key;
+  };
+
   const parts = (): KbdPart[] =>
     keys().map((key) => ({
       key,
       text: options.labels?.symbols?.[key] ?? symbols[key] ?? key,
-      label: options.labels?.names?.[key] ?? names[key] ?? SPOKEN[key] ?? key,
+      label: spoken(key),
     }));
 
   const text = (): string => parts().map((part) => part.text).join(separator);
@@ -880,39 +977,42 @@ const OTHER_SYMBOLS: Readonly<Record<string, string>> = {
   End: 'End',
 };
 
+/** A key's spoken name: the catalogue key, then the English. */
+type SpokenName = readonly [key: string, english: string];
+
 /** Spoken names shared by every platform. */
-const SPOKEN: Readonly<Record<string, string>> = {
-  Enter: 'Enter',
-  Tab: 'Tab',
-  Backspace: 'Backspace',
-  Delete: 'Delete',
-  Escape: 'Escape',
-  CapsLock: 'Caps lock',
-  ' ': 'Space',
-  ArrowUp: 'Up arrow',
-  ArrowDown: 'Down arrow',
-  ArrowLeft: 'Left arrow',
-  ArrowRight: 'Right arrow',
-  PageUp: 'Page up',
-  PageDown: 'Page down',
-  Home: 'Home',
-  End: 'End',
+const SPOKEN: Readonly<Record<string, SpokenName>> = {
+  Enter: ['keyEnter', 'Enter'],
+  Tab: ['keyTab', 'Tab'],
+  Backspace: ['keyBackspace', 'Backspace'],
+  Delete: ['keyDelete', 'Delete'],
+  Escape: ['keyEscape', 'Escape'],
+  CapsLock: ['keyCapsLock', 'Caps lock'],
+  ' ': ['keySpace', 'Space'],
+  ArrowUp: ['keyArrowUp', 'Up arrow'],
+  ArrowDown: ['keyArrowDown', 'Down arrow'],
+  ArrowLeft: ['keyArrowLeft', 'Left arrow'],
+  ArrowRight: ['keyArrowRight', 'Right arrow'],
+  PageUp: ['keyPageUp', 'Page up'],
+  PageDown: ['keyPageDown', 'Page down'],
+  Home: ['keyHome', 'Home'],
+  End: ['keyEnd', 'End'],
+  Control: ['keyControl', 'Control'],
+  Shift: ['keyShift', 'Shift'],
 };
 
-const APPLE_NAMES: Readonly<Record<string, string>> = {
+// Keyed by what each platform calls the key rather than by the key, because
+// one physical key has two names and a translation needs both.
+const APPLE_NAMES: Readonly<Record<string, SpokenName>> = {
   ...SPOKEN,
-  Meta: 'Command',
-  Control: 'Control',
-  Alt: 'Option',
-  Shift: 'Shift',
+  Meta: ['keyCommand', 'Command'],
+  Alt: ['keyOption', 'Option'],
 };
 
-const OTHER_NAMES: Readonly<Record<string, string>> = {
+const OTHER_NAMES: Readonly<Record<string, SpokenName>> = {
   ...SPOKEN,
-  Meta: 'Windows',
-  Control: 'Control',
-  Alt: 'Alt',
-  Shift: 'Shift',
+  Meta: ['keyWindows', 'Windows'],
+  Alt: ['keyAlt', 'Alt'],
 };
 
 function detectPlatform(): KbdPlatform {
@@ -926,8 +1026,11 @@ function detectPlatform(): KbdPlatform {
 
 export interface CodeLabels {
   /**
-   * Accessible name for a code block that scrolls. Default `TypeScript code`,
-   * or plain `Code` when no language is known.
+   * Accessible name for a code block that scrolls. Default the locale's
+   * `codeBlockLanguage` with `{language}`, or `Code, TypeScript`, and with no
+   * language known the locale's `codeBlock`, or plain `Code` — the same keys
+   * and words a chat names a code part by, so one block of code is not called
+   * two things on one page.
    */
   block?: (language: string) => string;
 }
@@ -988,7 +1091,13 @@ export function createCode(options: CodeOptions = {}): Code {
   const overflowing = new Signal.State(false);
 
   const language = (): string => options.language?.()?.trim() ?? '';
-  const blockLabel = options.labels?.block ?? ((lang) => (lang ? `${lang} code` : 'Code'));
+  const locale = useLocale();
+  const blockLabel =
+    options.labels?.block ??
+    ((lang) =>
+      lang
+        ? word(locale, 'codeBlockLanguage', `Code, ${lang}`, { language: lang })
+        : word(locale, 'codeBlock', 'Code'));
 
   measureEffect(() => {
     if (!block) return;
@@ -1005,13 +1114,32 @@ export function createCode(options: CodeOptions = {}): Code {
     const measure = () => overflowing.set(el.scrollWidth > el.clientWidth);
     measure();
 
-    const observer = new view.ResizeObserver(measure);
-    observer.observe(el);
-    // The `<pre>` can stay exactly the same size while the code inside it
-    // grows, which is the case that matters: a highlighter rewrites the
-    // content after mount, and only the child's box changes.
-    for (const child of el.children) observer.observe(child);
-    onCleanup(() => observer.disconnect());
+    // The box, for the width the code has to fit into. A resize is reported
+    // after layout, so it is measured there and then.
+    const resize = new view.ResizeObserver(measure);
+    resize.observe(el);
+    // The content, for what has to fit. The `<pre>` can stay exactly the same
+    // size while the code inside it grows, which is the case that matters: a
+    // highlighter rewrites the content after mount, often by replacing the
+    // child outright. Observing that child's box would see nothing even when
+    // it survives, because `<code>` is inline and an inline box has no size a
+    // ResizeObserver reports. A mutation is reported before layout, though,
+    // and reading a width then forces one — so code that streams in, or is
+    // highlighted a piece at a time, is measured once a frame however many
+    // changes the frame brought.
+    let frame = 0;
+    const content = new view.MutationObserver(() => {
+      frame ||= view.requestAnimationFrame(() => {
+        frame = 0;
+        measure();
+      });
+    });
+    content.observe(el, { childList: true, characterData: true, subtree: true });
+    onCleanup(() => {
+      resize.disconnect();
+      content.disconnect();
+      view.cancelAnimationFrame(frame);
+    });
   });
 
   return {
@@ -1072,8 +1200,8 @@ export interface RelativeTimeOptions {
    */
   live?: boolean;
 
-  /** BCP 47 locale. Defaults to the browser's. */
-  locale?: string | string[];
+  /** BCP 47 locale. Defaults to the one the locale provider is set to. */
+  locale?: string;
   /** Default `long`, which is the one a screen reader reads as a sentence. */
   style?: Intl.RelativeTimeFormatStyle;
   /** `auto` turns "1 day ago" into "yesterday". Default `auto`. */
@@ -1135,11 +1263,28 @@ export interface RelativeTime {
 export function createRelativeTime(options: RelativeTimeOptions): RelativeTime {
   const live = options.live !== false;
   const external = options.now;
+  const locale = useLocale();
 
-  // Built once and kept: constructing an Intl formatter is expensive enough
-  // that doing it per render shows up on a page with a few hundred of these.
-  let relativeFormat: Intl.RelativeTimeFormat | null = null;
-  let absoluteFormat: Intl.DateTimeFormat | null = null;
+  // Which language this reads in, and the reason the formatters come from the
+  // package's shared cache rather than being built per instance: the tag can
+  // change under a page that switches locale, and constructing an Intl
+  // formatter is expensive enough to show up on a page with a few hundred of
+  // these — so a few hundred of them share one.
+  const tag = (): string => options.locale ?? locale.code();
+
+  // Looked up again only when the tag changes. Finding a formatter in the
+  // shared cache means working out its key from the options, and a tick
+  // re-reads every live instance on the page; the lookup is for a change of
+  // language to pay, not for each of them once a second.
+  const relativeFormat = new Signal.Computed(() =>
+    getRelativeTimeFormat(tag(), {
+      numeric: options.numeric ?? 'auto',
+      style: options.style ?? 'long',
+    }),
+  );
+  const absoluteFormat = new Signal.Computed(() =>
+    getDateTimeFormat(tag(), options.absoluteOptions ?? { dateStyle: 'long', timeStyle: 'short' }),
+  );
 
   const now = (): number => {
     if (external) return external.get();
@@ -1153,7 +1298,8 @@ export function createRelativeTime(options: RelativeTimeOptions): RelativeTime {
   const parts = (): { value: number; unit: RelativeTimeUnit } => {
     const target = date();
     if (!target) return { value: 0, unit: 'second' };
-    return difference(target, new Date(now()));
+    const [value, unit] = relativeTimeParts(target, new Date(now()));
+    return { value, unit };
   };
 
   const text = (): string => {
@@ -1162,11 +1308,7 @@ export function createRelativeTime(options: RelativeTimeOptions): RelativeTime {
     const { value, unit } = parts();
     const custom = options.labels?.relative;
     if (custom) return custom(value, unit, target);
-    relativeFormat ??= new Intl.RelativeTimeFormat(options.locale, {
-      numeric: options.numeric ?? 'auto',
-      style: options.style ?? 'long',
-    });
-    return relativeFormat.format(value, unit);
+    return relativeFormat.get().format(value, unit);
   };
 
   const absolute = (): string => {
@@ -1174,11 +1316,7 @@ export function createRelativeTime(options: RelativeTimeOptions): RelativeTime {
     if (!target) return '';
     const custom = options.labels?.absolute;
     if (custom) return custom(target);
-    absoluteFormat ??= new Intl.DateTimeFormat(
-      options.locale,
-      options.absoluteOptions ?? { dateStyle: 'long', timeStyle: 'short' },
-    );
-    return absoluteFormat.format(target);
+    return absoluteFormat.get().format(target);
   };
 
   if (live && !external) {
@@ -1187,7 +1325,7 @@ export function createRelativeTime(options: RelativeTimeOptions): RelativeTime {
       // Nothing to keep up to date, so ask for the slowest period going and
       // let some other instance set the pace.
       if (!target) return DAY;
-      return periodFor(difference(target, new Date(clock.get())).unit);
+      return periodFor(relativeTimeParts(target, new Date(clock.get()))[1]);
     });
   }
 
@@ -1305,55 +1443,4 @@ function toDate(input: Date | number | string | null | undefined): Date | null {
   if (input === null || input === undefined || input === '') return null;
   const date = input instanceof Date ? input : new Date(input);
   return Number.isNaN(date.getTime()) ? null : date;
-}
-
-/**
- * How far `target` is from `now`, in the largest unit that still says
- * something — negative in the past, positive in the future.
- *
- * Below a day it is elapsed time, because that is what "five minutes ago"
- * means and it is more use than "yesterday" would be. From a day up it is
- * calendar arithmetic, because from there on the unit is a date rather than a
- * duration: at 01:00 on Tuesday, something posted at 23:00 on Sunday is
- * twenty-six hours old, and calling that "yesterday" is wrong — it was the day
- * before yesterday, and only counting the midnights between says so. Rounding
- * the day difference also absorbs the 23- and 25-hour days daylight saving
- * produces.
- */
-function difference(target: Date, now: Date): { value: number; unit: RelativeTimeUnit } {
-  const ms = target.getTime() - now.getTime();
-  const size = Math.abs(ms);
-
-  if (size < MINUTE) return { value: Math.trunc(ms / SECOND), unit: 'second' };
-  if (size < HOUR) return { value: Math.trunc(ms / MINUTE), unit: 'minute' };
-  if (size < DAY) return { value: Math.trunc(ms / HOUR), unit: 'hour' };
-
-  const days = calendarDays(target, now);
-  if (Math.abs(days) < 7) return { value: days, unit: 'day' };
-
-  const months = calendarMonths(target, now);
-  if (months === 0) return { value: Math.trunc(days / 7), unit: 'week' };
-  if (Math.abs(months) < 12) return { value: months, unit: 'month' };
-  return { value: Math.trunc(months / 12), unit: 'year' };
-}
-
-function calendarDays(target: Date, now: Date): number {
-  return Math.round((startOfDay(target) - startOfDay(now)) / DAY);
-}
-
-function startOfDay(date: Date): number {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-}
-
-/**
- * Whole calendar months between two dates.
- *
- * The day of the month has to have come round as well, or the 25th of January
- * and the 3rd of February — nine days apart — would be reported as a month.
- */
-function calendarMonths(target: Date, now: Date): number {
-  let months = (target.getFullYear() - now.getFullYear()) * 12 + (target.getMonth() - now.getMonth());
-  if (months > 0 && target.getDate() < now.getDate()) months -= 1;
-  if (months < 0 && target.getDate() > now.getDate()) months += 1;
-  return months;
 }

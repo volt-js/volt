@@ -20,6 +20,7 @@ import {
   type ProgressOptions,
   type SeparatorOptions,
 } from '../src/display.ts';
+import { createLocaleProvider } from '../src/i18n.ts';
 
 let host: HTMLElement;
 let mounted: { unmount(): void }[] = [];
@@ -405,6 +406,28 @@ describe('progress', () => {
 
     const own = mountProgress({ labels: { indeterminate: 'Chargement…' } });
     expect(own.root().getAttribute('aria-valuetext')).toBe('Chargement…');
+  });
+
+  it('says the wait in the language the locale provider speaks', () => {
+    @Component({
+      selector: 'v-bar-de',
+      render: compileTemplate(`<div class="bar" :spread="progress.rootProps()"></div>`),
+    })
+    class GermanBar {
+      locale = createLocaleProvider({ defaultLocale: 'de-DE', messages: { loading: 'Lädt…' } });
+      progress = createProgress();
+    }
+
+    const handle = track(mount(GermanBar, host));
+    flushSync();
+    const bar = host.querySelector('.bar')!;
+    // The catalogue already has a word for this; a provider that translates
+    // it should not have to translate it again for every progress bar.
+    expect(bar.getAttribute('aria-valuetext')).toBe('Lädt…');
+
+    (handle.instance as GermanBar).locale.setMessages({ loading: 'Wird geladen…' });
+    flushSync();
+    expect(bar.getAttribute('aria-valuetext')).toBe('Wird geladen…');
   });
 
   it('drops back to indeterminate rather than announcing NaN', () => {

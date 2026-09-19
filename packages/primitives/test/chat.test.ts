@@ -19,10 +19,11 @@
  * cannot be scheduled cannot be tested, and every interesting scroll case here
  * is about a measurement landing at a particular moment.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { compileTemplate } from '@voltdev/core/jit';
 import { Component, Signal, flushSync, mount } from '@voltdev/core';
 import { resetAnnouncer } from '../src/announcer.ts';
+import { createLocaleProvider, type LocaleProvider, type MessageCatalog } from '../src/i18n.ts';
 import {
   createChat,
   type Chat,
@@ -161,6 +162,7 @@ const TEMPLATE = `
 `;
 
 interface ChatInstance {
+  locale: LocaleProvider | null;
   chat: Chat<string>;
   /** What the composer's handler returned for the last key it saw. */
   composerHandled: boolean;
@@ -211,9 +213,12 @@ function transcript(count: number, author: (index: number) => string = () => 'ad
 function mountChat({
   height = 100,
   messages = [] as readonly ChatMessageInput<string>[],
+  catalog = undefined as MessageCatalog | undefined,
 } = {}): Room {
   @Component({ selector: `v-chat-${++selectors}`, render: compileTemplate(TEMPLATE) })
   class ChatComponent {
+    // Ahead of the chat, so that the chat is made inside the provider.
+    locale = catalog ? createLocaleProvider({ defaultLocale: 'de-DE', messages: catalog }) : null;
     scroller = new Signal.State<Element | null>(null);
     box = new Signal.State<Element | null>(null);
     composer = new Signal.State<Element | null>(null);
@@ -278,6 +283,36 @@ function userScroll(room: Room, offset: number): void {
   flushSync();
 }
 
+/**
+ * Make the scroller animate a smooth scroll the way a browser does: nothing
+ * moves when it is asked for, and the frames arrive later as scroll events of
+ * their own — which a test sends with `userScroll`. Returns where each smooth
+ * scroll was aimed.
+ */
+function smoothScrolls(room: Room): number[] {
+  const aimed: number[] = [];
+  const instant = room.scroller.scrollTo.bind(room.scroller) as (options: ScrollToOptions) => void;
+  room.scroller.scrollTo = ((options: ScrollToOptions) => {
+    if (options.behavior === 'smooth') aimed.push(options.top ?? 0);
+    else instant(options);
+  }) as typeof room.scroller.scrollTo;
+  return aimed;
+}
+
+/**
+ * Clamp commanded scrolls to what the sizer allows, as a browser does and
+ * happy-dom, which lays nothing out, does not. A scroll aimed past the end of
+ * a sizer that has not grown yet stops at its end.
+ */
+function scrollLikeABrowser(room: Room): void {
+  const sizer = host.querySelector<HTMLElement>('.sizer')!;
+  const unclamped = room.scroller.scrollTo.bind(room.scroller) as (options: ScrollToOptions) => void;
+  room.scroller.scrollTo = ((options: ScrollToOptions) => {
+    const max = Math.max(0, Number.parseFloat(sizer.style.height) - room.scroller.clientHeight);
+    unclamped({ ...options, top: Math.min(Math.max(0, options.top ?? 0), max) });
+  }) as typeof room.scroller.scrollTo;
+}
+
 /** The measurement of a rendered message landing, as the observer would. */
 function measure(room: Room, index: number, height: number): void {
   const el = room.row(index);
@@ -291,6 +326,18 @@ function press(el: HTMLElement, key: string, modifiers: Partial<KeyboardEventIni
     new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...modifiers }),
   );
   flushSync();
+}
+
+/**
+ * Give a code block a content width and a box, and report it as the observer
+ * watching it would. happy-dom lays nothing out, so both are zero otherwise.
+ */
+function overflow(block: HTMLElement, scrollWidth: number, clientWidth: number): void {
+  Object.defineProperty(block, 'scrollWidth', { value: scrollWidth, configurable: true });
+  Object.defineProperty(block, 'clientWidth', { value: clientWidth, configurable: true });
+  const observer = FakeResizeObserver.live.find((candidate) => candidate.targets.has(block));
+  if (!observer) throw new Error('the code block is not being watched');
+  observer.deliver([{ target: block, block: 0 }]);
 }
 
 /** The buttons in one message's action group, in the order they are offered. */
@@ -565,6 +612,49 @@ describe('staying at the bottom', () => {
     expect(room.jump()).toBeNull();
   });
 
+  it('stays pinned while a smooth jump is on its way to the end', () => {
+    const room = mountChat({ messages: transcript(100) });
+    userScroll(room, 0);
+    const smooth = smoothScrolls(room);
+
+    room.chat.jumpToLatest({ behavior: 'smooth' });
+    flushSync();
+    expect(smooth).toEqual([1900]);
+
+    // The animation's own frames, each a move and each far from the end.
+    // Reading them as the reader leaving would let go of the pin on the very
+    // jump that asked for it.
+    userScroll(room, 400);
+    userScroll(room, 1200);
+    expect(room.chat.isPinned()).toBe(true);
+    expect(room.jump()).toBeNull();
+
+    // A message arriving mid-flight moves the end, and the jump follows it
+    // there rather than landing short and counting it unread.
+    room.chat.add(say(100, 'ben'));
+    flushSync();
+    expect(room.chat.unreadCount()).toBe(0);
+    expect(smooth).toEqual([1900, 1920]);
+
+    userScroll(room, 1920);
+    expect(room.chat.isPinned()).toBe(true);
+    expect(pinChanges).toEqual([false, true]);
+  });
+
+  it('lets go of a smooth jump the moment the reader scrolls against it', () => {
+    const room = mountChat({ messages: transcript(100) });
+    userScroll(room, 0);
+    smoothScrolls(room);
+
+    room.chat.jumpToLatest({ behavior: 'smooth' });
+    flushSync();
+    userScroll(room, 600);
+    userScroll(room, 300);
+
+    expect(room.chat.isPinned()).toBe(false);
+    expect(pinChanges).toEqual([false, true, false]);
+  });
+
   it('holds the reader still when content above them grows', () => {
     const room = mountChat({ messages: transcript(100) });
     userScroll(room, 400);
@@ -615,6 +705,102 @@ describe('staying at the bottom', () => {
 
     press(room.scroller, 'End');
     expect(room.scroller.scrollTop).toBe(1900);
+  });
+
+  it('loads older history above the reader without moving what they read', () => {
+    chatOptions = { ...chatOptions, self: 'ada' };
+    const room = mountChat({
+      messages: Array.from({ length: 20 }, (_, index) => say(index + 20, 'ada')),
+    });
+    scrollLikeABrowser(room);
+    userScroll(room, 200);
+    room.chat.add(say(40, 'ben'));
+    room.chat.beginEdit('m39');
+    flushSync();
+    // Message 30 is at the top of the viewport, one arrival is unread, and
+    // an edit is in progress.
+    expect(room.chat.messages()[10]!.id).toBe('m30');
+    expect(room.chat.unreadCount()).toBe(1);
+
+    room.chat.prepend(Array.from({ length: 10 }, (_, index) => say(index + 10, 'ada')));
+    flushSync();
+
+    // Ten messages of 20px arrived above, so the view moved down by exactly
+    // that much and message 30 is still the one at the top.
+    expect(room.chat.messages()).toHaveLength(31);
+    expect(room.chat.messages()[20]!.id).toBe('m30');
+    expect(room.scroller.scrollTop).toBe(400);
+    // Nothing else about the reader's place changed with it.
+    expect(room.chat.isPinned()).toBe(false);
+    expect(room.chat.unreadCount()).toBe(1);
+    expect(room.chat.editing()?.id).toBe('m39');
+    expect(pinChanges).toEqual([false]);
+  });
+
+  it('keeps a pinned reader at the end when older history arrives', () => {
+    const room = mountChat({ messages: transcript(10) });
+    scrollLikeABrowser(room);
+    room.chat.prepend([{ ...say(100, 'ben'), id: 'older' }]);
+    flushSync();
+
+    expect(room.chat.messages()[0]!.id).toBe('older');
+    expect(room.chat.isPinned()).toBe(true);
+    // Eleven messages of 20 in a 100 viewport.
+    expect(room.scroller.scrollTop).toBe(120);
+  });
+
+  it('leaves a message it already holds where it is, since pages of history overlap', () => {
+    const room = mountChat({ messages: [say(1, 'ada'), say(2, 'ben')] });
+    const kept = room.chat.messages()[0];
+    room.chat.prepend([
+      say(-1, 'ben'),
+      say(0, 'ada'),
+      // The same message twice in one page, as a cursor that overlaps
+      // itself delivers it.
+      say(0, 'ada', 'a second copy'),
+      say(1, 'ada', 'a third copy'),
+    ]);
+    flushSync();
+
+    expect(room.chat.messages().map((message) => message.id)).toEqual(['m-1', 'm0', 'm1', 'm2']);
+    expect(room.chat.messages()[1]!.text()).toBe('message 0');
+    expect(room.chat.messages()[2]).toBe(kept);
+  });
+
+  it('opens a new conversation at its end, even with history for the old one on its way', () => {
+    const room = mountChat({ messages: transcript(100) });
+    scrollLikeABrowser(room);
+    userScroll(room, 0);
+
+    // The reader asked for older history and changed conversation before the
+    // view had moved to hold them on what they were reading.
+    room.chat.prepend(
+      Array.from({ length: 20 }, (_, index) => ({ ...say(index, 'ben'), id: `old${index}` })),
+    );
+    room.chat.setMessages(
+      Array.from({ length: 100 }, (_, index) => ({ ...say(index, 'ben'), id: `new${index}` })),
+    );
+    flushSync();
+
+    expect(room.chat.isPinned()).toBe(true);
+    expect(room.scroller.scrollTop).toBe(1900);
+  });
+
+  it('opens a new conversation at its end, rather than finishing the old one’s jump', () => {
+    const room = mountChat({ messages: transcript(100) });
+    userScroll(room, 0);
+    const smooth = smoothScrolls(room);
+    room.chat.jumpToLatest({ behavior: 'smooth' });
+    flushSync();
+    userScroll(room, 500);
+
+    room.chat.setMessages(transcript(60));
+    flushSync();
+
+    // A conversation opens where it opens, in one move: the animation that
+    // was on its way through the last one has nothing to do with it.
+    expect(smooth).toEqual([1900]);
+    expect(room.scroller.scrollTop).toBe(1100);
   });
 
   it('opens a new conversation at its end, with nothing unread', () => {
@@ -1012,6 +1198,58 @@ describe('per-message actions', () => {
     expect(tabStop(room, 2)).toEqual(['copy']);
   });
 
+  it('leaves a key the action toolbar already used to the toolbar', () => {
+    chatOptions = { ...chatOptions, self: 'ada' };
+    const room = mountChat({ messages: transcript(100) });
+    const end = room.scroller.scrollTop;
+    expect(end).toBe(1900);
+
+    // Home moves the toolbar to its first action. The same key reaches the
+    // log on its way up, and sending the reader to the first message as well
+    // would make one press do two unrelated things.
+    press(actionIn(room, 99, 'edit'), 'Home');
+    expect(room.instance.actionHandled).toBe(true);
+    expect(document.activeElement).toBe(actionIn(room, 99, 'copy'));
+    expect(room.scroller.scrollTop).toBe(end);
+  });
+
+  it('keeps focus in the log when the message holding it leaves the window', () => {
+    chatOptions = { ...chatOptions, self: 'ada' };
+    const room = mountChat({ messages: transcript(100) });
+    const copy = actionIn(room, 99, 'copy');
+    copy.focus();
+    expect(document.activeElement).toBe(copy);
+
+    // The reader scrolls back through history, and the row holding focus is
+    // unmounted under them. Left alone, focus is on <body> and the next Tab
+    // starts again from the top of the page.
+    userScroll(room, 0);
+    expect(room.row(99)).toBeNull();
+    expect(document.activeElement).toBe(room.scroller);
+    // Without the view being moved to show what took focus.
+    expect(room.scroller.scrollTop).toBe(0);
+  });
+
+  it('leaves focus that was never in a message where it is', () => {
+    const room = mountChat({ messages: transcript(100) });
+    room.composer.focus();
+
+    userScroll(room, 0);
+    expect(document.activeElement).toBe(room.composer);
+  });
+
+  it('does not take focus back once the reader has moved it out of the log', () => {
+    chatOptions = { ...chatOptions, self: 'ada' };
+    const room = mountChat({ messages: transcript(100) });
+    actionIn(room, 99, 'copy').focus();
+    room.composer.focus();
+    room.composer.blur();
+    expect(document.activeElement).toBe(document.body);
+
+    userScroll(room, 0);
+    expect(document.activeElement).toBe(document.body);
+  });
+
   it('leaves Enter and Space to the button under them', () => {
     chatOptions = { ...chatOptions, actions: () => ['copy', 'edit'] };
     const room = mountChat({ messages: [say(0, 'ada')] });
@@ -1172,6 +1410,104 @@ describe('per-message actions', () => {
   });
 });
 
+describe('stopping and restarting a reply', () => {
+  it('takes no more tokens into a reply that was stopped', () => {
+    const room = mountChat({ messages: [say(0, 'ada')] });
+    const reply = room.chat.add({ id: 'live', author: 'ben', name: 'Ben', typing: true });
+    room.chat.append('live', 'half an ');
+    flushSync();
+
+    room.chat.cancel('live');
+    // The request behind it is still running and still delivering. Stopping
+    // the message has to stop the words, or "Stop generating" does nothing
+    // anyone can see.
+    room.chat.append('live', 'answer');
+    flushSync();
+    expect(reply.text()).toBe('half an ');
+    expect(reply.status()).toBe('idle');
+
+    // Asked for again, it takes tokens again.
+    room.chat.regenerate('live');
+    room.chat.append('live', 'another answer');
+    flushSync();
+    expect(reply.text()).toBe('another answer');
+    expect(reply.status()).toBe('streaming');
+  });
+
+  it('takes no failure and no new shape into a reply that was stopped', () => {
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const room = mountChat({ messages: [say(0, 'ada')] });
+    const reply = room.chat.add({ id: 'live', author: 'ben', name: 'Ben', typing: true });
+    room.chat.append('live', 'half an ');
+    flushSync();
+
+    room.chat.cancel('live');
+    // An aborted request fails, and the consumer's own `catch` says so; a
+    // request that is still running goes on shaping the reply. Neither is
+    // news about a reply the reader stopped on purpose.
+    room.chat.fail('live', 'aborted');
+    room.chat.addPart('live', { kind: 'code', language: 'ts' });
+    room.chat.setParts('live', [{ text: 'something else entirely' }]);
+    flushSync();
+    vi.advanceTimersByTime(50);
+
+    expect(reply.status()).toBe('idle');
+    expect(reply.error()).toBe('');
+    expect(reply.text()).toBe('half an ');
+    expect(reply.parts()).toHaveLength(1);
+    expect(room.chat.actionsFor(reply)).not.toContain('retry');
+    const spoken = [...document.querySelectorAll('[data-volt-announcer]')]
+      .map((region) => region.textContent ?? '')
+      .join('');
+    expect(spoken).not.toContain('aborted');
+  });
+
+  it('hears a failure again once a stopped message is sent again', () => {
+    chatOptions = { ...chatOptions, self: 'ada' };
+    const room = mountChat({ messages: [say(0, 'ben')] });
+    const mine = room.chat.add({ id: 'mine', author: 'ada', name: 'Ada', streaming: true });
+    room.chat.append('mine', 'half a thought');
+    room.chat.cancel('mine');
+
+    room.chat.beginEdit('mine');
+    type(room, 'a whole thought');
+    room.chat.send();
+    // Sent again, it is a message in flight like any other, and a network
+    // that refuses it has to be heard.
+    room.chat.fail('mine', 'offline');
+    flushSync();
+    expect(mine.status()).toBe('error');
+    expect(mine.error()).toBe('offline');
+  });
+
+  it('retries a reply that failed on its way by waiting for it again', () => {
+    const room = mountChat({ messages: [say(0, 'ada')] });
+    const reply = room.chat.add({ id: 'live', author: 'ben', name: 'Ben', typing: true });
+    room.chat.append('live', 'half an ');
+    room.chat.fail('live', 'the connection dropped');
+    flushSync();
+
+    actionIn(room, 1, 'retry').click();
+    flushSync();
+
+    expect(asked).toEqual(['retry:live']);
+    // Waiting again, with the half that arrived thrown away: new tokens on the
+    // end of the old ones would be two answers run together.
+    expect(reply.status()).toBe('typing');
+    expect(reply.text()).toBe('');
+    expect(reply.error()).toBe('');
+
+    room.chat.append('live', 'a whole answer');
+    room.chat.finish('live');
+    flushSync();
+    expect(reply.text()).toBe('a whole answer');
+    expect(reply.status()).toBe('idle');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // What a message is doing
 // ---------------------------------------------------------------------------
@@ -1224,6 +1560,71 @@ describe('message states', () => {
     room.chat.add(say(21, 'ben'));
     flushSync();
     expect(room.chat.unreadCount()).toBe(1);
+  });
+
+  it('counts a reply that was only on its way once it arrives', () => {
+    const room = mountChat({ messages: transcript(20) });
+    userScroll(room, 0);
+
+    room.chat.add({ id: 'live', author: 'ben', name: 'Ben', typing: true });
+    flushSync();
+    expect(room.chat.unreadCount()).toBe(0);
+
+    // The first token is the reply arriving, while the reader is not looking.
+    room.chat.append('live', 'here it is');
+    flushSync();
+    expect(room.chat.unreadCount()).toBe(1);
+    expect(room.jump()!.getAttribute('aria-label')).toBe('1 new message');
+
+    // Once, not again when it finishes.
+    room.chat.finish('live');
+    flushSync();
+    expect(room.chat.unreadCount()).toBe(1);
+  });
+
+  it('counts a reply that finishes without ever streaming', () => {
+    const room = mountChat({ messages: transcript(20) });
+    userScroll(room, 0);
+
+    room.chat.add({ id: 'live', author: 'ben', name: 'Ben', typing: true });
+    room.chat.setParts('live', [{ text: 'all at once' }]);
+    room.chat.finish('live');
+    flushSync();
+    expect(room.chat.unreadCount()).toBe(1);
+  });
+
+  it('counts a reply once, however many attempts it takes to arrive', () => {
+    const room = mountChat({ messages: transcript(20) });
+    userScroll(room, 0);
+
+    room.chat.add({ id: 'live', author: 'ben', name: 'Ben', typing: true });
+    room.chat.append('live', 'half an ');
+    room.chat.fail('live', 'the connection dropped');
+    room.chat.retry('live');
+    room.chat.append('live', 'a whole answer');
+    room.chat.finish('live');
+    flushSync();
+    // One message the reader has not read, not one per attempt at it.
+    expect(room.chat.unreadCount()).toBe(1);
+    expect(room.jump()!.getAttribute('aria-label')).toBe('1 new message');
+
+    // Once they have caught up, the next reply in its place is news again.
+    room.chat.jumpToLatest();
+    flushSync();
+    userScroll(room, 0);
+    room.chat.regenerate('live');
+    room.chat.append('live', 'another answer');
+    flushSync();
+    expect(room.chat.unreadCount()).toBe(1);
+  });
+
+  it('does not count a reply that arrives while the reader is following', () => {
+    const room = mountChat({ messages: transcript(20) });
+    room.chat.add({ id: 'live', author: 'ben', name: 'Ben', typing: true });
+    room.chat.append('live', 'here it is');
+    room.chat.finish('live');
+    flushSync();
+    expect(room.chat.unreadCount()).toBe(0);
   });
 
   it('does not let a finish quietly clear a failure', () => {
@@ -1310,10 +1711,76 @@ describe('the shape of a message', () => {
     // from having its text read out to them.
     expect(code!.getAttribute('aria-label')).toBe('Code, ts');
     expect(code!.getAttribute('data-language')).toBe('ts');
-    // A code block scrolls sideways, and a region that scrolls has to be
-    // reachable without a mouse.
-    expect(code!.querySelector('.part-body')!.getAttribute('tabindex')).toBe('0');
+
+    // A code block that scrolls sideways has to be reachable without a mouse —
+    // and one that does not is an empty Tab press, in a transcript that may
+    // hold dozens of one-line snippets.
+    const block = code!.querySelector<HTMLElement>('.part-body')!;
+    expect(block.hasAttribute('tabindex')).toBe(false);
+
+    overflow(block, 900, 400);
+    expect(block.getAttribute('tabindex')).toBe('0');
     expect(prose!.querySelector('.part-body')!.hasAttribute('tabindex')).toBe(false);
+
+    overflow(block, 300, 400);
+    expect(block.hasAttribute('tabindex')).toBe(false);
+  });
+
+  it('notices a line of code growing as it streams, once a frame', async () => {
+    const room = mountChat({
+      messages: [
+        { ...say(0, 'ben'), text: undefined, parts: [{ kind: 'code', language: 'ts', text: 'let' }] },
+      ],
+    });
+    const block = partsOf(room, 0)[0]!.querySelector<HTMLElement>('.part-body')!;
+    expect(block.hasAttribute('tabindex')).toBe(false);
+
+    // The box keeps its size while the line inside it grows, so no resize is
+    // ever reported — the observer is never fired here, as in a browser.
+    let reads = 0;
+    Object.defineProperty(block, 'clientWidth', { value: 400, configurable: true });
+    Object.defineProperty(block, 'scrollWidth', {
+      get: () => {
+        reads++;
+        return 900;
+      },
+      configurable: true,
+    });
+
+    for (const token of [' x', ' = ', 'aVeryLongExpression()']) {
+      room.chat.append('m0', token);
+      flushSync();
+      await Promise.resolve();
+    }
+    // Reading the width forces a layout, and a token is the hot path: three of
+    // them in one frame are measured once, when the frame comes.
+    expect(reads).toBe(0);
+
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    flushSync();
+    expect(reads).toBe(1);
+    expect(block.getAttribute('tabindex')).toBe('0');
+  });
+
+  it('does not look for code blocks again while the reader scrolls inside one window', () => {
+    const room = mountChat({
+      messages: Array.from({ length: 200 }, (_, index) => ({
+        ...say(index, 'ben'),
+        text: undefined,
+        parts: [{ kind: 'code' as const, text: `line ${index}` }],
+      })),
+    });
+    userScroll(room, 401);
+    const box = host.querySelector<HTMLElement>('.box')!;
+    const rendered = room.rows().length;
+    const find = vi.spyOn(box, 'querySelector');
+
+    // Every one of these is a scroll frame, and none of them changes which
+    // messages are rendered.
+    for (const offset of [402, 405, 410, 415, 419]) userScroll(room, offset);
+
+    expect(room.rows()).toHaveLength(rendered);
+    expect(find).not.toHaveBeenCalled();
   });
 
   it('copies a code block without the prose around it', async () => {
@@ -1428,6 +1895,53 @@ describe('the shape of a message', () => {
     expect(sources[0]!.getAttribute('href')).toBe('https://example.test/a');
   });
 
+  it('writes no href for a source that has nowhere to point', () => {
+    @Component({
+      selector: `v-chat-sources-${++selectors}`,
+      render: compileTemplate(`
+        <div class="log" :ref="scroller" :spread="chat.logProps()">
+          <div :spread="chat.sizerProps()">
+            <div :ref="box" :spread="chat.containerProps()">
+              <div :for="row in chat.rendered()" :key="row.id" :spread="chat.messageProps(row)">
+                <a class="source" :for="part in row.message.parts()" :key="part.id"
+                   :spread="chat.partProps(part)">[{ part.ordinal }]</a>
+              </div>
+            </div>
+          </div>
+        </div>
+      `),
+    })
+    class Sources {
+      scroller = new Signal.State<Element | null>(null);
+      box = new Signal.State<Element | null>(null);
+      chat = createChat<string>({
+        scroller: () => this.scroller.get(),
+        container: () => this.box.get(),
+      });
+    }
+
+    const handle = mount(Sources, host);
+    mounted.push(handle);
+    (handle.instance as Sources).chat.setMessages([
+      {
+        id: 'm0',
+        author: 'ben',
+        parts: [
+          { kind: 'source', title: 'Widgets' },
+          { kind: 'source', href: 'https://example.test/b' },
+        ],
+      },
+    ]);
+    flushSync();
+
+    const [bare, linked] = [...host.querySelectorAll('.source')];
+    // `href` is a property on an <a>, and a property set to undefined is the
+    // string "undefined" — a link to a page of that name beside this one.
+    expect(bare!.hasAttribute('href')).toBe(false);
+    expect(bare!.getAttribute('aria-label')).toBe('Source 1: Widgets');
+    expect(linked!.getAttribute('href')).toBe('https://example.test/b');
+  });
+
   it('streams into the last part the consumer opened', () => {
     const room = mountChat({ messages: [say(0, 'ben', 'here it is')] });
     const part = room.chat.addPart('m0', { kind: 'code', language: 'ts' })!;
@@ -1489,5 +2003,63 @@ describe('announcing a state', () => {
     // feels like it is, and this region is the one the announcer owns.
     expect(document.querySelectorAll("[data-volt-announcer='assertive']")).toHaveLength(0);
     expect(document.querySelectorAll("[data-volt-announcer='polite']")).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The words it says
+// ---------------------------------------------------------------------------
+
+describe('the words it says', () => {
+  it('speaks the language the locale provider speaks', () => {
+    chatOptions = { ...chatOptions, self: 'ada' };
+    const room = mountChat({
+      messages: transcript(20),
+      catalog: {
+        chatLog: 'Nachrichten',
+        chatComposer: 'Nachricht',
+        chatActions: 'Aktionen',
+        chatCopy: 'Nachricht kopieren',
+        chatRegenerate: 'Antwort neu erzeugen',
+        chatTyping: '{name} schreibt',
+        codeBlockLanguage: 'Quelltext, {language}',
+        chatCopyCode: 'Quelltext kopieren',
+        chatNewMessages: { one: '{n} neue Nachricht', other: '{n} neue Nachrichten' },
+      },
+    });
+    room.chat.add({
+      ...say(20, 'ben'),
+      text: undefined,
+      parts: [{ kind: 'code', language: 'ts', text: 'let x' }],
+    });
+    room.chat.add({ id: 'live', author: 'ben', name: 'Ben', typing: true });
+    flushSync();
+
+    expect(room.scroller.getAttribute('aria-label')).toBe('Nachrichten');
+    expect(room.composer.getAttribute('aria-label')).toBe('Nachricht');
+    expect(room.row(20)!.querySelector('.actions')!.getAttribute('aria-label')).toBe('Aktionen');
+    expect(actionIn(room, 20, 'copy').getAttribute('aria-label')).toBe('Nachricht kopieren');
+    expect(actionIn(room, 20, 'regenerate').getAttribute('aria-label')).toBe(
+      'Antwort neu erzeugen',
+    );
+    expect(partsOf(room, 20)[0]!.getAttribute('aria-label')).toBe('Quelltext, ts');
+    expect(room.row(20)!.querySelector('.copy-code')!.getAttribute('aria-label')).toBe(
+      'Quelltext kopieren',
+    );
+    expect(room.chat.statusText(room.chat.messages()[21]!)).toBe('Ben schreibt');
+    // A word the catalogue leaves out is said in English rather than as its key.
+    expect(actionIn(room, 19, 'edit').getAttribute('aria-label')).toBe('Edit and resend');
+
+    userScroll(room, 0);
+    room.chat.add(say(22, 'ben'));
+    room.chat.add(say(23, 'ben'));
+    flushSync();
+    expect(room.jump()!.getAttribute('aria-label')).toBe('2 neue Nachrichten');
+
+    // Read on every render, so a catalogue swapped later reaches words that
+    // are already on screen.
+    room.instance.locale!.setMessages({ chatLog: 'Verlauf' });
+    flushSync();
+    expect(room.scroller.getAttribute('aria-label')).toBe('Verlauf');
   });
 });

@@ -35,6 +35,8 @@
 import { Signal, effect, onCleanup } from '@voltdev/core';
 import { createPresence, type PresenceState } from './presence.js';
 import { createCollection, ITEM_ATTRIBUTE } from './collection.js';
+import { createDismiss } from './dismiss.js';
+import { useLocale, type Locale, type MessageKey, type MessageValues } from './i18n.js';
 import { createId } from './id.js';
 
 // The proposal's own name for reading without subscribing; Volt adds no second
@@ -59,6 +61,18 @@ export interface FeedbackProps {
  * separates the two, and every component takes an override.
  */
 const ANNOUNCE_DELAY = 50;
+
+/**
+ * A default string: the locale's catalogue first, then English.
+ *
+ * `loading` is one of the library's own keys and always resolves. The rest —
+ * `dismiss`, `loaded`, `emptyState`, `noResultsFor` — are not, so a catalogue
+ * that declares them is heard and without one the English stands. Read on
+ * every call, so a catalogue swapped later reaches words already on screen.
+ */
+function word(locale: Locale, key: MessageKey, fallback: string, values?: MessageValues): string {
+  return locale.has(key) ? locale.t(key, values) : fallback;
+}
 
 // ---------------------------------------------------------------------------
 // Live region timing
@@ -233,7 +247,7 @@ export function createDeferredVisibility(
 export type AlertPriority = 'assertive' | 'polite';
 
 export interface AlertLabels {
-  /** Accessible name for the dismiss control. Default `Dismiss`. */
+  /** Accessible name for the dismiss control. Default the locale's `dismiss`, or `Dismiss`. */
   dismiss?: string;
 }
 
@@ -264,12 +278,11 @@ export interface AlertOptions {
   /**
    * Escape dismisses it. Default true.
    *
-   * The key is watched on the region itself rather than on the document, so it
-   * only ever answers with focus inside the alert — an alert is not a layer,
-   * and one that swallowed the page's Escape would take it from the dialog or
-   * the menu it sits in. The tradeoff runs the other way too: an alert *inside*
-   * an open dialog cannot stop Escape reaching the dialog, because the dismiss
-   * stack listens in the capture phase, so that one keypress closes both.
+   * Only with focus inside the alert. An alert is not a layer, and one that
+   * swallowed the page's Escape would take it from the dialog or the menu it
+   * sits in — so it joins the dismiss stack while focus is in it and leaves it
+   * as focus does. Inside an open dialog it is then the topmost layer, and one
+   * press closes the alert and leaves the dialog open.
    */
   closeOnEscape?: boolean;
 
@@ -331,6 +344,7 @@ export function createAlert(options: AlertOptions): Alert {
   const state = options.open ?? new Signal.State(options.defaultOpen ?? false);
   const priority: AlertPriority = options.priority ?? 'assertive';
   const labels = options.labels ?? {};
+  const locale = useLocale();
 
   const timing = createLiveRegionTiming(() => options.region(), options.announceDelay);
 
@@ -338,6 +352,8 @@ export function createAlert(options: AlertOptions): Alert {
 
   /** Where focus was before it entered the alert, so a dismiss can put it back. */
   let focusOrigin: HTMLElement | null = null;
+  /** Whether focus is inside the alert, which is the only time Escape is its. */
+  const focusWithin = new Signal.State(false);
 
   // An alert does not take focus, so this is only ever spent when the user
   // walked into it themselves — to press dismiss.
@@ -345,21 +361,35 @@ export function createAlert(options: AlertOptions): Alert {
     if (!state.get() || typeof document === 'undefined') return;
 
     focusOrigin = activeElement();
+    focusWithin.set(isInRegion(focusOrigin));
 
     const onFocusIn = (event: Event) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;
+      const within = isInRegion(target);
+      focusWithin.set(within);
       // Moving between the alert's own controls is not an entry into it.
-      if (options.region()?.contains(target)) return;
+      if (within) return;
       focusOrigin = target;
     };
+    // Focus leaving for nothing at all — a click on the page's background —
+    // raises no focusin to say where it went.
+    const onFocusOut = (event: Event) => {
+      if ((event as FocusEvent).relatedTarget === null) focusWithin.set(false);
+    };
     document.addEventListener('focusin', onFocusIn, true);
+    document.addEventListener('focusout', onFocusOut, true);
 
     onCleanup(() => {
       document.removeEventListener('focusin', onFocusIn, true);
+      document.removeEventListener('focusout', onFocusOut, true);
       focusOrigin = null;
     });
   });
+
+  function isInRegion(node: Node | null): boolean {
+    return node !== null && (options.region()?.contains(node) ?? false);
+  }
 
   /**
    * Take focus out of the alert before the alert goes.
@@ -395,21 +425,18 @@ export function createAlert(options: AlertOptions): Alert {
     () => options.region(),
   );
 
+  // Escape is the alert's only while focus is inside it, and then the alert is
+  // a layer like any other: onto the dismiss stack as focus enters, so an
+  // alert inside an open dialog is the topmost layer and one press closes the
+  // alert alone, and off it as focus leaves, so the page's Escape — a
+  // dialog's, a menu's — is never the alert's to take.
   effect(() => {
-    if (!state.get() || options.closeOnEscape === false) return;
-    const region = options.region();
-    if (!region) return;
-
-    const onKeyDown = (event: Event) => {
-      if (!isKeyboardEvent(event) || event.key !== 'Escape') return;
-      // Neither prevented nor stopped: Escape has other meanings further up —
-      // abandoning an input's own composition, for one — and an alert has no
-      // claim on the key beyond its own subtree.
-      setOpen(false);
-    };
-
-    region.addEventListener('keydown', onKeyDown);
-    onCleanup(() => region.removeEventListener('keydown', onKeyDown));
+    if (!state.get() || options.closeOnEscape === false || !focusWithin.get()) return;
+    createDismiss(
+      () => options.region(),
+      () => setOpen(false),
+      { outsidePointer: false },
+    );
   });
 
   // Built once and handed out unchanged. `:spread` reattaches everything it
@@ -473,7 +500,7 @@ export function createAlert(options: AlertOptions): Alert {
       type: 'button',
       tabindex: '0',
       // A dismiss control is usually a glyph, and "times" is not a label.
-      'aria-label': labels.dismiss ?? 'Dismiss',
+      'aria-label': labels.dismiss ?? word(locale, 'dismiss', 'Dismiss'),
       onclick: onDismissClick,
       onkeydown: onDismissKeyDown,
     }),
@@ -485,11 +512,12 @@ export function createAlert(options: AlertOptions): Alert {
 // ---------------------------------------------------------------------------
 
 export interface SkeletonLabels {
-  /** Announced while the placeholder is up. Default `Loading…`. */
+  /** Announced while the placeholder is up. Default the locale's `loading` — `Loading…`. */
   loading?: string;
   /**
-   * Announced once the content has arrived. Default `Loaded`. Set to '' to say
-   * nothing, which is right when the content announces itself some other way.
+   * Announced once the content has arrived. Default the locale's `loaded`, or
+   * `Loaded`. Set to '' to say nothing, which is right when the content
+   * announces itself some other way.
    */
   loaded?: string;
 }
@@ -510,7 +538,8 @@ export interface SkeletonOptions {
    *
    * Zero, unlike the spinner's, because a skeleton *is* the layout: delaying it
    * shows a blank hole first and then a jump, which is worse than the flash it
-   * would have avoided.
+   * would have avoided. The words in the status region wait with it, so a load
+   * that ends inside the delay is neither shown nor mentioned.
    */
   delay?: number;
   /** Once up, keep it up at least this long, in milliseconds. Default 0. */
@@ -582,6 +611,7 @@ export interface Skeleton {
 export function createSkeleton(options: SkeletonOptions = {}): Skeleton {
   const state = options.loading ?? new Signal.State(options.defaultLoading ?? false);
   const labels = options.labels ?? {};
+  const locale = useLocale();
 
   const visibility = createDeferredVisibility(() => state.get(), {
     delay: options.delay,
@@ -591,20 +621,25 @@ export function createSkeleton(options: SkeletonOptions = {}): Skeleton {
   const timing = regionTiming(options.region, options.announceDelay);
 
   /**
-   * Whether a load has ever actually started.
+   * Whether the placeholder has been on screen since the last load began.
    *
-   * Without it a page that was never loading announces "Loaded" the moment its
-   * status region settles, which is a lie about something that never happened.
+   * The words follow the placeholder, as the spinner's follow its graphic: a
+   * wait too short to show is a wait too short to mention, so `delay` holds
+   * back "Loading…" with the boxes. It is also what makes "Loaded" true.
+   * Without it a page that was never loading announces "Loaded" the moment
+   * its status region settles, and a wait nobody saw announces an end to it.
    */
-  const started = new Signal.State(false);
+  const shown = new Signal.State(false);
   effect(() => {
-    if (state.get()) started.set(true);
+    if (visibility.isVisible()) shown.set(true);
+    // A load that has begun and not yet shown has, so far, nothing to say.
+    else if (state.get()) shown.set(false);
   });
 
   const message = (): string => {
-    if (state.get()) return labels.loading ?? 'Loading…';
-    if (!started.get()) return '';
-    return labels.loaded ?? 'Loaded';
+    if (!shown.get()) return '';
+    if (state.get()) return labels.loading ?? word(locale, 'loading', 'Loading…');
+    return labels.loaded ?? word(locale, 'loaded', 'Loaded');
   };
 
   const isMessageVisible = (): boolean => timing.isReady() && message() !== '';
@@ -657,7 +692,7 @@ export function createSkeleton(options: SkeletonOptions = {}): Skeleton {
 // ---------------------------------------------------------------------------
 
 export interface SpinnerLabels {
-  /** What the wait is called. Default `Loading…`. */
+  /** What the wait is called. Default the locale's `loading` — `Loading…`. */
   loading?: string;
 }
 
@@ -717,12 +752,13 @@ export interface Spinner {
  *   class Save {
  *     region = new Signal.State<Element | null>(null);
  *     spinner = createSpinner({ region: () => this.region.get() });
+ *     hidden = visuallyHidden();
  *   }
  *
  *   <div :ref="region" :spread="spinner.rootProps()">
  *     <svg :if="spinner.isVisible()" :spread="spinner.indicatorProps()">…</svg>
  *     <span :if="spinner.isMessageVisible()" :spread="spinner.labelProps()"
- *           :style="visuallyHidden()">{ spinner.label() }</span>
+ *           :style="hidden">{ spinner.label() }</span>
  *   </div>
  *
  * The graphic is hidden from assistive technology and the label carries the
@@ -737,6 +773,7 @@ export interface Spinner {
 export function createSpinner(options: SpinnerOptions = {}): Spinner {
   const state = options.loading ?? new Signal.State(options.defaultLoading ?? false);
   const labels = options.labels ?? {};
+  const locale = useLocale();
 
   const visibility = createDeferredVisibility(() => state.get(), {
     delay: options.delay ?? 500,
@@ -753,7 +790,7 @@ export function createSpinner(options: SpinnerOptions = {}): Spinner {
     isLoading: () => state.get(),
     isVisible: () => visibility.isVisible(),
     state: () => visibility.state(),
-    label: () => labels.loading ?? 'Loading…',
+    label: () => labels.loading ?? word(locale, 'loading', 'Loading…'),
     isMessageVisible,
 
     setLoading(next) {
@@ -793,9 +830,15 @@ export function createSpinner(options: SpinnerOptions = {}): Spinner {
 export type EmptyStateStatus = 'loading' | 'empty' | 'filled';
 
 export interface EmptyStateLabels {
-  /** Nothing here, and nothing was filtered out. Default `Nothing here yet.`. */
+  /**
+   * Nothing here, and nothing was filtered out. Default the locale's
+   * `emptyState`, or `Nothing here yet.`.
+   */
   empty?: string;
-  /** Nothing matched the current search. Given the query. */
+  /**
+   * Nothing matched the current search. Given the query. Default the locale's
+   * `noResultsFor`, with the query as `{query}`, or `No results for “query”.`.
+   */
   noResults?: (query: string) => string;
 }
 
@@ -815,7 +858,9 @@ export interface EmptyStateOptions {
    * Left out, the items are counted from the DOM and watched for changes. That
    * costs a `MutationObserver` and only sees items marked with
    * `data-volt-item`, the attribute the rest of the library's collections use;
-   * passing the count is cheaper and exact.
+   * passing the count is cheaper and exact. Until the DOM has been counted —
+   * on a server, and until the page attaches — the collection is not taken to
+   * be empty.
    */
   count?: () => number;
   /** The attribute marking an item, when counting from the DOM. */
@@ -841,6 +886,12 @@ export type EmptyStateProps = FeedbackProps;
 export interface EmptyState {
   /** Whether the collection is empty and has finished loading. */
   isEmpty(): boolean;
+  /**
+   * How many items the collection holds. Counted from the DOM, it is 0 until
+   * the DOM has been counted — on a server, and until the page attaches — so
+   * a count shown to the reader wants the `count` option. `status()` and
+   * `isEmpty()` do not take an uncounted collection to be empty.
+   */
   count(): number;
   status(): EmptyStateStatus;
   /** What to show and announce, or '' when there is nothing to say. */
@@ -892,6 +943,7 @@ export interface EmptyState {
  */
 export function createEmptyState(options: EmptyStateOptions): EmptyState {
   const labels = options.labels ?? {};
+  const locale = useLocale();
   const messageId = createId('empty-state');
 
   const timing = regionTiming(options.region, options.announceDelay);
@@ -903,7 +955,8 @@ export function createEmptyState(options: EmptyStateOptions): EmptyState {
     skipDisabled: false,
   });
 
-  const observed = new Signal.State(0);
+  /** What the DOM held when it was last counted, or null before it has been. */
+  const observed = new Signal.State<number | null>(null);
 
   // Only when the consumer has not said. `all()` reads the DOM, which is not
   // reactive by itself, so the count is mirrored into a signal and the DOM is
@@ -919,8 +972,10 @@ export function createEmptyState(options: EmptyStateOptions): EmptyState {
       const recount = () => observed.set(items.all().length);
       recount();
 
-      // Nowhere to observe from — a server render, where the count taken above
-      // is the only one there will be, and nothing will change under it.
+      // No observer to watch with — a DOM that is not a browser's — and the
+      // count taken above is the only one there will be. A server never gets
+      // this far: it does not run this effect at all, which is why `status`
+      // has to tell a count not yet taken from a count of zero.
       if (typeof MutationObserver === 'undefined') return;
 
       // `subtree`, because rows are commonly nested in a `<tbody>` or a group
@@ -931,11 +986,16 @@ export function createEmptyState(options: EmptyStateOptions): EmptyState {
     });
   }
 
-  const count = (): number => options.count?.() ?? observed.get();
+  const count = (): number => options.count?.() ?? observed.get() ?? 0;
 
   const status = (): EmptyStateStatus => {
     if (options.loading?.()) return 'loading';
-    return count() === 0 ? 'empty' : 'filled';
+    // Not yet counted — on a server, which never runs the effect above, and
+    // until the page attaches — is not the same as counted and found to be
+    // zero. Calling a list with rows in it empty is the worse of the two
+    // mistakes, and the count arrives with the page either way.
+    const known = options.count ? options.count() : observed.get();
+    return known === 0 ? 'empty' : 'filled';
   };
 
   const isEmpty = (): boolean => status() === 'empty';
@@ -943,11 +1003,12 @@ export function createEmptyState(options: EmptyStateOptions): EmptyState {
   const message = (): string => {
     if (!isEmpty()) return '';
     const query = options.query?.()?.trim() ?? '';
-    if (!query) return labels.empty ?? 'Nothing here yet.';
+    if (!query) return labels.empty ?? word(locale, 'emptyState', 'Nothing here yet.');
     // Two different messages because they call for two different actions:
     // nothing yet means create something, no matches means search for
     // something else, and one sentence cannot mean both.
-    return labels.noResults ? labels.noResults(query) : `No results for “${query}”.`;
+    if (labels.noResults) return labels.noResults(query);
+    return word(locale, 'noResultsFor', `No results for “${query}”.`, { query });
   };
 
   const isMessageVisible = (): boolean => isEmpty() && timing.isReady();

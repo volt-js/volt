@@ -26,7 +26,18 @@ Every primitive here follows [the conventions the package shares](./primitives#c
 created in a component's field initialiser, elements handed over as getters,
 state read by calling it, props spread with `:spread`, a `Signal.State` passed
 in to control a value from outside, and every user-facing string under
-`labels`, English by default.
+`labels`.
+
+**A default word comes from the locale provider when its catalogue has one.**
+Each default below names its catalogue key beside its English — the dismiss
+control's `dismiss`, `Dismiss` — and a catalogue that declares the key is what
+is said; one that does not leaves the English. Only `loading` and `remove` are
+the library's own keys, which every catalogue resolves; the rest are yours to
+declare or leave out, so a translation never has to carry words for a
+component it does not use. They are read each time they are said, so a
+catalogue swapped under the page reaches words already on screen. A `{name}`,
+`{n}` or other placeholder in the English is one the catalogue's string can
+use too, and a count given as `{n}` can pick a plural form.
 
 Two things are specific to this page.
 
@@ -248,7 +259,7 @@ createProgress(options?: ProgressOptions): Progress
 | `label` | Accessible name. Ignored when `labelledBy` is given |
 | `labelledBy` | Id of an element that already names it. Preferred over `label` |
 | `valueText` | `(value, percent) => string` — a spoken alternative to the number |
-| `labels.indeterminate` | Said in place of a value while there is none. Default `Loading…`; `''` says nothing |
+| `labels.indeterminate` | Said in place of a value while there is none. Default the locale's `loading` — `Loading…`; `''` says nothing |
 | `onValueChange` | Told each value `setValue` writes |
 
 | Member | Description |
@@ -312,7 +323,7 @@ A count, or a status, that says what it is counting.
 | `showZero` | Stay visible at zero. Default `false` |
 | `live` | `'off'`, `'polite'` or `'assertive'`. Default `'off'` |
 | `labels.count` | `(count, describes) => string`. Default `3 unread messages` |
-| `labels.overflow` | `(max, describes) => string`. Default `More than 99 unread messages` |
+| `labels.overflow` | `(max, describes) => string`. Default `badgeOverflow` with `{n}` and `{what}`, `More than 99 unread messages`; with no `describes`, `badgeOverflowBare`, `More than 99` |
 | `onCountChange` | Told each count `setCount` writes |
 
 | Member | Description |
@@ -322,7 +333,7 @@ A count, or a status, that says what it is counting.
 | `isOverflowed()` | Past `max` |
 | `text()` | What is drawn: `3`, `99+`, or `''` for a badge with no count |
 | `label()` | What a screen reader is told instead |
-| `badgeProps()` | `role="img"` and the label, `data-count`, `data-overflow`, and the live attributes |
+| `badgeProps()` | `role="img"` and the label, `data-count`, `data-overflow` |
 
 ```ts
 import { Signal } from '@voltdev/core';
@@ -363,21 +374,20 @@ words, so a page that needs "1 unread message" supplies both forms in
 
 **`live` is off by default.** A badge summarises something already on the
 page, so announcing each change is usually repetition, and a counter that ticks
-during a page load interrupts continuously. Turning it on also sets
-`aria-atomic`, so what is heard is the label rather than the digit that
-changed. What it does not have is the timing gate the feedback primitives
-keep, and that costs the change that matters most. Under `:if`, a badge going
-from nothing to one appears holding its first count — region and words in one
-mutation, the failure described under
-[Announcing a change](#announcing-a-change). Kept mounted, it is no better: a
-badge with nothing to show writes `aria-hidden` and `data-empty` and nothing
-else, so at zero there is no `aria-live` on it either, and the live region,
-its name and its first count all arrive in the same update. Either way the
-first arrival is not announced by the rule this page is built on. `showZero:
-true` keeps the region in place at zero, at the price of a visible "0". The
-tests check that `aria-live` and `aria-atomic` are written on a badge that
-already has a count, not what a screen reader says, so treat `live` as
-unproven for anything but a count changing from one number to another.
+during a page load interrupts continuously. Turned on, each change is said as
+the label rather than the bare digit that changed — "4 unread messages" — at
+the priority given.
+
+It is said through the document's [shared announcer](./primitives#announcements-announce)
+rather than by making the badge a live region of its own, because a badge can
+never satisfy the rule under [Announcing a change](#announcing-a-change): a
+region has to be on the page before its words are, and under `:if` a badge
+arrives holding its first count, while one kept mounted is `aria-hidden` and
+empty at zero. Either way the change that matters most — from nothing to one —
+would land together with its region and go unheard. The announcer is mounted
+once and kept, and a sentence given before it has settled waits for it, so the
+first change is heard as well. The count a badge is created with is not a
+change and is not announced.
 
 ### Relative time
 
@@ -392,7 +402,7 @@ A timestamp that reads the way a person would say it, and stays true.
 | `date` | The moment — a `Date`, epoch ms, or a string `Date` parses. Pass ISO 8601 |
 | `now` | A `Signal.State<number>` for "now" — a test, or a clock you already own |
 | `live` | Keep it up to date. Default `true` |
-| `locale` | BCP 47. Default the browser's |
+| `locale` | BCP 47. Default the one the locale provider is set to |
 | `style` | `Intl.RelativeTimeFormat` style. Default `'long'`, the one read as a sentence |
 | `numeric` | Default `'auto'`, which says "yesterday" rather than "1 day ago" |
 | `absoluteOptions` | How the absolute time in `title` is formatted. Default long date, short time |
@@ -441,13 +451,21 @@ The unit, and how often an instance asks to be re-read:
 | Under 12 months | `month` | 5 min |
 | Beyond | `year` | 5 min |
 
+Below a day the distance is rounded to the nearest whole unit, so ninety
+seconds ahead is "in 2 minutes" — the same arithmetic
+[`locale.format.relativeTime`](./primitives-data#relativetime) does, because it
+is literally the same function. Two answers for one moment is what a second
+copy of it would produce.
+
 The period is a fraction of the unit rather than the exact moment the text
 would change, so the text can be up to that fraction stale; waking on the
 boundary would need a timer per instance, which is the thing being avoided.
 The other side of one shared clock is that a tick reaches every live instance,
 not only the one that asked for it: while one timestamp on the page is under a
 minute old, all two hundred work out their text and their props once a
-second, and only a text that has changed is written back.
+second, and only a text that has changed is written back. What that costs each
+of them is the formatting itself: the formatters are looked up in the shared
+cache when the language changes, not on every tick.
 
 From a day upwards the distance is counted in midnights, not hours: at 01:00 on
 Tuesday something posted at 23:00 on Sunday was the day before yesterday,
@@ -474,7 +492,7 @@ A chord drawn as symbols and said as words — `⌘K`, spoken "Command K".
 | `keys` | The chord in `KeyboardEvent.key` names: `() => ['Meta', 'K']`, or `() => 'Meta+K'` |
 | `platform` | `'apple'` or `'other'`. Default sniffed from the user agent |
 | `labels.symbols` | What each key is drawn as, by key name. Merged over the defaults |
-| `labels.names` | What each key is called aloud, by key name. Merged over the defaults |
+| `labels.names` | What each key is called aloud, by key name. Merged over the defaults, which are the catalogue keys in the table below |
 | `labels.separator` | Drawn between keys. Default `''` on Apple, `'+'` elsewhere |
 | `labels.join` | Spoken between keys. Default a space |
 
@@ -501,18 +519,21 @@ search.label(); // 'Command K'
 
 | Key | Apple: drawn, said | Elsewhere: drawn, said |
 |---|---|---|
-| `Meta` | ⌘, Command | Win, Windows |
-| `Control` | ⌃, Control | Ctrl, Control |
-| `Alt` | ⌥, Option | Alt, Alt |
-| `Shift` | ⇧, Shift | Shift, Shift |
-| `Enter` | ↩, Enter | Enter, Enter |
-| `Escape` | esc, Escape | Esc, Escape |
-| `' '` | ␣, Space | Space, Space |
-| `ArrowUp` | ↑, Up arrow | ↑, Up arrow |
+| `Meta` | ⌘, `keyCommand` — Command | Win, `keyWindows` — Windows |
+| `Control` | ⌃, `keyControl` — Control | Ctrl, `keyControl` — Control |
+| `Alt` | ⌥, `keyOption` — Option | Alt, `keyAlt` — Alt |
+| `Shift` | ⇧, `keyShift` — Shift | Shift, `keyShift` — Shift |
+| `Enter` | ↩, `keyEnter` — Enter | Enter, `keyEnter` — Enter |
+| `Escape` | esc, `keyEscape` — Escape | Esc, `keyEscape` — Escape |
+| `' '` | ␣, `keySpace` — Space | Space, `keySpace` — Space |
+| `ArrowUp` | ↑, `keyArrowUp` — Up arrow | ↑, `keyArrowUp` — Up arrow |
 
 Tab, Backspace, Delete, CapsLock, PageUp, PageDown, Home, End and the other
-arrows have entries too. A key with none is drawn and said as written, and a
-single character keeps the case it was given.
+arrows have entries too, each said as the catalogue's `key` and its
+`KeyboardEvent.key` name — `keyPageUp`, `keyArrowLeft` — or in English. The
+modifiers are named for what each platform calls them, because one physical
+key has two names and a translation needs both. A key with no entry is drawn
+and said as written, and a single character keeps the case it was given.
 
 `⌘` read aloud is "place of interest sign" or, more often, silence — so the
 element becomes a leaf with a name of its own. When keys are drawn as separate
@@ -543,7 +564,7 @@ having.
 | `pre` | The `<pre>` around a block. Needed to know whether it scrolls |
 | `language` | `() => string` — written to `data-language`, and used in the block's name |
 | `label` | The block's accessible name, overriding the one built from `language` |
-| `labels.block` | `(language) => string`. Default `TypeScript code` for `'TypeScript'`, or `Code` with no language |
+| `labels.block` | `(language) => string`. Default `codeBlockLanguage` with `{language}`, `Code, TypeScript`, or with no language `codeBlock`, `Code` |
 
 | Member | Description |
 |---|---|
@@ -572,14 +593,26 @@ told what it is.
 
 A block that overflows sideways is a scroll container, and one that cannot be
 focused cannot be scrolled from the keyboard at all. So it becomes a focusable,
-named region — but only while it really overflows, measured with a
-`ResizeObserver` on the `<pre>` and the children it has when it is wired. A
-permanent `tabindex="0"` would put an empty tab stop in front of every short
-snippet on the page. The cost of naming it is one more entry in the landmark
-list; the cost of not naming it would be a tab stop that says nothing when it
-takes focus. Where there is no `ResizeObserver` — a server, a test DOM — the
-block is taken not to scroll, which leaves a tab stop out rather than adding a
-nameless one.
+named region — but only while it really overflows. A permanent `tabindex="0"`
+would put an empty tab stop in front of every short snippet on the page. The
+cost of naming it is one more entry in the landmark list; the cost of not
+naming it would be a tab stop that says nothing when it takes focus. The name
+is the one a chat gives a code part, from the same catalogue keys, so one
+block is not called two things on one page.
+
+Two observers measure it: a `ResizeObserver` on the `<pre>` for the width the
+code has to fit into, and a `MutationObserver` over its content for what has
+to fit. The content is the half that is easy to get wrong — a highlighter
+rewrites the code after mount, often replacing the `<code>` outright, and the
+`<pre>` never changes size. Watching that child's own box would see nothing
+either way, because `<code>` is inline and an inline box has no size a
+`ResizeObserver` reports. A resize is measured as it is reported, after
+layout; a change of content is reported before layout, where reading a width
+forces one, so it is measured once a frame however many changes the frame
+brought — code streamed in, or highlighted a token at a time, costs one
+layout a frame rather than one a change. Where there is no `ResizeObserver` — a server, a test
+DOM — the block is taken not to scroll, which leaves a tab stop out rather than
+adding a nameless one.
 
 It is semantics only: no highlighting, no copy button, no line numbers.
 
@@ -694,7 +727,7 @@ focus goes when it is removed.
 | `removable` | Default `true` |
 | `disabled` | `() => boolean`. Announced as unavailable, and refuses removal |
 | `focusable` | Put the chip itself in the tab order. Default `true` |
-| `labels.remove` | `(label) => string`. Default `Remove Ada`, or `Remove` with no label |
+| `labels.remove` | `(label) => string`. Default `removeItem` with the label as `{label}`; without that key, the locale's `remove` and the label — `Remove Ada`; with no label, `remove` alone |
 | `onRemove` | Called when the chip asks to be removed. You drop it |
 
 | Member | Description |
@@ -704,7 +737,7 @@ focus goes when it is removed.
 | `remove()` | Move focus off, then call `onRemove`. Does nothing when not removable |
 | `onKeyDown(event)` | Delete and Backspace remove. Calls `preventDefault` itself on a key it acts on, and on no other |
 | `chipProps()` | `data-volt-item`, `data-label`, `tabindex="0"` when `focusable`, and `aria-disabled` with `data-disabled` when disabled |
-| `removeProps()` | `type="button"`, the name, `tabindex="-1"` while the chip is the tab stop and `"0"` when it is not, `aria-disabled` when disabled, `data-disabled` when not `removable` |
+| `removeProps()` | `type="button"`, the name, `tabindex="-1"`, `aria-disabled` when disabled, `data-disabled` when not `removable` |
 
 ```ts
 import { Component, Prop, Signal } from '@voltdev/core';
@@ -747,10 +780,10 @@ without `:key` can still lose focus, since the reconciler is then free to
 replace the node underneath it. Disabled chips count as neighbours:
 `aria-disabled` leaves an element focusable.
 
-**The chip is the tab stop; the remove button is not.** Ten tags cost ten Tab
-presses rather than twenty. The cost is that the button cannot be reached by
-Tab, which is why Delete and Backspace on the chip do the same job. Nothing on
-the chip tells a screen reader user those keys exist; the button, with its
+**The chip is the tab stop; the remove button never is.** Ten tags cost ten
+Tab presses rather than twenty. The cost is that the button cannot be reached
+by Tab, which is why Delete and Backspace on the chip do the same job. Nothing
+on the chip tells a screen reader user those keys exist; the button, with its
 name, is still reachable by a screen reader's own cursor and by pointer.
 
 The keys are ignored when they come from a field inside the chip — an editable
@@ -759,12 +792,21 @@ role of its own, and arrow keys are deliberately absent: a row of chips is a
 row of tab stops, and a primitive that owned the arrows would have to own the
 tab order too. `focusable: false` exists for handing the chips to
 [roving focus](./primitives#roving-focus-createrovingfocus), which then owns
-their tab stops. It is not yet the saving it sounds like: the option cannot
-tell a chip in a roving group from a chip nothing can focus, so it also makes
-every remove button a tab stop of its own. A roving row of ten chips is then
-eleven Tab presses — the row, and ten buttons — rather than one. Delete and
-Backspace keep working on whichever chip the group has focused, since
-`onKeyDown` does not read `focusable`.
+their tab stops: a roving row of ten chips is one Tab press. The remove
+buttons stay out of the tab order either way, so the count does not depend on
+which of the two owns the stop. Delete and Backspace keep working on whichever
+chip the group has focused, since `onKeyDown` does not read `focusable`. The
+other side of that rule is that a chip nothing else makes focusable cannot be
+reached from the keyboard at all — `focusable: false` is for a group that
+takes the job over, not for a chip that wants to be skipped. In development a
+removable chip made with `focusable: false` warns once it is on the page with
+no `tabindex`, since nothing else will say so.
+
+**The remove control's name is a whole phrase where the catalogue gives one.**
+`removeItem` — `'{label} entfernen'` — lets the language put the name where
+it belongs. Without it the name is the `remove` verb followed by the label,
+which reads right in English and in a language that also puts the verb first,
+and runs the other way round in one that does not.
 
 ## Announcing a change
 
@@ -800,7 +842,9 @@ Two consequences:
 
 A sentence that has no markup of its own to live in — a sort order changed, a
 value was copied — belongs in the document's shared announcer, which the
-[building blocks](./primitives#announcements-announce) cover; chat uses it.
+[building blocks](./primitives#announcements-announce) cover. A component whose
+own element cannot be on the page before its words belongs there too: it is
+where chat says arrivals, and where a `live` badge says its count.
 
 ### `createLiveRegionTiming`
 
@@ -846,9 +890,9 @@ A message announced where the user already is.
 | `priority` | `'assertive'` or `'polite'`. Default `'assertive'`; fixed for the alert's life |
 | `open` | A `Signal.State<boolean>`, to control it from outside |
 | `defaultOpen` | Starting state when the alert owns it. Default `false` |
-| `closeOnEscape` | Default `true`. Listened for on the region, not the document |
+| `closeOnEscape` | Default `true`. Only while focus is inside the alert |
 | `announceDelay` | Override the region timing |
-| `labels.dismiss` | The dismiss control's name. Default `Dismiss` |
+| `labels.dismiss` | The dismiss control's name. Default the locale's `dismiss`, or `Dismiss` |
 | `onOpenChange` | Told each change |
 
 | Member | Description |
@@ -910,11 +954,14 @@ because it cannot see what it was spread onto: the role is what makes a `<div>`
 announce as a button, and `type` is what stops a `<button>` submitting its
 form. On a real button, Enter and Space are left to the browser.
 
-Escape is listened for on the region, so it answers only with focus inside the
-alert: an alert is not a layer, and one that swallowed the page's Escape would
-take it from the dialog or menu it sits in. The other side of that is that an
-alert *inside* an open dialog cannot stop Escape reaching the dialog, whose
-dismiss stack listens in the capture phase — one keypress closes both.
+Escape answers only with focus inside the alert: an alert is not a layer, and
+one that swallowed the page's Escape would take it from the dialog or menu it
+sits in. While focus *is* inside it, though, it is a layer like any other — it
+joins the [dismiss stack](./primitives#dismissal-createdismiss) as focus
+enters and leaves it as focus goes. So an alert inside an open dialog is the
+topmost layer while the user is standing in it, and one press closes the alert
+and leaves the dialog open; once focus is back in the dialog, the next press
+is the dialog's.
 
 ### Empty state
 
@@ -928,18 +975,18 @@ What a collection says when it holds nothing.
 |---|---|
 | `collection` | The list, grid or table. Required. Keep it mounted when empty |
 | `region` | The empty state's own element, which is the live region |
-| `count` | `() => number`. Left out, items are counted from the DOM |
+| `count` | `() => number`. Left out, items are counted from the DOM, and nothing is called empty until they have been |
 | `itemAttribute` | The attribute marking an item, when counting from the DOM. Default `data-volt-item` |
 | `query` | `() => string` — the search or filter that produced the emptiness |
 | `loading` | `() => boolean`. An empty collection mid-load is not empty |
 | `announceDelay` | Override the region timing |
-| `labels.empty` | Default `Nothing here yet.` |
-| `labels.noResults` | `(query) => string`. Default `No results for “query”.` |
+| `labels.empty` | Default the locale's `emptyState`, or `Nothing here yet.` |
+| `labels.noResults` | `(query) => string`. Default the locale's `noResultsFor`, or `No results for “query”.` |
 
 | Member | Description |
 |---|---|
 | `isEmpty()` | Empty and finished loading |
-| `count()` | |
+| `count()` | How many items there are. Counted from the DOM, `0` until the DOM has been counted |
 | `status()` | `'loading'`, `'empty'` or `'filled'` |
 | `message()` | What to show and announce, or `''` |
 | `isMessageVisible()` | Whether it may be rendered yet |
@@ -982,6 +1029,14 @@ DOM, which costs a `MutationObserver` over the whole subtree and sees only
 elements carrying the item attribute — the one the package's collections use.
 Disabled items are counted: emptiness is about what is there, not what can be
 reached.
+
+Until that count has been taken the status is `'filled'`, not `'empty'`. Not
+yet counted is not the same as counted and found to be zero, and calling a
+list with rows in it empty is much the worse of the two mistakes — it is what
+a server render would otherwise do to every populated list. The count arrives
+with the page either way. `count()` has no such answer to give: it is `0`
+until then, so a count shown to the reader — "12 results" — wants the `count`
+option rather than the DOM's.
 
 "Nothing here yet" and "no results" are two messages because they call for two
 actions — create something, or search for something else — and a query that is
@@ -1047,8 +1102,8 @@ A placeholder standing in for content while it loads.
 | `delay` | Hold the placeholder back, in ms. Default `0` |
 | `minDuration` | Once up, keep it up at least this long, in ms. Default `0` |
 | `announceDelay` | Override the region timing |
-| `labels.loading` | Default `Loading…` |
-| `labels.loaded` | Default `Loaded`. `''` says nothing |
+| `labels.loading` | Default the locale's `loading` — `Loading…` |
+| `labels.loaded` | Default the locale's `loaded`, or `Loaded`. `''` says nothing |
 | `onLoadingChange` | Told each change `setLoading` makes |
 
 | Member | Description |
@@ -1094,17 +1149,16 @@ reachable by Tab and is nameless when it gets there. One "Loading…" in the
 status region replaces the wall. `aria-busy` goes on the content, never on the
 region, where it would mean "do not announce me".
 
-"Loaded" is said only after a load has actually started, so a page that was
-never loading does not announce a finish. The delay defaults to zero, unlike
-the spinner's, because a skeleton *is* the layout: delaying it shows a blank
-hole and then a jump, which is worse than the flash it would have avoided.
+The delay defaults to zero, unlike the spinner's, because a skeleton *is* the
+layout: delaying it shows a blank hole and then a jump, which is worse than the
+flash it would have avoided.
 
-**`delay` holds back the placeholder, not the words.** The message follows
-`loading` and the region's gate and nothing else, so a skeleton given a
-`delay` still says "Loading…" once the gate opens and "Loaded" when it ends,
-for a wait too short ever to have shown a placeholder. The spinner is the
-other way round: nothing is said while it waits out its delay. No test covers
-what a delayed skeleton says, so this is read from the source.
+**The words follow the placeholder.** Nothing is said while `delay` is being
+waited out, and a load that finishes inside it is neither shown nor mentioned:
+a wait too short to show is a wait too short to mention, which is the rule the
+spinner keeps too. It is also what makes "Loaded" true — a page that was never
+loading, or was loading for eighty milliseconds behind a `delay` of three
+hundred, does not announce the end of something nobody was told had begun.
 
 ### Spinner
 
@@ -1122,7 +1176,7 @@ A busy indicator that does not flash, and says what it is.
 | `delay` | Wait before showing anything, in ms. Default `500` |
 | `minDuration` | Once up, keep it up at least this long, in ms. Default `0` |
 | `announceDelay` | Override the region timing |
-| `labels.loading` | What the wait is called. Default `Loading…` |
+| `labels.loading` | What the wait is called. Default the locale's `loading` — `Loading…` |
 | `onLoadingChange` | Told each change `setLoading` makes |
 
 | Member | Description |
@@ -1187,7 +1241,7 @@ they are what `createChat` owns.
 |---|---|
 | The transcript, with each message's text as a signal of its own | Where messages come from and go — the network, persistence |
 | Streaming: `append` changes one text node, and the list does not re-render | The request that produces a reply, reading its stream, and turning it into `append` calls |
-| Following the conversation, the unread count, jump-to-latest | Paging older history in at the top — see [Messages](#messages); there is no prepend |
+| Following the conversation, the unread count, jump-to-latest | Fetching the older history `prepend` puts at the top — see [Messages](#messages) |
 | Windowing, through `createVirtualizer` with measurement on | Every pixel of the layout and all of the styling |
 | Author grouping, answered per row | Avatars, names, timestamps — their markup |
 | The composer's Enter, its growth, edit-and-resend | Attachments, mentions, slash commands, rich text, drafts that survive a reload |
@@ -1204,20 +1258,6 @@ different one. Turning a reply's text into parts is yours, and `addPart` and
 editing a message or regenerating a reply deletes every message after it,
 because leaving them in place would show a conversation that never happened.
 An application that wants to keep the old branch has to keep it itself.
-
-Some of the left-hand column is not finished, and each gap is described where
-it comes up:
-
-- a reply added as `typing` is never counted as unread, even once it has
-  arrived; `cancel` does not stop `append` writing; and `retry` cannot put a
-  reply back to waiting, so a failed reply is restarted with `regenerate` —
-  [Streaming a reply](#streaming-a-reply);
-- nothing keeps a focused message rendered, so scrolling it out of the window
-  drops focus on `<body>` — [Actions](#actions);
-- every code part is a tab stop whether or not it overflows, and a source
-  part with no `href` is spread as a link to "undefined" — [Parts](#parts);
-- a server renders the oldest messages rather than the newest —
-  [On a server](#on-a-server).
 
 ### Wiring it up
 
@@ -1270,9 +1310,9 @@ export class Room {
     onResend: (_message, text) => this.ask(text),
     // Already emptied and set typing; fetching the new reply is ours.
     onRegenerate: (reply) => void this.stream(reply, this.promptBefore(reply)),
-    // `retry` leaves a message idle, and only `regenerate` sets one waiting
-    // again. Only Ben's replies fail in this example.
-    onRetry: (reply) => this.chat.regenerate(reply.id),
+    // A reply that failed on its way is already emptied and waiting again, as
+    // a regenerated one is. Only Ben's replies fail in this example.
+    onRetry: (reply) => void this.stream(reply, this.promptBefore(reply)),
   });
 
   ask(text: string): void {
@@ -1288,21 +1328,20 @@ export class Room {
   async stream(reply: ChatMessage, prompt: string): Promise<void> {
     try {
       for await (const token of replyTokens(prompt)) {
-        // Stopped, or thrown away. `append` would write the token regardless.
-        const status = reply.status();
-        if (status !== 'typing' && status !== 'streaming') return;
+        // `append` drops tokens for a reply that was stopped; aborting the
+        // request in `onCancel` is what stops them being fetched at all.
         this.chat.append(reply.id, token);
       }
       this.chat.finish(reply.id);
     } catch {
+      // Also where an aborted request ends up. `fail` ignores a reply that
+      // was stopped, so a Stop is not reported as a failure.
       this.chat.fail(reply.id, 'The connection dropped');
     }
   }
 
   onLogKey(event: KeyboardEvent): void {
-    // A key the action toolbar already used has bubbled here; Home and End
-    // would otherwise also scroll the whole transcript.
-    if (!event.defaultPrevented && this.chat.onKeyDown(event)) event.preventDefault();
+    if (this.chat.onKeyDown(event)) event.preventDefault();
   }
 
   onActionKey(message: ChatMessage, event: KeyboardEvent): void {
@@ -1335,10 +1374,11 @@ and no end to follow.
 
 None of the keyboard handlers call `preventDefault`. The log's `onKeyDown` in
 particular must not be left without it, or the browser scrolls a second time on
-Page Down. And because the action toolbars sit inside the log, their keys reach
-the log's handler too: `onKeyDown` does not look at where a key came from, so
-the check on `defaultPrevented` above is what stops Home in a toolbar from also
-sending the reader to the first message.
+Page Down. It answers for a key pressed on the scroller itself and nothing has
+already prevented, which is what keeps the action toolbars — they sit inside
+the log, so their keys reach its handler on the way up — from sending the
+reader to the first message every time Home moves a toolbar to its first
+button.
 
 ### Options
 
@@ -1370,6 +1410,7 @@ sending the reader to the first message.
 | `rendered()` | The window to render: each row's `index`, `id`, `message`, `startsGroup`, `endsGroup` |
 | `add(input)` | Append a message and return it |
 | `setMessages(inputs)` | Replace the transcript, opening it at its end with nothing unread |
+| `prepend(inputs)` | Put older messages above the ones already here, holding the reader's place |
 
 A message input is `{ author, id?, name?, text?, timestamp?, streaming?,
 typing?, parts?, data? }`. `author` is an identity, not a display name —
@@ -1404,16 +1445,22 @@ cached against the message id rather than its position, and each row carries
 `aria-setsize` and `aria-posinset` for the whole transcript rather than the
 window.
 
-**Loading a conversation is supported; paging older history in is not.**
-`add` appends and `setMessages` replaces; `regenerate` and a resend only ever
-remove. `setMessages` rebuilds every message, is not announced — history is not
-news — forgets an edit in progress, and re-pins, so the view goes to the newest
-message. That is right for opening a conversation or switching to another. It
-is wrong for a reader who scrolled to the top to see more: calling
-`setMessages` with older messages in front keeps the measurements of every
-message whose `id` it is given again — they are keyed by id, and an input
-without one is given a fresh id and measured from scratch — but takes the
-reader to the bottom. There is no prepend that holds their place.
+**Opening a conversation and paging history into it are different calls.**
+`setMessages` rebuilds every message, is not announced — history is not news —
+forgets an edit in progress, and re-pins, so the view goes to the newest
+message in one move: a hold for history still on its way into the old
+conversation, or a smooth jump still travelling through it, is dropped with
+it. That is right for opening a conversation or switching to another, and
+wrong for a reader who scrolled to the top to see more.
+
+`prepend` is that reader's call. It adds the older messages above the ones
+already there and moves the view down by exactly the height they took, so the
+message being read stays under the eye rather than being pushed off the
+bottom of it. Nothing else moves: the pin, the unread count and an edit in
+progress are left as they were, and nothing is announced. A message whose `id`
+is already in the transcript is skipped, because pages of history overlap more
+often than not — and so is one whose `id` came earlier in the same page. The new messages start at `itemSize` and are corrected for as
+each is measured, the way any content growing above the viewport is.
 
 ### Streaming a reply
 
@@ -1421,9 +1468,9 @@ reader to the bottom. There is no prepend that holds their place.
 |---|---|
 | `append(id, token)` | Add to the last part's text. The first token turns `typing` into `streaming` |
 | `finish(id)` | A typing or streaming message is done — which is when it is announced |
-| `fail(id, error?)` | Status becomes `'error'`, and the reason is announced |
-| `cancel(id)` | Stop a typing or streaming message: it goes idle, and `onCancel` is called |
-| `retry(id)` | Clear a failure, go idle, and call `onRetry` |
+| `fail(id, error?)` | Status becomes `'error'`, and the reason is announced. Ignored for a message that was cancelled |
+| `cancel(id)` | Stop a typing or streaming message: it goes idle, whatever arrives for it later is dropped, and `onCancel` is called |
+| `retry(id)` | Clear a failure and call `onRetry`. A reply that failed arriving waits again, emptied; a message that failed once sent stays as it is |
 | `regenerate(id)` | Delete everything after the message, empty it, set it typing, call `onRegenerate` |
 | `statusText(message)` | "Ada is typing", "Ada is replying", the failure — or `''` |
 
@@ -1433,14 +1480,17 @@ transcript instead, each becomes a second thing to keep in step, and the one
 that drifts is always the indicator that never goes away.
 
 `add` with `typing: true` shows that a reply is coming before there is a token
-of it, and is not counted as unread — the count is of things there are to read.
-**Nothing counts it later, either.** Neither the first token nor `finish`
-touches the count, so a reply started as `typing` — the pattern in the example
-above — that arrives while the reader is scrolled up leaves `unreadCount()`
-where it was. The jump control still appears, since it follows the pin, but it
-is named "Jump to latest" rather than "1 new message". A message added with
-`streaming: true` is counted when it is added. The tests check that a typing
-message is not counted; none follows one through to its finish.
+of it, and is not counted as unread — the count is of things there are to read,
+and an indicator is not one. It is counted when it becomes one: on its first
+token, or on `finish` for a reply that arrives whole without ever streaming.
+So a reply asked for while the reader is scrolled up reaches them as "1 new
+message" rather than a bare "Jump to latest". A message added with
+`streaming: true` is counted when it is added.
+
+The count is of messages, not of arrivals. A reply that fails on its way and
+is retried, or is regenerated, arrives more than once, and while the reader is
+away it is still one message they have not read. Once they have caught up the
+count starts again, so the same reply arriving afresh after that is news.
 
 A streaming or typing message is not announced when it is added, only when it
 is finished: once per token would be an unusable stutter. `finish` will not
@@ -1448,18 +1498,23 @@ clear a failure, so a message that failed mid-stream keeps its retry. A
 cancelled message keeps whatever text had arrived and is not announced.
 `append` ignores an unknown id and an empty token.
 
-**`cancel` stops the message, not your request.** `append` checks the id and
-that the token is not empty, and not the status, so a token that arrives after
-`cancel` is still written into the cancelled message. Abort the request in `onCancel`, or check the status before
-each `append` as the example does.
+**`cancel` stops the message, not your request.** Whatever the request goes on
+sending for a cancelled reply is dropped: tokens — "Stop generating" that lets
+the words keep coming has stopped nothing the reader can see — parts from
+`addPart` and `setParts`, and the failure an aborted request ends in, so the
+`catch` that calls `fail` does not turn every Stop into "Ben's reply failed"
+with a retry button. The request itself is yours, and it is still running and
+still costing: abort it in `onCancel`. `regenerate`, a `retry` of a reply that
+failed on its way, and sending the message again after an edit each take it
+back.
 
-**`retry` does not restart a reply.** It clears the failure and leaves the
-message `idle` with whatever text it had, which suits a message the reader
-sent and the network refused. Nothing but `regenerate` puts a message back to
-`typing`, and `append` does not move an idle message to `streaming`, so a reply
-retried with `retry` alone would take new tokens on the end of the old ones
-and never be announced. The example's `onRetry` calls `regenerate`, which
-empties it and asks through `onRegenerate`.
+**`retry` asks for the same thing twice, and what that means depends on what
+failed.** A reply that failed on its way — `typing` or `streaming` when `fail`
+was called — is emptied and put back to `typing`, so the next attempt streams
+into a clean message rather than adding a second answer onto half of the
+first. A message the reader sent and the network refused keeps its text and
+goes back to `idle`: there is nothing to empty, and the text is what has to be
+sent again. Either way `onRetry` is where the request is made.
 
 ### Parts
 
@@ -1471,17 +1526,17 @@ and links are not on the list.
 | Kind | What `partProps(part)` makes of it |
 |---|---|
 | `text` | Nothing but `data-part` |
-| `code` | `role="group"` named `Code, ts`, `data-language`; its content gets `tabindex="0"`, since code scrolls sideways. Always, unlike [`createCode`](#code), which measures and adds the tab stop only while the block overflows — so every code part in the window is a Tab press, a one-line snippet included |
+| `code` | `role="group"` named `Code, ts`, `data-language`; its content gets `tabindex="0"` while it really scrolls sideways, measured as [`createCode`](#code) measures a block |
 | `quote` | `role="blockquote"` |
 | `reasoning` | `role="group"` named `Reasoning` or its `title`, `data-state`; closed unless `open: true` |
-| `source` | A name — `Source 2: Widgets` — and `href`, so it belongs on an `<a>` |
+| `source` | A name — `Source 2: Widgets` — and, when the part has one, `href`, so it belongs on an `<a>` |
 
 | Member | Description |
 |---|---|
-| `addPart(id, part)` | Give a message another part, and return it. Tokens then stream into it |
-| `setParts(id, parts)` | Replace a message's shape. An empty list makes it a plain message with no text |
+| `addPart(id, part)` | Give a message another part, and return it. Tokens then stream into it. `null` for an unknown or cancelled message |
+| `setParts(id, parts)` | Replace a message's shape. An empty list makes it a plain message with no text. Ignored for a cancelled message |
 | `partProps(part)` | The part's outer element, where its role and name live |
-| `partContentProps(part)` | The element holding its text: an `id`, `hidden` while folded, `tabindex="0"` on code |
+| `partContentProps(part)` | The element holding its text: an `id`, `hidden` while folded, `tabindex="0"` on code that scrolls |
 | `partToggleProps(part)` | The button that folds reasoning: `type="button"`, `aria-expanded`, `aria-controls`, `data-state` |
 | `partCopyProps(part)` | The button that copies a code block: `type="button"`, named `Copy code`, `data-state` from `copyStatus` |
 
@@ -1512,11 +1567,25 @@ leaving out reasoning and sources: reasoning is how the answer was reached and
 is usually folded away unread, and a citation's body is a URL. Its number and
 title are in its accessible name, which is where they belong.
 
-**Give every source an `href`.** `partProps` writes `href` whether or not the
-part has one, and `:spread` sets `href` on an `<a>` as a property, so a source
-without one is spread as `href="undefined"` — a link to a page called
-"undefined" beside the current one. A citation with nothing to point at
-belongs in a `<span>`.
+**A code part is a tab stop only while it scrolls.** A block that overflows
+sideways cannot be scrolled from the keyboard unless it can take focus; one
+that fits is an empty Tab press, and in a transcript that is dozens of them,
+one per one-line snippet. So the window's code parts are measured — one pair
+of observers for the whole transcript, not a pair per part, since parts come
+and go with the window — for the width they have and the width they need. A
+line that grows as it streams changes no box a `ResizeObserver` reports, so
+the content is watched too, and measured once a frame however many tokens the
+frame brought. The code elements are looked for when the window's rows change,
+not on every scroll frame, so scrolling within one window costs this nothing.
+Where there is no `ResizeObserver` the code is taken not to
+scroll, which leaves the tab stop out rather than adding a useless one.
+
+**A source with no `href` is spread without one.** `href` is a property of an
+`<a>`, and `:spread` sets a property to exactly what it is given, so writing
+it as `undefined` would make a link to a page called "undefined". A citation
+with nothing to point at is better in a `<span>` all the same: `partProps`
+still names it, but a link that goes nowhere is a link a keyboard user has to
+step over.
 
 ### Actions
 
@@ -1557,12 +1626,18 @@ between them is yours.
 **Tab walks the window, not the transcript.** Only rendered messages have
 toolbars in the DOM, so Tab visits the messages in and around the viewport
 and then leaves the log; the log's own keys are how a keyboard reader goes
-further. Nothing keeps a focused message rendered, either. Scroll it out of
-the window — with Page Down, or by the view following new messages while it
-is pinned — and the button holding focus is removed with its row, which
-leaves focus on `<body>`. A windowed tree moves focus with its window — see
-[collections](./primitives-collections#windowing-a-tree); the chat does not
-yet, and no test covers focus while the transcript scrolls.
+further.
+
+**Focus that a row takes with it comes back to the log.** Scroll a focused
+message out of the window — with Page Down, or by the view following new
+messages while it is pinned — and the button holding focus is removed with its
+row, which would leave focus on `<body>` and start the next Tab at the top of
+the page. The log takes it instead: it is a tab stop of its own, it is where
+the scrolling keys are heard, and it is still wherever the reader has got to,
+which no one message is. Focus the reader moved somewhere real is left where
+they put it. (A windowed tree keeps the focused row rendered instead — see
+[collections](./primitives-collections#windowing-a-tree) — which a transcript
+cannot do without holding a message outside the window it is drawing.)
 
 Only one copy is in flight at a time, because there is one clipboard; two
 messages copied in turn do not both show as copied.
@@ -1587,7 +1662,7 @@ movement.
 | Case | What happens |
 |---|---|
 | A message arrives while pinned | The view follows the new end — and again when the message is measured and turns out taller than guessed |
-| A message arrives while scrolled up | Nothing scrolls, and `unreadCount()` goes up by one — unless it was added as `typing`; see [Streaming a reply](#streaming-a-reply) |
+| A message arrives while scrolled up | Nothing scrolls, and `unreadCount()` goes up by one — once per message, and for a reply added as `typing`, when it starts arriving; see [Streaming a reply](#streaming-a-reply) |
 | The reader scrolls away | Following stops on that move, not after a timeout |
 | The reader scrolls back within `bottomThreshold` | Following resumes and the count clears; there is nothing to press |
 | Content above the viewport grows | The virtualizer compensates so the view stays on what was being read; the pin is untouched |
@@ -1595,20 +1670,20 @@ movement.
 `logProps()` turns the browser's own scroll anchoring off, so it and the
 virtualizer do not both correct the same shift. Nothing else touches the pin
 except `jumpToLatest` and `setMessages`, which opens a conversation at its end
-with nothing unread. `bottomThreshold` defaults to 32 px rather than zero
+with nothing unread; `prepend` deliberately leaves it alone. `bottomThreshold` defaults to 32 px rather than zero
 because fractional layout and zoom leave a reader who is visibly at the bottom
 a fraction of a pixel short, and a chat that unpins there stops following for
 no reason anyone can see; it is not larger because a reader who scrolled up
 one line would be dragged back down. Both ends are yours to choose — nothing
 refuses a zero.
 
-Because the pin follows every reported offset, a jump with `behavior:
-'smooth'` works against it: each frame of the animation further than
-`bottomThreshold` from the end is a move away from it, so the view is unpinned
-until the animation lands — `onPinnedChange` told `false`, and the jump
-control back on screen meanwhile. A message that arrives during the animation
-is counted as unread and moves the end, so the jump can land short of it and
-stay unpinned. The tests jump with the default, which lands in one move.
+A jump with `behavior: 'smooth'` arrives as a run of ordinary scroll events,
+nearly all of them far from the end, and read like any other move its first
+frame would let go of the pin the jump itself just set. So a smooth jump is
+remembered while it is on its way: its frames do not release the pin, and a
+message arriving mid-flight moves the end and the jump is aimed again rather
+than cut short by an instant one. A frame that goes the other way is the
+reader taking over, and from then on a move is a move again.
 
 ### The composer
 
@@ -1656,7 +1731,7 @@ document's shared polite announcer — one sentence per message that arrived,
 `Ada: hello` by default — and never assertively, because a conversation that
 cuts the reader off every time somebody types is worse than one that says
 nothing. A failure is said the same way, through `labels.failed`. History
-loaded with `setMessages` is not announced.
+loaded with `setMessages` or `prepend` is not announced.
 
 Every message `add` receives in the `idle` state is said, the reader's own
 included: `self` is read only by the default actions, so in the example above
@@ -1667,21 +1742,25 @@ your own calls to the [shared announcer](./primitives#announcements-announce).
 
 ### Labels
 
-| Label | Default |
+Each default is the locale provider's word when its catalogue declares the key
+beside it, and the English otherwise — see [Before you start](#before-you-start).
+None of them are the library's own keys.
+
+| Label | Catalogue key, then the English |
 |---|---|
-| `log` | `Messages` |
-| `composer` | `Message` |
-| `jumpToLatest(unread)` | `Jump to latest`, `1 new message`, `3 new messages` |
+| `log` | `chatLog` — `Messages` |
+| `composer` | `chatComposer` — `Message` |
+| `jumpToLatest(unread)` | `chatJumpToLatest` — `Jump to latest`; with some unread, `chatNewMessages` with `{n}`, which can be a plural record — `1 new message`, `3 new messages` |
 | `messageArrived(message)` | `Ada: hello` |
-| `actions` | `Copy message`, `Edit and resend`, `Regenerate reply`, `Try again`, `Stop generating` |
-| `actionGroup(message)` | `Message actions` |
-| `typing(message)` | `Ada is typing` |
-| `generating(message)` | `Ada is replying` |
-| `failed(message, error)` | `Ada: rate limited`, or `Ada's message could not be sent` |
-| `codeBlock(language)` | `Code, ts`, or `Code` |
-| `copyCode` | `Copy code` |
-| `reasoning(title)` | The title, or `Reasoning` |
-| `source(ordinal, title)` | `Source 2: Widgets`, or `Source 2` |
+| `actions` | `chatCopy`, `chatEdit`, `chatRegenerate`, `chatRetry`, `chatCancel` — `Copy message`, `Edit and resend`, `Regenerate reply`, `Try again`, `Stop generating` |
+| `actionGroup(message)` | `chatActions` — `Message actions` |
+| `typing(message)` | `chatTyping` with `{name}` — `Ada is typing`; with no name, `chatTypingNoName` — `Typing` |
+| `generating(message)` | `chatReplying` with `{name}` — `Ada is replying`; with no name, `chatReplyingNoName` — `Replying` |
+| `failed(message, error)` | `Ada: rate limited`; with no reason, `chatNotSent` with `{name}` — `Ada's message could not be sent` — or `chatNotSentNoName` — `Message could not be sent` |
+| `codeBlock(language)` | `codeBlockLanguage` with `{language}` — `Code, ts`; with none, `codeBlock` — `Code`. The keys [`createCode`](#code) uses |
+| `copyCode` | `chatCopyCode` — `Copy code` |
+| `reasoning(title)` | The title, or `chatReasoning` — `Reasoning` |
+| `source(ordinal, title)` | `chatSourceTitled` with `{n}` and `{title}` — `Source 2: Widgets` — or `chatSource` with `{n}` — `Source 2` |
 
 The jump control's name carries the count because that is the only place a
 screen reader user can hear it: a "3" drawn beside the button is invisible to
@@ -1730,11 +1809,11 @@ they start from, not where they end up:
 | Avatar, Image | `data-status="idle"` whatever the source; the load is watched once the page attaches |
 | Alert, Empty state, Skeleton, Spinner, given a `region` | The region, empty. The gate opens only in a browser, so the words arrive after the page attaches |
 | Skeleton, Spinner | No placeholder or graphic — deferred visibility never turns on |
-| Empty state without `count` | A count of zero, because the DOM count is taken by an effect — so a full list is written with `data-empty` and an `aria-describedby` pointing at the empty region until the page attaches. Pass `count` |
+| Empty state without `count` | Nothing: the DOM count is taken by an effect, and until it has been the collection is not called empty. `data-status="filled"` and no message. Pass `count` to write the real answer |
 | Code | Never scrollable, so no tab stop and no region |
 | Keyboard shortcut | The `other` symbols, unless `platform` is passed |
 | Relative time | The text as of the render; the page rewrites it when it attaches |
-| Chat | The *oldest* messages — the first and its overscan — because a server has no viewport and does not run the effect that follows the end. The view moves to the newest once the page attaches. Nothing is announced |
+| Chat | The newest messages — as many as the window holds, ending at the last one — because a conversation opens at its end and that is where the reader is about to be. A server has no viewport to work a window out against, so the count comes from the overscan. Nothing is announced |
 
 The badge, progress bar, separator and chip compute their props directly and
 write the same thing on both sides.

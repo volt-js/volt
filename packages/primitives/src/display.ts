@@ -15,6 +15,7 @@
  */
 
 import { Signal, effect, onCleanup } from '@voltdev/core';
+import { useLocale } from './i18n.js';
 
 // The proposal's own name for reading without subscribing; Volt adds no second
 // spelling for it.
@@ -309,8 +310,8 @@ export type ProgressState = 'indeterminate' | 'loading' | 'complete';
 
 export interface ProgressLabels {
   /**
-   * Announced in place of a value while the total is unknown. Set to '' to say
-   * nothing at all.
+   * Announced in place of a value while the total is unknown. Default the
+   * locale's `loading` — `Loading…`. Set to '' to say nothing at all.
    */
   indeterminate?: string;
 }
@@ -388,7 +389,10 @@ export function createProgress(options: ProgressOptions = {}): Progress {
   const state = options.value ?? new Signal.State<number | null>(options.defaultValue ?? null);
   const min = options.min ?? 0;
   const max = options.max ?? 100;
-  const indeterminateLabel = options.labels?.indeterminate ?? 'Loading…';
+  const locale = useLocale();
+  // Read on every call rather than once, so a catalogue swapped later reaches
+  // a bar already on screen.
+  const indeterminateLabel = (): string => options.labels?.indeterminate ?? locale.t('loading');
 
   const value = (): number | null => {
     const raw = state.get();
@@ -415,7 +419,7 @@ export function createProgress(options: ProgressOptions = {}): Progress {
 
   const valueText = (): string | undefined => {
     const current = value();
-    if (current === null) return indeterminateLabel || undefined;
+    if (current === null) return indeterminateLabel() || undefined;
     const text = options.valueText?.(current, percent() ?? 0);
     return text || undefined;
   };
@@ -493,8 +497,15 @@ export type VisuallyHiddenStyle = Readonly<Record<string, string>>;
  * mattering it can go. `white-space: nowrap` stops a long string being wrapped
  * into a 1px-wide column, which some screen readers read a line at a time.
  *
- *   <span :style="visuallyHidden()">Sort ascending</span>
- *   <span :spread="{ style: visuallyHidden() }">…</span>
+ *   class SortButton {
+ *     hidden = visuallyHidden();
+ *   }
+ *
+ *   <span :style="hidden">Sort ascending</span>
+ *
+ * A template resolves its names against the component, so the style is held
+ * in a field rather than called from the markup, where `visuallyHidden` is not
+ * a name the template can see.
  *
  * The object is frozen and shared: it is a constant, and nothing should be
  * mutating a style that other elements are using.
@@ -536,6 +547,7 @@ export interface SeparatorResizeOptions {
    * by default, given the 0–100 range.
    */
   value?: Signal.State<number>;
+  /** Starting size when the separator owns it. Default 50. */
   defaultValue?: number;
   /** Default 0. */
   min?: number;
@@ -586,7 +598,11 @@ export interface Separator {
   value(): number | null;
   /** Set the size, clamped to the range. Ignored on a non-resizing separator. */
   setValue(value: number): void;
-  /** Handle a keydown. Returns true when it was consumed. */
+  /**
+   * Handle a keydown. Returns true when it was consumed, and the caller then
+   * has to prevent the default, or the browser scrolls the page for the same
+   * arrow, Home or End as well.
+   */
   onKeyDown(event: KeyboardEvent): boolean;
 
   separatorProps(): SeparatorProps;
@@ -598,7 +614,11 @@ export interface Separator {
  *   <hr :spread="separator.separatorProps()">
  *
  *   <div :spread="splitter.separatorProps()"
- *        :keydown="splitter.onKeyDown($event)"></div>
+ *        :keydown="splitter.onKeyDown($event) && $event.preventDefault()"></div>
+ *
+ * `onKeyDown` says whether it consumed the key and leaves the default to the
+ * caller, which has to prevent it: the arrows, Home and End it consumes would
+ * otherwise scroll the page as well.
  *
  * Decorative is the default because that is what nearly every separator is: a
  * rule between two menu groups tells a screen reader nothing the grouping has

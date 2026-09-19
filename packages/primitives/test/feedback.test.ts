@@ -28,6 +28,8 @@ import {
   type SkeletonOptions,
   type SpinnerOptions,
 } from '../src/feedback.ts';
+import { createLocaleProvider } from '../src/i18n.ts';
+import { createDismiss } from '../src/dismiss.ts';
 
 let host: HTMLElement;
 let mounted: { unmount(): void }[] = [];
@@ -349,8 +351,107 @@ describe('alert: dismissing', () => {
     raise().click();
     advance(50);
 
+    // A key press comes from wherever focus is, so focus goes in first — a
+    // separate task from the press, as it always is in a browser.
+    dismiss().focus();
+    flushSync();
     key(dismiss(), 'Escape');
     expect(region()).toBeNull();
+  });
+
+  it('closes only itself on Escape when it sits inside an open dialog', () => {
+    @Component({
+      selector: 'v-dialog-alert',
+      render: compileTemplate(`
+        <div class="dialog" :ref="dialog">
+          <input class="field">
+          <div class="region" :ref="region" :spread="alert.rootProps()">
+            <p :if="alert.isMessageVisible()" :spread="alert.messageProps()">
+              Could not save
+              <button class="dismiss" :spread="alert.dismissProps()">x</button>
+            </p>
+          </div>
+        </div>
+      `),
+    })
+    class DialogWithAlert {
+      dialog = new Signal.State<Element | null>(null);
+      region = new Signal.State<Element | null>(null);
+      dialogOpen = new Signal.State(true);
+      // The layer a dialog registers, from the stack every overlay shares.
+      layer = createDismiss(
+        () => this.dialog.get(),
+        () => this.dialogOpen.set(false),
+        { outsidePointer: false },
+      );
+      alert = createAlert({ region: () => this.region.get(), defaultOpen: true });
+    }
+
+    const handle = track(mount(DialogWithAlert, host));
+    const instance = handle.instance as DialogWithAlert;
+    advance(50);
+
+    const field = host.querySelector('.field') as HTMLInputElement;
+    field.focus();
+    const dismiss = host.querySelector('.dismiss') as HTMLElement;
+    dismiss.focus();
+    flushSync();
+
+    // One press, one layer: the alert the reader is standing in goes, and the
+    // dialog around it stays.
+    key(dismiss, 'Escape');
+    expect(instance.alert.isOpen()).toBe(false);
+    expect(instance.dialogOpen.get()).toBe(true);
+    expect(document.activeElement).toBe(field);
+
+    // With focus back in the dialog, the next press is the dialog's.
+    key(field, 'Escape');
+    expect(instance.dialogOpen.get()).toBe(false);
+  });
+
+  it('leaves a press outside to the dialog it sits in, while focus is in the alert', () => {
+    @Component({
+      selector: 'v-dialog-alert-press',
+      render: compileTemplate(`
+        <div>
+          <div class="dialog" :ref="dialog">
+            <div class="region" :ref="region" :spread="alert.rootProps()">
+              <p :if="alert.isMessageVisible()" :spread="alert.messageProps()">
+                Could not save
+                <button class="dismiss" :spread="alert.dismissProps()">x</button>
+              </p>
+            </div>
+          </div>
+          <div class="page">the page behind the dialog</div>
+        </div>
+      `),
+    })
+    class LightDialogWithAlert {
+      dialog = new Signal.State<Element | null>(null);
+      region = new Signal.State<Element | null>(null);
+      dialogOpen = new Signal.State(true);
+      // A dialog that closes when the page behind it is pressed.
+      layer = createDismiss(
+        () => this.dialog.get(),
+        () => this.dialogOpen.set(false),
+      );
+      alert = createAlert({ region: () => this.region.get(), defaultOpen: true });
+    }
+
+    const handle = track(mount(LightDialogWithAlert, host));
+    const instance = handle.instance as LightDialogWithAlert;
+    advance(50);
+    (host.querySelector('.dismiss') as HTMLElement).focus();
+    flushSync();
+
+    // The alert is on the stack while focus is in it, for Escape alone. A
+    // press is not its to take, so the one beneath still hears it.
+    const page = host.querySelector('.page') as HTMLElement;
+    page.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    page.dispatchEvent(new Event('pointerup', { bubbles: true }));
+    flushSync();
+    expect(instance.dialogOpen.get()).toBe(false);
+    expect(instance.alert.isOpen()).toBe(true);
   });
 
   it('does not take Escape from the rest of the page', () => {
@@ -369,6 +470,8 @@ describe('alert: dismissing', () => {
     raise().click();
     advance(50);
 
+    dismiss().focus();
+    flushSync();
     key(dismiss(), 'Escape');
     expect(region()).not.toBeNull();
   });
@@ -444,7 +547,7 @@ let skeletonOptions: Omit<SkeletonOptions, 'region'> = {};
           <span class="line"></span>
           <a class="deep" href="#x">focusable</a>
         </div>
-        <p class="real" :if="skeleton.isLoaded()">the article</p>
+        <p class="real" :if="isLoaded()">the article</p>
       </div>
       <div class="status" :ref="region" :spread="skeleton.statusProps()">
         <span class="message" :if="skeleton.isMessageVisible()"
@@ -600,6 +703,42 @@ describe('skeleton: when the placeholder is worth showing', () => {
     advance(1000);
     expect(placeholder()).toBeNull();
     expect(skeleton.state()).toBe('idle');
+  });
+
+  it('says nothing about a wait too short to have shown', () => {
+    const { skeleton, message } = setupSkeleton({ defaultLoading: true, delay: 300 });
+    advance(100);
+    // The placeholder is being held back, so the words are too: a wait too
+    // short to show is a wait too short to mention.
+    expect(skeleton.message()).toBe('');
+    expect(message()).toBeNull();
+
+    skeleton.setLoading(false);
+    advance(1000);
+    // And no "Loaded" about a load nobody was shown.
+    expect(skeleton.message()).toBe('');
+    expect(message()).toBeNull();
+  });
+
+  it('speaks once the placeholder is up, and again when it is done', () => {
+    const { skeleton, message } = setupSkeleton({ defaultLoading: true, delay: 300 });
+    advance(300);
+    expect(skeleton.isVisible()).toBe(true);
+    advance(50);
+    expect(message()!.textContent).toBe('Loading…');
+
+    skeleton.setLoading(false);
+    flushSync();
+    expect(message()!.textContent).toBe('Loaded');
+
+    // A second wait, too short to show, says nothing — not even a repeat of
+    // the "Loaded" the first one earned.
+    skeleton.setLoading(true);
+    advance(100);
+    expect(message()).toBeNull();
+    skeleton.setLoading(false);
+    advance(1000);
+    expect(message()).toBeNull();
   });
 
   it('reports the wait it is sitting out, on the elements as well', () => {
@@ -1157,5 +1296,74 @@ describe('createDeferredVisibility', () => {
     instance.active.set(false);
     flushSync();
     expect(instance.visibility.state()).toBe('idle');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Words from the locale
+// ---------------------------------------------------------------------------
+
+describe('the words each component says by default', () => {
+  @Component({
+    selector: 'v-feedback-de',
+    render: compileTemplate(`
+      <div>
+        <div class="alert" :ref="region" :spread="alert.rootProps()">
+          <button class="dismiss" :spread="alert.dismissProps()">x</button>
+        </div>
+        <ul :ref="list"></ul>
+      </div>
+    `),
+  })
+  class German {
+    locale = createLocaleProvider({
+      defaultLocale: 'de-DE',
+      messages: {
+        dismiss: 'Schließen',
+        loading: 'Wird geladen…',
+        loaded: 'Geladen',
+        emptyState: 'Noch nichts hier.',
+        noResultsFor: 'Keine Treffer für „{query}“.',
+      },
+    });
+    region = new Signal.State<Element | null>(null);
+    list = new Signal.State<Element | null>(null);
+    query = new Signal.State('');
+    alert = createAlert({ region: () => this.region.get(), defaultOpen: true });
+    skeleton = createSkeleton({ defaultLoading: true });
+    spinner = createSpinner();
+    empty = createEmptyState({
+      collection: () => this.list.get(),
+      count: () => 0,
+      query: () => this.query.get(),
+    });
+  }
+
+  it('comes from the locale provider when it has them', () => {
+    const handle = track(mount(German, host));
+    const instance = handle.instance as German;
+    flushSync();
+
+    // A provider that translates the page should not leave the alert's
+    // dismiss control, the loading words and the empty state in English.
+    expect(host.querySelector('.dismiss')!.getAttribute('aria-label')).toBe('Schließen');
+    expect(instance.spinner.label()).toBe('Wird geladen…');
+    expect(instance.skeleton.message()).toBe('Wird geladen…');
+    expect(instance.empty.message()).toBe('Noch nichts hier.');
+
+    instance.query.set('Ada');
+    expect(instance.empty.message()).toBe('Keine Treffer für „Ada“.');
+
+    instance.skeleton.setLoading(false);
+    flushSync();
+    expect(instance.skeleton.message()).toBe('Geladen');
+  });
+
+  it('keeps the English for anything the catalogue leaves out', () => {
+    const { alert, dismiss, raise } = setupAlert();
+    raise().click();
+    advance(50);
+    expect(dismiss().getAttribute('aria-label')).toBe('Dismiss');
+    expect(alert.isOpen()).toBe(true);
   });
 });

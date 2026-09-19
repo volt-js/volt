@@ -15,7 +15,8 @@
  *     scroller = new Signal.State<Element | null>(null);
  *     list = new Signal.State<Element | null>(null);
  *     composer = new Signal.State<Element | null>(null);
- *     chat = createChat({
+ *     // Annotated, because `onSend` refers to the field it initialises.
+ *     chat: Chat = createChat({
  *       scroller: () => this.scroller.get(),
  *       container: () => this.list.get(),
  *       composer: () => this.composer.get(),
@@ -23,7 +24,8 @@
  *     });
  *   }
  *
- *   <div :ref="scroller" :spread="chat.logProps()" :keydown="chat.onKeyDown($event)">
+ *   <div :ref="scroller" :spread="chat.logProps()"
+ *        :keydown="chat.onKeyDown($event) && $event.preventDefault()">
  *     <div :spread="chat.sizerProps()">
  *       <div :ref="list" :spread="chat.containerProps()">
  *         <div :for="row in chat.rendered()" :key="row.id"
@@ -59,8 +61,9 @@
  * **Windowing is `createVirtualizer`**, with measurement on, because no
  * message has a knowable height: a one-word reply and a twenty-line one are
  * the same kind of thing. Measurements are cached against the message id, so
- * loading older history at the top does not throw away what is already known
- * about the rest.
+ * `prepend` does not throw away what is already known about the rest of the
+ * transcript — and it moves the view down by the height of what it added, so
+ * the reader who asked for the history stays on what they were reading.
  *
  * **A message's parts are its shape, not its rendering.** A reply is rarely
  * one run of prose: it has code in it, a passage it is quoting, reasoning the
@@ -83,9 +86,10 @@
  * most worth reading before using this.
  */
 
-import { Signal, effect } from '@voltdev/core';
+import { Signal, effect, measureEffect, onCleanup } from '@voltdev/core';
 import { announce } from './announcer.js';
 import { createClipboard, type CopyStatus } from './clipboard.js';
+import { useLocale, type Locale, type MessageValues } from './i18n.js';
 import { createId } from './id.js';
 import {
   createVirtualizer,
@@ -142,7 +146,8 @@ export interface ChatMessageInput<T = unknown> {
   streaming?: boolean;
   /**
    * A reply is on its way and none of it has arrived — the typing indicator.
-   * The first token turns it into a streaming message on its own.
+   * The first token turns it into a streaming message on its own, and that is
+   * also when it counts as unread: an indicator is not something to read.
    */
   typing?: boolean;
   /**
@@ -265,16 +270,25 @@ export interface ChatRow<T = unknown> {
   readonly endsGroup: boolean;
 }
 
+/**
+ * Every word a chat says, each overriding a default.
+ *
+ * A default is the locale provider's word where its catalogue declares the
+ * key named beside it, and English otherwise. None of these keys are the
+ * library's own, so a catalogue is not asked to carry them; a `{name}`,
+ * `{language}`, `{title}` or `{n}` in one is filled in.
+ */
 export interface ChatLabels<T = unknown> {
-  /** Names the transcript. Default `Messages`. */
+  /** Names the transcript. Default `chatLog`, `Messages`. */
   log?: string;
-  /** Names the composer. Default `Message`. */
+  /** Names the composer. Default `chatComposer`, `Message`. */
   composer?: string;
   /**
    * The jump-to-latest control, given how many messages arrived unseen.
-   * Default `Jump to latest` when none, `3 new messages` when some — the count
-   * has to be in the name, because it is the only place a screen-reader user
-   * can hear it.
+   * Default `chatJumpToLatest`, `Jump to latest`, when none, and
+   * `chatNewMessages` with the count as `{n}`, `3 new messages`, when some —
+   * the count has to be in the name, because it is the only place a
+   * screen-reader user can hear it.
    */
   jumpToLatest?: (unread: number) => string;
   /**
@@ -286,25 +300,39 @@ export interface ChatLabels<T = unknown> {
   /**
    * Names each action button. A name is required rather than an icon's title,
    * because an icon-only button with no name is a button that says "button".
+   * Default `chatCopy`, `chatEdit`, `chatRegenerate`, `chatRetry` and
+   * `chatCancel`: `Copy message`, `Edit and resend`, `Regenerate reply`,
+   * `Try again` and `Stop generating`.
    */
   actions?: Partial<Record<ChatActionName, string>>;
-  /** Names the group the actions sit in. Default `Message actions`. */
+  /** Names the group the actions sit in. Default `chatActions`, `Message actions`. */
   actionGroup?: (message: ChatMessage<T>) => string;
 
-  /** Default `Ada is typing`. */
+  /** Default `chatTyping`, `Ada is typing`, or `chatTypingNoName`, `Typing`. */
   typing?: (message: ChatMessage<T>) => string;
-  /** Default `Ada is replying`. */
+  /** Default `chatReplying`, `Ada is replying`, or `chatReplyingNoName`, `Replying`. */
   generating?: (message: ChatMessage<T>) => string;
-  /** Default `Ada: message failed`, or the reason when there is one. */
+  /**
+   * Default `Ada: rate limited` when there is a reason, and otherwise
+   * `chatNotSent`, `Ada's message could not be sent`, or `chatNotSentNoName`,
+   * `Message could not be sent`.
+   */
   failed?: (message: ChatMessage<T>, error: string) => string;
 
-  /** Names a code block, given whatever the consumer called the language. */
+  /**
+   * Names a code block, given whatever the consumer called the language.
+   * Default `codeBlockLanguage`, `Code, TypeScript`, or `codeBlock`, `Code` —
+   * the keys and the words `createCode` uses.
+   */
   codeBlock?: (language: string | undefined) => string;
-  /** Names the button that copies one. Default `Copy code`. */
+  /** Names the button that copies one. Default `chatCopyCode`, `Copy code`. */
   copyCode?: string;
-  /** Names a run of collapsible reasoning. Default `Reasoning`. */
+  /** Names a run of collapsible reasoning. Default its title, or `chatReasoning`, `Reasoning`. */
   reasoning?: (title: string | undefined) => string;
-  /** Names a citation, given its number within the message. */
+  /**
+   * Names a citation, given its number within the message. Default
+   * `chatSourceTitled`, `Source 2: Widgets`, or `chatSource`, `Source 2`.
+   */
   source?: (ordinal: number, title: string | undefined) => string;
 }
 
@@ -409,18 +437,36 @@ export interface Chat<T = unknown> {
   finish(id: string): void;
   /** It went wrong. The status becomes `error` and the reason is announced. */
   fail(id: string, error?: string): void;
-  /** Stop a generation that is under way. */
+  /**
+   * Stop a generation that is under way. Whatever arrives for it afterwards —
+   * tokens, parts, the failure an aborted request ends in — is dropped.
+   */
   cancel(id: string): void;
-  /** Clear a failure and ask for the message again. */
+  /**
+   * Clear a failure and ask for the message again. A reply that failed on its
+   * way goes back to waiting, emptied; a message that failed once sent keeps
+   * its text and goes back to idle.
+   */
   retry(id: string): void;
   /** Throw a reply away and ask for another in its place. */
   regenerate(id: string): void;
-  /** Give a message another part, streaming a structured reply. */
+  /**
+   * Give a message another part, streaming a structured reply. Null when there
+   * is no such message, or it was stopped.
+   */
   addPart(id: string, part: ChatPartInput): ChatPart | null;
   /** Replace a message's shape. */
   setParts(id: string, parts: readonly ChatPartInput[]): void;
-  /** Replace the transcript — loading history, or changing conversation. */
+  /** Replace the transcript — opening a conversation, or changing to another. */
   setMessages(inputs: readonly ChatMessageInput<T>[]): void;
+  /**
+   * Put older messages above the ones already here — history paged in as the
+   * reader scrolls up — and hold the reader on what they were reading. Not
+   * announced, and the pin, the unread count and an edit in progress stay as
+   * they were. A message whose id is already in the transcript is left where
+   * it is.
+   */
+  prepend(inputs: readonly ChatMessageInput<T>[]): void;
 
   /** Whether new content will be followed. */
   isPinned(): boolean;
@@ -461,7 +507,11 @@ export interface Chat<T = unknown> {
   /** What to show for a message's state. Empty when there is nothing to say. */
   statusText(message: ChatMessage<T>): string;
 
-  /** Scrolling keys for the transcript. Returns true when it consumed one. */
+  /**
+   * Scrolling keys for the transcript. Returns true when it consumed one, and
+   * the caller then has to prevent the default, or the browser scrolls for the
+   * same key as well.
+   */
   onKeyDown(event: KeyboardEvent): boolean;
   /** Enter sends, Shift+Enter does not. Returns true when it consumed the key. */
   onComposerKeyDown(event: KeyboardEvent): boolean;
@@ -492,6 +542,8 @@ export interface Chat<T = unknown> {
 interface PartEntry extends ChatPart {
   readonly body: Signal.State<string>;
   readonly unfolded: Signal.State<boolean>;
+  /** Whether a code part's content is wider than its box, as last measured. */
+  readonly scrolls: Signal.State<boolean>;
 }
 
 /** The writable half of a message, which never leaves this module. */
@@ -507,6 +559,17 @@ interface Entry<T> extends ChatMessage<T> {
    * that has to fire.
    */
   structured: boolean;
+  /**
+   * Stopped mid-reply, so whatever the request behind it still sends — a
+   * token, a part, the failure an aborted request ends in — has nowhere to go.
+   * Cleared when the message is asked for or sent again.
+   */
+  stopped: boolean;
+  /**
+   * Whether the failure came while the reply was on its way rather than after
+   * the message was sent, which decides what `retry` puts it back to.
+   */
+  failedArriving: boolean;
 }
 
 /**
@@ -538,6 +601,7 @@ function createPart(
     title: input.title,
     body,
     unfolded,
+    scrolls: new Signal.State(false),
     text: () => body.get(),
     isOpen: () => unfolded.get(),
     toggle: (open) => unfolded.set(open ?? !untrack(() => unfolded.get())),
@@ -588,7 +652,9 @@ function joinParts(parts: readonly PartEntry[]): string {
  * following stops on that move rather than after a timeout; back within it,
  * they have returned, and following resumes and the unread count clears.
  * Nothing else touches the pin except `jumpToLatest` and a change of
- * conversation.
+ * conversation; `prepend` moves the view without touching it, because history
+ * arriving above the reader says nothing about whether they want to follow the
+ * end.
  *
  * The four cases that matter, and what each does:
  *
@@ -614,39 +680,59 @@ function joinParts(parts: readonly PartEntry[]): string {
 export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
   const threshold = options.bottomThreshold ?? DEFAULT_BOTTOM_THRESHOLD;
   const composerRows = options.rows ?? DEFAULT_COMPOSER_ROWS;
+  const locale = useLocale();
+  const given = options.labels;
+  // Functions all, even where the consumer's label is a plain string: a
+  // default is read from the catalogue each time it is asked for.
   const labels = {
-    log: options.labels?.log ?? 'Messages',
-    composer: options.labels?.composer ?? 'Message',
-    jumpToLatest: options.labels?.jumpToLatest ?? defaultJumpLabel,
+    log: (): string => given?.log ?? word(locale, 'chatLog', 'Messages'),
+    composer: (): string => given?.composer ?? word(locale, 'chatComposer', 'Message'),
+    jumpToLatest:
+      given?.jumpToLatest ?? ((unread: number): string => defaultJumpLabel(locale, unread)),
     messageArrived:
-      options.labels?.messageArrived ??
+      given?.messageArrived ??
       ((message: ChatMessage<T>): string =>
         message.name === '' ? message.text() : `${message.name}: ${message.text()}`),
-    actions: { ...DEFAULT_ACTION_LABELS, ...options.labels?.actions },
-    actionGroup: options.labels?.actionGroup ?? ((): string => 'Message actions'),
+    action: (action: ChatActionName): string => {
+      const [key, english] = DEFAULT_ACTION_LABELS[action];
+      return given?.actions?.[action] ?? word(locale, key, english);
+    },
+    actionGroup:
+      given?.actionGroup ?? ((): string => word(locale, 'chatActions', 'Message actions')),
     typing:
-      options.labels?.typing ??
+      given?.typing ??
       ((message: ChatMessage<T>): string =>
-        message.name === '' ? 'Typing' : `${message.name} is typing`),
+        message.name === ''
+          ? word(locale, 'chatTypingNoName', 'Typing')
+          : word(locale, 'chatTyping', `${message.name} is typing`, { name: message.name })),
     generating:
-      options.labels?.generating ??
+      given?.generating ??
       ((message: ChatMessage<T>): string =>
-        message.name === '' ? 'Replying' : `${message.name} is replying`),
+        message.name === ''
+          ? word(locale, 'chatReplyingNoName', 'Replying')
+          : word(locale, 'chatReplying', `${message.name} is replying`, { name: message.name })),
     failed:
-      options.labels?.failed ??
+      given?.failed ??
       ((message: ChatMessage<T>, error: string): string =>
-        defaultFailedLabel(message.name, error)),
+        defaultFailedLabel(locale, message.name, error)),
     codeBlock:
-      options.labels?.codeBlock ??
+      given?.codeBlock ??
       ((language: string | undefined): string =>
-        language === undefined ? 'Code' : `Code, ${language}`),
-    copyCode: options.labels?.copyCode ?? 'Copy code',
+        // The keys `createCode` names a block by, so that one block of code is
+        // not called two things on one page.
+        language === undefined
+          ? word(locale, 'codeBlock', 'Code')
+          : word(locale, 'codeBlockLanguage', `Code, ${language}`, { language })),
+    copyCode: (): string => given?.copyCode ?? word(locale, 'chatCopyCode', 'Copy code'),
     reasoning:
-      options.labels?.reasoning ?? ((title: string | undefined): string => title ?? 'Reasoning'),
+      given?.reasoning ??
+      ((title: string | undefined): string => title ?? word(locale, 'chatReasoning', 'Reasoning')),
     source:
-      options.labels?.source ??
+      given?.source ??
       ((ordinal: number, title: string | undefined): string =>
-        title === undefined ? `Source ${ordinal}` : `Source ${ordinal}: ${title}`),
+        title === undefined
+          ? word(locale, 'chatSource', `Source ${ordinal}`, { n: ordinal })
+          : word(locale, 'chatSourceTitled', `Source ${ordinal}: ${title}`, { n: ordinal, title })),
   };
 
   const messages = new Signal.State<readonly ChatMessage<T>[]>([]);
@@ -655,6 +741,13 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
 
   const pinned = new Signal.State(true);
   const unread = new Signal.State(0);
+  /**
+   * The messages `unread` is counting. A reply can arrive more than once — it
+   * failed on its way and was retried, or it was regenerated — and while the
+   * reader is away it is still one message they have not read. Emptied with
+   * the count, so a reply that arrives again after they caught up is news.
+   */
+  const unseen = new Set<ChatMessage<T>>();
   const draft = new Signal.State('');
   /** The message the composer is standing in for, while one is being edited. */
   const editing = new Signal.State<string | null>(null);
@@ -692,6 +785,8 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
       failure: new Signal.State(''),
       partList,
       structured,
+      stopped: false,
+      failedArriving: false,
       // Through the entry rather than the local, because `regenerate` and a
       // resend put a structured message back to plain and this has to answer
       // for the message it is on now, not the one it was built from.
@@ -748,17 +843,33 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
     say(labels.messageArrived(message));
   };
 
+  /**
+   * A message arrived while the reader was not following, and is one more
+   * unread unless it is already counted.
+   *
+   * Counted against the pin rather than against what is on screen: a reader
+   * who has scrolled up has not seen this message even if the arithmetic
+   * happens to place it inside their viewport.
+   */
+  const countArrival = (message: ChatMessage<T>): void => {
+    if (untrack(() => pinned.get()) || unseen.has(message)) return;
+    unseen.add(message);
+    unread.set(unseen.size);
+  };
+
+  /** The reader has caught up with everything that arrived. */
+  const markRead = (): void => {
+    unseen.clear();
+    unread.set(0);
+  };
+
   const add = (input: ChatMessageInput<T>): ChatMessage<T> => {
     const entry = createEntry(input);
     messages.set([...untrack(() => messages.get()), entry]);
 
-    // Counted against the pin rather than against what is on screen: a reader
-    // who has scrolled up has not seen this message even if the arithmetic
-    // happens to place it inside their viewport. A typing indicator is not an
-    // arrival and is not counted — the count is of things there are to read.
-    if (!untrack(() => pinned.get()) && input.typing !== true) {
-      unread.set(untrack(() => unread.get()) + 1);
-    }
+    // A typing indicator is not an arrival — the count is of things there are
+    // to read — so it is counted when its reply starts to arrive instead.
+    if (input.typing !== true) countArrival(entry);
 
     // A message that is about to be streamed has no text to say yet, and
     // announcing it token by token would be an unusable stutter. `finish` says
@@ -769,7 +880,10 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
 
   const append = (id: string, token: string): void => {
     const entry = byId.get(id);
-    if (!entry || token === '') return;
+    // A stopped reply takes nothing more. The request behind it is the
+    // consumer's and may well still be delivering, and "Stop generating" that
+    // lets the words keep coming has not stopped anything the reader can see.
+    if (!entry || token === '' || entry.stopped) return;
     // Into the last part, which for a plain message is the message's own body
     // signal. `addPart` is how a consumer starts a new one; tokens never
     // decide for themselves where a part ends, because deciding that is
@@ -778,8 +892,12 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
     const target = parts[parts.length - 1]?.body ?? entry.body;
     target.set(untrack(() => target.get()) + token);
     // A reply that was on its way has started arriving. Noticing it here is
-    // what keeps the typing indicator from being a second thing to switch off.
-    if (untrack(() => entry.state.get()) === 'typing') entry.state.set('streaming');
+    // what keeps the typing indicator from being a second thing to switch off,
+    // and it is the moment the reply becomes something to read.
+    if (untrack(() => entry.state.get()) === 'typing') {
+      entry.state.set('streaming');
+      countArrival(entry);
+    }
   };
 
   const finish = (id: string): void => {
@@ -790,12 +908,19 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
     // clear an error the reader still has a retry button for.
     if (status !== 'streaming' && status !== 'typing') return;
     entry.state.set('idle');
+    // A reply that arrives whole, without a token ever streaming, arrives now.
+    if (status === 'typing') countArrival(entry);
     speak(entry);
   };
 
   const fail = (id: string, error = ''): void => {
     const entry = byId.get(id);
-    if (!entry) return;
+    // Aborting the request is how a consumer stops it, and an aborted request
+    // fails. A reply the reader stopped on purpose is not a failed one, and a
+    // retry button on it would offer to undo what they asked for.
+    if (!entry || entry.stopped) return;
+    const status = untrack(() => entry.state.get());
+    if (status !== 'error') entry.failedArriving = status === 'typing' || status === 'streaming';
     entry.state.set('error');
     entry.failure.set(error);
     // Politely, like everything else here. A failure is worth interrupting a
@@ -808,6 +933,7 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
     if (!entry) return;
     const status = untrack(() => entry.state.get());
     if (status !== 'streaming' && status !== 'typing') return;
+    entry.stopped = true;
     entry.state.set('idle');
     options.onCancel?.(entry);
   };
@@ -816,7 +942,17 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
     const entry = byId.get(id);
     if (!entry || untrack(() => entry.state.get()) !== 'error') return;
     entry.failure.set('');
-    entry.state.set('idle');
+    if (entry.failedArriving) {
+      // A reply that failed on its way is waited for again from nothing, as a
+      // regenerated one is. The half that arrived is not the start of the next
+      // attempt, and new tokens on the end of it would be two answers run
+      // together. A message the reader sent is sent again as it stands.
+      rewrite(entry, '');
+      entry.stopped = false;
+      entry.state.set('typing');
+    } else {
+      entry.state.set('idle');
+    }
     options.onRetry?.(entry);
   };
 
@@ -825,6 +961,7 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
     if (!entry) return;
     truncateAfter(entry);
     rewrite(entry, '');
+    entry.stopped = false;
     entry.failure.set('');
     // Waiting, not idle: the reply has been asked for and none of it is here,
     // which is exactly what the typing indicator is for.
@@ -834,7 +971,9 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
 
   const addPart = (id: string, input: ChatPartInput): ChatPart | null => {
     const entry = byId.get(id);
-    if (!entry) return null;
+    // A stopped reply takes no new shape either, for the same reason it takes
+    // no tokens.
+    if (!entry || entry.stopped) return null;
     const parts = untrack(() => entry.partList.get());
     const kind = input.kind ?? 'text';
     const ordinal = parts.filter((part) => part.kind === kind).length + 1;
@@ -848,7 +987,7 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
 
   const setParts = (id: string, inputs: readonly ChatPartInput[]): void => {
     const entry = byId.get(id);
-    if (!entry) return;
+    if (!entry || entry.stopped) return;
     if (inputs.length === 0) {
       rewrite(entry, '');
       return;
@@ -863,11 +1002,36 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
     // History is not news. A conversation opens at its end, showing the newest
     // message with nothing unread, which is also what switching conversation
     // has to reset to.
-    unread.set(0);
+    markRead();
     // An edit of a message that is no longer in the transcript would send its
     // text back to nothing on the next Enter.
     editing.set(null);
+    // Both were about where the reader was in the last conversation: a hold
+    // for history that arrived above them, or a jump on its way to its end.
+    // This one opens at its own end, in one move.
+    holdAt = null;
+    jumpingTo = null;
     setPinned(true);
+  };
+
+  const prepend = (inputs: readonly ChatMessageInput<T>[]): void => {
+    // Pages of history overlap more often than not, and a second entry under
+    // an id already held would leave `byId` answering for only one of them.
+    // Asked one at a time, because `createEntry` is what registers an id: a
+    // message that comes twice in the same page is then caught as well.
+    const older: Entry<T>[] = [];
+    for (const input of inputs) {
+      if (input.id === undefined || !byId.has(input.id)) older.push(createEntry(input));
+    }
+    if (older.length === 0) return;
+    const before = untrack(() => virtualizer.scrollOffset());
+    messages.set([...older, ...untrack(() => messages.get())]);
+    // Everything already here has moved down by the height of what arrived
+    // above it, and the view has to move by as much to stay on what the reader
+    // was reading. Worked out against the geometry that now holds the new
+    // messages, at their estimates: each is corrected for as it is measured,
+    // the way any content growing above the viewport is.
+    holdAt = before + untrack(() => virtualizer.offsetOf(older.length));
   };
 
   // --- Grouping ------------------------------------------------------------
@@ -911,22 +1075,221 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
     focusable: true,
   });
 
+  /**
+   * How far the rendered window is from the virtualizer's, in messages.
+   *
+   * Nothing, once there is a viewport to work a window out against. Until the
+   * scroller has been measured — on a server, which never measures one, and
+   * for the first render in a browser — the virtualizer has only offset zero
+   * to go on, and that is the oldest message. A conversation opens at its end,
+   * so while it is being followed the same number of messages are taken from
+   * there instead: what a server writes is then what the reader is about to
+   * be shown, not the far end of the history, every row of which the page
+   * would swap out as it attached.
+   */
+  const windowShift = (): number => {
+    if (virtualizer.viewportSize() > 0 || !pinned.get()) return 0;
+    const items = virtualizer.items();
+    const first = items[0];
+    if (!first) return 0;
+    return Math.max(0, messages.get().length - items.length) - first.index;
+  };
+
+  /**
+   * The first and last message the window holds, as a value that changes only
+   * when they do.
+   *
+   * `items()` is a new array on every scroll frame, because each item carries
+   * its offset. Work that only has to happen when rows come and go — finding
+   * the elements in them — reads this instead, and scrolling within one
+   * window then costs it nothing.
+   */
+  const windowed = new Signal.Computed(
+    () => {
+      const { startIndex, endIndex } = virtualizer.range();
+      const shift = windowShift();
+      return { first: startIndex + shift, last: endIndex + shift };
+    },
+    { equals: (a, b) => a.first === b.first && a.last === b.last },
+  );
+
   const rendered = (): readonly ChatRow<T>[] => {
     const list = messages.get();
     const rows: ChatRow<T>[] = [];
+    const shift = windowShift();
     for (const item of virtualizer.items()) {
-      const message = list[item.index];
+      const index = item.index + shift;
+      const message = list[index];
       if (!message) continue;
       rows.push({
-        index: item.index,
+        index,
         id: message.id,
         message,
-        startsGroup: !sameRun(list[item.index - 1], message),
-        endsGroup: !sameRun(message, list[item.index + 1]),
+        startsGroup: !sameRun(list[index - 1], message),
+        endsGroup: !sameRun(message, list[index + 1]),
       });
     }
     return rows;
   };
+
+  // --- Focus, as the window moves ------------------------------------------
+
+  /**
+   * Whether DOM focus is inside a rendered message.
+   *
+   * Tracked rather than read off `document.activeElement`, because the case
+   * that matters is the one where focus has already been lost: a row unmounted
+   * under the reader takes focus to `<body>`, and by then the document can no
+   * longer say where it came from.
+   */
+  let focusInMessage = false;
+
+  effect(() => {
+    const container = options.container();
+    if (!container) return;
+
+    const onFocusIn = (): void => {
+      focusInMessage = true;
+    };
+    const onFocusOut = (event: Event): void => {
+      // A row unmounted under the reader blurs with nowhere to go. That is
+      // focus being dropped, not focus leaving, and engines differ on whether
+      // they announce it at all, so both are handled.
+      const target = event.target;
+      if (target instanceof Element && !target.isConnected) return;
+      // `Element` has no typed map entry for focusout, so the event arrives
+      // as a bare `Event` and `relatedTarget` has to be asked for.
+      const next = 'relatedTarget' in event ? event.relatedTarget : null;
+      focusInMessage = next instanceof Node && container.contains(next);
+    };
+
+    container.addEventListener('focusin', onFocusIn);
+    container.addEventListener('focusout', onFocusOut);
+    onCleanup(() => {
+      container.removeEventListener('focusin', onFocusIn);
+      container.removeEventListener('focusout', onFocusOut);
+    });
+  });
+
+  /**
+   * Keep focus in the log when the message holding it leaves the window.
+   *
+   * A message's action, a code block or a link in its text can hold focus, and
+   * the row is unmounted the moment it leaves the window — the reader paging
+   * back through history, or the view following a new message away from it.
+   * The platform then drops focus on `<body>`, and the next Tab starts again
+   * from the top of the page. The log takes it instead: it is a tab stop of
+   * its own, it is where the scrolling keys are heard, and it is still
+   * wherever the reader has got to, which no one message is.
+   */
+  effect(() => {
+    // Re-runs as the window changes, which is the event being waited for.
+    virtualizer.items();
+    if (!focusInMessage) return;
+    const scroller = untrack(() => options.scroller());
+    if (!(scroller instanceof HTMLElement)) return;
+    const here = scroller.ownerDocument.activeElement;
+    // Focus that went somewhere real is focus the reader moved; only focus
+    // that went nowhere is focus that was dropped.
+    if (here !== null && here !== scroller.ownerDocument.body) return;
+    focusInMessage = false;
+    // `preventScroll`, because the reader is mid-scroll: bringing the log's
+    // own box into view would move the page they are holding still.
+    scroller.focus({ preventScroll: true });
+  });
+
+  // --- Code that scrolls ---------------------------------------------------
+
+  /** The code part each watched element is showing. */
+  const watched = new Map<Element, PartEntry>();
+  const measureCode = (el: Element): void => {
+    watched.get(el)?.scrolls.set(el.scrollWidth > el.clientWidth);
+  };
+
+  let resize: ResizeObserver | null = null;
+  let content: MutationObserver | null = null;
+  let frame = 0;
+  let cancelFrame: (() => void) | null = null;
+
+  /** Made when the first code part is seen: most transcripts never hold one. */
+  const watch = (el: Element, view: Window & typeof globalThis): void => {
+    resize ??= new view.ResizeObserver((entries) => {
+      for (const entry of entries) measureCode(entry.target);
+    });
+    if (!content) {
+      const changed = new Set<Element>();
+      content = new view.MutationObserver((records) => {
+        for (const record of records) {
+          // A token changes a text node, and the block is whichever watched
+          // element it sits in.
+          let node: Node | null = record.target;
+          while (node !== null && !watched.has(node as Element)) node = node.parentNode;
+          if (node !== null) changed.add(node as Element);
+        }
+        frame ||= view.requestAnimationFrame(() => {
+          frame = 0;
+          for (const block of changed) measureCode(block);
+          changed.clear();
+        });
+      });
+      cancelFrame = () => view.cancelAnimationFrame(frame);
+    }
+    resize.observe(el);
+    content.observe(el, { childList: true, characterData: true, subtree: true });
+    measureCode(el);
+  };
+
+  /**
+   * Which code parts in the window really overflow, which is when one needs a
+   * tab stop.
+   *
+   * A block that scrolls sideways has to be focusable or it cannot be scrolled
+   * from the keyboard, and one that does not is an empty Tab press — in a
+   * transcript, dozens of them, one per one-line snippet. So it is measured,
+   * as `createCode` measures its block, by one pair of observers for the whole
+   * transcript rather than a pair per part: parts enter and leave the DOM with
+   * the window, and an observer each would make scrolling a churn of them.
+   *
+   * The box is watched for the width the code has to fit into, and the
+   * content for what has to fit: a line that grows as it streams changes no
+   * box a ResizeObserver reports. Reading the width forces a layout, and a
+   * token is the hot path, so content changes are measured once a frame
+   * however many tokens the frame brought.
+   */
+  measureEffect(() => {
+    const container = options.container();
+    const view = container?.ownerDocument.defaultView;
+    // No observer means no layout to observe — a test DOM that reports every
+    // box as zero. Taking the code not to scroll leaves a tab stop out rather
+    // than adding an empty one.
+    if (!container || !view || typeof view.ResizeObserver !== 'function') return;
+
+    for (const el of watched.keys()) {
+      if (el.isConnected) continue;
+      resize?.unobserve(el);
+      watched.delete(el);
+    }
+    const list = messages.get();
+    const { first, last } = windowed.get();
+    for (let index = Math.max(0, first); index <= last; index++) {
+      for (const part of list[index]?.parts() ?? []) {
+        if (part.kind !== 'code') continue;
+        const el = container.querySelector(`[id="${partContentId(part)}"]`);
+        if (!el) continue;
+        const known = watched.has(el);
+        // Written even when known: an unkeyed loop reuses an element for
+        // another part.
+        watched.set(el, part as PartEntry);
+        if (!known) watch(el, view);
+      }
+    }
+  });
+
+  onCleanup(() => {
+    resize?.disconnect();
+    content?.disconnect();
+    cancelFrame?.();
+  });
 
   // --- Staying at the bottom, or not ---------------------------------------
 
@@ -954,6 +1317,28 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
   let lastOffset = 0;
 
   /**
+   * Where a smooth jump to the end is headed, while one is on its way.
+   *
+   * A smooth scroll arrives as a run of ordinary scroll events, each of them a
+   * move and nearly all of them far from the end. Read like any other move,
+   * the jump's first frame would let go of the pin the jump itself set — the
+   * jump control back on screen, and a message arriving mid-flight counted
+   * unread and left below where the jump lands. Not a signal, for the same
+   * reason `lastOffset` is not.
+   */
+  let jumpingTo: number | null = null;
+
+  /**
+   * Where the view has to be once history prepended above it is in the DOM.
+   *
+   * Applied from the effect below rather than by `prepend` itself, because
+   * the sizer has not grown by then: a scroll aimed past its old end would
+   * stop at that end, and a reader near the top — the one who asked for the
+   * history — would be the one it failed.
+   */
+  let holdAt: number | null = null;
+
+  /**
    * Where both halves of the scroll model live: the pin follows the reader,
    * and the view follows the end while the pin holds.
    *
@@ -974,13 +1359,31 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
     const target = maxScroll();
     const count = messages.get().length;
 
+    if (holdAt !== null) {
+      // The move is this component's own, so it is recorded as acted on and
+      // says nothing about where the reader went: the distance to the end is
+      // what it was, and so is the pin.
+      const hold = Math.min(holdAt, target);
+      holdAt = null;
+      untrack(() => virtualizer.scrollToOffset(hold));
+      // Read back rather than taken as asked for, because the browser clamps.
+      lastOffset = untrack(virtualizer.scrollOffset);
+      return;
+    }
+
     if (offset !== lastOffset) {
+      const forward = offset > lastOffset;
       lastOffset = offset;
       const near = target - offset <= threshold;
-      setPinned(near);
-      // Reaching the end is what marks the arrivals read. There is nothing to
-      // press and nothing to dismiss: the reader has caught up.
-      if (near) unread.set(0);
+      // Every frame of a jump heads for the end. One that does not is the
+      // reader taking over, and from then on a move is a move again.
+      if (jumpingTo === null || near || !forward) {
+        jumpingTo = null;
+        setPinned(near);
+        // Reaching the end is what marks the arrivals read. There is nothing
+        // to press and nothing to dismiss: the reader has caught up.
+        if (near) markRead();
+      }
     }
 
     // Untracked, so that setting the pin just above does not send this effect
@@ -988,6 +1391,15 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
     if (!untrack(() => pinned.get()) || count === 0) return;
     // Commanding a scroll that would not move anything is work for nothing.
     if (Math.abs(offset - target) < 1) return;
+    if (jumpingTo !== null) {
+      // Already on its way there, and a command now would cut it short. When
+      // the end has moved under it — a message arrived, or one was measured —
+      // the jump is aimed again rather than replaced by an instant one.
+      if (Math.abs(jumpingTo - target) < 1) return;
+      jumpingTo = target;
+      untrack(() => virtualizer.scrollToOffset(target, { behavior: 'smooth' }));
+      return;
+    }
     untrack(() => virtualizer.scrollToOffset(target));
     // Recorded as the offset acted on, rather than waited for. The virtualizer
     // does not publish what it commands — the `scroll` event does, a frame
@@ -1001,9 +1413,14 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
 
   const jumpToLatest = (scrollOptions: VirtualScrollOptions = {}): void => {
     setPinned(true);
-    unread.set(0);
+    markRead();
     if (untrack(() => messages.get().length) === 0) return;
-    untrack(() => virtualizer.scrollToOffset(maxScroll(), scrollOptions));
+    const target = untrack(maxScroll);
+    // Only a smooth jump arrives in steps; any other lands in its one move,
+    // and so does a jump to where the view already is.
+    const smooth = scrollOptions.behavior === 'smooth';
+    jumpingTo = smooth && Math.abs(untrack(virtualizer.scrollOffset) - target) >= 1 ? target : null;
+    untrack(() => virtualizer.scrollToOffset(target, scrollOptions));
   };
 
   // --- The composer --------------------------------------------------------
@@ -1040,6 +1457,7 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
       editing.set(null);
       truncateAfter(entry);
       rewrite(entry, text);
+      entry.stopped = false;
       entry.failure.set('');
       entry.state.set('idle');
       options.onResend?.(entry, text);
@@ -1180,6 +1598,7 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
     addPart,
     setParts,
     setMessages,
+    prepend,
 
     isPinned: () => pinned.get(),
     isAtBottom,
@@ -1281,7 +1700,7 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
       // them. Announcements come from `announce` instead, which says one
       // sentence per message that actually arrived.
       'aria-live': 'off',
-      'aria-label': labels.log,
+      'aria-label': labels.log(),
     }),
 
     sizerProps: () => ({ ...virtualizer.sizerProps(), role: 'presentation' }),
@@ -1306,7 +1725,7 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
 
     composerProps: () => ({
       rows: String(composerRows),
-      'aria-label': labels.composer,
+      'aria-label': labels.composer(),
       enterkeyhint: 'send',
       style: {
         // The platform's own auto-sizing. A hidden mirror element measured on
@@ -1347,7 +1766,7 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
       // Inside a form, a button with no type submits it.
       type: 'button',
       tabindex: tabStopFor(message) === action ? '0' : '-1',
-      'aria-label': labels.actions[action],
+      'aria-label': labels.action(action),
       'data-chat-action': action,
       // Only the copy button has a state to show, and only about its own
       // message: two messages copied in turn must not both look copied.
@@ -1382,7 +1801,10 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
             // The number is in the name. On screen a citation is "[2]", which
             // is read out as "2" or as nothing at all.
             'aria-label': labels.source(part.ordinal, part.title),
-            href: part.href,
+            // Left off rather than written as undefined: `href` is a property
+            // of an `<a>`, and a spread sets a property to exactly what it is
+            // given, so undefined would be a link to a page called that.
+            ...(part.href === undefined ? {} : { href: part.href }),
           };
         case 'text':
           return common;
@@ -1391,11 +1813,12 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
 
     partContentProps: (part) => ({
       id: partContentId(part),
-      // A code block scrolls sideways more often than not, and a region that
-      // scrolls has to be reachable by keyboard or its content is unreadable
-      // without a mouse. The name is on the group around it rather than here,
-      // so it is not repeated every time focus lands.
-      tabindex: part.kind === 'code' ? '0' : undefined,
+      // A region that scrolls has to be reachable by keyboard or its content
+      // is unreadable without a mouse — but only while it does scroll, or
+      // every short snippet is a tab stop with nothing to do. The name is on
+      // the group around it rather than here, so it is not repeated every
+      // time focus lands.
+      tabindex: part.kind === 'code' && (part as PartEntry).scrolls.get() ? '0' : undefined,
       hidden: part.isOpen() ? undefined : true,
     }),
 
@@ -1408,50 +1831,61 @@ export function createChat<T = unknown>(options: ChatOptions<T>): Chat<T> {
 
     partCopyProps: (part) => ({
       type: 'button',
-      'aria-label': labels.copyCode,
+      'aria-label': labels.copyCode(),
       'data-state': copyStatus(part.id),
     }),
   };
 }
 
 /**
- * The English defaults for the action buttons.
+ * A default word: the locale's catalogue where it has one, then English.
+ *
+ * None of these are the library's own keys, so no translation has to grow
+ * them for a component it may never render: a catalogue that declares one is
+ * heard, and without it the English stands. Read on every call, so a
+ * catalogue swapped later reaches words already on screen.
+ */
+function word(locale: Locale, key: string, fallback: string, values?: MessageValues): string {
+  return locale.has(key) ? locale.t(key, values) : fallback;
+}
+
+/**
+ * The defaults for the action buttons: the catalogue key, then the English.
  *
  * Verbs, and each one says what it acts on. "Copy" alone is fine beside an
  * icon and useless in a list of forty buttons read out one after another,
  * which is how a screen-reader user meets a transcript.
  */
-const DEFAULT_ACTION_LABELS: Record<ChatActionName, string> = {
-  copy: 'Copy message',
-  edit: 'Edit and resend',
-  regenerate: 'Regenerate reply',
-  retry: 'Try again',
-  cancel: 'Stop generating',
+const DEFAULT_ACTION_LABELS: Record<ChatActionName, readonly [key: string, english: string]> = {
+  copy: ['chatCopy', 'Copy message'],
+  edit: ['chatEdit', 'Edit and resend'],
+  regenerate: ['chatRegenerate', 'Regenerate reply'],
+  retry: ['chatRetry', 'Try again'],
+  cancel: ['chatCancel', 'Stop generating'],
 };
 
 /**
- * The English default for what a failed message says.
+ * The default for what a failed message says.
  *
  * The reason wins when there is one, because "could not be sent" tells the
  * reader nothing they cannot already see and "rate limited" tells them whether
  * pressing retry is worth anything.
  */
-function defaultFailedLabel(name: string, error: string): string {
+function defaultFailedLabel(locale: Locale, name: string, error: string): string {
   if (error !== '') return name === '' ? error : `${name}: ${error}`;
-  return name === '' ? 'Message could not be sent' : `${name}'s message could not be sent`;
+  return name === ''
+    ? word(locale, 'chatNotSentNoName', 'Message could not be sent')
+    : word(locale, 'chatNotSent', `${name}'s message could not be sent`, { name });
 }
 
 /**
- * The English default for the jump-to-latest name.
- *
- * Plain strings rather than the locale catalogue, as the virtualizer's own
- * labels are: these are chat's words, not the library's, and a catalogue key
- * added here would be one every translation has to grow. `labels` is the way
- * past it.
+ * The default for the jump-to-latest name. A catalogue's `chatNewMessages` can
+ * be a plural record, since the count is the `n` that selects the form.
  */
-function defaultJumpLabel(unread: number): string {
-  if (unread === 0) return 'Jump to latest';
-  return unread === 1 ? '1 new message' : `${unread} new messages`;
+function defaultJumpLabel(locale: Locale, unread: number): string {
+  if (unread === 0) return word(locale, 'chatJumpToLatest', 'Jump to latest');
+  const english = unread === 1 ? '1 new message' : `${unread} new messages`;
+  return word(locale, 'chatNewMessages', english, { n: unread });
 }
 
 /**
