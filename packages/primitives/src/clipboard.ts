@@ -27,6 +27,7 @@
 
 import { Signal, onCleanup } from '@voltdev/core';
 import { announce } from './announcer.js';
+import { useLocale, type MessageKey } from './i18n.js';
 
 /** How long the copied state is held, in milliseconds. */
 const COPIED_FOR = 2000;
@@ -34,9 +35,15 @@ const COPIED_FOR = 2000;
 export type CopyStatus = 'idle' | 'copied' | 'failed';
 
 export interface ClipboardLabels {
-  /** Announced once the text is on the clipboard. Default "Copied". */
+  /**
+   * Announced once the text is on the clipboard.
+   *
+   * Without one the locale's `copied` is said, and "Copied" where the
+   * catalogue has no entry for it. Give one where the sentence is about this
+   * particular button — "Link copied".
+   */
   copied?: string;
-  /** Announced when the clipboard refused. Default "Could not copy". */
+  /** Announced when the clipboard refused. The locale's `copyFailed`, else "Could not copy". */
   failed?: string;
 }
 
@@ -111,9 +118,16 @@ async function write(text: string): Promise<void> {
 }
 
 export function createClipboard(options: ClipboardOptions): Clipboard {
+  const locale = useLocale();
   const status = new Signal.State<CopyStatus>('idle');
   const resetAfter = options.resetAfter ?? COPIED_FOR;
   let timer: ReturnType<typeof setTimeout> | null = null;
+
+  // A sentence said out loud is the whole of what a screen-reader user is told
+  // about a copy, so it comes from the catalogue the rest of the library
+  // speaks from. A label given here is about this button and outranks it.
+  const label = (override: string | undefined, key: MessageKey, fallback: string): string =>
+    override ?? (locale.has(key) ? locale.t(key) : fallback);
 
   const settle = (next: Exclude<CopyStatus, 'idle'>): void => {
     status.set(next);
@@ -136,7 +150,9 @@ export function createClipboard(options: ClipboardOptions): Clipboard {
       await write(text);
     } catch (error) {
       settle('failed');
-      announce(options.labels?.failed ?? 'Could not copy', { priority: 'assertive' });
+      announce(label(options.labels?.failed, 'copyFailed', 'Could not copy'), {
+        priority: 'assertive',
+      });
       options.onError?.(error);
       return false;
     }
@@ -145,7 +161,7 @@ export function createClipboard(options: ClipboardOptions): Clipboard {
     // Through the region rather than by relabelling the button: a name that
     // changes under a screen reader's focus is announced unreliably, and this
     // is the sentence the user actually needs.
-    announce(options.labels?.copied ?? 'Copied');
+    announce(label(options.labels?.copied, 'copied', 'Copied'));
     options.onCopy?.(text);
     return true;
   };

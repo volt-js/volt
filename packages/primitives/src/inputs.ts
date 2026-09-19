@@ -97,6 +97,11 @@ export interface TextFieldOptions {
    * owns its own, which is what most callers want.
    */
   value?: Signal.State<string>;
+  /**
+   * The starting value when the control owns its state. What the state starts
+   * at — this, or what a `value` signal held at construction — becomes the
+   * control's own default, so it is also what a form reset goes back to.
+   */
   defaultValue?: string;
 
   /** Fixed id for the control, when something outside has to refer to it. */
@@ -167,7 +172,10 @@ interface TextControl {
   setValue(value: string): void;
   clear(): void;
   isEmpty(): boolean;
-  /** Characters left before `maxLength`, or null when there is no maximum. */
+  /**
+   * Room left before `maxLength`, in the UTF-16 code units the platform
+   * counts it in, or null when there is no maximum.
+   */
   remaining(): number | null;
 
   fieldProps(): InputProps;
@@ -180,6 +188,8 @@ interface TextControl {
 
 function createTextControl(options: TextFieldOptions): TextControl {
   const state = options.value ?? new Signal.State(options.defaultValue ?? '');
+  const start = untrack(() => state.get());
+  if (start) adoptDefault(options.input, () => start);
   const field = createFormField(fieldOptionsFor(options));
 
   bindTextValue(options.input, state, field, options.onValueChange);
@@ -196,8 +206,11 @@ function createTextControl(options: TextFieldOptions): TextControl {
     setValue,
     clear: () => setValue(''),
     isEmpty: () => state.get().length === 0,
+    // In UTF-16 code units, as `maxlength` itself counts: an emoji is one
+    // character to a person and two to the box, and a count that disagreed
+    // with the box would promise room it is about to refuse.
     remaining: () =>
-      options.maxLength === undefined ? null : options.maxLength - [...state.get()].length,
+      options.maxLength === undefined ? null : options.maxLength - state.get().length,
 
     fieldProps: () => field.fieldProps(),
     labelProps: () => field.labelProps(),
@@ -216,6 +229,23 @@ function createTextControl(options: TextFieldOptions): TextControl {
         'data-empty': state.get().length === 0 || undefined,
       }),
   };
+}
+
+/**
+ * Make a starting value the control's own default.
+ *
+ * `defaultValue` — the `value` attribute of an input, the text inside a
+ * textarea — is what a form reset restores and what the field measures dirty
+ * against. The value is written as a property, which is neither: without this
+ * a control created with a default is dirty from the moment it mounts, and a
+ * reset empties it. It has to be created ahead of the field, whose effect
+ * reads the default the first time it sees the control.
+ */
+function adoptDefault(control: () => Element | null | undefined, text: () => string): void {
+  effect(() => {
+    const el = control();
+    if (isValueControl(el)) el.defaultValue = text();
+  });
 }
 
 /**
@@ -284,9 +314,19 @@ function bindTextValue(
 
     // A reset restores the control's default value and fires no `input`, so
     // the signal has to be told or the box and the state disagree from then
-    // on. It is read after a microtask because `reset` is dispatched partway
-    // through resetting, before the value has settled.
-    const onReset = () => queueMicrotask(read);
+    // on. There is no moment to read the restored value at: `reset` is
+    // dispatched before the platform puts anything back, nothing is fired once
+    // it has, and when a press on a reset button is what dispatched this, a
+    // microtask queued here runs before it has as well. So the default is
+    // written here, as the platform is about to write it, and read from there
+    // — which also leaves the effect above nothing to write, and no edit to
+    // report that nobody made. A reset a listener ahead of this one called off
+    // is left alone.
+    const onReset = (event: Event) => {
+      if (event.defaultPrevented) return;
+      el.value = el.defaultValue;
+      read();
+    };
     const form = formOf(el);
 
     el.addEventListener('input', read);
@@ -405,14 +445,28 @@ export function createTextarea(options: TextareaOptions = { input: () => null })
     if (!autoSize || !isTextarea(el)) return;
 
     if (supportsFieldSizing()) {
+      // Read before anything here is written, so it is the author's styling
+      // that comes back, and once: nothing below runs again per keystroke.
+      const style = el.ownerDocument.defaultView?.getComputedStyle(el);
+      // An unset `min-height` reads as `auto`, and a floor of zero is no floor
+      // at all, so neither is taken for one the author set.
+      const floor = style?.minHeight ?? '';
+      const authorFloor = floor !== '' && floor !== 'auto' && floor !== '0px';
+
       el.style.setProperty('field-sizing', 'content');
-      // `lh` is the element's own line height, so the cap is stated in the
-      // unit the author thinks in rather than in pixels nobody can predict.
+      // The platform ignores `rows` on an element sized to its content, so an
+      // empty box would be one line tall; the floor is said here instead —
+      // unless the author's stylesheet already sets one, which an inline style
+      // would silently beat. `lh` is the element's own line height, so both
+      // ends are stated in the unit the author thinks in rather than in pixels
+      // nobody can predict.
+      if (!authorFloor) el.style.setProperty('min-height', linesTall(rows, style));
       if (options.maxRows !== undefined) {
-        el.style.setProperty('max-height', `${options.maxRows}lh`);
+        el.style.setProperty('max-height', linesTall(options.maxRows, style));
       }
       onCleanup(() => {
         el.style.removeProperty('field-sizing');
+        el.style.removeProperty('min-height');
         el.style.removeProperty('max-height');
       });
       return;
@@ -519,13 +573,34 @@ function capHeight(el: HTMLTextAreaElement, maxRows: number | undefined): number
   const line = Number.parseFloat(style?.lineHeight ?? '');
   if (!Number.isFinite(line) || line <= 0) return Infinity;
 
-  const padding =
-    Number.parseFloat(style?.paddingTop ?? '0') + Number.parseFloat(style?.paddingBottom ?? '0');
-  const border =
-    Number.parseFloat(style?.borderTopWidth ?? '0') +
-    Number.parseFloat(style?.borderBottomWidth ?? '0');
+  return maxRows * line + insetsOf(style);
+}
 
-  return maxRows * line + (Number.isFinite(padding) ? padding : 0) + (Number.isFinite(border) ? border : 0);
+/**
+ * `lines` of text as a height for this box, in its own line height.
+ *
+ * Under `border-box` a height counts the padding and border as well, and a
+ * line of text does not, so they are added — or a box asked to open four
+ * lines tall opens short of that by its own padding.
+ */
+function linesTall(lines: number, style: CSSStyleDeclaration | undefined): string {
+  const insets = style?.boxSizing === 'border-box' ? insetsOf(style) : 0;
+  return insets > 0 ? `calc(${lines}lh + ${insets}px)` : `${lines}lh`;
+}
+
+/** The padding and border above and below the text, in pixels. */
+function insetsOf(style: CSSStyleDeclaration | undefined): number {
+  let total = 0;
+  for (const side of [
+    style?.paddingTop,
+    style?.paddingBottom,
+    style?.borderTopWidth,
+    style?.borderBottomWidth,
+  ]) {
+    const px = Number.parseFloat(side ?? '');
+    if (Number.isFinite(px)) total += px;
+  }
+  return total;
 }
 
 // ---------------------------------------------------------------------------
@@ -556,6 +631,10 @@ export interface NumberInputOptions {
 
   /** Supply a signal to control the value from outside. `null` is empty. */
   value?: Signal.State<number | null>;
+  /**
+   * The starting value when it owns its state. A form reset goes back to what
+   * the state started at: this, or what a `value` signal held at construction.
+   */
   defaultValue?: number | null;
 
   id?: string;
@@ -763,6 +842,11 @@ export function createNumberInput(options: NumberInputOptions): NumberInput {
     return undefined;
   };
 
+  // Formatted, since the box is what a reset restores and it holds text; the
+  // hidden input follows the box back.
+  const start = untrack(() => state.get());
+  if (start !== null) adoptDefault(options.input, () => format(start));
+
   const field = createFormField({
     ...fieldOptionsFor(
       {
@@ -964,7 +1048,7 @@ interface NumberSymbols {
   group: string;
   decimal: string;
   minus: string;
-  /** Code point of this numbering system's zero. */
+  /** Code point of this locale's own zero, whose run of ten is read with one subtraction. */
   zero: number;
 }
 
@@ -986,13 +1070,32 @@ function numberSymbols(locale: string): NumberSymbols {
     group: of('group') ?? ',',
     decimal: of('decimal') ?? '.',
     minus: of('minusSign') ?? '-',
-    // Every decimal numbering system lays its digits out contiguously from
-    // zero, so one subtraction covers Arabic-Indic, Devanagari and the rest.
     zero: getNumberFormat(locale, { useGrouping: false }).format(0).codePointAt(0) ?? 48,
   };
 
   symbolCache.set(locale, made);
   return made;
+}
+
+/** A decimal digit, in any script. */
+const DIGIT = /\p{Nd}/u;
+
+/**
+ * The value of a decimal digit from any numbering system.
+ *
+ * Not only the locale's own: Hindi numbers in Latin digits by default while a
+ * Devanagari keyboard types the other kind, and an input method in full-width
+ * mode types a third — and a digit read as decoration and dropped changes the
+ * number without a word. Unicode assigns every decimal digit in a contiguous
+ * run of ten, zero first, so the value is the distance from the start of the
+ * run: stepped back to while the code point before is still a digit, and taken
+ * modulo ten because a few runs sit end to end.
+ */
+function digitValue(char: string): number {
+  const code = char.codePointAt(0) ?? 0;
+  let start = code;
+  while (DIGIT.test(String.fromCodePoint(start - 1))) start -= 1;
+  return (code - start) % 10;
 }
 
 /** Characters that can separate digits in some locale, plus the ones people type anyway. */
@@ -1018,8 +1121,15 @@ export function parseLocaleNumber(text: string, locale: string): number | null {
 
   let mapped = '';
   for (const char of text.trim()) {
-    const digit = (char.codePointAt(0) ?? 0) - zero;
-    mapped += digit >= 0 && digit <= 9 ? String(digit) : char;
+    if (char >= '0' && char <= '9') {
+      mapped += char;
+      continue;
+    }
+    // The locale's own digits are the ones typed on every keystroke where
+    // they are not Latin, so they are not walked back through their run.
+    const own = (char.codePointAt(0) ?? 0) - zero;
+    if (own >= 0 && own <= 9) mapped += String(own);
+    else mapped += DIGIT.test(char) ? String(digitValue(char)) : char;
   }
   if (mapped === '') return null;
 
@@ -1183,7 +1293,7 @@ export function createPasswordInput(
         type: 'button',
         'aria-label': revealed.get()
           ? label(options.labels?.hide, 'hidePassword', 'Hide password')
-          : label(options.labels?.show, 'show', 'Show password'),
+          : label(options.labels?.show, 'showPassword', 'Show password'),
         'aria-controls': base.field.ids().control,
         'data-state': revealed.get() ? 'revealed' : 'hidden',
       }),
@@ -1212,14 +1322,23 @@ export interface PinInputLabels extends FormFieldLabels {
 export interface PinInputOptions {
   /** The element holding the boxes, so they can be found in the order they appear. */
   container: () => Element | null | undefined;
-  /** The hidden input carrying the whole value. */
-  hiddenInput?: () => Element | null | undefined;
+  /**
+   * The hidden input carrying the whole value: what submits, what the platform
+   * validates, and what a reset restores. Its value is written through this
+   * accessor and nowhere else, so without it the form would submit an empty
+   * code.
+   */
+  hiddenInput: () => Element | null | undefined;
   label?: () => Element | null | undefined;
   description?: () => Element | null | undefined;
   errorMessage?: () => Element | null | undefined;
 
   /** Supply a signal to control the value from outside. */
   value?: Signal.State<string>;
+  /**
+   * The starting code when it owns its state. A form reset goes back to what
+   * the state started at: this, or what a `value` signal held at construction.
+   */
   defaultValue?: string;
 
   /** How many boxes. Default 6. */
@@ -1297,12 +1416,26 @@ export interface PinInput {
  * string. The cost is that a user cannot go back and edit box two without
  * arrowing to it, which is what the arrow keys are for.
  *
+ *   class Verify {
+ *     container = new Signal.State<Element | null>(null);
+ *     hidden = new Signal.State<Element | null>(null);
+ *     pin = createPinInput({
+ *       container: () => this.container.get(),
+ *       hiddenInput: () => this.hidden.get(),
+ *       name: 'code',
+ *     });
+ *     slots = Array.from({ length: this.pin.length() }, (_, i) => i);
+ *   }
+ *
  *   <div :ref="container" :spread="pin.groupProps()">
- *     <input :for="i in pin.length()" :spread="pin.boxProps(i - 1)"
- *            :keydown="pin.onKeyDown($event, i - 1)" :input="pin.onInput($event, i - 1)"
- *            :paste="pin.onPaste($event, i - 1)" :focus="pin.onFocus(i - 1)">
- *     <input :ref="hidden" :spread="pin.hiddenInputProps()">
+ *     <input :for="i in slots" :key="i" :spread="pin.boxProps(i)"
+ *            :keydown="pin.onKeyDown($event, i)" :input="pin.onInput($event, i)"
+ *            :paste="pin.onPaste($event, i)" :focus="pin.onFocus(i)">
  *   </div>
+ *   <input :ref="hidden" :spread="pin.hiddenInputProps()">
+ *
+ * The boxes come from an array of indices because `:for` iterates a
+ * collection: over a bare number it renders nothing at all.
  */
 export function createPinInput(options: PinInputOptions): PinInput {
   const locale = useLocale();
@@ -1377,6 +1510,9 @@ export function createPinInput(options: PinInputOptions): PinInput {
     });
   });
 
+  const start = untrack(() => state.get());
+  if (start) adoptDefault(options.hiddenInput, () => sliceTo(start, length));
+
   const field = createFormField({
     ...fieldOptionsFor(
       {
@@ -1395,7 +1531,7 @@ export function createPinInput(options: PinInputOptions): PinInput {
       // The hidden input is the control: it is what submits, what the platform
       // validates, and what a `reset` restores. The visible boxes borrow its
       // ARIA through `groupProps`.
-      options.hiddenInput ?? options.container,
+      options.hiddenInput,
     ),
     validate: (value, control) => {
       const current = untrack(() => state.get());
@@ -1414,7 +1550,7 @@ export function createPinInput(options: PinInputOptions): PinInput {
   // The hidden input is written from the value rather than typed into, so the
   // usual two-way binding would have nothing to read back.
   effect(() => {
-    const el = options.hiddenInput?.();
+    const el = options.hiddenInput();
     const next = state.get();
     if (!isValueControl(el) || el.value === next) return;
     el.value = next;
@@ -1422,28 +1558,52 @@ export function createPinInput(options: PinInputOptions): PinInput {
   });
 
   // A reset is the other direction, and it fires no `input`. The browser
-  // restores the hidden input and every box to their default of empty; without
+  // restores the hidden input to its default and every box to its own; without
   // this the value would not hear about it, so the boxes would read blank while
   // the field still held — and `isComplete()` still claimed — the old code, and
   // the next character typed would be distributed over it.
   //
-  // Read back off the hidden input rather than assumed to be empty, because it
-  // is the control the platform reset and a consumer may have written a
-  // `value` attribute on it. Read after a microtask, since `reset` is
-  // dispatched partway through resetting, before the values have settled.
+  // Where it is going is the hidden input's default — `defaultValue`, or a
+  // `value` attribute the consumer wrote — rather than anything read back
+  // afterwards: `reset` is dispatched before the platform puts anything back,
+  // nothing is fired once it has, and when a press on a reset button is what
+  // dispatched this, a microtask queued here runs before it has as well. A
+  // reset a listener ahead of this one called off is left alone.
   effect(() => {
-    const hidden = options.hiddenInput?.();
+    const hidden = options.hiddenInput();
     const anchor = isValueControl(hidden) ? hidden : options.container();
     const form = anchor ? formOf(anchor) : null;
     if (!form) return;
 
-    const onReset = () =>
-      queueMicrotask(() => {
-        setValue(isValueControl(hidden) ? hidden.value : '');
-        // The tab stop goes back to where the next character belongs, which is
-        // the first box now that there is nothing in any of them.
-        active.set(Math.min(untrack(() => state.get()).length, length - 1));
+    const onReset = (event: Event) => {
+      if (event.defaultPrevented) return;
+      const restored = sliceTo(isValueControl(hidden) ? hidden.defaultValue : '', length);
+      // By code point, as the boxes are filled everywhere else: indexing the
+      // string would hand half of an emoji to one box and half to the next.
+      const characters = [...restored];
+
+      // A box has no default of its own, so the platform is about to blank it
+      // whatever the code is going back to. Each is given the character it is
+      // going back to as its default, and the reset then leaves it there.
+      boxes.all().forEach((box, index) => {
+        if (!isInputElement(box)) return;
+        box.defaultValue = characters[index] ?? '';
+        box.value = box.defaultValue;
       });
+      // Written ahead of the value, as the platform is about to, so the effect
+      // above finds nothing to write and reports no edit that nobody made.
+      if (isValueControl(hidden)) hidden.value = restored;
+
+      // Not through `setValue`: a code put back whole has not been completed
+      // by anyone, and `onComplete` is often what submits it.
+      if (untrack(() => state.get()) !== restored) {
+        state.set(restored);
+        options.onValueChange?.(restored);
+      }
+      // The tab stop goes back to where the next character belongs, which
+      // for an empty code is the first box.
+      active.set(Math.min(characters.length, length - 1));
+    };
 
     form.addEventListener('reset', onReset);
     onCleanup(() => form.removeEventListener('reset', onReset));
@@ -2071,7 +2231,7 @@ export function createTagsInput(options: TagsInputOptions): TagsInput {
     });
   });
 
-  const field = createFormField({
+  const composed = createFormField({
     ...fieldOptionsFor(
       {
         input: options.input,
@@ -2090,16 +2250,54 @@ export function createTagsInput(options: TagsInputOptions): TagsInput {
     // `required` is deliberately not forwarded to the control: it would put
     // the constraint on the text input, and an empty text input next to five
     // tags is a filled-in field. The rule is about the tags, so it is checked
-    // here and reported through the same custom validity.
+    // here and reported through the same custom validity. Its own key rather
+    // than the catalogue's `required`, which every catalogue has, so the
+    // generic word would always win over the sentence that says what to do.
     validate: (value, control) => {
       if (required() && untrack(() => state.get()).length === 0) {
-        return label(options.labels?.empty, 'required', 'Add at least one tag.');
+        return label(options.labels?.empty, 'tagsEmpty', 'Add at least one tag.');
       }
       return options.validate?.(value, control);
     },
   });
 
+  // The field is told `required` here instead, where it only answers for it:
+  // `isRequired()` and `data-required` report the rule the field enforces.
+  const field: FormField = {
+    ...composed,
+    isRequired: required,
+    fieldProps: () => ({ ...composed.fieldProps(), 'data-required': required() || undefined }),
+  };
+
   bindTextValue(options.input, draft, field, () => duplicate.set(null));
+
+  // The tags a reset goes back to. The draft follows the reset by itself,
+  // through the text input; the tags are the half the platform knows nothing
+  // about, and left alone they would go on submitting from a form that has
+  // just been put back. Written directly, as `clear()` is, since the platform
+  // resets a disabled control too; and silently, for the same reason.
+  const initial = untrack(() => state.get());
+
+  effect(() => {
+    const el = options.input();
+    const form = el ? formOf(el) : null;
+    if (!form) return;
+
+    // Nothing is read back, so there is nothing to wait for. A reset a listener
+    // ahead of this one called off is left alone.
+    const onReset = (event: Event) => {
+      if (event.defaultPrevented) return;
+      duplicate.set(null);
+      const current = untrack(() => state.get());
+      if (current.length === initial.length && current.every((tag, i) => tag === initial[i])) {
+        return;
+      }
+      write(initial);
+    };
+
+    form.addEventListener('reset', onReset);
+    onCleanup(() => form.removeEventListener('reset', onReset));
+  });
 
   const splitPasted = (text: string): string[] => {
     // A newline always splits, whatever the delimiters are: text pasted out of
@@ -2456,12 +2654,15 @@ export function createRating(options: RatingOptions): Rating {
    * with zero meaning unrated, a radio group is a string or nothing — and
    * because the public contract is a `Signal.State<number>` the caller can own.
    * Both setters ignore a value they already hold, so the pair settles.
+   *
+   * It starts where the rating starts, because the group takes what it holds
+   * at construction as what a form reset goes back to.
    */
-  const selection = new Signal.State<string | null>(null);
+  const selectionOf = (value: number): string | null => (value > 0 ? String(value) : null);
+  const selection = new Signal.State<string | null>(selectionOf(untrack(() => state.get())));
 
   effect(() => {
-    const value = state.get();
-    const next = value > 0 ? String(value) : null;
+    const next = selectionOf(state.get());
     if (untrack(() => selection.get()) !== next) selection.set(next);
   });
 
@@ -2518,9 +2719,7 @@ export function createRating(options: RatingOptions): Rating {
       options.group,
     ),
     // The hidden radios carry `required`, so the platform refuses the submit;
-    // this is what puts a message on screen for it. The cost of the pair is
-    // that the browser's own bubble points at a radio nobody can see — the
-    // same cost every visually hidden native control pays.
+    // this is the message the refusal is reported with, by the listener below.
     validate: (value, control) => {
       if (required() && untrack(() => state.get()) === 0) {
         return options.labels?.valueMissing ?? locale.t('required');
@@ -2529,16 +2728,33 @@ export function createRating(options: RatingOptions): Rating {
     },
   });
 
+  // The platform fires `invalid` at the radio it refused, and `invalid` does
+  // not bubble — so the field, listening on the group, would never hear it,
+  // and a submit refused before any submit event would put nothing on the
+  // page. It is caught on the way down instead. The browser's own bubble is
+  // cancelled, since it would point at a radio nobody can see, and the field
+  // reports the refusal in the markup, as it does for a control of its own.
+  effect(() => {
+    const group = options.group();
+    if (!group) return;
+
+    const onInvalid = (event: Event) => {
+      event.preventDefault();
+      field.report();
+    };
+
+    group.addEventListener('invalid', onInvalid, true);
+    onCleanup(() => group.removeEventListener('invalid', onInvalid, true));
+  });
+
   /**
    * The score a reset goes back to.
    *
-   * A reset restores every control in the form to its default, and the hidden
-   * radios have none to restore to: their checkedness is a property rather
-   * than a `checked` attribute, so the browser finds `defaultChecked` false on
-   * all of them and unchecks the lot. What is left is a rating that still
-   * answers 4 and a form that submits nothing, which is the disagreement a
-   * hidden native control exists to prevent. So the default is remembered
-   * here, where it was declared.
+   * The radio group puts its mirrors back and its selection with them, but it
+   * hands the number back through `onValueChange`, and so through `setValue`
+   * — which refuses while read-only or disabled. A score nobody may change is
+   * exactly the one a reset has to put back rather than drop, so the number is
+   * restored here as well, where it was declared.
    */
   const initial = untrack(() => state.get());
 
@@ -2547,25 +2763,15 @@ export function createRating(options: RatingOptions): Rating {
     const form = group ? formOf(group) : null;
     if (!group || !form) return;
 
-    // Read after a microtask, since `reset` is dispatched partway through
-    // resetting, before the controls have settled.
-    const onReset = () =>
-      queueMicrotask(() => {
-        const restored = Math.min(Math.max(initial, 0), max);
-        // Not through `setValue`, which refuses while read-only or disabled —
-        // and a score nobody may change is exactly the one a reset has to put
-        // back rather than drop.
-        if (untrack(() => state.get()) !== restored) {
-          state.set(restored);
-          options.onValueChange?.(restored);
-        }
-        // The mirrors are written by hand as well, because a reset that lands
-        // on the score already held changes no signal, and nothing would then
-        // re-apply the props the browser has just cleared.
-        for (const mirror of group.querySelectorAll('input[type="radio"]')) {
-          if (isInputElement(mirror)) mirror.checked = mirror.value === String(restored);
-        }
-      });
+    // Nothing is read back, so there is nothing to wait for. A reset a listener
+    // ahead of this one called off is left alone.
+    const onReset = (event: Event) => {
+      if (event.defaultPrevented) return;
+      const restored = Math.min(Math.max(initial, 0), max);
+      if (untrack(() => state.get()) === restored) return;
+      state.set(restored);
+      options.onValueChange?.(restored);
+    };
 
     form.addEventListener('reset', onReset);
     onCleanup(() => form.removeEventListener('reset', onReset));

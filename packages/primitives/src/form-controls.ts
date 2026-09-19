@@ -136,6 +136,8 @@ export function createCheckbox(options: CheckboxOptions = {}): Checkbox {
   const state = options.checked ?? new Signal.State<CheckedState>(options.defaultChecked ?? false);
   const disabled = () => options.disabled?.() ?? false;
   const required = () => options.required?.() ?? false;
+  /** What a reset of the owning form goes back to. See `followReset`. */
+  const initial = untrack(() => state.get());
 
   // A disabled control does not change through its own API. The alternative —
   // letting the API through and only blocking the keyboard and the press —
@@ -148,10 +150,19 @@ export function createCheckbox(options: CheckboxOptions = {}): Checkbox {
   };
 
   if (options.input) {
+    const input = options.input;
     mirrorInput(
-      options.input,
+      input,
       () => state.get() === true,
       () => state.get() === 'indeterminate',
+    );
+    followReset(
+      () => formOf(input()),
+      () => {
+        if (untrack(() => state.get()) === initial) return;
+        state.set(initial);
+        options.onCheckedChange?.(initial);
+      },
     );
   }
 
@@ -205,6 +216,7 @@ export function createCheckbox(options: CheckboxOptions = {}): Checkbox {
         name: options.name,
         value: options.value ?? 'on',
         checked: state.get() === true,
+        defaultChecked: initial === true,
         required: required(),
         disabled: disabled(),
       }),
@@ -267,6 +279,8 @@ export function createSwitch(options: SwitchOptions = {}): Switch {
   const state = options.checked ?? new Signal.State(options.defaultChecked ?? false);
   const disabled = () => options.disabled?.() ?? false;
   const required = () => options.required?.() ?? false;
+  /** What a reset of the owning form goes back to. See `followReset`. */
+  const initial = untrack(() => state.get());
 
   const setChecked = (next: boolean) => {
     if (disabled() || state.get() === next) return;
@@ -275,7 +289,16 @@ export function createSwitch(options: SwitchOptions = {}): Switch {
   };
 
   if (options.input) {
-    mirrorInput(options.input, () => state.get());
+    const input = options.input;
+    mirrorInput(input, () => state.get());
+    followReset(
+      () => formOf(input()),
+      () => {
+        if (untrack(() => state.get()) === initial) return;
+        state.set(initial);
+        options.onCheckedChange?.(initial);
+      },
+    );
   }
 
   const toggle = () => setChecked(!state.get());
@@ -316,6 +339,7 @@ export function createSwitch(options: SwitchOptions = {}): Switch {
         name: options.name,
         value: options.value ?? 'on',
         checked: state.get(),
+        defaultChecked: initial,
         required: required(),
         disabled: disabled(),
       }),
@@ -355,7 +379,8 @@ export interface RadioGroupOptions {
   /** Id of the element that names the group — a legend or a heading. */
   labelledBy?: string;
 
-  onValueChange?: (value: string) => void;
+  /** Null when a form reset puts back a group that started with nothing chosen. */
+  onValueChange?: (value: string | null) => void;
 }
 
 export interface RadioGroup {
@@ -406,6 +431,17 @@ export function createRadioGroup(options: RadioGroupOptions): RadioGroup {
   const state = options.value ?? new Signal.State<string | null>(options.defaultValue ?? null);
   const disabled = () => options.disabled?.() ?? false;
   const required = () => options.required?.() ?? false;
+  /** What a reset of the owning form goes back to. See `followReset`. */
+  const initial = untrack(() => state.get());
+
+  followReset(
+    () => options.group()?.closest('form'),
+    () => {
+      if (untrack(() => state.get()) === initial) return;
+      state.set(initial);
+      options.onValueChange?.(initial);
+    },
+  );
 
   const collection = createCollection(options.group);
 
@@ -583,6 +619,7 @@ export function createRadioGroup(options: RadioGroupOptions): RadioGroup {
         name: options.name,
         value,
         checked: state.get() === value,
+        defaultChecked: initial === value,
         required: required(),
         disabled: itemDisabled || disabled(),
       }),
@@ -617,6 +654,8 @@ interface MirrorOptions {
   name: string | undefined;
   value: string;
   checked: boolean;
+  /** Whether the control started checked, which is what a form reset restores. */
+  defaultChecked: boolean;
   required: boolean;
   disabled: boolean;
 }
@@ -627,6 +666,11 @@ function mirrorProps(options: MirrorOptions): ControlProps {
     type: options.type,
     value: options.value,
     checked: options.checked,
+    // The `checked` content attribute, which is the only thing a form reset
+    // restores: the line above writes a property, and a property is not a
+    // default. Without it a reset unchecks every mirror while the state — and
+    // the control on screen — stays checked, and the form submits nothing.
+    defaultChecked: options.defaultChecked,
     required: options.required,
     disabled: options.disabled,
     // Reachable to the platform, invisible to assistive technology and to Tab:
@@ -688,6 +732,34 @@ function mirrorInput(
     el.addEventListener('click', swallow);
     onCleanup(() => el.removeEventListener('click', swallow));
   });
+}
+
+/**
+ * Put the state back to where it started when the owning form is reset.
+ *
+ * The mirrors go back by themselves, to the `defaultChecked` they carry; the
+ * state is the half the platform knows nothing about. It is written directly
+ * rather than through the setter, which refuses while disabled — and a reset
+ * puts a disabled control's mirror back as well, so a state left behind would
+ * disagree with it. Nothing is read back from the mirrors, which the platform
+ * has not touched yet when `reset` is dispatched; where they are going is
+ * already known. A reset a listener ahead of this one called off is left alone.
+ */
+function followReset(form: () => HTMLFormElement | null | undefined, restore: () => void): void {
+  effect(() => {
+    const owner = form();
+    if (!owner) return;
+    const onReset = (event: Event) => {
+      if (!event.defaultPrevented) restore();
+    };
+    owner.addEventListener('reset', onReset);
+    onCleanup(() => owner.removeEventListener('reset', onReset));
+  });
+}
+
+/** The form a mirror belongs to, which its `form` property says, `form` attribute and all. */
+function formOf(input: Element | null | undefined): HTMLFormElement | null {
+  return isInput(input) ? input.form : null;
 }
 
 /** Point every mirror in a radio group at the value the group actually holds. */

@@ -434,6 +434,19 @@ export function createSlider(options: SliderOptions): Slider {
     write(next);
   }
 
+  /**
+   * Put the value back to where it started, for either reset.
+   *
+   * Not through `setValues`, which refuses while disabled: the platform puts a
+   * disabled control's mirrors back all the same, and a value left behind is
+   * what the slider submits the moment it is enabled again.
+   */
+  function restore(): void {
+    const list = current();
+    if (initial.length === list.length && initial.every((value, i) => value === list[i])) return;
+    write(initial);
+  }
+
   function stepBy(index: number, steps: number): void {
     const list = current();
     const from = list[index];
@@ -658,6 +671,24 @@ export function createSlider(options: SliderOptions): Slider {
   const revision = new Signal.State(0);
   const invalidate = (): void => revision.set(revision.get() + 1);
 
+  /**
+   * Take up a value written into the mirrors from outside, once something
+   * says one was.
+   *
+   * Left alone, the thumb would show one value over a form that submits
+   * another — the disagreement the mirrors exist to prevent. So the value
+   * follows the write, settled onto the grid and into order like any other,
+   * and the mirrors are filled from that, in case settling moved it. Written
+   * directly, as a reset is: a restore does not ask whether the slider is
+   * enabled, and a value left behind is submitted the moment it is.
+   */
+  const adopt = (): void => {
+    const list = current();
+    const next = settle(submitted());
+    if (next.some((value, i) => value !== list[i])) write(next);
+    fillMirrors(next);
+  };
+
   // Delegated from the root, because the mirrors are the consumer's `:for` to
   // render and unrender and there is no moment at which the whole set can be
   // subscribed to one by one.
@@ -667,16 +698,16 @@ export function createSlider(options: SliderOptions): Slider {
 
     const onWrite = (event: Event) => {
       const target = event.target;
-      if (target instanceof Element && target.hasAttribute(SLIDER_INPUT_ATTRIBUTE)) invalidate();
+      if (target instanceof Element && target.hasAttribute(SLIDER_INPUT_ATTRIBUTE)) adopt();
     };
 
     root.addEventListener('input', onWrite);
     root.addEventListener('change', onWrite);
-    window.addEventListener('pageshow', invalidate);
+    window.addEventListener('pageshow', adopt);
     onCleanup(() => {
       root.removeEventListener('input', onWrite);
       root.removeEventListener('change', onWrite);
-      window.removeEventListener('pageshow', invalidate);
+      window.removeEventListener('pageshow', adopt);
     });
   });
 
@@ -703,6 +734,27 @@ export function createSlider(options: SliderOptions): Slider {
     return submitted().join(',') !== pristine;
   };
 
+  /**
+   * Fill every mirror from `values` by hand: from the value the slider started
+   * at, for either reset, and from the value it has just taken up.
+   *
+   * Not left to the render. A mirror a form reset is about to put back has to
+   * be put back here as well — the platform announces nothing when it does
+   * it, and `data-dirty` is rendered from something that can be depended on
+   * rather than from the DOM, so a value written into a mirror from outside
+   * would go on being rendered as an unsaved change long after the reset took
+   * it away. And a value taken up that settles back onto the one the slider
+   * already had changes nothing the render would rewrite.
+   */
+  function fillMirrors(values: readonly number[]): void {
+    for (const [index, value] of values.entries()) {
+      const mirror = mirrorAt(index);
+      const text = String(value);
+      if (mirror && mirror.value !== text) mirror.value = text;
+    }
+    invalidate();
+  }
+
   const field: FormField = {
     ...composed,
     isDirty,
@@ -712,12 +764,8 @@ export function createSlider(options: SliderOptions): Slider {
     // field reporting itself clean is telling the truth about the submit and
     // about the thumb.
     reset: () => {
-      setValues(initial);
-      for (const [index, value] of initial.entries()) {
-        const mirror = mirrorAt(index);
-        const text = String(value);
-        if (mirror && mirror.value !== text) mirror.value = text;
-      }
+      restore();
+      fillMirrors(initial);
       composed.reset();
     },
     fieldProps: () => ({ ...composed.fieldProps(), 'data-dirty': isDirty() || undefined }),
@@ -725,17 +773,20 @@ export function createSlider(options: SliderOptions): Slider {
   };
 
   // The field clears its own record on reset; the value is ours to put back.
-  // `reset` is dispatched partway through the platform's own algorithm, so the
-  // restore is queued until after it has finished with the mirrors.
+  // Nothing is read back from the mirrors, so there is nothing to wait for the
+  // platform to finish. A reset a listener ahead of this one called off is
+  // left alone.
   effect(() => {
     const form = options.root()?.closest('form');
     if (!form) return;
 
-    const onReset = () => {
+    const onReset = (event: Event) => {
+      if (event.defaultPrevented) return;
       // Every mirror is about to be put back to the `value` attribute this
       // slider wrote, so whatever was written over them goes with it. The
       // value is the half the platform knows nothing about.
-      queueMicrotask(() => setValues(initial));
+      restore();
+      fillMirrors(initial);
     };
     form.addEventListener('reset', onReset);
     onCleanup(() => form.removeEventListener('reset', onReset));
@@ -1257,6 +1308,16 @@ export interface FileUploadOptions {
   paste?: boolean;
   /** Take a drop anywhere on the page, not only on the drop zone. */
   fullPage?: boolean;
+
+  /**
+   * The submission name, so a plain form post carries the files themselves.
+   *
+   * Written to the input only when there is no `transport`. With one, the
+   * bytes have already gone up over the wire while the input still holds every
+   * queued file, sent ones included — so a name here would post each of them a
+   * second time with the form, which is never what a transport is for.
+   */
+  name?: string;
 
   disabled?: () => boolean;
   required?: () => boolean;
@@ -1982,6 +2043,18 @@ export function createFileUpload(options: FileUploadOptions): FileUpload {
   // Form field
   // -------------------------------------------------------------------------
 
+  /**
+   * Whether a submit now would post half an upload: a file is still on its way.
+   *
+   * Only with a transport. Without one nothing is ever sent — the form posts
+   * the files itself, through the input — so a pending file is not on its way
+   * anywhere, and counting it would refuse every submit such a form makes.
+   */
+  const isBusy = (list: readonly UploadItem[]): boolean =>
+    options.transport !== undefined &&
+    options.blockSubmitWhileBusy !== false &&
+    list.some((item) => item.status === 'uploading' || item.status === 'pending');
+
   const field: FormField = createFormField({
     control: options.input,
     label: options.label,
@@ -1989,24 +2062,55 @@ export function createFileUpload(options: FileUploadOptions): FileUpload {
     errorMessage: options.errorMessage,
     required: options.required,
     disabled: options.disabled,
+    // A file still going up refuses the submit through validation rather than
+    // at once, so the message arrives with the refused submit. An upload in
+    // progress is not a mistake, and saying so the moment one began would put
+    // an alert in the error region, and `aria-invalid` on the input, every
+    // time a file was added.
+    validate: () =>
+      isBusy(untrack(items)) ? (labels.busy ?? 'Wait for the upload to finish.') : undefined,
   });
 
   /**
-   * Push the queue's verdict into the platform.
+   * Push the queue's refusals into the platform.
    *
-   * A form whose upload has failed, or has not finished, must not submit —
-   * and the only way to stop it that also covers a submit the consumer never
-   * wrote a handler for is the control's own validity.
+   * A form whose upload has failed, or holds a file it refused, must not
+   * submit — and the only way to stop it that also covers a submit the
+   * consumer never wrote a handler for is the control's own validity. A
+   * refusal is shown at once, since it is news about something the user just
+   * did.
    */
   effect(() => {
     const list = items();
-    const busy = list.some((item) => item.status === 'uploading' || item.status === 'pending');
-    const rejected = list.find((item) => item.status === 'rejected' || item.status === 'error');
+    const refused = list.find((item) => item.status === 'rejected' || item.status === 'error');
+    const busy = isBusy(list);
 
-    if (rejected?.error) field.setCustomValidity(rejected.error.message);
-    else if (busy && options.blockSubmitWhileBusy !== false) {
-      field.setCustomValidity(labels.busy ?? 'Wait for the upload to finish.');
-    } else field.setCustomValidity('');
+    untrack(() => {
+      field.setCustomValidity(refused?.error?.message ?? '');
+      // A refused submit put the busy message on screen; it goes when the
+      // reason does, rather than waiting for the next submit to take it back.
+      if (!busy && field.isInvalid()) void field.validate();
+    });
+  });
+
+  // A file input has no default list of files, so a reset empties it — and the
+  // queue is the half the platform knows nothing about. Left alone it would go
+  // on listing, and sending, files the form has just been told to forget,
+  // under an input that no longer submits any of them. So the queue empties
+  // too, which is what `clear()` already means: cancelled as well as
+  // forgotten. Nothing is read back, so there is nothing to wait for, and a
+  // reset a listener ahead of this one called off is left alone.
+  effect(() => {
+    const input = options.input();
+    const form = input instanceof HTMLInputElement ? input.form : null;
+    if (!form) return;
+
+    const onReset = (event: Event) => {
+      if (!event.defaultPrevented) clearAll();
+    };
+
+    form.addEventListener('reset', onReset);
+    onCleanup(() => form.removeEventListener('reset', onReset));
   });
 
   // -------------------------------------------------------------------------
@@ -2302,6 +2406,13 @@ export function createFileUpload(options: FileUploadOptions): FileUpload {
         // these is checked again on the files that come back.
         webkitdirectory: options.directory === true,
       };
+      // Omitted rather than set to undefined: `name` is a property on an
+      // input, and assigning undefined to it submits the string "undefined".
+      // A transport takes the name off, because it has already sent the bytes
+      // the input is still holding.
+      if (options.name !== undefined && options.transport === undefined) {
+        props.name = options.name;
+      }
       // Hiding this is the consumer's business — but hide it with
       // `VISUALLY_HIDDEN_INPUT_STYLE`, not `display: none`, or a required file
       // input that blocks a submit has nowhere to show the reason.
@@ -2356,7 +2467,12 @@ export function createFileUpload(options: FileUploadOptions): FileUpload {
 
     removeProps: (item) => ({
       type: 'button',
-      'aria-label': labels.remove?.(item) ?? `Remove ${item.file.name}`,
+      // "Remove" is one of the words the catalogue carries, and every other
+      // remove button in the library takes it from there, so a German page
+      // does not have one row of English buttons in it.
+      'aria-label':
+        labels.remove?.(item) ??
+        `${locale.has('remove') ? locale.t('remove') : 'Remove'} ${item.file.name}`,
       'data-status': item.status,
     }),
   };

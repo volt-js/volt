@@ -12,7 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { compileTemplate } from '@voltdev/core/jit';
-import { Component, Signal, flushSync, mount } from '@voltdev/core';
+import { Component, Signal, createRoot, flushSync, mount } from '@voltdev/core';
 import {
   createFormField,
   type FormFieldOptions,
@@ -56,6 +56,29 @@ async function settle(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
   flushSync();
+}
+
+/**
+ * Reset the form in the order a browser does, which this environment's own
+ * `reset()` does not: the event first, then every microtask its listeners
+ * queued — a press on a reset button runs them as each listener returns, with
+ * nothing else on the stack to wait for — and only then the controls put back.
+ */
+async function browserReset(form: HTMLFormElement): Promise<void> {
+  const event = new Event('reset', { bubbles: true, cancelable: true });
+  if (!form.dispatchEvent(event)) return;
+  await settle();
+
+  // The environment's `reset()` puts the controls back and then dispatches an
+  // event of its own, which is the one that has just been heard.
+  const dispatch = form.dispatchEvent;
+  form.dispatchEvent = () => true;
+  try {
+    form.reset();
+  } finally {
+    form.dispatchEvent = dispatch;
+  }
+  await settle();
 }
 
 function deferred<T>(): {
@@ -441,6 +464,52 @@ describe('the platform half', () => {
 
     expect(submit(form()).submitted).toBe(true);
   });
+
+  it('keeps the platform’s own wording for a constraint while a custom message is set', () => {
+    // A control that words its constraints itself, as a browser does for every
+    // native one in the user's language — the part of a browser this test
+    // environment leaves out. It has the platform's single message slot: once
+    // a custom message is set, `validationMessage` is that message.
+    class Picker extends HTMLElement {
+      value = '';
+      #custom = '';
+      get willValidate(): boolean {
+        return true;
+      }
+      get validity(): ValidityState {
+        const valueMissing = this.value === '';
+        const customError = this.#custom !== '';
+        return { valueMissing, customError, valid: !valueMissing && !customError } as ValidityState;
+      }
+      get validationMessage(): string {
+        return this.#custom || (this.value === '' ? 'Choisissez une couleur.' : '');
+      }
+      setCustomValidity(message: string): void {
+        this.#custom = message;
+      }
+    }
+    customElements.define('v-wording-picker', Picker);
+    const picker = document.createElement('v-wording-picker');
+    host.append(picker);
+
+    createRoot((dispose) => {
+      mounted.push({ unmount: dispose });
+      const field = createFormField({ control: () => picker });
+      flushSync();
+      field.setCustomValidity('Cette couleur est prise.');
+      flushSync();
+
+      expect(field.messages()).toEqual(['Choisissez une couleur.', 'Cette couleur est prise.']);
+      expect(picker.validationMessage).toBe('Cette couleur est prise.');
+
+      // And again with the custom message already in the slot, which is how
+      // every evaluation after the first finds the control.
+      field.report();
+      flushSync();
+      expect(field.messages()).toEqual(['Choisissez une couleur.', 'Cette couleur est prise.']);
+      expect(picker.validationMessage).toBe('Cette couleur est prise.');
+    });
+  });
 });
 
 describe('setCustomValidity', () => {
@@ -484,6 +553,38 @@ describe('setCustomValidity', () => {
 
     expect(field.state()).toBe('valid');
     expect(input().validity.customError).toBe(false);
+  });
+
+  it('says nothing about an untouched field when a message it never had is cleared', () => {
+    const { field, input, error } = signup({ required: true });
+
+    // What an effect that mirrors a server's verdict does on its first run.
+    // Clearing is not a request to judge the field, and judging it here would
+    // put the required message on screen before anyone had typed.
+    field.setCustomValidity('');
+    flushSync();
+
+    expect(field.state()).toBe('valid');
+    expect(input().hasAttribute('aria-invalid')).toBe(false);
+    expect(error()).toBeNull();
+  });
+
+  it('stops refusing the submit at the next edit, whenever the screen catches up', () => {
+    const { field, input, form } = signup({}, { revalidateOn: 'blur' });
+    type(input(), 'someone@example.com');
+    field.setCustomValidity('Taken.');
+    flushSync();
+
+    type(input(), 'someone.else@example.com');
+    // The message waits for the blur, as asked; the platform does not, or a
+    // submit made before the blur is refused on a verdict about a value that
+    // is no longer there, with nothing on screen to say why.
+    expect(input().validity.customError).toBe(false);
+
+    const result = submit(form());
+    expect(result.submitted).toBe(true);
+    expect(result.prevented).toBe(false);
+    expect(field.state()).toBe('valid');
   });
 });
 
@@ -587,6 +688,188 @@ describe('a validator of the consumer’s own', () => {
     await field.validate();
 
     expect(validate).not.toHaveBeenCalled();
+    expect(field.state()).toBe('valid');
+  });
+
+  it('does not refuse a submit on its verdict about a value that has since changed', () => {
+    const { field, input, form } = signup(
+      {},
+      {
+        revalidateOn: 'submit',
+        validate: (value) => (value === 'taken@example.com' ? 'Already registered.' : null),
+      },
+    );
+    type(input(), 'taken@example.com');
+    submit(form());
+    expect(field.messages()).toEqual(['Already registered.']);
+
+    type(input(), 'free@example.com');
+    // Re-checked by the submit itself — which the platform must let happen,
+    // rather than refuse on the old verdict before the submit event can fire.
+    const result = submit(form());
+
+    expect(result.submitted).toBe(true);
+    expect(result.prevented).toBe(false);
+    expect(field.state()).toBe('valid');
+  });
+});
+
+describe('an async validator and a native submit', () => {
+  it('lets the submit through once the validator has passed the value', async () => {
+    const validate = vi.fn(() => Promise.resolve<ValidationOutcome>(null));
+    const { field, input, form } = signup({}, { validate });
+    type(input(), 'someone@example.com');
+    await field.validate();
+    await settle();
+    expect(field.state()).toBe('valid');
+
+    const result = submit(form());
+
+    expect(result.submitted).toBe(true);
+    expect(result.prevented).toBe(false);
+    // The answer about this value is in. Asking again would put the field back
+    // to pending, and a pending field is one no submit can get past.
+    expect(validate).toHaveBeenCalledTimes(1);
+  });
+
+  it('makes the submit it had to refuse once the check that refused it passes', async () => {
+    const gate = deferred<ValidationOutcome>();
+    const { field, input, form } = signup({}, { validate: () => gate.promise });
+    type(input(), 'someone@example.com');
+
+    const seen: boolean[] = [];
+    form().addEventListener('submit', (event) => {
+      seen.push(event.defaultPrevented);
+      event.preventDefault();
+    });
+    form().requestSubmit();
+    flushSync();
+    expect(seen).toEqual([true]);
+    expect(field.state()).toBe('pending');
+
+    gate.resolve(null);
+    await settle();
+
+    expect(seen).toEqual([true, false]);
+    expect(field.state()).toBe('valid');
+  });
+
+  it('keeps refusing, and says why, when the check fails', async () => {
+    const gate = deferred<ValidationOutcome>();
+    const { field, input, form } = signup({}, { validate: () => gate.promise });
+    type(input(), 'taken@example.com');
+
+    const seen: boolean[] = [];
+    form().addEventListener('submit', (event) => {
+      seen.push(event.defaultPrevented);
+      event.preventDefault();
+    });
+    form().requestSubmit();
+    gate.resolve('Already registered.');
+    await settle();
+
+    expect(seen).toEqual([true]);
+    expect(field.messages()).toEqual(['Already registered.']);
+    // The verdict stands until the value changes, so the next submit is
+    // refused on it rather than asking the server the same question again.
+    expect(submit(form()).submitted).toBe(false);
+  });
+
+  it('does not submit on an answer about a value that has since been edited', async () => {
+    const gates = [deferred<ValidationOutcome>(), deferred<ValidationOutcome>()];
+    let call = 0;
+    const { input, form } = signup({}, { validate: () => gates[call++]!.promise });
+    type(input(), 'someone@example.com');
+
+    const seen: boolean[] = [];
+    form().addEventListener('submit', (event) => {
+      seen.push(event.defaultPrevented);
+      event.preventDefault();
+    });
+    form().requestSubmit();
+    flushSync();
+    // The submit was for the value that was there when it was made.
+    type(input(), 'someone.else@example.com');
+
+    gates[0]!.resolve(null);
+    gates[1]!.resolve(null);
+    await settle();
+
+    expect(seen).toEqual([true]);
+  });
+
+  it('drops an answer that lands after the edit, when nothing asks again until the submit', async () => {
+    const gates = [deferred<ValidationOutcome>(), deferred<ValidationOutcome>()];
+    let call = 0;
+    const { field, input, form } = signup(
+      {},
+      { revalidateOn: 'submit', validate: () => gates[call++]!.promise },
+    );
+    type(input(), 'taken@example.com');
+    expect(submit(form()).prevented).toBe(true);
+    expect(field.state()).toBe('pending');
+
+    // The edit asks nothing — that waits for the submit — so the answer still
+    // on its way is the only thing that could land, and it is about the old
+    // value.
+    type(input(), 'free@example.com');
+    expect(field.state()).toBe('valid');
+    expect(input().hasAttribute('aria-busy')).toBe(false);
+
+    gates[0]!.resolve('Already registered.');
+    await settle();
+
+    expect(field.messages()).toEqual([]);
+    expect(input().validity.customError).toBe(false);
+
+    // So the next submit reaches the field, which asks about the value that
+    // is there now, and goes when that answer says yes.
+    const seen: boolean[] = [];
+    form().addEventListener('submit', (event) => {
+      seen.push(event.defaultPrevented);
+      event.preventDefault();
+    });
+    form().requestSubmit();
+    flushSync();
+    expect(call).toBe(2);
+
+    gates[1]!.resolve(null);
+    await settle();
+
+    expect(seen).toEqual([true, false]);
+  });
+
+  it('asks again at the next submit when the validator could not be reached', async () => {
+    let call = 0;
+    const validate = vi.fn(() =>
+      call++ === 0
+        ? Promise.reject<ValidationOutcome>(new Error('network'))
+        : Promise.resolve<ValidationOutcome>(null),
+    );
+    const { field, input, form } = signup({}, { validate });
+    type(input(), 'someone@example.com');
+
+    const seen: boolean[] = [];
+    form().addEventListener('submit', (event) => {
+      seen.push(event.defaultPrevented);
+      event.preventDefault();
+    });
+    form().requestSubmit();
+    await settle();
+
+    // Nobody has passed the value, so it is not let through — and says why.
+    expect(seen).toEqual([true]);
+    expect(field.messages()).toEqual(['This value could not be checked.']);
+    // But no answer is not an answer about the value. Held in the platform, it
+    // would refuse the next submit before the field heard it, and the check
+    // could never be tried again without changing what was typed.
+    expect(input().validity.customError).toBe(false);
+
+    form().requestSubmit();
+    await settle();
+
+    expect(validate).toHaveBeenCalledTimes(2);
+    expect(seen).toEqual([true, true, false]);
     expect(field.state()).toBe('valid');
   });
 });
@@ -709,15 +992,44 @@ describe('reset', () => {
     expect(field.isDirty()).toBe(true);
     expect(field.isTouched()).toBe(true);
 
+    // As a script resets it. This environment puts the controls back before it
+    // dispatches the event; a browser's order is the next test.
     form().reset();
-    // The reset event fires as part of resetting, so the control's value is
-    // only settled once the algorithm around it has finished.
     await settle();
 
     expect(input().value).toBe('');
     expect(field.isDirty()).toBe(false);
     expect(field.isTouched()).toBe(false);
     expect(field.state()).toBe('valid');
+  });
+
+  it('is pristine after a reset button is pressed, when the event comes before the value', async () => {
+    const { field, input, form } = signup({ required: true });
+    submit(form());
+    type(input(), 'a');
+    expect(field.isDirty()).toBe(true);
+
+    await browserReset(form());
+
+    // Nothing is fired once the platform has put the value back, so there is
+    // no later moment to read it at: the field has to know where it is going.
+    expect(input().value).toBe('');
+    expect(field.value()).toBe('');
+    expect(field.isDirty()).toBe(false);
+    expect(field.state()).toBe('valid');
+  });
+
+  it('leaves everything alone when the reset is cancelled', async () => {
+    const { field, input, form } = signup({ required: true });
+    type(input(), 'a');
+    blur(input());
+    form().addEventListener('reset', (event) => event.preventDefault(), true);
+
+    await browserReset(form());
+
+    expect(input().value).toBe('a');
+    expect(field.isDirty()).toBe(true);
+    expect(field.isTouched()).toBe(true);
   });
 
   it('clears a custom message from the control as well as from the field', () => {

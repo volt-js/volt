@@ -13,6 +13,7 @@ import { defineComponent, flushSync, mount } from '@voltdev/core';
 import { createRoot } from '@voltdev/reactivity';
 import { createClipboard, type Clipboard } from '../src/clipboard.js';
 import { resetAnnouncer } from '../src/announcer.js';
+import { createLocaleProvider } from '../src/i18n.js';
 
 function spoken(priority = 'polite'): string {
   const region = document.querySelector(`[data-volt-announcer='${priority}']`);
@@ -209,5 +210,59 @@ describe('the trigger, spread onto a button', () => {
       flushSync();
     }
     handle.unmount();
+  });
+});
+
+describe('what it says, in the application’s language', () => {
+  /**
+   * The announcement is the whole of what a screen-reader user is told about a
+   * copy, so an English sentence in a German page is the one part of the
+   * interaction that does not arrive.
+   */
+  function german(options: Parameters<typeof createClipboard>[0]): {
+    clip: Clipboard;
+    dispose: () => void;
+  } {
+    let clip!: Clipboard;
+    let dispose!: () => void;
+    createRoot((d) => {
+      dispose = d;
+      createLocaleProvider({
+        defaultLocale: 'de-DE',
+        messages: { copied: 'Kopiert', copyFailed: 'Kopieren fehlgeschlagen' },
+      });
+      clip = createClipboard(options);
+    });
+    return { clip, dispose };
+  }
+
+  it('announces a copy in the locale’s words', async () => {
+    const { clip, dispose } = german({ text: () => 'x' });
+    await clip.copy();
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(spoken()).toBe('Kopiert');
+    dispose();
+  });
+
+  it('announces a refusal in the locale’s words', async () => {
+    vi.stubGlobal('navigator', {
+      clipboard: { writeText: () => Promise.reject(new Error('no')) },
+    });
+    const { clip, dispose } = german({ text: () => 'x' });
+    await clip.copy();
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(spoken('assertive')).toBe('Kopieren fehlgeschlagen');
+    dispose();
+  });
+
+  it('still prefers a label given outright, which is about this button', async () => {
+    const { clip, dispose } = german({ text: () => 'x', labels: { copied: 'Link kopiert' } });
+    await clip.copy();
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(spoken()).toBe('Link kopiert');
+    dispose();
   });
 });

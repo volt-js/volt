@@ -16,6 +16,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { compileTemplate } from '@voltdev/core/jit';
 import { Component, Signal, flushSync, mount } from '@voltdev/core';
+import { createLocaleProvider } from '../src/i18n.ts';
 import {
   createFileUpload,
   createSlider,
@@ -205,6 +206,31 @@ function build(
 
 function setup(options: Options = {}, box: Partial<DOMRect> = HORIZONTAL): SliderHarness {
   return build(SLIDER, options, host, box);
+}
+
+/**
+ * Reset the form in the order a browser does, which this environment's own
+ * `reset()` does not: the event first, then every microtask its listeners
+ * queued — a press on a reset button runs them as each listener returns, with
+ * nothing else on the stack to wait for — and only then the controls put back.
+ */
+async function browserReset(form: HTMLFormElement): Promise<void> {
+  const event = new Event('reset', { bubbles: true, cancelable: true });
+  if (!form.dispatchEvent(event)) return;
+  await Promise.resolve();
+  flushSync();
+
+  // The environment's `reset()` puts the controls back and then dispatches an
+  // event of its own, which is the one that has just been heard.
+  const dispatch = form.dispatchEvent;
+  form.dispatchEvent = () => true;
+  try {
+    form.reset();
+  } finally {
+    form.dispatchEvent = dispatch;
+  }
+  await Promise.resolve();
+  flushSync();
 }
 
 function press(el: HTMLElement, key: string, modifiers: Partial<KeyboardEventInit> = {}): boolean {
@@ -1209,14 +1235,70 @@ describe('slider: the hidden mirrors', () => {
     press(thumb(0), 'End');
     expect(slider.value()).toBe(100);
 
-    form.reset();
-    // The restore is queued behind the platform's own reset algorithm, which is
-    // still walking the controls when the event fires.
-    await Promise.resolve();
-    flushSync();
+    await browserReset(form);
 
     expect(slider.value()).toBe(20);
     expect(mirrors()[0]!.value).toBe('20');
+  });
+
+  it('stays where it is when the reset is called off', async () => {
+    const form = document.createElement('form');
+    host.append(form);
+    const { slider, thumb, mirrors } = build(SLIDER, { defaultValue: [20], name: 'price' }, form);
+    press(thumb(0), 'End');
+    form.addEventListener('reset', (event) => event.preventDefault(), true);
+
+    await browserReset(form);
+
+    // Nothing else in the form went back, so a thumb that did would be showing
+    // a value the user never agreed to give up.
+    expect(slider.value()).toBe(100);
+    expect(mirrors()[0]!.value).toBe('100');
+  });
+
+  it('puts a disabled slider back on a form reset, thumb and all', async () => {
+    const form = document.createElement('form');
+    host.append(form);
+    const disabled = new Signal.State(false);
+    const { slider, thumb, mirrors } = build(
+      SLIDER,
+      { defaultValue: [20], name: 'price', disabled: () => disabled.get() },
+      form,
+    );
+    press(thumb(0), 'End');
+    disabled.set(true);
+    flushSync();
+
+    await browserReset(form);
+
+    // The platform puts a disabled control back like any other, so the value
+    // has to go back with it — or the moved value is what the slider submits
+    // the moment it is enabled again.
+    expect(slider.values()).toEqual([20]);
+    expect(thumb(0).getAttribute('aria-valuenow')).toBe('20');
+    disabled.set(false);
+    flushSync();
+    expect(mirrors()[0]!.value).toBe('20');
+    expect(new FormData(form).getAll('price')).toEqual(['20']);
+  });
+
+  it('puts a disabled slider back when its field is reset', () => {
+    const disabled = new Signal.State(false);
+    const { slider, thumb, mirrors } = setup({
+      defaultValue: [20],
+      name: 'price',
+      disabled: () => disabled.get(),
+    });
+    press(thumb(0), 'End');
+    disabled.set(true);
+    flushSync();
+
+    slider.field.reset();
+    flushSync();
+
+    expect(slider.values()).toEqual([20]);
+    expect(mirrors()[0]!.value).toBe('20');
+    expect(slider.field.isDirty()).toBe(false);
   });
 
   it('still submits the value it shows after a reset that changed nothing', async () => {
@@ -1224,9 +1306,7 @@ describe('slider: the hidden mirrors', () => {
     host.append(form);
     const { slider, mirrors } = build(SLIDER, { defaultValue: [20], name: 'price' }, form);
 
-    form.reset();
-    await Promise.resolve();
-    flushSync();
+    await browserReset(form);
 
     // The platform resets every control to its own default, and the mirror's
     // default is empty because the value is written as a property and never as
@@ -1330,9 +1410,7 @@ describe('slider: dirtiness', () => {
     expect(slider.value()).toBe(25);
     expect(slider.field.isDirty()).toBe(true);
 
-    form.reset();
-    await Promise.resolve();
-    flushSync();
+    await browserReset(form);
 
     expect(slider.value()).toBe(20);
     expect(slider.field.isDirty()).toBe(false);
@@ -1373,10 +1451,10 @@ describe('slider: dirtiness', () => {
     host.append(form);
     const { slider, root, mirrors } = build(SLIDER, { defaultValue: [20, 80], name: 'price' }, form);
 
-    // A session restore, an autofill or a script writes the control itself: no
-    // thumb moves and no signal is set, and the form goes on to submit a value
-    // the user never chose. A guard that only ever hears about the slider's own
-    // writes has nothing to say about it.
+    // A session restore, an autofill or a script writes the control itself
+    // rather than going through the slider, and the form goes on to submit a
+    // value the user never chose. A guard that only ever hears about the
+    // slider's own writes has nothing to say about it.
     //
     // Written to the upper thumb's mirror, which is not the control the field
     // listens to — so the render that follows is the slider's own delegation
@@ -1473,25 +1551,96 @@ describe('slider: dirtiness', () => {
     expect(root.hasAttribute('data-dirty')).toBe(false);
   });
 
+  it('moves the thumb to a value written into a mirror, once the write is announced', () => {
+    const form = document.createElement('form');
+    host.append(form);
+    const onValueChange = vi.fn();
+    const { slider, thumb, mirrors } = build(
+      SLIDER,
+      { defaultValue: [20, 80], name: 'price', onValueChange },
+      form,
+    );
+
+    // A restored session writes the control and says so. A thumb that stayed
+    // at 80 would show one value over a form that submits another.
+    const mirror = mirrors()[1]!;
+    mirror.value = '90';
+    mirror.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync();
+
+    expect(slider.values()).toEqual([20, 90]);
+    expect(thumb(1).getAttribute('aria-valuenow')).toBe('90');
+    expect(onValueChange).toHaveBeenLastCalledWith([20, 90]);
+    expect(new FormData(form).getAll('price')).toEqual(['20', '90']);
+
+    // And a page back from the bfcache, which announces itself with nothing
+    // but `pageshow`.
+    mirrors()[0]!.value = '35';
+    window.dispatchEvent(new Event('pageshow'));
+    flushSync();
+
+    expect(slider.values()).toEqual([35, 90]);
+    expect(thumb(0).getAttribute('aria-valuenow')).toBe('35');
+  });
+
+  it('takes up a value written into a mirror while it is disabled', () => {
+    const form = document.createElement('form');
+    host.append(form);
+    const { slider, mirrors } = build(
+      SLIDER,
+      { defaultValue: [20], name: 'price', disabled: () => true },
+      form,
+    );
+
+    // A restore does not ask whether the control is enabled, and a value left
+    // behind in the mirror is the one submitted the moment it is.
+    const mirror = mirrors()[0]!;
+    mirror.value = '60';
+    mirror.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync();
+
+    expect(slider.values()).toEqual([60]);
+  });
+
+  it('keeps the thumbs in order when a value written into a mirror would cross them', () => {
+    const form = document.createElement('form');
+    host.append(form);
+    const { slider, mirrors } = build(SLIDER, { defaultValue: [20, 20], name: 'price' }, form);
+
+    // Settled like any other value, the upper thumb stays where it is — so
+    // nothing the render would rewrite has changed, and the mirror is put
+    // right by hand or it goes on submitting a value no thumb shows.
+    const mirror = mirrors()[1]!;
+    mirror.value = '10';
+    mirror.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    expect(slider.values()).toEqual([20, 20]);
+    expect(new FormData(form).getAll('price')).toEqual(['20', '20']);
+    expect(slider.field.isDirty()).toBe(false);
+  });
+
   it('lets a form reset take back a mirror the slider never wrote', async () => {
     const form = document.createElement('form');
     host.append(form);
-    const { slider, mirrors } = build(SLIDER, { defaultValue: [20], name: 'price' }, form);
+    const { slider, root, mirrors } = build(SLIDER, { defaultValue: [20], name: 'price' }, form);
 
     const mirror = mirrors()[0]!;
     mirror.value = '77';
     mirror.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
     expect(slider.field.isDirty()).toBe(true);
+    expect(root.hasAttribute('data-dirty')).toBe(true);
 
     // The platform puts every mirror back to the `value` attribute the slider
     // wrote, so the reset is what ends the drift — the slider itself has no
     // value to rewrite them with, being on its default throughout.
-    form.reset();
-    await Promise.resolve();
-    flushSync();
+    await browserReset(form);
     expect(mirrors()[0]!.value).toBe('20');
     expect(slider.field.isDirty()).toBe(false);
+    // And what is rendered says so too, although the platform announces
+    // nothing when it puts a mirror back.
+    expect(root.hasAttribute('data-dirty')).toBe(false);
   });
 
   it('clears a mirror it never wrote when the field is reset', () => {
@@ -3169,6 +3318,35 @@ describe('upload: what assistive technology is told', () => {
     expect(host.querySelector('.retry')!.hasAttribute('aria-disabled')).toBe(false);
   });
 
+  it('names the remove button from the locale catalogue, as every other remove button is', async () => {
+    @Component({
+      selector: `v-upload-${++selectors}`,
+      render: compileTemplate(`
+        <div class="upload">
+          <input class="picker" :ref="input" :spread="upload.inputProps()">
+          <ul>
+            <li :for="entry of upload.items()" :key="entry.id">
+              <button class="remove" :spread="upload.removeProps(entry)"></button>
+            </li>
+          </ul>
+        </div>
+      `),
+    })
+    class GermanUpload {
+      input = new Signal.State<Element | null>(null);
+      locale = createLocaleProvider({ defaultLocale: 'de-DE', messages: { remove: 'Entfernen' } });
+      upload = createFileUpload({ input: () => this.input.get() });
+    }
+
+    const handle = mount(GermanUpload, host);
+    mounted.push(handle);
+    flushSync();
+    (handle.instance as GermanUpload).upload.add([file('urlaub.png')]);
+    await settle();
+
+    expect(host.querySelector('.remove')!.getAttribute('aria-label')).toBe('Entfernen urlaub.png');
+  });
+
   it('announces politely, and never as an emergency', () => {
     const harness = buildUpload({});
     expect(harness.live.getAttribute('role')).toBe('status');
@@ -3277,19 +3455,115 @@ describe('upload: the form around it', () => {
 
     harness.upload.add([file('a.png')]);
     await settle();
-    expect(harness.upload.field.messages()).toEqual(['Wait for the upload to finish.']);
 
     const blocked = new Event('submit', { bubbles: true, cancelable: true });
     form.dispatchEvent(blocked);
+    flushSync();
     // A form that posts half an upload is worse than one that makes the user
-    // wait.
+    // wait — and the refused submit is when the user is told to.
     expect(blocked.defaultPrevented).toBe(true);
+    expect(harness.upload.field.messages()).toEqual(['Wait for the upload to finish.']);
 
     lastFor('a.png').resolve();
     await settle();
+    // The message goes when the reason does, not at the next submit.
+    expect(harness.upload.field.messages()).toEqual([]);
     const allowed = new Event('submit', { bubbles: true, cancelable: true });
     form.dispatchEvent(allowed);
     expect(allowed.defaultPrevented).toBe(false);
+  });
+
+  it('does not call an upload in progress invalid before anyone has submitted', async () => {
+    const harness = buildUpload({ transport: heldTransport() });
+
+    harness.upload.add([file('a.png')]);
+    await settle();
+
+    // Nothing is wrong yet: a file going up is not a mistake, and an error
+    // region that said "Wait for the upload to finish." every time an upload
+    // began would be an alarm about nothing.
+    expect(harness.upload.field.state()).toBe('valid');
+    expect(harness.upload.field.messages()).toEqual([]);
+    expect(harness.picker.hasAttribute('aria-invalid')).toBe(false);
+  });
+
+  it('is not invalid at mount when required and empty', async () => {
+    const harness = buildUpload({ required: () => true });
+    await settle();
+
+    // The one thing the form field exists to prevent: a required field
+    // announcing itself wrong before anyone has done anything.
+    expect(harness.upload.field.state()).toBe('valid');
+    expect(harness.upload.field.messages()).toEqual([]);
+    expect(harness.picker.hasAttribute('aria-invalid')).toBe(false);
+  });
+
+  it('lets a form without a transport post its files itself', async () => {
+    const form = document.createElement('form');
+    host.append(form);
+    const harness = buildUpload({ name: 'attachments' }, UPLOAD, form);
+
+    harness.upload.add([file('a.png')]);
+    await settle();
+
+    // Nothing will ever send these, so nothing is on its way: the form is what
+    // posts them, through the input.
+    const submit = new Event('submit', { bubbles: true, cancelable: true });
+    form.dispatchEvent(submit);
+    expect(submit.defaultPrevented).toBe(false);
+    expect(harness.picker.name).toBe('attachments');
+    expect((new FormData(form).getAll('attachments') as File[]).map((one) => one.name)).toEqual([
+      'a.png',
+    ]);
+  });
+
+  it('leaves the input unnamed when a transport sends the files', async () => {
+    const harness = buildUpload({ name: 'attachments', transport: heldTransport() });
+
+    // The input holds every queued file, sent ones included, so a name would
+    // post each of them a second time with the form.
+    expect(harness.picker.hasAttribute('name')).toBe(false);
+  });
+
+  it('empties the queue with the input on a form reset', async () => {
+    const form = document.createElement('form');
+    host.append(form);
+    const harness = buildUpload({ transport: heldTransport(), accept: 'image/*' }, UPLOAD, form);
+
+    harness.upload.add([file('a.png'), file('notes.txt', 10, 'text/plain')]);
+    await settle();
+    expect(harness.upload.field.isInvalid()).toBe(true);
+
+    form.reset();
+    await settle();
+
+    // The browser empties the input, and a queue that kept its files would go
+    // on listing — and sending — what the form has just been told to forget.
+    expect(harness.upload.items()).toEqual([]);
+    expect(lastFor('a.png').aborted).toBe(true);
+    expect(picked(harness.picker)).toEqual([]);
+    expect(harness.upload.field.state()).toBe('valid');
+    const submit = new Event('submit', { bubbles: true, cancelable: true });
+    form.dispatchEvent(submit);
+    expect(submit.defaultPrevented).toBe(false);
+  });
+
+  it('keeps every file when the reset is called off', async () => {
+    const form = document.createElement('form');
+    host.append(form);
+    const harness = buildUpload({ transport: heldTransport() }, UPLOAD, form);
+
+    harness.upload.add([file('a.png')]);
+    await settle();
+    form.addEventListener('reset', (event) => event.preventDefault(), true);
+
+    form.dispatchEvent(new Event('reset', { bubbles: true, cancelable: true }));
+    await settle();
+
+    // "Discard your changes?" answered no: nothing else in the form went back,
+    // so an upload that threw its files away would be the only thing that did.
+    expect(harness.upload.items().map((item) => item.file.name)).toEqual(['a.png']);
+    expect(lastFor('a.png').aborted).toBe(false);
   });
 
   it('lets a submit through while busy when told to', async () => {

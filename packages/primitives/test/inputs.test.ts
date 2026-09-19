@@ -126,6 +126,29 @@ async function settle(): Promise<void> {
 }
 
 /**
+ * Reset the form in the order a browser does, which this environment's own
+ * `reset()` does not: the event first, then every microtask its listeners
+ * queued — a press on a reset button runs them as each listener returns, with
+ * nothing else on the stack to wait for — and only then the controls put back.
+ */
+async function browserReset(form: HTMLFormElement): Promise<void> {
+  const event = new Event('reset', { bubbles: true, cancelable: true });
+  if (!form.dispatchEvent(event)) return;
+  await settle();
+
+  // The environment's `reset()` puts the controls back and then dispatches an
+  // event of its own, which is the one that has just been heard.
+  const dispatch = form.dispatchEvent;
+  form.dispatchEvent = () => true;
+  try {
+    form.reset();
+  } finally {
+    form.dispatchEvent = dispatch;
+  }
+  await settle();
+}
+
+/**
  * A `ResizeObserver` that delivers exactly what a test asks it to.
  *
  * happy-dom lays nothing out, so the real one would never fire, and the count
@@ -286,8 +309,7 @@ describe('text input', () => {
     const { instance, input, form } = textInput();
 
     typeInto(input(), 'grace');
-    form().reset();
-    await settle();
+    await browserReset(form());
 
     expect(input().value).toBe('');
     expect(instance.text.value()).toBe('');
@@ -310,14 +332,51 @@ describe('text input', () => {
     expect(value.get()).toBe('ada');
   });
 
-  it('counts what is left by characters, not by code units', () => {
+  it('counts what is left the way maxlength does, in code units', () => {
     inputOptions = { maxLength: 4 };
     const { instance, input } = textInput();
 
     expect(input().getAttribute('maxlength')).toBe('4');
     typeInto(input(), '👍👍');
-    // Two thumbs are two characters to a person and four to `String#length`.
-    expect(instance.text.remaining()).toBe(2);
+    // Two thumbs are two characters to a person and four to the platform,
+    // which counts `maxlength` in UTF-16 code units — so the box is full, and
+    // a count of two left would promise room the box will refuse.
+    expect(instance.text.remaining()).toBe(0);
+  });
+
+  it('makes defaultValue the value a reset goes back to, and dirty is measured from', async () => {
+    inputOptions = { name: 'nickname', defaultValue: 'Ada' };
+    const { instance, input, form } = textInput();
+
+    expect(input().value).toBe('Ada');
+    // Nobody has typed anything, so there is nothing unsaved.
+    expect(instance.text.field.isDirty()).toBe(false);
+
+    typeInto(input(), 'Grace');
+    expect(instance.text.field.isDirty()).toBe(true);
+
+    await browserReset(form());
+
+    expect(input().value).toBe('Ada');
+    expect(instance.text.value()).toBe('Ada');
+    expect(instance.text.field.isDirty()).toBe(false);
+    expect(submitted(form())).toEqual([['nickname', 'Ada']]);
+  });
+
+  it('takes what a signal it was handed starts at as the default too', async () => {
+    const value = new Signal.State('Ada');
+    inputOptions = { name: 'nickname', value };
+    const { instance, input, form } = textInput();
+
+    // An edit form seeded from a record is not an edit nobody has saved.
+    expect(instance.text.field.isDirty()).toBe(false);
+
+    typeInto(input(), 'Grace');
+    await browserReset(form());
+
+    expect(value.get()).toBe('Ada');
+    expect(instance.text.field.isDirty()).toBe(false);
+    expect(submitted(form())).toEqual([['nickname', 'Ada']]);
   });
 
   it('reports emptiness for CSS without a class from the consumer', () => {
@@ -415,6 +474,64 @@ describe('textarea', () => {
     handle.unmount();
     flushSync();
     expect(el.style.getPropertyValue('field-sizing')).toBe('');
+    expect(el.style.getPropertyValue('min-height')).toBe('');
+    expect(el.style.getPropertyValue('max-height')).toBe('');
+  });
+
+  it('opens rows tall where the browser sizes it, which ignores rows itself', () => {
+    textareaOptions = { rows: 4 };
+    const { area } = textarea();
+
+    // The platform drops `rows` on an element sized to its content, so an
+    // empty box would be one line tall; the floor is said in lines instead.
+    expect(area().style.getPropertyValue('min-height')).toBe('4lh');
+  });
+
+  it('counts its padding and border into the lines it opens and stops at, under border-box', () => {
+    const sheet = document.createElement('style');
+    sheet.textContent = 'textarea { box-sizing: border-box; padding: 4px 6px; border: 1px solid; }';
+    document.head.append(sheet);
+    try {
+      textareaOptions = { rows: 4, maxRows: 6 };
+      const { area } = textarea();
+
+      // Under border-box a height includes the padding and the border, and a
+      // line of text does not, so `4lh` alone would open the box short of
+      // four lines by exactly what surrounds them.
+      expect(area().style.getPropertyValue('min-height')).toBe('calc(4lh + 10px)');
+      expect(area().style.getPropertyValue('max-height')).toBe('calc(6lh + 10px)');
+    } finally {
+      sheet.remove();
+    }
+  });
+
+  it('leaves a floor the author’s stylesheet sets to the stylesheet', () => {
+    const sheet = document.createElement('style');
+    sheet.textContent = 'textarea { min-height: 6rem; }';
+    document.head.append(sheet);
+    try {
+      const { area } = textarea();
+
+      // An inline style beats every rule in a stylesheet, so a floor written
+      // here would quietly override the one the design system chose.
+      expect(area().style.getPropertyValue('min-height')).toBe('');
+      expect(area().style.getPropertyValue('field-sizing')).toBe('content');
+    } finally {
+      sheet.remove();
+    }
+  });
+
+  it('goes back to its defaultValue on a reset', async () => {
+    textareaOptions = { name: 'bio', defaultValue: 'Hello.' };
+    const { instance, area, form } = textarea();
+    expect(instance.area.field.isDirty()).toBe(false);
+
+    typeInto(area(), 'Something else.');
+    await browserReset(form());
+
+    expect(area().value).toBe('Hello.');
+    expect(instance.area.value()).toBe('Hello.');
+    expect(submitted(form())).toEqual([['bio', 'Hello.']]);
   });
 
   it('writes no style at all when auto-sizing is declined', () => {
@@ -586,6 +703,22 @@ describe('number input', () => {
     expect(hidden().type).toBe('hidden');
     // A server parses a number, not a locale's punctuation.
     expect(submitted(form())).toEqual([['qty', '1234.56']]);
+  });
+
+  it('goes back to its defaultValue on a reset, and is not dirty before one', async () => {
+    numberOptions = { locale: 'en-US', name: 'qty', defaultValue: 5 };
+    const { instance, input, form } = numberInput();
+    expect(instance.num.field.isDirty()).toBe(false);
+
+    typeInto(input(), '12');
+    expect(instance.num.field.isDirty()).toBe(true);
+
+    await browserReset(form());
+
+    expect(instance.num.value()).toBe(5);
+    expect(input().value).toBe('5');
+    expect(instance.num.field.isDirty()).toBe(false);
+    expect(submitted(form())).toEqual([['qty', '5']]);
   });
 
   it('reads back what the locale writes, which is the half usually missing', () => {
@@ -961,6 +1094,30 @@ describe('reading a number the way a locale writes one', () => {
     expect(parseLocaleNumber('١٢٣٤٫٥٦', 'ar-EG')).toBe(1234.56);
   });
 
+  it('reads digits the locale does not write by default, rather than dropping them', () => {
+    // Hindi numbers in Latin digits by default, and a Devanagari keyboard
+    // types the other kind; an IME in full-width mode types a third. A digit
+    // read as decoration and dropped changes the number without a word.
+    expect(parseLocaleNumber('१२३४.५', 'hi-IN')).toBe(1234.5);
+    expect(parseLocaleNumber('१2३', 'hi-IN')).toBe(123);
+    expect(parseLocaleNumber('１２３', 'ja-JP')).toBe(123);
+    expect(parseLocaleNumber('𝟒𝟐', 'en-US')).toBe(42);
+  });
+
+  it('reads the locale’s own digits without searching for where their run starts', () => {
+    // Parsed on every keystroke in a number field, and for a locale that
+    // writes Arabic-Indic digits by default they are every digit typed. Only
+    // a digit from some other numbering system is worth the walk back to its
+    // zero, which builds a character at every step.
+    const build = vi.spyOn(String, 'fromCodePoint');
+    try {
+      expect(parseLocaleNumber('١٢٣٤٥٦٧٨٩', 'ar-EG')).toBe(123456789);
+      expect(build).not.toHaveBeenCalled();
+    } finally {
+      build.mockRestore();
+    }
+  });
+
   it('answers null for text that is not a number', () => {
     expect(parseLocaleNumber('', 'en-US')).toBeNull();
     expect(parseLocaleNumber('twelve', 'en-US')).toBeNull();
@@ -1096,6 +1253,33 @@ describe('password input', () => {
     expect(toggle().getAttribute('aria-label')).toBe('Reveal');
     click(toggle());
     expect(status().textContent).toBe('Now visible');
+  });
+
+  it('names its toggle from the locale catalogue, both ways round', () => {
+    @Component({
+      selector: `v-pw-${++selectors}`,
+      render: compileTemplate(`
+        <input :ref="input" :spread="pw.inputProps()">
+        <button :spread="pw.toggleProps()" :click="pw.toggle()">eye</button>
+      `),
+    })
+    class GermanPassword {
+      input = new Signal.State<Element | null>(null);
+      locale = createLocaleProvider({
+        defaultLocale: 'de-DE',
+        messages: { showPassword: 'Passwort anzeigen', hidePassword: 'Passwort verbergen' },
+      });
+      pw = createPasswordInput({ input: () => this.input.get() });
+    }
+
+    track(mount(GermanPassword, host));
+    flushSync();
+    const toggle = host.querySelector('button')!;
+
+    // The key is the one its three siblings are named after.
+    expect(toggle.getAttribute('aria-label')).toBe('Passwort anzeigen');
+    click(toggle);
+    expect(toggle.getAttribute('aria-label')).toBe('Passwort verbergen');
   });
 });
 
@@ -1456,12 +1640,13 @@ describe('PIN input', () => {
   });
 
   it('follows a form reset, which fires no input event', async () => {
-    pinOptions = { name: 'code', length: 6, defaultValue: '123456' };
+    pinOptions = { name: 'code', length: 6 };
     const { instance, hidden, form, values } = pinInput();
+    instance.pin.setValue('123456');
+    flushSync();
 
     expect(submitted(form())).toEqual([['code', '123456']]);
-    form().reset();
-    await settle();
+    await browserReset(form());
 
     // The browser blanks the boxes and the hidden input either way. A value
     // that did not hear about it would leave the field claiming a complete
@@ -1473,13 +1658,53 @@ describe('PIN input', () => {
     expect(submitted(form())).toEqual([['code', '']]);
   });
 
+  it('goes back to its defaultValue on a reset, and is not dirty before one', async () => {
+    const onComplete = vi.fn();
+    pinOptions = { name: 'code', length: 4, defaultValue: '1234', onComplete };
+    const { instance, form, values } = pinInput();
+    expect(instance.pin.field.isDirty()).toBe(false);
+
+    instance.pin.setValue('98');
+    flushSync();
+    expect(instance.pin.field.isDirty()).toBe(true);
+
+    await browserReset(form());
+
+    // Back to the code it was created with, as every other control in the
+    // form goes back to its default — not back to nothing.
+    expect(instance.pin.value()).toBe('1234');
+    expect(values()).toEqual(['1', '2', '3', '4']);
+    expect(instance.pin.field.isDirty()).toBe(false);
+    expect(submitted(form())).toEqual([['code', '1234']]);
+    // Put back whole, not completed by anyone — and `onComplete` is often
+    // what submits the code.
+    expect(onComplete).not.toHaveBeenCalled();
+  });
+
+  it('puts a default back a character to a box, one outside the BMP included', async () => {
+    pinOptions = { name: 'code', length: 4, type: 'any', defaultValue: '😀1' };
+    const { instance, boxes, form, values } = pinInput();
+    instance.pin.setValue('ab');
+    flushSync();
+
+    await browserReset(form());
+
+    // Two characters, though three UTF-16 units: counted by the unit, the
+    // emoji is split across two boxes as a pair of lone surrogates, and the
+    // tab stop lands a box past where the next character goes.
+    expect(values()).toEqual(['😀', '1', '', '']);
+    expect(boxes().map((el) => el.getAttribute('tabindex'))).toEqual(['-1', '-1', '0', '-1']);
+    expect(instance.pin.value()).toBe('😀1');
+  });
+
   it('starts the next code from empty after a reset', async () => {
-    pinOptions = { length: 6, defaultValue: '123456' };
+    pinOptions = { length: 6 };
     const { instance, box, boxes, form, values } = pinInput();
+    instance.pin.setValue('123456');
+    flushSync();
 
     box(5).focus();
-    form().reset();
-    await settle();
+    await browserReset(form());
 
     // The tab stop belongs where the next character does, and after a reset
     // that is the first box rather than the last one anybody touched.
@@ -2522,6 +2747,38 @@ describe('tags input', () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
+  it('says what a required, empty field is missing, and that it is required', () => {
+    tagsOptions = { required: () => true, name: 'topics' };
+    const { instance, form } = tagsInput();
+
+    form().dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    flushSync();
+
+    // Its own sentence, not the shared catalogue's generic "Required", which
+    // is always there to be found and so would always win.
+    expect(instance.tags.field.messages()).toEqual(['Add at least one tag.']);
+    // Required, although the text box it validates through is not.
+    expect(instance.tags.field.isRequired()).toBe(true);
+    expect(instance.tags.field.fieldProps()['data-required']).toBe(true);
+  });
+
+  it('goes back to the tags it started with on a reset', async () => {
+    tagsOptions = { name: 'topics', defaultValue: ['ada'] };
+    const { instance, input, form, labels } = tagsInput();
+    typeInto(input(), 'grace');
+    press(input(), 'Enter');
+    typeInto(input(), 'half');
+
+    await browserReset(form());
+
+    // The tags as well as the draft: a reset that left the tags would leave
+    // them submitting from a form that has just been put back.
+    expect(instance.tags.tags()).toEqual(['ada']);
+    expect(labels()).toEqual(['ada']);
+    expect(instance.tags.draft()).toBe('');
+    expect(submitted(form())).toEqual([['topics', 'ada']]);
+  });
+
   it('can be driven from the signal it was handed', () => {
     const value = new Signal.State<readonly string[]>([]);
     tagsOptions = { value };
@@ -2814,12 +3071,13 @@ describe('rating', () => {
     ratingOptions = { name: 'score', defaultValue: 4, readOnly: () => true };
     const { instance, radios, form } = rating();
 
-    form().reset();
-    await settle();
+    await browserReset(form());
 
-    // The hidden radios have no `checked` attribute to be restored to — their
-    // checkedness is a property — so a reset unchecks all five, and the score
-    // the field still reports would submit nothing at all.
+    // The hidden radio for the starting score carries it as its `checked`
+    // attribute, which is what a reset restores. So the reset puts that radio
+    // back, and the score a read-only field goes on reporting is the one the
+    // form submits — rather than nothing at all, which is what a reset that
+    // unchecked all five would leave.
     expect(instance.rating.value()).toBe(4);
     expect(radios().filter((el) => el.checked)).toHaveLength(1);
     expect(submitted(form())).toEqual([['score', '4']]);
@@ -2832,8 +3090,7 @@ describe('rating', () => {
     click(stars()[4]!);
     expect(submitted(form())).toEqual([['score', '5']]);
 
-    form().reset();
-    await settle();
+    await browserReset(form());
 
     // What a reset means for every other control in the form: back to the
     // default the markup declared, not back to nothing.
@@ -2854,8 +3111,7 @@ describe('rating', () => {
 
     value.set(1);
     flushSync();
-    form().reset();
-    await settle();
+    await browserReset(form());
 
     // The signal is the contract, so a reset that put the score back only in
     // the mirrors would leave the caller holding a number the form is no
@@ -2873,8 +3129,7 @@ describe('rating', () => {
     click(stars()[8]!);
     expect(submitted(form())).toEqual([['score', '4.5']]);
 
-    form().reset();
-    await settle();
+    await browserReset(form());
 
     // What is painted, what is reported and what submits are one answer, and
     // a half is the one a mirror keyed by whole numbers would miss.
@@ -2889,8 +3144,7 @@ describe('rating', () => {
     const { instance, stars, form } = rating();
 
     click(stars()[2]!);
-    form().reset();
-    await settle();
+    await browserReset(form());
 
     expect(instance.rating.value()).toBe(0);
     expect(submitted(form())).toEqual([]);
@@ -2935,6 +3189,40 @@ describe('rating', () => {
     expect(radios().every((el) => el.required)).toBe(true);
     instance.rating.field.report();
     flushSync();
+    expect(instance.rating.field.isInvalid()).toBe(true);
+  });
+
+  it('says why when the platform refuses a submit for want of a rating', () => {
+    ratingOptions = { required: () => true, name: 'score' };
+    const { instance, group, form } = rating();
+    let reached = false;
+    form().addEventListener('submit', (event) => {
+      reached = true;
+      event.preventDefault();
+    });
+
+    form().requestSubmit();
+    flushSync();
+
+    // Refused before any submit event, so the refusal is the only notice the
+    // field gets — and it has to put the message on the page from there.
+    expect(reached).toBe(false);
+    expect(instance.rating.field.isInvalid()).toBe(true);
+    expect(instance.rating.field.messages()).toEqual(['Required']);
+    expect(group().getAttribute('aria-invalid')).toBe('true');
+  });
+
+  it('hears the refusal at a radio, where invalid is fired and from where it does not bubble', () => {
+    ratingOptions = { required: () => true, name: 'score' };
+    const { instance, radios } = rating();
+
+    // As a browser fires it: at the radio it could not accept, and no further.
+    const event = new Event('invalid', { cancelable: true });
+    radios()[0]!.dispatchEvent(event);
+    flushSync();
+
+    // The browser's own bubble would point at a radio nobody can see.
+    expect(event.defaultPrevented).toBe(true);
     expect(instance.rating.field.isInvalid()).toBe(true);
   });
 

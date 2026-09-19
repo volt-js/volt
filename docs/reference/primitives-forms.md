@@ -28,11 +28,11 @@ styling either, with two exceptions the sections below give reasons for: the
 visually-hidden style on a mirrored input, and the height of an auto-sizing
 textarea.
 
-The native-input rule is also where most of what is unfinished on this page
-lives. A mirrored input has to agree with the state it stands for through a
-submit *and* a reset, and not every control here gets the reset half right yet.
-[What a form reset does](#what-a-form-reset-does) and
-[what does not work yet](#what-does-not-work-yet) say which.
+The native-input rule is also what makes a reset work. A mirrored input has to
+agree with the state it stands for through a submit *and* a `form.reset()`, and
+each control here writes the default the platform restores as well as the value
+it holds. [What a form reset does](#what-a-form-reset-does) says what each one
+goes back to.
 
 ## The shape they share
 
@@ -136,8 +136,8 @@ custom element.
 | `isTouched()` | Whether the control has been left at least once |
 | `isRequired()` / `isDisabled()` / `isReadOnly()` | The resolved flags |
 | `validate()` | Run everything, an async validator included. Resolves to whether it passed |
-| `report()` | Validate and show the result now; `false` while an async validator runs |
-| `setCustomValidity(message)` | A message the platform cannot derive. `''` clears it |
+| `report()` | Validate and show the result now; `false` while an async validator runs. One already asked about this value is not asked again, unless it rejected |
+| `setCustomValidity(message)` | A message the platform cannot derive, shown at once. `''` clears it, and says nothing about a field nobody has validated yet |
 | `markEdited()` / `markTouched()` | Record an edit or a visit for a control that fires no `input` or `blur` |
 | `reset()` | Clear validation and touched, and measure dirty again — it stays `true` while the value still differs from its default. Does not touch the value |
 | `fieldProps()` | The wrapper: `data-state`, `data-dirty`, `data-touched`, `data-required`, … |
@@ -221,19 +221,22 @@ exactly the reasons the page shows. A field that looks invalid while the form
 submits anyway is two sources of truth, and they diverge at once.
 
 **The submit is checked in the capture phase**, so a handler that stops
-propagation cannot skip it, and cancelled when the field is not valid. It
-cannot be put ahead of a `submit` listener you added to the form element
-itself — at the target, listeners run in the order they were added — so a form
-you submit by hand should check `event.defaultPrevented`.
+propagation cannot skip it, and cancelled when the field is not valid. At the
+target the capturing listeners run first, so it runs before a `submit` handler
+you added to the form itself, whichever was added first. Only a capturing
+listener on an ancestor, or one added to the form ahead of the field, runs
+earlier — a form you submit by hand from there should check
+`event.defaultPrevented`.
 
 **The browser's own bubble is cancelled.** When the platform refuses a submit
 it fires `invalid` at the control; the field cancels it and shows the same
 messages in your markup instead. Where a message comes from the platform, the
 browser's `validationMessage` is used — it is already in the user's language —
-unless `labels` names that constraint. The exception is a control that also
-carries a custom message: the platform has one message slot, which then holds
-yours, so the constraint falls back to the library's English wording. Name
-the constraints in `labels` if a field mixes the two.
+unless `labels` names that constraint. The platform has one message slot, and a
+custom message occupies it, so the field reads the platform's own wording with
+that slot momentarily empty and puts the custom message back before it returns:
+a malformed address and a duplicate one are reported in the browser's words and
+in yours, in that order.
 
 ### Messages from a server
 
@@ -244,11 +247,10 @@ a form nobody can submit.
 
 Dropped is not the same as gone from the screen. With the default
 `revalidateOn: 'input'` the edit re-validates at once, so the message and the
-platform's refusal go together. With `'blur'` or `'submit'` nothing re-checks
-until that trigger, so the message stays on screen and on the control — and a
-submit that arrives first is refused once, silently, because the platform
-refuses on the stale message before the field has re-checked. See
-[what does not work yet](#what-does-not-work-yet).
+state go together. With `'blur'` or `'submit'` the message stays on screen
+until that trigger, as asked — but the platform's refusal is lifted at the
+edit either way, so a submit made before the blur is re-checked rather than
+refused on a verdict about a value that is no longer there.
 
 The `validity` option is not a substitute. It lets you read the field's state
 as a signal, or seed it, but the field writes it on every validation: an
@@ -263,19 +265,26 @@ while it runs, so the field need not flicker back to looking fine — but
 `isInvalid()` is `false` while pending and `aria-invalid` goes with it, so an
 error element rendered on `:if="field.isInvalid()"`, as in the example above,
 does disappear for the wait. Render it on `field.messages().length` to keep
-it. An answer overtaken by a newer run is dropped, which with the default
-`revalidateOn` means any answer about a value that has since been edited; and
-a validator that rejects is reported as invalid with `labels.validationFailed`
-("This value could not be checked."), because a value that could not be
-checked has not passed.
+it. An answer about a value that has since been edited is dropped, whether or
+not the edit asked again — with `revalidateOn: 'blur'` or `'submit'` it does
+not, and the field leaves `'pending'` at the edit rather than waiting for an
+answer it will not use. A validator that rejects is reported as invalid with
+`labels.validationFailed` ("This value could not be checked."), because a value
+that could not be checked has not passed. But no answer is not a verdict on
+the value: it is not put into the platform's validity, and the next submit
+asks again, so a moment's network trouble does not leave the form refusing
+every submit until someone changes what they typed.
 
-**A field with an async validator cannot be submitted natively yet.** Every
-submit calls `report()`, which starts the validator again and answers `false`
-because it is pending, so the submit is cancelled — including after a previous
-run said the value was fine. Until that changes, submit such a form yourself:
-`if (await field.validate()) form.submit()`. `form.submit()` fires no `submit`
-event and runs no constraint validation, which is what makes it the way past;
-it is also why `validate()` has to run first.
+**A native submit waits for the answer rather than failing for having asked.**
+A validator that has answered about the value as it stands, or is still
+answering, is not asked again, so a submit made after it has passed goes
+straight through. A submit made while it
+is still running is refused once — there is nothing else to do with a value
+nobody has finished checking — and made again, as the user made it and through
+`requestSubmit`, as soon as the answer comes back and says yes. An answer about
+a value that has since been edited is dropped, and takes the waiting submit
+with it: what is submitted is only ever a value that was checked. `validate()`
+asks again whatever has been asked before, for a form you submit yourself.
 
 ### Dirty and touched
 
@@ -297,7 +306,7 @@ one prop object for its own element.
 | `input` | — | The `<input>` or `<textarea>`. Required |
 | `label` / `description` / `errorMessage` | — | Passed to the form field |
 | `value` | own state | A `Signal.State<string>` |
-| `defaultValue` | `''` | The starting value when it owns its state |
+| `defaultValue` | `''` | The starting value, and what a reset goes back to |
 | `id` / `name` / `placeholder` / `autoComplete` | — | Written to the control |
 | `required` / `disabled` / `readOnly` | unset | Accessors |
 | `minLength` / `maxLength` / `pattern` | — | Written to the control, so the platform checks them |
@@ -309,7 +318,7 @@ one prop object for its own element.
 | `field` | The composed `FormField` |
 | `value()` / `setValue(value)` / `clear()` | The value |
 | `isEmpty()` | Whether it is `''` |
-| `remaining()` | Characters left before `maxLength`, or `null` without one. See below |
+| `remaining()` | Room left before `maxLength`, or `null` without one. See below |
 | `fieldProps()` / `labelProps()` / `descriptionProps()` / `errorMessageProps()` | From the field |
 | `controlProps()` | The field's control props, the native text attributes and `data-empty` |
 
@@ -317,11 +326,10 @@ There is no `value` in any prop object. The value is written to the element's
 property from the signal, and only when it differs — assigning `value` moves the
 caret to the end, which is what makes a naively controlled input unusable.
 
-`remaining()` counts code points, so two emoji are two characters rather than
-the four `String#length` reports. The browser's own `maxlength` counts UTF-16
-code units, so for anything outside the Basic Multilingual Plane the two
-disagree: the box can refuse a character while `remaining()` still says there
-is room for one.
+`remaining()` counts in the UTF-16 code units `maxlength` itself counts in, so
+it agrees with the box: an emoji is one character to a person and two to the
+platform, and a counter that said otherwise would promise room the box is about
+to refuse.
 
 ### `createInput`
 
@@ -345,7 +353,7 @@ createTextarea(options?: TextareaOptions): Textarea
 
 | Option | Default | Description |
 |---|---|---|
-| `rows` | `2` | Lines to show while empty — on the measuring path only; see below |
+| `rows` | `2` | Lines to show while empty |
 | `maxRows` | — | Stop growing here. Without it the box grows for ever |
 | `autoSize` | `true` | Grow with the content |
 
@@ -363,19 +371,24 @@ that a page of them shares one layout rather than forcing one each; a
 way is the mirror-element trick: a hidden clone has to follow every font,
 padding, border and width of the original and still cannot copy its scrollbar.
 
-This is one of the two places the library writes a style — `field-sizing` and
-`max-height`, or `height` and `overflow-y` on the measuring path — because "as
-tall as its content" cannot be said in your stylesheet without the same
-measurement. With `autoSize: false` nothing is written. On the measuring path
+This is one of the two places the library writes a style — `field-sizing`,
+`min-height` and `max-height`, or `height` and `overflow-y` on the measuring
+path — because "as tall as its content" cannot be said in your stylesheet
+without the same measurement. With `autoSize: false` nothing is written. On the measuring path
 `maxRows` needs a numeric `line-height`; with `line-height: normal` there is no
 length to multiply and the box is left uncapped rather than capped somewhere
 you did not ask for.
 
-`rows` does not survive the first path. `textareaProps()` writes it, but the
-platform ignores `rows` on an element with `field-sizing: content`, so in a
-browser that supports it an empty box is one line tall rather than two. Give
-the textarea a `min-height` in `lh` in your stylesheet if it should open
-taller; the measuring path honours `rows` as the height it starts from.
+`rows` holds on both paths. The platform ignores it on an element with
+`field-sizing: content`, so the auto-sizing path says the floor itself, as a
+`min-height` in `lh` — the element's own line height, the same unit `maxRows`
+is stated in — and the measuring path uses `rows` as the height it starts from.
+Under `box-sizing: border-box` a height counts the padding and border and a
+line of text does not, so both `min-height` and `max-height` add them, read
+once when the control mounts: `calc(4lh + 10px)` for four lines inside 4px of
+padding and a 1px border. A `min-height` your own stylesheet already gives the
+textarea is left to govern — an inline one would beat it — so `rows` is not
+written over it. Everything written is removed again when the scope goes away.
 
 ### `createPasswordInput`
 
@@ -520,12 +533,13 @@ parseLocaleNumber(text: string, locale: string): number | null
 ```
 
 Formatting is the easy half; parsing is where a number field is usually wrong.
-The digits of the locale's own numbering system are read as well as Latin
-ones, so Arabic-Indic numerals work under `ar-EG` and Devanagari under `mr` —
-but only there: `hi-IN` numbers in Latin digits by default, and a Devanagari
-digit typed under it is dropped. Decoration — a currency symbol, a percent
-sign, the space inside a French thousands group — is dropped rather than
-rejected, because someone who pastes "£1,234.56" means 1234.56.
+Every decimal digit Unicode knows is read, not only the locale's own: `hi-IN`
+numbers in Latin digits by default while a Devanagari keyboard types the other
+kind and an input method in full-width mode types a third, and a digit read as
+decoration and dropped would change the number without a word. Decoration — a
+currency symbol, a percent sign, the space inside a French thousands group — is
+dropped rather than rejected, because someone who pastes "£1,234.56" means
+1234.56.
 
 The one ambiguous case is a lone separator: "1.234" is 1234 in German and
 1.234 in English. A separator that is not the locale's decimal is read as
@@ -552,7 +566,7 @@ before it are filled; a filled box can still be pressed and typed over.
 | Option | Default | Description |
 |---|---|---|
 | `container` | — | The element holding the boxes. Required |
-| `hiddenInput` | — | The hidden input carrying the whole value. See below |
+| `hiddenInput` | — | The hidden input carrying the whole value. Required |
 | `length` | `6` | How many boxes |
 | `type` | `'numeric'` | `'numeric'`, `'alphanumeric'` or `'any'` |
 | `allow` | — | A stricter per-character rule |
@@ -562,8 +576,9 @@ before it are filled; a filled box can still be pressed and typed over.
 | `labels` | — | Adds `box(position, length)` ("Digit 3 of 6") and `incomplete` |
 
 Plus the common `label`, `description`, `errorMessage`, `value`,
-`defaultValue`, `id`, `name`, `required`, `disabled`, `readOnly`, `validate`,
-`validateOn`, `revalidateOn` and `onValueChange`.
+`defaultValue` (the starting code, and what a reset goes back to), `id`,
+`name`, `required`, `disabled`, `readOnly`, `validate`, `validateOn`,
+`revalidateOn` and `onValueChange`.
 
 | Member | Description |
 |---|---|
@@ -574,10 +589,10 @@ Plus the common `label`, `description`, `errorMessage`, `value`,
 | `groupProps()` / `boxProps(i)` / `hiddenInputProps()` | The group, one box, and the input that submits |
 | `field` / `fieldProps()` / `labelProps()` / `descriptionProps()` / `errorMessageProps()` | The composed form field and its parts |
 
-**Pass `hiddenInput`, although the type lets you leave it out.** The hidden
-input is the field's control — what submits, what the platform validates and
-what a reset restores — and its value is written only through that accessor.
-Without it the input still renders with a `name`, and submits an empty string.
+`hiddenInput` is required because it is the field's control — what submits,
+what the platform validates and what a reset restores — and its value is
+written only through that accessor. The boxes are for typing into; nothing in
+them reaches the server.
 
 ```ts
 import { Signal } from '@voltdev/core';
@@ -648,7 +663,7 @@ so a field holding twenty tags costs two Tab presses rather than twenty-one.
 | `transform` | trim | Clean a tag before it is added |
 | `validateTag` | — | Refuse a tag outright |
 | `onReject` | — | `(tag, reason)` — `'duplicate'`, `'invalid'` or `'full'` |
-| `labels` | — | Adds `list`, `remove(tag)`, `added(tag)`, `removed(tag)`, `duplicate(tag)`, `empty` |
+| `labels` | — | Adds `list` (the locale's `tags`, else "Tags"), `remove(tag)`, `added(tag)`, `removed(tag)`, `duplicate(tag)`, `empty` (the locale's `tagsEmpty`, else "Add at least one tag.") |
 
 Plus the common `label`, `description`, `errorMessage`, `id`, `placeholder`,
 `required`, `disabled`, `readOnly`, `validate`, `validateOn`, `revalidateOn`
@@ -734,8 +749,11 @@ half-typed in the box is cleared rather than added; a paste without one is left
 in the box to be edited.
 
 `required` is checked against the tags rather than written to the text input,
-because an empty text box beside five tags is a filled-in field. The message it
-shows is covered under [what does not work yet](#what-does-not-work-yet).
+because an empty text box beside five tags is a filled-in field. The field
+still answers for it — `isRequired()` is `true` and `data-required` is
+written — and an empty row is refused with `labels.empty` ("Add at least one
+tag."), which is the field's own sentence rather than the catalogue's generic
+"Required".
 
 For a tag that is its own component with its own element,
 [`createChip`](./primitives-display#removable-tags) is the primitive to reach
@@ -779,6 +797,13 @@ labels, which here is the hidden input, and those forwarded presses are
 cancelled so they cannot change the input behind the state's back. The label is
 therefore the one place a press is seen exactly once, whether it landed on the
 box or on the words beside it.
+
+Each of the three remembers what it was created holding and goes back to it
+when its form is reset, writing that starting state to the hidden input as the
+`checked` attribute so the platform puts the mirror back to the same place.
+Both halves move together, so a box that is plainly ticked after a reset is a
+box the form submits. A reset a listener ahead of the control has cancelled is
+left alone.
 
 Space toggles and Enter does not, as on the native controls: inside a form
 Enter submits, and a control that consumed it would take that away from the
@@ -850,7 +875,7 @@ this one is never seen.
 | `loop` | `true` | Arrows wrap past the ends |
 | `orientation` | — | Written to `aria-orientation`. The keyboard is unchanged |
 | `label` / `labelledBy` | — | A radiogroup takes no name from its contents |
-| `onValueChange` | — | |
+| `onValueChange` | — | Called with `null` when a reset puts back a group that started with nothing chosen |
 
 | Member | Description |
 |---|---|
@@ -966,6 +991,13 @@ pointer hovers.
 The arrows do not wrap: arrowing past five stars back to one is a misclick
 waiting to happen.
 
+A `required` rating that nobody has answered is refused by the platform, which
+carries `required` on the hidden radios — and the refusal is heard where the
+platform makes it. `invalid` is fired at a radio and does not bubble, so the
+rating catches it on the way down, cancels the browser's own bubble (it would
+point at a radio nobody can see) and puts the message on the page through the
+field, exactly as a control of the field's own would.
+
 A read-only rating stops being a radio group and becomes one `role="img"` whose
 name is the whole score, and the stars become `aria-hidden` decoration. Five
 radios nobody can change are five tab stops that do nothing; the score is one
@@ -1022,7 +1054,7 @@ of them; elsewhere the keydown handler does the activating.
 A disabled toggle leaves the tab order — `props()` writes `disabled` and drops
 the `tabindex` — and so does a disabled toggle group. That is the opposite of
 the checkbox, the switch and the slider thumbs, which stay reachable with
-`aria-disabled`; the two rules have not been reconciled.
+`aria-disabled`; see [what has not been decided](#what-has-not-been-decided).
 
 A toggle group is a set of them over one value, holding one tab stop. It is
 `type: 'single'` (the default) or `type: 'multiple'`, where the value is an array
@@ -1209,18 +1241,27 @@ slider reporting itself clean while it would submit something else is the
 disagreement the mirrors exist to prevent. `field.isDirty()` compares what a
 submit would send, read from the mirrors on every call, with what a reset would
 restore — so a value written into a mirror by a session restore or the
-back-forward cache counts, even though nothing announced it.
+back-forward cache counts, even when nothing announced it.
 
-Three limits come with that. A value written into a mirror from outside makes
-the slider dirty but does not move the thumb, so a restored form can report
-unsaved changes while showing a value it will not submit. A rendered
-`data-dirty` follows only what it can hear — `input`, `change` and `pageshow`;
-a script that assigns a mirror and fires nothing shows up on the next render
-for any other reason, though `isDirty()` itself is right whenever it is asked.
-And neither reset puts the value back while the slider is disabled: both go
-through `setValues`, which refuses then, so the mirrors return to the start
-while the thumb stays where it was — and once the slider is enabled again it
-submits the moved value. See [what does not work yet](#what-does-not-work-yet).
+Both resets put the value back whether or not the slider is disabled. They
+write the signal directly rather than going through `setValues`, which refuses
+while disabled — and a value nobody may change is exactly the one a reset has
+to put back rather than leave behind for the form to submit the moment the
+slider is enabled again. The mirrors are written by hand at the same time,
+because the platform announces nothing when it puts one back and a rendered
+`data-dirty` has to hear about it.
+
+A value written into a mirror from outside is taken up as soon as something
+announces it — `input` or `change` on the mirror, or `pageshow` for a page back
+from the back-forward cache. The thumb moves to it, settled onto the grid and
+into order like any value, `onValueChange` hears it, and the mirrors are filled
+from the settled value; a thumb left where it was would show one value over a
+form that submits another. It is written directly, as a reset is, so a
+disabled slider takes it up too. A write nothing announces cannot be heard: a
+script that assigns a mirror and fires nothing leaves the thumb where it was,
+and a rendered `data-dirty` catches up on the next render for any other reason
+— though `isDirty()` counts it whenever it is asked, and the next value the
+slider writes fills the mirrors from itself again.
 
 A range input always holds a value, so `required` can never be what refuses a
 slider. Use `validate`, which is handed every value, for a rule about them.
@@ -1250,6 +1291,7 @@ zone is the shortcut, not the mechanism.
 | `resumeFrom` | — | Ask the server how much it has, for a chunked upload |
 | `retries` | `0` | Attempts after a failure |
 | `retryDelay` | [`exponentialBackoff`](./primitives-data#retrying) | `(attempt, error) => milliseconds`. The default waits a random time between half and all of 300 ms × 2^(attempt − 1), capped at 30 s |
+| `name` | — | The submission name for the input, so a plain form post carries the files. Dropped when there is a `transport` |
 | `accept` / `maxSize` / `maxFiles` | — | `maxSize` in bytes; `maxFiles` counts the whole queue |
 | `multiple` | `true` | With `false`, each file added replaces the queue |
 | `directory` / `maxDirectoryDepth` | — / `8` | Pick and walk directories |
@@ -1262,9 +1304,9 @@ zone is the shortcut, not the mechanism.
 
 Without a `transport` nothing is sent, and the files sit at `'pending'` for
 ever. That is the shape for a form that posts its files through the input
-itself — but pending counts as busy, so such a form also needs
-`blockSubmitWhileBusy: false`, or every submit is refused with "Wait for the
-upload to finish."
+itself, and it submits: a file nothing will ever send is not a file on its way
+anywhere, so the busy rule applies only where there is a transport to be busy
+with. Give that form a `name` and it posts every queued file.
 
 **Rejected files stay in the queue**, with status `'rejected'` and a reason
 code — `'type'`, `'size'`, `'count'` or `'custom'`. A file that silently fails
@@ -1366,28 +1408,33 @@ so a dropped or pasted file is part of a native submit and satisfies
 `required`, exactly as a picked one would. Refused files are listed in the
 queue for the user to read and are never put in the input.
 
-**Give the input its `name` yourself.** There is no `name` option and
-`inputProps()` does not write one, so `<input name="attachments" …>` in your
-markup is what makes the form carry the files. Leave it off when a transport is
-doing the sending: the input still holds every queued file, uploaded ones
-included, and a named input would post their bytes a second time with the form.
+**`name` makes the form carry the files**, and `inputProps()` writes it to the
+input. It is dropped when a `transport` is given, because the input holds every
+queued file, already-sent ones included, and a named input would post their
+bytes a second time with the form. A `name` written in your own markup is your
+own business and is left alone.
 
-**The queue decides whether the form may submit**, through the input's custom
-validity. While a file is pending or going up, the submit is refused with
-`labels.busy` ("Wait for the upload to finish."), unless `blockSubmitWhileBusy`
-is `false`. While a refused or failed file is in the queue, the submit is
-refused with that file's reason — so the user has to remove it, or retry it
-until it succeeds, before the form goes.
+**The queue decides whether the form may submit.** A refused or failed file is
+pushed into the input's custom validity the moment it happens — it is news
+about something the user just did — so the submit is refused with that file's
+reason until the user removes it or retries it until it succeeds.
 
-It goes through `field.setCustomValidity`, which shows at once, so none of
-this waits for a submit. For as long as a file is pending or uploading, the
-field is `'invalid'`, the input carries `aria-invalid`, and `messages()` holds
-the busy message — so an error element rendered from it, a `role="alert"`
-region, announces "Wait for the upload to finish." when an upload begins. A
-refusal shows the moment the file is refused, which is the useful half; the
-busy message is the cost of the same mechanism. That wiring is also why a
-`required` upload is announced as invalid before anyone has touched it; see
-[what does not work yet](#what-does-not-work-yet).
+A file still going up refuses the submit too, with `labels.busy` ("Wait for
+the upload to finish."), unless `blockSubmitWhileBusy` is `false` or there is
+no transport. That one is checked when the field validates rather than pushed
+in as it happens: an upload in progress is not a mistake, and announcing one in
+a `role="alert"` region every time a file was added would be an alarm about
+nothing. So the message arrives with the submit it refuses, and goes again when
+the upload finishes rather than waiting for the next submit to take it back.
+Nothing here makes an untouched `required` upload invalid before anyone has
+submitted.
+
+The cost is the one every `validate` rule carries until its field has
+validated: the platform does not hold it. `form.checkValidity()` answers
+`true` while a file is going up, and a `submit` listener that runs ahead of the
+field — one capturing on an ancestor — hears the submit before the field has
+refused it. Such a listener can ask `upload.field.report()` itself, which
+refuses for the same reason the field will, or read `upload.counts()`.
 
 **Hide the input with `VISUALLY_HIDDEN_INPUT_STYLE`**, if you hide it at all,
 not with `display: none`: a required file input the browser cannot render has
@@ -1450,7 +1497,7 @@ createClipboard(options: ClipboardOptions): Clipboard
 |---|---|---|
 | `text` | — | `() => string`, read at the moment of the copy. Required |
 | `resetAfter` | `2000` | How long `status()` stays at `copied` or `failed` |
-| `labels` | — | `copied` (default "Copied"), `failed` (default "Could not copy") |
+| `labels` | — | `copied` and `failed`, for what is announced. Without them the locale's `copied` and `copyFailed`, and "Copied" and "Could not copy" where the catalogue has neither |
 | `onCopy` / `onError` | — | `(text)` after a copy; `(error)` with whatever the refusal threw |
 
 | Member | Description |
@@ -1482,10 +1529,14 @@ a button that says "Copied" for ever is lying by the time anyone looks back. The
 result is announced through
 [the shared announcer](./primitives#announcements-announce) rather than by
 changing the button's own name, which screen readers announce inconsistently
-while focus is on it; a failure is announced assertively. Outside a secure context
-`navigator.clipboard` is not there, and the fallback is the deprecated
-selection-and-`execCommand` route, which is still the only thing that works on
-a plain-HTTP internal tool. It moves focus to a temporary element and puts it
+while focus is on it; a failure is announced assertively. The sentence is the
+whole of what a screen-reader user is told about the copy, so it comes from the
+locale catalogue — `labels` is for wording that is about this particular
+button, "Link copied".
+
+Outside a secure context `navigator.clipboard` is not there, and the fallback
+is the deprecated selection-and-`execCommand` route, which is still the only
+thing that works on a plain-HTTP internal tool. It moves focus to a temporary element and puts it
 back. A refusal is reported as `'failed'`, not swallowed.
 
 ## What a plain form post carries
@@ -1500,7 +1551,7 @@ back. A refusal is reported as `'failed'`, not swallowed.
 | `createCheckbox`, `createSwitch` | A visually-hidden checkbox | `name=value` while checked |
 | `createRadioGroup`, `createRating` | A visually-hidden radio per option | `name=value` for the chosen one |
 | `createSlider` | A visually-hidden range input per thumb | `name` once per thumb |
-| `createFileUpload` | The `<input type="file">`, named in your markup | every queued file not refused, as a native submit sends them |
+| `createFileUpload` | The `<input type="file">` | every queued file not refused, as a native submit sends them — with a `name` and no `transport` |
 | `createToggle`, `createToggleGroup` | nothing | — |
 | `createFormField` | whatever control you gave it | — |
 
@@ -1512,31 +1563,40 @@ element rather than set to `undefined`, which a form would send as the string
 
 A reset restores each native control to its default — the `value` *attribute*,
 the `checked` *attribute* — and fires one `reset` event at the form and no
-`input` at anything. The controls here write their elements' *properties* from
-state — only the slider writes a default as well — so which defaults a reset
-finds, and whether the state hears about it, is decided control by control.
+`input` at anything. A value written to an element's *property* is not a
+default, so each control here writes its starting state as the default too, and
+the platform and the state then go back to the same place.
+
+**Where it is going is known, not read back.** `reset` is dispatched before the
+platform puts anything back, nothing is fired once it has, and when a press on
+a reset button is what dispatched it, even a microtask queued from a listener
+runs first. So nothing here waits for the event and reads the control: each
+control writes what it is going back to, as the platform is about to, and the
+platform then writes the same thing over it. A reset a listener ahead of the
+control has cancelled — the "discard your changes?" answered no — is left
+alone by every one of them.
 
 | Control | After `form.reset()` |
 |---|---|
-| `createInput`, `createTextarea`, `createPasswordInput` | Follows. The value becomes what the markup's `value` attribute says — `''` without one — and not the `defaultValue` option |
-| `createNumberInput` | Follows, to `null`, not to `defaultValue` |
-| `createPinInput` | Follows, to the hidden input's `value` attribute or empty, and the tab stop moves to where the next character goes — the first box, for an empty code |
-| `createRating` | Goes back to `defaultValue`, and rewrites its mirrors |
-| `createSlider` | Goes back to the value it started with, mirrors and all — except while disabled, when only the mirrors do |
-| `createTagsInput` | Clears the draft. The tags stay, and still submit |
-| `createCheckbox`, `createSwitch`, `createRadioGroup` | The state stays; the hidden inputs are unchecked. See below |
-| `createFileUpload` | Nothing listens for it. The browser empties a file input on reset; the queue keeps its items, and the field's reset drops the queue's verdict — a refused or unfinished file no longer blocks the submit until the queue next changes |
-| `createFormField` | Validation, touched and dirty are cleared after the reset settles |
+| `createInput`, `createTextarea`, `createPasswordInput` | Goes back to `defaultValue`, or to what a `value` signal held at construction |
+| `createNumberInput` | The same, formatted for the locale; the hidden input follows the box |
+| `createPinInput` | The same, and the tab stop moves to where the next character goes — the first box, for an empty code. `onComplete` is not called for a code nobody completed |
+| `createRating` | Goes back to `defaultValue`, its hidden radios with it — read-only or disabled included |
+| `createTagsInput` | Goes back to `defaultValue`, and clears the draft |
+| `createCheckbox`, `createSwitch`, `createRadioGroup` | Go back to how they were created, state and hidden input together |
+| `createSlider` | Goes back to the value it started with, mirrors and all, whether or not it is disabled |
+| `createFileUpload` | Empties the queue, cancelling anything in flight — a file input has no default list of files, so the platform empties the input and the queue goes with it |
+| `createFormField` | Validation, touched and dirty are cleared, and dirty is measured against the value the reset is restoring |
 
 `field.reset()` is the other half of the same thing. It clears validation and
 touched and measures dirty again without touching the value — the slider's
 excepted, which puts the value back as well — for a form reset some other way:
 a "discard" button that writes the signals back itself, then calls it.
 
-Because `defaultValue` is written as a property, a text or number input created
-with one is dirty from the moment it mounts: the value differs from the empty
-default a reset would restore. Where a control needs to reset to something, put
-that value in the markup, where the platform can find it.
+A control created with a `defaultValue` is not dirty at mount, because that
+value is its default as well as its value. A `value` attribute of your own in
+the markup is adopted rather than overwritten in the text-shaped controls, and
+is then what the control starts at and goes back to.
 
 ## Type names
 
@@ -1577,65 +1637,16 @@ const caption = (item: UploadItem): string =>
   item.status === 'rejected' ? `${item.file.name}: ${item.error?.message ?? ''}` : item.file.name;
 ```
 
-## What does not work yet
+## What has not been decided
 
-Each of these is how the package behaves today, and each is a gap rather than a
-decision.
+One thing on this page is left as it is because settling it is a decision about
+the library rather than a bug to fix.
 
-- **A reset desynchronises checkbox, switch and radio group.** Their hidden
-  inputs are checked through the `checked` property, so a reset finds
-  `defaultChecked` false on every one and unchecks them all, while the state —
-  and the visible control — stays checked. The form then submits nothing for
-  them, including for a box created with `defaultChecked: true` that nobody
-  touched. `createRating` works around the same thing for its own radios; the
-  radio group it is built on, and the checkbox and switch, do not yet. Until
-  they do, reset such a form by writing the signals back rather than with
-  `form.reset()`.
-- **Tags and the upload queue do not follow a reset.** Only the tags draft is
-  cleared, and the upload has no reset handling at all. Worse, the upload's
-  field clears its custom validity on the reset while the queue keeps its
-  items, so a refused or failed file that was blocking the submit stops
-  blocking it — with the file input now empty — until the queue next changes.
-  Call `upload.clear()` alongside a reset.
-- **A disabled slider ignores a reset.** `form.reset()` and `field.reset()` both
-  put the value back through `setValues`, which refuses while disabled, so the
-  mirrors return to the start and the thumb does not; once the slider is enabled
-  again it submits the moved value. `createRating` avoids exactly this by
-  writing its signal directly. Reset a slider while it is enabled, or write the
-  value signal you passed in.
-- **An upload without a transport refuses every submit** unless
-  `blockSubmitWhileBusy` is `false`: nothing sends its files, so they stay
-  `'pending'`, and pending counts as busy.
-- **A required upload is invalid before anyone has touched it.** The effect that
-  lets the queue block a submit calls `field.setCustomValidity('')` on its first
-  run, and any call to that marks the field as validated — so an empty,
-  required upload shows its value-missing message (the browser's own wording,
-  or "Fill in this field." where the engine gives none) and `aria-invalid` from
-  the moment it mounts, which is the one thing
-  [the form field](#when-validation-speaks) is built to prevent. Until it is
-  fixed, either accept the early message or leave `required` off and refuse an
-  empty queue in your own submit handler.
-- **A server message outlives the edit that should clear it** when
-  `revalidateOn` is `'blur'` or `'submit'`. The edit drops it from the field's
-  record but nothing re-checks, so the control keeps refusing: the next submit
-  is refused with no message, the field then shows valid, and the one after
-  goes through. Keep the default `revalidateOn: 'input'` on a field that takes
-  server messages, or clear the message yourself with
-  `field.setCustomValidity('')` when the value changes.
-- **An async validator blocks every native submit**, as described under
-  [async validators](#async-validators).
-- **A textarea's `rows` does nothing where `field-sizing` is supported**, which
-  is the path the library prefers; an empty auto-sizing box there is one line
-  tall. See [`createTextarea`](#createtextarea).
-- **A required tags input shows the locale's generic "Required"** rather than
-  its own "Add at least one tag.", because the shared locale supplies a
-  `required` message and it is preferred over the fallback. Pass
-  `labels.empty` to say something specific. Its `field.isRequired()` also reads
-  `false`, since `required` is deliberately not forwarded to the text input.
-- **A required rating left unrated is refused with no message on the page.**
-  The hidden radios carry `required`, so the browser blocks the submit — but it
-  fires `invalid` at a radio, the field is listening on the group, and `invalid`
-  does not bubble; the submit event the field would otherwise check never fires.
-  The browser's own bubble points at a radio nobody can see. Calling
-  `rating.field.report()` from the submit button's `click`, which runs before
-  the browser validates, puts the message on the page.
+- **A disabled toggle leaves the tab order**, where a disabled checkbox, switch
+  or slider thumb stays in it with `aria-disabled`. `createToggle` and
+  `createToggleGroup` write the native `disabled` attribute and drop the
+  `tabindex`, which is what a `<button>` usually does and what their own
+  `press()`, `release()` and `toggle()` already match by staying available to
+  the application. The two rules have not been reconciled, and reconciling them
+  changes the keyboard behaviour of one set of shipped primitives whichever way
+  it goes.

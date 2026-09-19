@@ -181,9 +181,13 @@ export interface FormFieldOptions {
   errorMessage?: () => Element | null | undefined;
 
   /**
-   * Supply a signal to drive validation from outside — a server's answer to a
-   * value it has just rejected, most often. Without one the field owns its
-   * own, which is what most callers want.
+   * Supply a signal to read the field's state from outside, or to seed it.
+   * Without one the field owns its own, which is what most callers want.
+   *
+   * It is not a way to impose a verdict: the field writes it on every
+   * validation, so an `invalid` set on it from outside lasts until the next
+   * one. A server's answer to a value it has just rejected goes through
+   * `setCustomValidity`, which also makes the platform refuse the submit.
    *
    * Dirty and touched take no signal on purpose: they are records of what the
    * user did, not settings, so they can be read and reset but not dictated.
@@ -249,10 +253,16 @@ export interface FormField {
   /**
    * Validate and show the result now, returning what can be said
    * synchronously — `false` while an async validator is still running, since a
-   * field nobody has finished checking cannot be called valid.
+   * field nobody has finished checking cannot be called valid. An async
+   * validator already asked about the value as it stands is not asked again
+   * unless it rejected: its answer stands until the value changes, and
+   * `validate()` asks anew.
    */
   report(): boolean;
-  /** A message the platform cannot derive. An empty string clears it. */
+  /**
+   * A message the platform cannot derive, shown at once. An empty string
+   * clears it, and on a field that has not been validated yet says nothing.
+   */
   setCustomValidity(message: string): void;
 
   /** Record an edit for a control that fires no `input` event of its own. */
@@ -304,8 +314,26 @@ export function createFormField(options: FormFieldOptions): FormField {
   let customMessage = '';
   /** The last answer from `options.validate`. */
   let validatorMessages: readonly string[] = [];
+  /**
+   * Whether that answer is a validator's failure to give one — it rejected —
+   * rather than a verdict on the value. It is shown, since nobody has passed
+   * the value, but it is not a reason the value is wrong.
+   */
+  let unanswered = false;
   /** Rising counter, so a slow async answer cannot overwrite a newer one. */
   let generation = 0;
+  /**
+   * Whether an async validator has been asked about the value as it stands.
+   * Its answer is then on screen or on its way, and an edit, a reset, or its
+   * failing to answer at all is what makes it worth asking again.
+   */
+  let askedAsync = false;
+  /**
+   * A submit refused only because that answer had not come back yet, to be
+   * made again once it has and says yes — so a submit waits for the check
+   * rather than failing for having asked.
+   */
+  let heldSubmit: { form: HTMLFormElement; submitter: HTMLElement | null } | null = null;
 
   const settle = (result: ValidationResult): void => {
     const previous = untrack(() => validity.get());
@@ -317,8 +345,9 @@ export function createFormField(options: FormFieldOptions): FormField {
   /**
    * What the field is right now, without running an async validator.
    *
-   * Custom messages are pushed into the control first, so that the platform's
-   * own `validity` — read immediately afterwards — already accounts for them.
+   * The platform's constraints are read first and the custom messages added to
+   * them, and the control is left holding the custom message, so the platform
+   * refuses a submit for the same reasons the field gives.
    */
   const evaluate = (): ValidationResult => {
     const control = options.control();
@@ -333,12 +362,23 @@ export function createFormField(options: FormFieldOptions): FormField {
     }
 
     const custom = customMessage ? [customMessage, ...validatorMessages] : [...validatorMessages];
+
+    // The platform's own wording is read with no custom message in place. It
+    // has one message slot, and once a custom message is in it `validationMessage`
+    // *is* that message, so its wording for every other constraint — already in
+    // the user's language — would be out of reach.
+    applyCustomValidity(control, '');
+    const messages = constraintMessages(control, options.labels);
+
     // The platform takes one string; the rest stay in `messages()`. What
     // matters is that it takes *a* string, because that is what makes it
-    // refuse the submit.
-    applyCustomValidity(control, custom[0] ?? '');
-
-    const messages = constraintMessages(control, options.labels);
+    // refuse the submit. A validator that rejected is not given one: failing
+    // to answer is no verdict on the value, and the platform refuses before
+    // the `submit` event, so the submit that would ask again would never be
+    // heard — a moment's network trouble would leave the form unsubmittable
+    // until the value changed.
+    const refusal = customMessage || (unanswered ? '' : validatorMessages[0]);
+    if (refusal) applyCustomValidity(control, refusal);
     // Appended rather than assumed present: a control the platform does not
     // validate reports no `customError`, so its custom messages arrive only
     // this way.
@@ -348,6 +388,7 @@ export function createFormField(options: FormFieldOptions): FormField {
   };
 
   const isValidNow = (): boolean => untrack(() => validity.get()).state === 'valid';
+  const isPendingNow = (): boolean => untrack(() => validity.get()).state === 'pending';
 
   /** Ask the consumer's validator, if there is one and there is anything to ask about. */
   const runValidator = (): ValidationOutcome | Promise<ValidationOutcome> => {
@@ -356,8 +397,9 @@ export function createFormField(options: FormFieldOptions): FormField {
     return options.validate(untrack(() => value.get()), control);
   };
 
-  const finish = (messages: readonly string[]): boolean => {
+  const finish = (messages: readonly string[], failed = false): boolean => {
     validatorMessages = messages;
+    unanswered = failed;
     const result = evaluate();
     settle(result);
     return result.state === 'valid';
@@ -372,6 +414,7 @@ export function createFormField(options: FormFieldOptions): FormField {
     hasValidated = true;
     const token = ++generation;
     const outcome = runValidator();
+    askedAsync = isPromise(outcome);
 
     if (!isPromise(outcome)) return Promise.resolve(finish(toMessages(outcome)));
 
@@ -382,22 +425,52 @@ export function createFormField(options: FormFieldOptions): FormField {
 
     // A newer run has taken over, so this answer is about a value that is two
     // edits old and has nothing left to say.
-    const conclude = (messages: readonly string[]) =>
-      token === generation ? finish(messages) : isValidNow();
+    const conclude = (messages: readonly string[], failed = false) => {
+      if (token !== generation) return isValidNow();
+      // No answer is not an answer about this value, so the next submit asks
+      // again rather than being refused on it.
+      if (failed) askedAsync = false;
+      const passed = finish(messages, failed);
+      const held = heldSubmit;
+      heldSubmit = null;
+      if (passed && held) submitAgain(held);
+      return passed;
+    };
 
     return outcome.then(
       (resolved) => conclude(toMessages(resolved)),
       // A validator that threw has not said the value is good, and treating
       // silence as approval is how bad values get through.
-      () => conclude([options.labels?.validationFailed ?? DEFAULT_VALIDATION_FAILED]),
+      () => conclude([options.labels?.validationFailed ?? DEFAULT_VALIDATION_FAILED], true),
     );
   };
 
   const report = (): boolean => {
+    // An async validator already asked about this value is not asked again.
+    // Its answer is on screen or on its way, and a submit that restarted it
+    // would find the field pending every time — so no submit would ever go.
+    if (askedAsync) {
+      if (!isPendingNow()) settle(evaluate());
+      return isValidNow();
+    }
     // A sync validator has settled by the time this returns; an async one
     // leaves the field pending, which is not valid.
     void validate();
     return isValidNow();
+  };
+
+  /**
+   * Make a submit again, as the user made it.
+   *
+   * Through `requestSubmit`, so the platform validates the whole form again and
+   * every `submit` listener hears it — a field that went quiet in the meantime
+   * does not get waved through by one that has just said yes.
+   */
+  const submitAgain = ({ form, submitter }: NonNullable<typeof heldSubmit>): void => {
+    if (!form.isConnected) return;
+    // A button that has left the form can no longer be the one that submits it.
+    const owner = (submitter as { form?: unknown } | null)?.form;
+    form.requestSubmit(owner === form ? submitter : null);
   };
 
   const onTrigger = (trigger: ValidationTrigger): void => {
@@ -410,23 +483,53 @@ export function createFormField(options: FormFieldOptions): FormField {
     const current = control ? readValue(control) : null;
     value.set(current);
     dirty.set(current !== pristine);
-    // A custom message is a verdict on a value that no longer exists. Left in
-    // place it survives every correction the user makes, which is the classic
-    // way a form becomes impossible to submit.
-    customMessage = '';
+    // An answer still on its way is about the old value as well, and so is a
+    // submit that was waiting for it. Left to land, the answer would become
+    // the verdict on a value nobody asked about — and, pushed into the
+    // platform, refuse every submit before one could ask again.
+    const edited = ++generation;
+    askedAsync = false;
+    heldSubmit = null;
+    // Every verdict held is about a value that no longer exists. A custom
+    // message left in place survives every correction the user makes, which
+    // is the classic way a form becomes impossible to submit. And whatever
+    // stays on screen until `revalidateOn` says otherwise, the platform lets go
+    // now: left there, it refuses the next submit on the old value's account
+    // before the field can re-check — a refusal nothing on screen explains, or
+    // one that never ends when the re-check was waiting for that submit.
+    if (customMessage || validatorMessages.length > 0) {
+      customMessage = '';
+      validatorMessages = [];
+      applyCustomValidity(control, '');
+    }
     onTrigger('input');
+    // Unless the trigger asked again, nothing is being checked any more, and a
+    // field left pending would be busy for ever. What it showed stays until
+    // the trigger, as it does for any edit.
+    if (generation === edited && isPendingNow()) {
+      const { messages } = untrack(() => validity.get());
+      settle(messages.length > 0 ? { state: 'invalid', messages } : VALID);
+    }
   };
 
-  const clear = (): void => {
+  /**
+   * Forget everything the field has recorded.
+   *
+   * `restored` says the value is going back to the pristine one as well, which
+   * is what a form reset does — and has not done yet when it says so.
+   */
+  const clear = (restored = false): void => {
     generation += 1;
     hasValidated = false;
+    askedAsync = false;
+    heldSubmit = null;
     customMessage = '';
     validatorMessages = [];
     touched.set(false);
 
     const control = options.control();
     applyCustomValidity(control, '');
-    const current = control ? readValue(control) : null;
+    const current = restored ? pristine : control ? readValue(control) : null;
     value.set(current);
     dirty.set(current !== pristine);
     settle(VALID);
@@ -482,18 +585,30 @@ export function createFormField(options: FormFieldOptions): FormField {
     if (!form) return;
 
     const onSubmit = (event: Event) => {
-      if (!report()) event.preventDefault();
+      if (report()) return;
+      event.preventDefault();
+      // Refused for want of an answer rather than for a bad one: made again
+      // when the answer comes, unless an edit has made it an answer about some
+      // other value first.
+      if (isPendingNow()) {
+        heldSubmit = { form, submitter: (event as SubmitEvent).submitter ?? null };
+      }
     };
-    const onReset = () => {
-      // `reset` is dispatched as part of resetting, so the control's value is
-      // only settled once the algorithm around it has finished.
-      queueMicrotask(clear);
+    const onReset = (event: Event) => {
+      // `reset` is dispatched before the platform puts anything back, and there
+      // is no later moment to read the value at: nothing is fired once it has,
+      // and when a press on a reset button is what dispatched this, a microtask
+      // queued here runs before it has as well. So the value is not read back.
+      // It is going to the pristine one, which is already known — unless a
+      // listener ahead of this one has called the reset off.
+      if (!event.defaultPrevented) clear(true);
     };
 
-    // Capture, so this runs before a handler that stopped propagation. It
-    // cannot be made to run before a `submit` handler the consumer registered
-    // on the form itself — at the target, listeners run in the order they were
-    // added, capturing or not — so a consumer who submits by hand should check
+    // Capture, so this runs before a handler that stopped propagation, and
+    // before every listener that does not capture — one on the form itself
+    // included, since at the target capturing listeners run first. Only one
+    // that captures on an ancestor, or on the form ahead of this one, runs
+    // earlier, and a consumer who submits by hand from there should check
     // `event.defaultPrevented`. The platform's own refusal, which needs no
     // listener at all, still happens first for any form without `novalidate`.
     form.addEventListener('submit', onSubmit, true);
@@ -565,11 +680,15 @@ export function createFormField(options: FormFieldOptions): FormField {
 
     setCustomValidity(message: string) {
       customMessage = message;
-      hasValidated = true;
       // Applied at once. Asking for a message is asking for it to be shown,
       // and waiting for a trigger would leave the caller wondering whether it
-      // took.
-      settle(evaluate());
+      // took. Taking one away is not a request to judge the rest, though: on
+      // a field nobody has touched it would put a required field's message on
+      // screen before anyone had typed, which is what this field is for
+      // preventing. The platform is told either way.
+      if (message) hasValidated = true;
+      if (hasValidated) settle(evaluate());
+      else applyCustomValidity(options.control(), '');
     },
 
     markEdited,
@@ -577,7 +696,7 @@ export function createFormField(options: FormFieldOptions): FormField {
       touched.set(true);
       onTrigger('blur');
     },
-    reset: clear,
+    reset: () => clear(),
 
     fieldProps: () => {
       const result = validity.get();
@@ -687,22 +806,16 @@ function constraintMessages(el: Element, labels: FormFieldLabels | undefined): s
     if (message && !messages.includes(message)) messages.push(message);
   };
 
-  // `validationMessage` is a single string for the whole control, and once a
-  // custom message is set it *is* that string — the platform's own wording for
-  // every other constraint becomes unreachable. So it counts as the custom
-  // message or as the generic fallback, never as both, or a malformed email
-  // would be reported with the message meant for a duplicate address.
+  // Read with no custom message in place — see `evaluate` — so this is the
+  // platform's own wording, for whichever constraint it found failing first.
   const platform = el.validationMessage || undefined;
-  const custom = el.validity.customError ? platform : undefined;
-  const generic = el.validity.customError ? undefined : platform;
 
   // Constraints before rules: there is no point telling someone their address
   // is taken while it is not yet a valid address.
   for (const key of CONSTRAINT_KEYS) {
     if (!el.validity[key]) continue;
-    add(labels?.[key] ?? generic ?? DEFAULT_MESSAGES[key]);
+    add(labels?.[key] ?? platform ?? DEFAULT_MESSAGES[key]);
   }
-  add(custom);
 
   return messages;
 }

@@ -60,6 +60,31 @@ function submitted(form: HTMLFormElement): [string, FormDataEntryValue][] {
   return [...new FormData(form).entries()];
 }
 
+/**
+ * Reset the form in the order a browser does, which this environment's own
+ * `reset()` does not: the event first, then every microtask its listeners
+ * queued — a press on a reset button runs them as each listener returns, with
+ * nothing else on the stack to wait for — and only then the controls put back.
+ */
+async function reset(form: HTMLFormElement): Promise<void> {
+  const event = new Event('reset', { bubbles: true, cancelable: true });
+  if (!form.dispatchEvent(event)) return;
+  await Promise.resolve();
+  flushSync();
+
+  // The environment's `reset()` puts the controls back and then dispatches an
+  // event of its own, which is the one that has just been heard.
+  const dispatch = form.dispatchEvent;
+  form.dispatchEvent = () => true;
+  try {
+    form.reset();
+  } finally {
+    form.dispatchEvent = dispatch;
+  }
+  await Promise.resolve();
+  flushSync();
+}
+
 // ---------------------------------------------------------------------------
 // Checkbox
 // ---------------------------------------------------------------------------
@@ -242,6 +267,64 @@ describe('checkbox', () => {
       expect(input().getAttribute('tabindex')).toBe('-1');
       expect(input().getAttribute('aria-hidden')).toBe('true');
     });
+
+    it('goes back to how it started on a reset, the input with it', async () => {
+      const { instance, label, control, input, form } = checkbox();
+      click(label());
+      expect(submitted(form())).toEqual([['terms', 'yes']]);
+
+      await reset(form());
+
+      // The box on screen and the input behind it agree, and agree with what
+      // a reset means: the state the checkbox was created in.
+      expect(control().getAttribute('aria-checked')).toBe('false');
+      expect(input().checked).toBe(false);
+      expect(submitted(form())).toEqual([]);
+      expect(instance.changes).toEqual([true, false]);
+    });
+
+    it('stays as it is when the reset is called off', async () => {
+      const { instance, label, control, form } = checkbox();
+      click(label());
+      form().addEventListener('reset', (event) => event.preventDefault(), true);
+
+      await reset(form());
+
+      // "Discard your changes?" answered no: nothing in the form went back, so
+      // the box must not either.
+      expect(control().getAttribute('aria-checked')).toBe('true');
+      expect(submitted(form())).toEqual([['terms', 'yes']]);
+      expect(instance.changes).toEqual([true]);
+    });
+
+    it('stays checked through a reset when it started checked, and still submits', async () => {
+      @Component({
+        selector: 'v-newsletter',
+        render: compileTemplate(`
+          <form>
+            <label :click="box.toggle()">
+              <input :ref="input" :spread="box.inputProps()">
+              <span :spread="box.controlProps()">Send me the newsletter</span>
+            </label>
+          </form>
+        `),
+      })
+      class Newsletter {
+        input = new Signal.State<Element | null>(null);
+        box = createCheckbox({ input: () => this.input.get(), name: 'news', defaultChecked: true });
+      }
+
+      track(mount(Newsletter, host));
+      flushSync();
+      const form = host.querySelector('form') as HTMLFormElement;
+
+      // Nobody has touched it. A reset that unchecked the input would make a
+      // form that submits nothing for a box that is plainly ticked.
+      await reset(form);
+
+      expect(host.querySelector('[role="checkbox"]')!.getAttribute('aria-checked')).toBe('true');
+      expect(submitted(form)).toEqual([['news', 'on']]);
+    });
   });
 
   describe('while disabled', () => {
@@ -417,6 +500,46 @@ describe('switch', () => {
     expect(instance.on.get()).toBe(false);
     expect(control().getAttribute('aria-disabled')).toBe('true');
   });
+
+  it('goes back to its starting setting on a reset, the input with it', async () => {
+    const { instance, label, control, input, form } = switchControl();
+    click(label());
+
+    await reset(form());
+
+    expect(instance.on.get()).toBe(false);
+    expect(control().getAttribute('aria-checked')).toBe('false');
+    expect(input().checked).toBe(false);
+    expect(submitted(form())).toEqual([]);
+  });
+
+  it('stays on through a reset when it started on, and still submits', async () => {
+    const { instance, form } = (() => {
+      @Component({
+        selector: 'v-always-on',
+        render: compileTemplate(`
+          <form>
+            <label :click="toggle.toggle()">
+              <input :ref="input" :spread="toggle.inputProps()">
+              <span :spread="toggle.controlProps()">Email me</span>
+            </label>
+          </form>
+        `),
+      })
+      class AlwaysOn {
+        input = new Signal.State<Element | null>(null);
+        toggle = createSwitch({ input: () => this.input.get(), name: 'notify', defaultChecked: true });
+      }
+      const handle = track(mount(AlwaysOn, host));
+      flushSync();
+      return { instance: handle.instance as AlwaysOn, form: host.querySelector('form') as HTMLFormElement };
+    })();
+
+    await reset(form);
+
+    expect(instance.toggle.checked()).toBe(true);
+    expect(submitted(form)).toEqual([['notify', 'on']]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -441,7 +564,7 @@ class Plan {
   value = new Signal.State<string | null>(null);
   disabled = new Signal.State(false);
   required = new Signal.State(false);
-  changes: string[] = [];
+  changes: (string | null)[] = [];
   options = [
     { value: 'free', label: 'Free', disabled: false },
     { value: 'team', label: 'Team', disabled: true },
@@ -713,6 +836,62 @@ describe('radio group', () => {
 
       expect(instance.changes).toEqual(['pro']);
       expect(inputs().map((el) => el.checked)).toEqual([false, false, true]);
+    });
+
+    it('goes back to having nothing chosen on a reset, the inputs with it', async () => {
+      const { instance, label, checked, inputs, form } = radioGroup();
+      click(label('pro'));
+
+      await reset(form());
+
+      expect(instance.value.get()).toBeNull();
+      expect(checked()).toEqual(['false', 'false', 'false']);
+      expect(inputs().map((el) => el.checked)).toEqual([false, false, false]);
+      expect(submitted(form())).toEqual([]);
+      expect(instance.changes).toEqual(['pro', null]);
+    });
+
+    it('keeps the answer it started with through a reset, and still submits it', async () => {
+      @Component({
+        selector: 'v-preset-plan',
+        render: compileTemplate(`
+          <form>
+            <div :ref="group" :spread="plans.groupProps()">
+              <label :for="value in values" :key="value" :click="plans.select(value)">
+                <input :spread="plans.inputProps(value)">
+                <span :spread="plans.itemProps(value)">{ value }</span>
+              </label>
+            </div>
+          </form>
+        `),
+      })
+      class PresetPlan {
+        group = new Signal.State<Element | null>(null);
+        values = ['free', 'pro'];
+        plans = createRadioGroup({
+          group: () => this.group.get(),
+          name: 'plan',
+          label: 'Plan',
+          defaultValue: 'pro',
+        });
+      }
+
+      const handle = track(mount(PresetPlan, host));
+      flushSync();
+      const form = host.querySelector('form') as HTMLFormElement;
+
+      // Untouched first: nothing changes the state, so nothing would put the
+      // mirror back if the reset were allowed to uncheck it.
+      await reset(form);
+      expect(submitted(form)).toEqual([['plan', 'pro']]);
+
+      click(host.querySelector('label') as HTMLElement);
+      expect(submitted(form)).toEqual([['plan', 'free']]);
+
+      await reset(form);
+
+      expect((handle.instance as PresetPlan).plans.value()).toBe('pro');
+      expect(submitted(form)).toEqual([['plan', 'pro']]);
     });
   });
 
