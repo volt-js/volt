@@ -1,0 +1,26 @@
+<div class="rows">
+  <div class="row" role="toolbar" aria-label="Formatting">
+    <v-tooltip text="Bold" label="Bold">
+      <button :slot-trigger class="volt-button icon">B</button>
+    </v-tooltip>
+
+    <v-tooltip text="Italic" label="Italic">
+      <button :slot-trigger class="volt-button icon">I</button>
+    </v-tooltip>
+
+    <v-tooltip label="Delete" placement="bottom">
+      <button :slot-trigger class="volt-button icon" data-variant="danger">✕</button>
+      <b>Delete</b> permanently
+    </v-tooltip>
+  </div>
+
+  <div class="row">
+    <v-tooltip :text="hint()">
+      <v-button :slot-trigger variant="primary" :onPress="save">Save</v-button>
+    </v-tooltip>
+
+    <span class="note">Rest the pointer on a button, or tab to one. The first
+      tooltip waits; the next opens at once, because by then you have asked for
+      tooltips.</span>
+  </div>
+</div>

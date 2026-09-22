@@ -1,0 +1,30 @@
+// Room above and below the row for a tooltip to sit in: the frame is only as
+// tall as its content, and a label placed over the toolbar would be cut off by
+// the edge of the page rather than flipped, which is a fallback for a viewport
+// and not for a frame.
+.rows {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-4);
+  padding-block: var(--volt-space-8);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--volt-space-3);
+  row-gap: var(--volt-space-2);
+}
+
+// A button with one character in it, squared off so the toolbar reads as icons.
+.icon {
+  inline-size: var(--volt-space-8);
+  justify-content: center;
+}
+
+.note {
+  max-inline-size: 22rem;
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}

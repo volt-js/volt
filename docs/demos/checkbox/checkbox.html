@@ -1,0 +1,17 @@
+<div class="rows">
+  <v-checkbox :checked="all" :onCheckedChange="setAll">Everything on it</v-checkbox>
+
+  <div class="rows nested">
+    <v-checkbox
+      :for="topping in toppings"
+      :key="topping.name"
+      :checked="topping.on"
+      :onCheckedChange="sync"
+    >{ topping.name }</v-checkbox>
+  </div>
+
+  <v-checkbox :disabled="true">Pineapple, which the kitchen has run out of</v-checkbox>
+
+  <span class="note">Ordering { chosen() }. The box at the top is mixed while only
+    some of the three are on, and checking it takes all of them.</span>
+</div>

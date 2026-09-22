@@ -1,0 +1,29 @@
+<div class="rows">
+  <v-tabs :value="section" label="Settings">
+    <v-tab value="account" label="Account">
+      <p>Two people can sign in to this project.</p>
+      <v-button size="sm" :onPress="toBilling">Go to billing</v-button>
+    </v-tab>
+
+    <v-tab value="billing" label="Billing">
+      <p>Nothing is owed until March.</p>
+    </v-tab>
+
+    <v-tab value="archive" label="Archive" :disabled="true">
+      <p>Nothing has been archived.</p>
+    </v-tab>
+  </v-tabs>
+
+  <span class="note">Showing { section.get() }. The arrow keys move between the tabs and
+    select as they go, Home and End reach the ends, and the disabled tab is stepped
+    over.</span>
+
+  <v-tabs class="beside" orientation="vertical" label="Reports">
+    <v-tab value="daily" label="Daily">
+      <p>Sent every morning, to everyone on the project.</p>
+    </v-tab>
+    <v-tab value="weekly" label="Weekly">
+      <p>Sent on Mondays, to the people who asked for it.</p>
+    </v-tab>
+  </v-tabs>
+</div>

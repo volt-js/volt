@@ -75,203 +75,24 @@ rules distinguish, on an engine with anchor positioning and on one without, and
 every selector in the sheet has to match something the primitive rendered. A
 primitive that renamed an attribute would leave a rule selecting on nothing,
 and that test would fail.
-
 ## The components
 
-Four so far. Each takes what a caller writes on the tag and puts it on the
-element it draws, so a class, an id or an `aria-label` lands where you would
-have put it by hand; each holds its primitive in a field, so `:ref` on the tag
-reaches everything the component does not offer; and every prop a template
-reads is a signal, so binding one keeps it live.
+| Group | Components |
+|---|---|
+| [Forms](./ui-forms) | `<v-button>`, `<v-checkbox>`, `<v-select>` and `<v-option>` |
+| [Overlays](./ui-overlays) | `<v-dialog>`, `<v-popover>`, `<v-tooltip>` |
+| [Navigation](./ui-navigation) | `<v-tabs>` and `<v-tab>` |
+| [Data](./ui-data) | `<v-table>` and `<v-table-column>` |
 
-### `<v-button>`
+Each is the primitive with the markup already written, and each keeps that
+primitive within reach — so a component is a shortcut, never a wall. What a
+caller writes on the tag lands on the element the component draws, the
+primitive is a field `:ref` can reach, and every prop a template reads is a
+signal, so binding one keeps it live.
 
-A `<button>`, with the sheet's look and the package's rule for a disabled
-control.
-
-| Prop | Type | Means |
-|---|---|---|
-| `variant` | `'primary' \| 'danger' \| 'ghost'` | Absent for the plain button |
-| `size` | `'sm' \| 'lg'` | Absent for the middle size |
-| `type` | `'button' \| 'submit' \| 'reset'` | `button` unless asked, rather than the platform's submit |
-| `disabled` | `boolean` | Refuses the press |
-| `onPress` | `(event: MouseEvent) => void` | Called on a press it did not refuse |
-
-```html
-<v-button variant="primary" :disabled="busy.get()" :onPress="save">
-  { busy.get() ? 'Saving…' : 'Save' }
-</v-button>
-```
-
-Disabled is written as `aria-disabled`, not the `disabled` attribute, so the
-button keeps its place in the tab order: a control a keyboard user cannot reach
-is one they cannot discover is there. The press is refused instead.
-
-### `<v-select>` and `<v-option>`
-
-A button showing the value, over a popup list — the APG select-only combobox,
-which `createSelect` implements down to the typeahead.
-
-<Demo name="select" height="300" />
-
-```html
-<v-select :value="chosen" name="country" placeholder="Choose a country">
-  <v-option
-    :for="country in countries"
-    :key="country.code"
-    :value="country.code"
-    :label="country.name"
-    :disabled="country.closed === true"
-  ></v-option>
-</v-select>
-```
-
-Each `<v-option>` draws a real `<option>` inside a hidden native `<select>`,
-which is the part that is easy to skip and expensive to skip: it is what
-submits with the form, what the platform validates, and what lets the control
-show the name of a value it was handed before its popup had ever been opened.
-The rows you see are drawn from the same options when the list opens, so an
-option is one component whether the list is open or shut.
-
-| `<v-select>` | Type | Means |
-|---|---|---|
-| `value` | `Signal.State<readonly string[]>` | Your signal. A list even for one value — `values()` is the list, `value()` the first of it |
-| `defaultValue` | `string \| readonly string[]` | Where it starts, when the value is the select's own |
-| `multiple` | `boolean` | More than one at a time |
-| `name` | `string` | Submitted as `name=value`; without one the native control submits nothing |
-| `open` | `Signal.State<boolean>` | Your signal for the popup, when you need to drive it |
-| `placeholder` | `string` | Shown while nothing is chosen |
-| `disabled`, `readOnly`, `required` | `boolean` | Written through to the native control |
-| `onValueChange`, `onOpenChange` | callbacks | |
-
-| `<v-option>` | Type | Means |
-|---|---|---|
-| `value` | `string` | Identifies the option; everything is keyed off it |
-| `label` | `string` | The name of the value, in the button and the native control |
-| `disabled` | `boolean` | Skipped by navigation and typeahead, still announced |
-
-Write a template inside the tag for a row that is more than a line of text —
-`label` is still needed, because an `<option>` holds text and nothing else, and
-that text is what a screen reader reads and what typeahead searches:
-
-```html
-<v-option value="fr" label="France">
-  <img src="/flags/fr.svg" alt=""> France
-</v-option>
-```
-
-Two things the sheet draws are information rather than emphasis, and both
-survive a forced palette. Which option is chosen is the obvious one. The other
-is the highlight: focus stays on the trigger — it is the element carrying
-`aria-activedescendant` — so an option under the keyboard has no `:focus` for
-CSS to find, and `data-highlighted` is the only mark saying where the keyboard
-is.
-
-### `<v-dialog>`
-
-`createDialog`, with the markup written. The state is one signal both sides
-hold: pass `open` and it is yours to read and write, pass nothing and the
-dialog owns it.
-
-<Demo name="dialog" height="300" />
-
-```html
-<v-button variant="danger" :onPress="show">Delete project</v-button>
-
-<v-dialog
-  :open="open"
-  title="Delete this project?"
-  description="Its history goes with it, and this cannot be undone."
->
-  <template :slot-footer>
-    <v-button variant="ghost" :onPress="hide">Cancel</v-button>
-    <v-button variant="danger" :onPress="remove">Delete</v-button>
-  </template>
-</v-dialog>
-```
-
-| Prop | Type | Means |
-|---|---|---|
-| `open` | `Signal.State<boolean>` | Your signal, when the state is yours |
-| `defaultOpen` | `boolean` | Where it starts, when the dialog owns its state |
-| `modal` | `boolean` | Traps focus, makes the rest inert, locks scrolling |
-| `closeOnEscape`, `closeOnOutsidePointer` | `boolean` | Both default to true |
-| `title`, `description` | `string` | Rendered, and named to the screen reader by the primitive's own ids |
-| `onOpenChange` | `(open: boolean) => void` | |
-
-Slots: the default one is the body, `header` replaces the title line when a
-heading needs markup, and `footer` is the row of buttons. `modal`,
-`defaultOpen` and the two `closeOn` props are read once, when the primitive is
-built, so they are not signals and changing them later does nothing — which is
-also why they are written down here.
-
-For anything this does not offer — `dialog.open()` from elsewhere, the
-primitive's own props on your own markup — take the primitive:
-
-```html
-<v-dialog :ref="box" title="Delete this project?"></v-dialog>
-```
-
-```ts
-box: VDialog | null = null;
-later(): void { this.box?.dialog.open(); }
-```
-
-### `<v-table>` and `<v-table-column>`
-
-A real `<table>`: the row and column relationships a screen reader reads out
-are the platform's, not a grid of `<div>`s.
-
-<Demo name="table" height="260" />
-
-```html
-<v-table :data="people.get()" :selected="chosen.get()" :striped="true">
-  <v-table-column field="name" label="Name"></v-table-column>
-  <v-table-column field="role" label="Role"></v-table-column>
-
-  <v-table-column label="Owed" align="end">
-    <template :slot-cell="{ row }">{ money(row.owed) }</template>
-  </v-table-column>
-
-  <v-table-column label="" align="end">
-    <template :slot-cell="{ row }">
-      <v-button size="sm" :onPress="() => toggle(row)">Select</v-button>
-    </template>
-  </v-table-column>
-</v-table>
-```
-
-A column is a tag because that is where its template belongs: the markup for a
-cell is written inside the column that draws it. The table fetches it from
-there with [`<slot :from>`](./template-syntax#drawing-what-was-written-inside-another-tag),
-which means a column is rendered once — for its heading — and never once per
-cell.
-
-| `<v-table>` | Type | Means |
-|---|---|---|
-| `data` | `readonly Record<string, unknown>[]` | The rows, in the order they are shown |
-| `rowKey` | `string` | The field that identifies a row. Default `id` |
-| `striped` | `boolean` | Shade every second row |
-| `selected` | `ReadonlySet<unknown> \| null` | The keys of the rows an action is about to be taken on |
-| `empty` | `string` | Shown in place of the rows when there are none |
-| `onRowPress` | `(row, index) => void` | |
-
-| `<v-table-column>` | Type | Means |
-|---|---|---|
-| `field` | `string` | The field of a row this column shows |
-| `label` | `string` | The heading, when it is a line of text |
-| `align` | `'start' \| 'center' \| 'end'` | `end` for numbers |
-| `width` | `string` | Any CSS width, put on the heading, which sizes the column |
-
-Slots: `cell` is drawn per row and is handed `{ row, value }`; `header` replaces
-the label when a heading needs markup. The table's own `empty` slot replaces the
-empty message.
-
-Selection is drawn, not owned. What selecting means — one row or many, and what
-happens next — is yours; what the table does is mark those rows with
-`aria-selected` and a colour a forced palette keeps. Striping and the pointer
-are emphasis, and are handed back when the palette is the user's, which leaves
-its two surface colours for the row that is actually selected.
+The components that are not tags yet are markup you write by hand, and each
+group's page carries it beside the components: the same primitive, the same
+class names, and the same look.
 
 ## Getting the styles onto the page
 
@@ -616,201 +437,6 @@ one or after it:
 | `LAYER_OVERRIDES` | `'volt.overrides'` |
 | `layerOrder` | The three, weakest first |
 | `layerOrderStatement()` | `'@layer volt.base, volt.components, volt.overrides;'` |
-
-## Markup for everything that is not a tag yet
-
-Seven of the eleven styled components have no component of their own. They are
-written the way the components above are written underneath: a primitive, the
-markup you want, and the sheet's class names on it. The button is here too,
-because `<v-button>` is exactly this markup and a caller may prefer to write it.
-
-### Button
-
-```html
-<button class="volt-button" data-variant="primary" data-size="sm">Save</button>
-```
-
-| Attribute | Values |
-|---|---|
-| `data-variant` | `primary`, `danger`, `ghost`; absent for the plain button |
-| `data-size` | `sm`, `lg`; absent for the middle size |
-
-Attributes rather than a class per variant, so that a variant is a value the
-markup carries rather than a string somebody has to concatenate correctly.
-Disabled is `disabled` or `aria-disabled="true"`, drawn the same; use the
-second when the button has to stay reachable by keyboard. Hover is not drawn on
-a disabled button, because a control that lights up under the pointer looks
-like it will do something.
-
-### Checkbox
-
-The control holds the box and the words that name it, the way the primitive's
-own example writes it, so the control takes its name from its contents and
-needs no `labelledBy`:
-
-```ts
-import { Signal } from '@voltdev/core';
-import { createCheckbox } from '@voltdev/primitives';
-
-class Terms {
-  input = new Signal.State<Element | null>(null);
-  agree = createCheckbox({ input: () => this.input.get(), name: 'terms' });
-}
-```
-
-```html
-<label class="volt-checkbox-field" :click="agree.toggle()" :keydown="agree.onKeyDown($event)">
-  <input :ref="input" :spread="agree.inputProps()">
-  <span class="volt-checkbox" :spread="agree.controlProps()">
-    <span class="volt-checkbox-indicator" aria-hidden="true">✓</span>
-    I accept the terms
-  </span>
-</label>
-```
-
-The box is drawn on the indicator, and the control is the row the box and the
-words sit on — its focus ring goes round both. A control with no words of its
-own, named with `label`, is the box alone.
-
-The sheet draws the box, its fill and its border; it does not draw a tick.
-There are no pseudo-elements anywhere in it, so the mark is yours — a glyph,
-or an SVG drawn in `currentColor` — and it is shown for `checked` and
-`indeterminate` by its colour: an unchecked box draws it in `transparent`, so
-the box does not change size between states. A mark with a colour of its own
-shows in every state. Reading `agree.isIndeterminate()` is how you draw a
-different mark for the third state. The rules select on `data-state` and
-`data-disabled` only, and on no ARIA attribute: ARIA is there to be spoken, not
-styled against.
-
-### Dialog
-
-The content is fixed to the centre of the viewport, at most 30rem wide, and
-never taller than the viewport less a margin — it scrolls instead, because a
-dialog taller than the screen with no way to scroll is a dialog with an
-unreachable confirm button. The overlay is yours, as in
-[the example above](#putting-classes-on-the-markup). The content has a focus
-ring of its own, since it takes focus itself when nothing inside it wants to.
-
-The centring is a `translate`, and the entry and exit animations move
-`translate` too — rising into the centre and sinking out of it. An animation's
-value beats a rule's, and these fill forwards, so their keyframes carry the
-centring with them and end exactly where the rule puts the content. The same
-fill beats a `translate` of your own on the content, so a dialog you want
-somewhere else wants new keyframes as well as a new rule.
-
-### Popover, menu and tooltip
-
-All three are positioned by the primitive through CSS anchor positioning, which
-writes the positioning scheme, `position-anchor` and `position-area` inline,
-so where they go is none of the sheet's business and `:portal` is safe for all
-three, as the primitives' own examples use it. The `data-anchored="false"` a
-primitive writes where the browser cannot anchor gets no rule: every current
-engine anchors, and a portalled element has no positioned ancestor near its
-trigger that a rule could place it against.
-
-The gap the sheet leaves between a popover and its trigger is a margin on the
-side that faces the trigger — above and below it for a `top` or `bottom`
-placement, beside it for a `left` or `right` one, and none across it, where it
-would push a popover aligned to one of the trigger's edges off that edge. Pass
-`offset` to `createPopover` and the primitive writes the gap inline instead.
-
-The popover arrow is drawn from `data-placement` and `data-align`, which the
-primitive writes on it, for all twelve placements: the sheet moves it onto the
-edge that faces the trigger, hides the two borders that would show inside the
-popover, and sets it along that edge where the trigger is — the middle for a
-centred placement, and near the aligned edge for a `-start` or `-end` one.
-`data-align` names that edge physically — `left`, `right`, `top` or `bottom` —
-and the primitive resolves it against the trigger's own writing direction,
-which a popover portalled to `<body>` does not share: a trigger inside a
-`dir="rtl"` region of a left-to-right page gets a popover aligned to its right
-edge and an arrow at the popover's right one.
-
-It is right while the browser uses the placement asked for. `data-placement` is
-that placement, not the one in use. When the popover would overflow, the
-browser may move it to the other side, or to another alignment — a centred
-popover to one lined up with either edge of the trigger — and nothing on the
-element changes to say so. The arrow stays where the requested placement put
-it, pointing at nothing. Chrome can tell a stylesheet which fallback it took,
-through anchored container queries (`@container anchored(fallback: …)`);
-Firefox cannot, and the sheet does not use them. `flip: false` and
-`shift: false` together rule the fallbacks out instead: the popover stays at
-the placement it was given and the arrow stays right, at the price of a popover
-that can run off the edge of the viewport.
-
-The menu marks the item under keyboard focus with `:focus-visible`. Roving
-focus moves real focus between items, so there is no highlighted-item attribute
-to style, and in a menu opened with the pointer, focus that follows the pointer
-draws no ring — the hover background is what marks that item, and
-`Highlight` under forced colours. An item that is unavailable, through
-`itemProps({ disabled: true })` or as a natively `disabled` `<button>`, is
-drawn in the muted text colour, `GrayText` under forced colours, and takes no
-hover: a control that lights up under the pointer looks like it will do
-something. An item written as a `<button>`, as the primitive's own example
-writes it, loses the browser's button border.
-
-A context menu — `createMenu` with no `trigger` — is not anchored, and
-`position()` reports the press in viewport coordinates, so the sheet makes the
-menu `position: fixed` to match: set its `left` and `top` from `position()`
-and it opens at the press on a scrolled page too. A dropdown menu is not
-affected, since the primitive writes its own scheme inline.
-
-The tooltip can be hovered. The primitive keeps it open while the pointer is
-on it, so a long description can be read without it closing, as WCAG's Content
-on Hover or Focus criterion (1.4.13) asks, and the sheet leaves pointer events
-on for that to work.
-
-### Tabs
-
-The primitive hides inactive panels with the `hidden` attribute rather than
-unmounting them, so nothing in the sheet sets `display` on a panel, and
-nothing in yours should: a `display` of any kind beats `hidden` and shows every
-panel at once. The selected tab is marked three ways — weight, colour and an
-edge — so that the selection does not rest on colour, which a forced palette
-replaces; under forced colours the text and the edge take `Highlight`. Panels
-have a focus ring, since each is in the tab order.
-
-The edge is the one that faces the panels: beneath a tab in a horizontal list,
-and at the inline end of a tab in a vertical one, where the list draws its own
-edge too. A tab draws that edge and no other, so a tab written as a `<button>`,
-as the primitive's own example writes it, loses the browser's button border.
-An unselected tab keeps its edge clear with `transparent`, which a forced
-palette paints like any other colour, so under forced colours the sheet takes
-that edge away instead, and only the selected tab has one.
-
-### Toast
-
-`data-type` is drawn as the colour of the toast's leading edge: `info`,
-`success`, `warning` or `error`. Under forced colours every severity would come
-out the same colour, so the edge also takes a border style per type — solid,
-double, dashed, dotted — which is geometry, and survives. That is a second cue,
-not the message: severity belongs in the words of the toast. The region is
-fixed to the bottom inline-end corner and has a focus ring, which is the only
-sign that the hotkey moving focus into it — `F6` unless you choose another —
-landed anywhere. The `data-paused` the primitive writes on the region is not
-styled.
-
-### Accordion
-
-The header is a heading element wrapping the trigger, as the pattern asks; the
-sheet takes its type scale away so the button inside is the visible thing. The
-panel animates its height between zero and `--volt-collapsible-height`, which
-`createAccordion` measures in [the measure lane](./reactivity#effects) and
-writes on the panel's `style` — `auto` does not interpolate, so without a real
-number there is nothing to animate between. The primitive keeps a closing panel
-present until that animation has run, so render the panel under
-`:if="isPresent(value)"` and the collapse is seen before it goes.
-
-The expand animation fills backwards only. Once it has run, the open panel
-goes back to the height of its content rather than staying at the height
-measured when it opened, so content that grows inside it later — an image
-arriving — is not clipped. The collapse fills forwards, and holds the panel
-shut until the primitive lets it go.
-
-`contractProperties`, a `ReadonlySet<string>`, is the list of such properties —
-the ones a primitive writes and a rule may read — and
-`--volt-collapsible-height` is the only one; `createCollapsible` writes it too.
-It is not a token: nobody decides in advance how tall a panel's content is.
-
 ## Accessibility the sheet carries
 
 **Forced colours.** Each component restates, under
@@ -886,7 +512,6 @@ can see where an element ends up, only what the rules placing it compute to —
 which is why the dialog's centring is checked by holding its keyframes to the
 rule they animate, not by measuring a box. Nothing runs in a real browser, and
 nothing is a visual test.
-
 ## Styles as data
 
 The sheet is assembled from data rather than written as CSS, because the
@@ -978,9 +603,9 @@ const css = wrap(`@layer ${LAYER_COMPONENTS}`, componentCss(dialogStyles, '  '))
 
 ## What is not here yet
 
-- **Most of the components.** Four of the eleven styled components are tags.
-  Checkbox, tabs, menu, popover, tooltip, toast and accordion are markup you
-  write, [above](#markup-for-everything-that-is-not-a-tag-yet).
+- **Most of the components.** Eight of the eleven styled components are tags;
+  menu, toast and accordion are still markup you write, which each group's
+  page carries beside the components it belongs with.
 - **A `.css` file in the package.** Generate one with `stylesheet()`.
 - **A release.** The package is not on npm.
 - **A second palette**, and a `color-scheme` to go with one.

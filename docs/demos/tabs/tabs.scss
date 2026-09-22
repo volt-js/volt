@@ -1,0 +1,22 @@
+.rows {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-5);
+}
+
+.note {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}
+
+// A vertical tab list stands beside its panels rather than above them, which
+// is layout the sheet leaves to the page: this is the class `<v-tabs>` hands
+// to the element wrapping the list and the panels.
+.beside {
+  display: flex;
+  column-gap: var(--volt-space-4);
+}
+
+.rows p {
+  margin-block: 0 var(--volt-space-3);
+}

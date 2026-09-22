@@ -1,0 +1,23 @@
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--volt-space-3);
+  row-gap: var(--volt-space-2);
+}
+
+// The panel is the popover's own, and the sheet draws it; this is only the
+// row of buttons put inside it.
+.choices {
+  display: flex;
+  column-gap: var(--volt-space-2);
+}
+
+.line {
+  margin: 0;
+}
+
+.note {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}

@@ -1,0 +1,27 @@
+<div class="row">
+  <v-popover
+    variant="primary"
+    placement="bottom-start"
+    :title="heading()"
+    description="Only the runs that match stay in the list."
+  >
+    <template :slot-trigger>Filters</template>
+
+    <div class="choices">
+      <v-button
+        :for="filter in filters"
+        :key="filter"
+        size="sm"
+        :variant="isOn(filter) ? 'primary' : 'ghost'"
+        :onPress="() => toggle(filter)"
+      >{ filter }</v-button>
+    </div>
+  </v-popover>
+
+  <v-popover variant="ghost" placement="right" label="What a run is">
+    <template :slot-trigger>?</template>
+    <p class="line">A run is one pass of the suite, on one commit, on one machine.</p>
+  </v-popover>
+
+  <span class="note">{ summary() }</span>
+</div>
