@@ -80,12 +80,13 @@ and that test would fail.
 | Group | Components |
 |---|---|
 | [Forms](./ui-forms) | `<v-button>`, `<v-checkbox>`, `<v-select>` and `<v-option>` |
-| [Overlays](./ui-overlays) | `<v-dialog>`, `<v-popover>`, `<v-tooltip>` |
-| [Navigation](./ui-navigation) | `<v-tabs>` and `<v-tab>` |
+| [Overlays](./ui-overlays) | `<v-dialog>`, `<v-popover>`, `<v-tooltip>`, `<v-menu>`, `<v-toaster>` |
+| [Navigation](./ui-navigation) | `<v-tabs>`, `<v-accordion>` |
 | [Data](./ui-data) | `<v-table>` and `<v-table-column>` |
 
-Eight tags over eleven styled components; menu, toast and accordion are the
-three that are still markup you write, and each group's page carries it.
+Every styled component is a tag now. The markup for writing one by hand is
+still on each group's page, because that is what a component here is made of
+and what to reach for when a component's shape does not fit.
 
 Each is the primitive with the markup already written, and each keeps that
 primitive within reach — so a component is a shortcut, never a wall. What a
@@ -606,12 +607,12 @@ const css = wrap(`@layer ${LAYER_COMPONENTS}`, componentCss(dialogStyles, '  '))
 
 ## What is not here yet
 
-- **Most of the components.** Eight of the eleven styled components are tags;
-  menu, toast and accordion are still markup you write, which each group's
-  page carries beside the components it belongs with.
+- **Most of the inventory.** Eleven components over twelve sheet entries, out
+  of the roughly fifty the roadmap names. The application shell, the layout
+  primitives and most of the form controls are not built.
 - **A `.css` file in the package.** Generate one with `stylesheet()`.
 - **A release.** The package is not on npm.
 - **A second palette**, and a `color-scheme` to go with one.
-- **Most of the primitives.** Eleven are styled. Switch, radio group, combobox and
+- **Most of the primitives.** Twelve are styled. Switch, radio group, combobox and
   the rest of the collections, form, display and data primitives have no styles
   here; the package covers a subset on purpose.

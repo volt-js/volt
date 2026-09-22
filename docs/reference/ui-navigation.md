@@ -148,6 +148,168 @@ settings: VTabs | null = null;
 later(): void { this.settings?.tabs.select('billing'); }
 ```
 
+## `<v-accordion>` and `<v-accordion-item>`
+
+A stack of sections, each behind the heading that opens it — the APG accordion
+pattern, which `createAccordion` owns down to the height a collapse animates
+to.
+
+<Demo name="accordion" height="420" />
+
+```html
+<v-accordion :value="open" :level="3">
+  <v-accordion-item value="delivery" label="When will it arrive?">
+    <p>Everything ordered before four leaves the same day.</p>
+  </v-accordion-item>
+
+  <v-accordion-item value="returns" label="Can I send it back?">
+    <p>Thirty days, no questions asked.</p>
+  </v-accordion-item>
+
+  <v-accordion-item value="gifts" label="Do you wrap gifts?" :disabled="true">
+    <p>Not until December.</p>
+  </v-accordion-item>
+</v-accordion>
+```
+
+One tag is one section, holding both halves of it: the heading `<v-accordion-item>`
+draws — a real heading element around a button, because the level is how a
+screen reader user skims the list and the button is what gives Enter and Space
+for free — and the panel, which is what was written inside the tag. The
+accordion around them owns what they share: which sections are open, whether
+more than one may be, and the arrow keys between the headings.
+
+| `<v-accordion>` | Type | Means |
+|---|---|---|
+| `value` | `Signal.State<string[]>` | Your signal. A list even for a single accordion, so changing `type` does not change the shape of state you already hold |
+| `defaultValue` | `string[]` | Open from the start, when the open sections are the accordion's own |
+| `type` | `'single' \| 'multiple'` | One section open at a time, or several. Default single |
+| `collapsible` | `boolean` | Let a single accordion close its last open section. Default false |
+| `orientation` | `'vertical' \| 'horizontal' \| 'both'` | Which arrows move between headings. Default vertical |
+| `loop` | `boolean` | Wrap past the first and last heading. Default true |
+| `region` | `boolean` | Give each panel `role="region"`. Default true |
+| `disabled` | `boolean` | Refuse every heading at once, for a list that is off while something saves |
+| `level` | `number \| string` | The heading level of every section. Default 3 |
+| `onValueChange` | `(value: string[]) => void` | Called with the open sections a user opened or closed, never with a default |
+
+| `<v-accordion-item>` | Type | Means |
+|---|---|---|
+| `value` | `string` | Identifies the section; the open ones are a list of these, and the pair of ids is minted from it |
+| `label` | `string` | The heading's words, when they are a line of text |
+| `disabled` | `boolean` | Refuses the press and says so, while staying reachable and announced |
+
+Slots: the content of `<v-accordion-item>` is the panel, and `header` is the
+heading's own markup, for a heading that is more than a line of text — which
+keeps the content of the tag meaning the larger of the two things by far. The
+sheet lays the heading out as a row with its words at one end, so a count or a
+marker written beside them lands at the other:
+
+```html
+<v-accordion-item value="care">
+  <template :slot-header>Looking after it<span class="count">4 steps</span></template>
+  <p>Cold wash, no tumble, warm iron.</p>
+</v-accordion-item>
+```
+
+`type`, `collapsible`, `orientation`, `loop`, `region` and `defaultValue` are
+what the primitive is *built* with, read once while the component's fields
+initialize, so changing one later does nothing — which is why they are written
+down here. The rest follow their expressions like any other prop: `disabled`
+and `level`, everything on `<v-accordion-item>`, and the open sections, which
+are the thing that changes — pass `value` and it is one signal both sides hold,
+so the page that writes `open.set(['returns'])` moves the accordion.
+
+**A closed panel is not in the page**, which is the difference from
+`<v-tabs>` and the one worth knowing before you write a panel. The content of a
+section is built when it opens and thrown away when it closes, so a scroll
+position, a half-filled field or an unsaved edit inside a panel does not
+survive a close: keep that in a signal of yours rather than in the DOM the
+panel made. A panel that is closing stays until the animation it started has
+finished, which is what makes the collapse animatable at all — so a closing
+panel is in the page with `data-state="closed"` for as long as the sheet's
+collapse runs.
+
+**Nothing may give `.volt-accordion-panel` padding**, yours included. The panel
+is clipped to nothing as it collapses, and padding is what would be left over
+at zero height — a strip of space under a section that is shut. The spacing
+belongs to the content, which is yours anyway:
+
+```html
+<v-accordion-item value="returns" label="Can I send it back?">
+  <div class="body"><p>Thirty days, no questions asked.</p></div>
+</v-accordion-item>
+```
+
+```scss
+.body { padding-block-end: var(--volt-space-3); padding-inline: var(--volt-space-2); }
+```
+
+The height the collapse travels is measured by the primitive and published on
+the panel as `--volt-collapsible-height`, because `height: auto` has no number
+to interpolate from and the number that would replace it is only known once the
+content has been laid out. Nothing measures per frame, and the animation is
+plain CSS.
+
+A single accordion's heading is a switch between sections rather than a switch
+for the section it sits on: the last open one will not close unless you write
+`collapsible`. Its heading reports `aria-disabled="true"` while it is the only
+one open, because pressing it does nothing and a user who has been told it is a
+control deserves to know that before they press — but it is not marked
+`data-disabled` and not greyed out, because it is the section being read rather
+than one that is unavailable.
+
+`level` is written as `aria-level` over the element's own level, and it has to
+fit the page around it: an accordion under an `<h2>` holds `<h3>`s, one under
+an `<h3>` holds `<h4>`s. It is the accordion's rather than each section's,
+because the sections are siblings and a list whose headings were at different
+levels would not be one list to anybody skimming by heading.
+
+Every heading stays in the page's tab sequence. That is where this departs from
+every other roving-focus widget in the package, and APG asks for it: an
+accordion is part of the document's reading order rather than one composite
+widget like a menu, so Tab walks the headings and the arrow keys are an
+addition. A disabled heading keeps its place in both orders — it is announced,
+it can be read, and what it refuses is the press.
+
+`region` gives each panel a landmark, which is what the pattern recommends and
+what APG's own advice says to drop once an accordion runs past roughly six
+sections: past that the regions crowd out every other landmark on the page.
+Either way the heading names the panel, so nothing invents a string for it.
+
+What you write on `<v-accordion>` lands on the element wrapping the sections,
+which carries no role — the pattern's roles are on the headings and the panels
+— so it is there to be laid out. What you write on `<v-accordion-item>` lands
+on the section itself: the element the sheet draws the border on, and the one
+carrying `data-state`, so `.mine[data-state='open']` is yours to style. Both
+survive every open and close, so a class or an id you wrote is still there
+after the first press.
+
+A name is the one thing neither element can carry. `aria-label` on an element
+with no role is thrown away by every screen reader, and nothing on the page
+looks wrong afterwards — so one written on either tag is said out loud in
+development, naming what does name a section: `label`, or the `header` slot.
+An accordion is not one control, and a name for the group belongs on the
+landmark or the heading the accordion sits under. Give either tag a `role` of
+your own and the name is yours to keep, in silence.
+
+A `<v-accordion-item>` written outside a `<v-accordion>` throws, naming both
+tags, and so do two sections in one accordion carrying the same value: the
+value is what the open sections are a list of and what the ids pairing a
+heading with its panel are minted from, so both would open at once, under one
+id.
+
+For anything the pair does not offer — opening a section from elsewhere, asking
+what is open — take the primitive:
+
+```html
+<v-accordion :ref="questions">…</v-accordion>
+```
+
+```ts
+questions: VAccordion | null = null;
+later(): void { this.questions?.accordion.open('returns'); }
+```
+
 ## Written by hand
 
 The same look without the tag: the primitive, the markup you want, and the

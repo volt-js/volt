@@ -288,6 +288,313 @@ does not drop you back to the full wait. That is global on purpose — a toolbar
 and the lone icon button beside it are one group to the person using them — and
 it is the one thing here you cannot scope.
 
+## `<v-menu>`, `<v-menu-item>` and `<v-menu-separator>`
+
+A button, and the list of actions it opens — `createMenu`, with the markup
+written. The WAI-ARIA menu-button pattern, down to the typeahead and the
+roving tab stop.
+
+<Demo name="menu" height="300" />
+
+```html
+<v-menu variant="primary" :onSelect="run">
+  <template :slot-trigger>Actions</template>
+
+  <v-menu-item value="rename">Rename…</v-menu-item>
+  <v-menu-item value="duplicate">Duplicate</v-menu-item>
+
+  <v-menu-separator></v-menu-separator>
+
+  <v-menu-item value="delete" :disabled="locked.get()">Delete report</v-menu-item>
+</v-menu>
+```
+
+The trigger is the component's, as the popover's is, and for the same reason:
+the sheet of actions is placed against the button in CSS, and the
+`anchor-name` that does it has to be on an element the component renders. So
+the trigger is a `<button>` drawn with the sheet's button rules — `variant`
+and `size` are that button's — and the `trigger` slot is what goes inside it.
+That button is also what names the menu: it carries the primitive's own id and
+the sheet points `aria-labelledby` at it.
+
+| `<v-menu>` | Type | Means |
+|---|---|---|
+| `open` | `Signal.State<boolean>` | Your signal, when the state is yours |
+| `defaultOpen` | `boolean` | Where it starts, when the menu owns its state |
+| `placement` | `'top' \| 'right' \| 'bottom' \| 'left'`, each also as `-start` and `-end` | Which side of the trigger the sheet sits on, and which edge it lines up with. Default `bottom-start`, which is the leading edge and mirrors under `dir="rtl"` |
+| `offset` | `number \| string` | The gap between trigger and sheet, written inline by the primitive. A bare number is pixels either way you write it: `offset="8"` and `:offset="8"` are the same gap |
+| `flip` | `boolean` | Let the browser move the sheet to the opposite side when it would overflow. Default true |
+| `orientation` | `'vertical' \| 'horizontal' \| 'both'` | Which arrows move between items, and which way a separator lies. Default `vertical` |
+| `loop` | `boolean` | Wrap past the first and last item. Default true |
+| `typeahead` | `boolean` | Typing letters jumps to the item they start. Default true |
+| `typeaheadTimeout` | `number` | How long typed characters accumulate, in ms. Default 500 |
+| `closeOnEscape`, `closeOnOutsidePointer` | `boolean` | Both default to true |
+| `closeOnSelect` | `boolean` | Choosing an item closes it. Default true; an item may say otherwise for itself |
+| `label` | `string` | The trigger's name, for a trigger whose words are an icon |
+| `aria-label`, `aria-labelledby` | `string` | The same name, and the same id, in the platform's spelling. Both land on the **trigger** |
+| `variant` | `'primary' \| 'danger' \| 'ghost'` | The trigger's look |
+| `size` | `'sm' \| 'lg'` | The trigger's size |
+| `onOpenChange` | `(open: boolean) => void` | |
+| `onSelect` | `(value: string \| undefined) => void` | Called with the `value` of the item chosen |
+
+| `<v-menu-item>` | Type | Means |
+|---|---|---|
+| `value` | `string` | What the menu's `onSelect` is handed. Carried on the element, which is what lets items be drawn from a loop |
+| `role` | `'menuitem' \| 'menuitemcheckbox' \| 'menuitemradio'` | `menuitem` acts; the other two carry a state |
+| `checked` | `boolean \| 'mixed'` | For those two roles. An omitted state is announced as unchecked, not absent |
+| `disabled` | `boolean` | Skipped by the arrows and by typeahead, refuses a press, still announced |
+| `textValue` | `string` | What typeahead matches on, when the visible words are not what anyone would type |
+| `closeOnSelect` | `boolean` | Overrides the menu's, for this item alone |
+| `onSelect` | `() => void` | Called when this item is chosen, by press or by key |
+
+`<v-menu-separator>` takes no props. It is a tag rather than markup of yours
+because the rule is the sheet's but the attributes are the primitive's: a
+separator lies *across* the menu, so which way it runs is the menu's
+orientation turned ninety degrees, and only the menu knows that. It is not a
+prop on an item either, because an item is pressable, focusable and collected
+and a separator is none of the three — which is also why nothing has to skip
+it: it carries no item marker, so the arrows step from the item above to the
+one below without being told to, while a reader still announces the grouping
+it draws.
+
+Slots: `trigger` is what the button holds, and the default one is the sheet —
+the items, the separators, and any markup of yours between them. An item's own
+words are the content of its tag; there is no `label` prop, because nothing
+else ever draws that item.
+
+`defaultOpen`, `placement`, `offset`, `flip`, `orientation`, `loop`, the two
+typeahead props, the two `closeOn` props and `closeOnSelect` are read once,
+when the primitive is built, so they are not signals and changing them later
+does nothing — which is also why they are written down here. Everything on an
+item, and `label`, `variant` and `size`, are the other kind: bind them and
+they follow.
+
+What you write on the tag reaches the **sheet**, not the trigger. The sheet is
+portalled to `<body>`, and it is the thing `<v-menu class="wide">` is about;
+the trigger is a button, and `variant` and `size` are how it is drawn. The
+exceptions are the three attributes that say what the control is called:
+`label`, `aria-label` and `aria-labelledby` go on the button, which is the
+element a reader announces, and through it they name the sheet as well. A name
+landing on the sheet would be outranked by the `aria-labelledby` pointing at
+the trigger and would say nothing at all. Where both spellings are written the
+attribute wins, because that is the one you wrote on the tag.
+
+Two attributes on the sheet are the component's rather than yours, and both are
+load bearing: its `id`, which is what the trigger's `aria-controls` points at,
+and `role="menu"`, which is what its `aria-haspopup` promises. Reach the sheet
+with a class, or take the element itself with `:ref`.
+
+Everything else you write stays. The sheet, an item and a separator each carry
+a bag of the primitive's attributes, and an entry a bag has no value for is
+dropped rather than written — because writing it as nothing would not skip the
+attribute but take yours off the element. So `aria-orientation` on a vertical
+menu, `data-label` on an item, `aria-keyshortcuts` anywhere: yours, kept. The
+`data-` attributes an item is read back by — `data-value`, `data-label`,
+`data-close-on-select` — are the props' own spelling, and writing one by hand
+works, which is what lets an item be drawn by markup the component never sees.
+
+**There is no highlighted-item attribute, and no rule in the sheet wants one.**
+Roving focus moves real DOM focus between items, so the item under the keyboard
+is the focused item and `:focus-visible` is what marks it — which also keeps a
+focus ring from being dragged around behind a pointer. In a menu opened with
+the pointer the hover background is what marks the item instead, and
+`Highlight` under forced colours. A menu opened with the pointer highlights
+nothing at all: the sheet itself takes focus, because marking an item would
+claim a choice nobody has made.
+
+**An item exists only while the menu is open.** The items are written in the
+default slot, which is the portalled sheet, so each `<v-menu-item>` is built
+when the menu opens and disposed when it closes. State an item shows — whether
+it is ticked, whether it is disabled — belongs to your page and is bound in,
+which it would have been anyway.
+
+**One press, one action.** An item carrying its own `onSelect` is not also
+reported to the menu's: running both would do two things for one choice. Use
+the menu's callback with `value` for a sheet drawn from a list, and the item's
+for the handful that are each their own thing.
+
+The tick on a checkbox item is yours. The sheet draws the row an item sits on
+and nothing inside it, so a `menuitemcheckbox` shows its state with markup you
+write — and `checked` is what a screen reader is told, so both have to be set
+from the same signal:
+
+```html
+<v-menu-item role="menuitemcheckbox" :checked="wrap.get()"
+             :closeOnSelect="false" :onSelect="toggleWrap">
+  <span aria-hidden="true">{ wrap.get() ? '✓' : '' }</span> Wrap lines
+</v-menu-item>
+```
+
+`open` is the one signal both sides hold, and markup cannot write a signal. To
+have a menu start open, write `defaultOpen`.
+
+A disabled item keeps its place in the accessibility tree — `aria-disabled`,
+never the `disabled` attribute, this package's rule for every disabled control
+— so it is announced as being there and unavailable rather than appearing to
+have vanished.
+
+This is the dropdown half of `createMenu`. A context menu has no trigger to
+hang off, is placed from `position()` in viewport coordinates, and needs a name
+of its own, so it stays markup you write, with the same primitive and the same
+classes — [the page's own section](#popover-menu-and-tooltip) has it.
+
+For anything this does not offer — opening it from elsewhere, moving focus to a
+particular item — take the primitive:
+
+```html
+<v-menu :ref="actions"><template :slot-trigger>Actions</template>…</v-menu>
+```
+
+```ts
+actions: VMenu | null = null;
+later(): void { this.actions?.menu.open('first'); }
+```
+
+## `<v-toaster>`
+
+The region short messages arrive in — `createToaster`, with the markup
+written. Each toast is its own live region, announced where the reader already
+is, and nothing ever takes focus.
+
+<Demo name="toast" height="320" />
+
+```html
+<v-toaster></v-toaster>
+```
+
+```ts
+import { toaster } from '@voltdev/ui/components';
+
+toaster().add({ title: 'Project saved' }, { type: 'success' });
+
+toaster().add(
+  { title: 'Message deleted', action: { label: 'Undo', onPress: restore } },
+  { duration: 0 },
+);
+```
+
+Write the tag once, in the markup that stays up for the whole application — a
+layout or a shell, not a page that comes and goes — and raise from anywhere
+with `toaster()`.
+
+That function is the one thing here that is not like the rest of the package,
+and it is deliberate. A toast is raised where the thing worth saying happened:
+a fetch wrapper, a store, a route guard, a retry that finally worked. None of
+those is a component. `:ref` on the tag reaches this one, and context reaches
+what is written *inside* it — which for a toaster is nothing, because the
+region is a leaf whose contents arrive from calls. So the way in is a function
+that answers with the toaster that is mounted, and what it answers with is the
+primitive itself: `add`, `update`, `dismiss`, `dismissAll`, `toasts`, `queued`
+and `focusRegion` are
+[`createToaster`](./primitives-overlays#notifications-createtoaster)'s own, so
+there is no second surface to learn or to keep in step.
+
+| `<v-toaster>` | Type | Means |
+|---|---|---|
+| `max` | `number \| string` | How many are on screen at once; the rest wait their turn. Default 3 |
+| `duration` | `number \| string` | How long one stays up, in milliseconds. Default 5000; `0` keeps it up until something dismisses it |
+| `hotkey` | `string \| ((event: KeyboardEvent) => boolean)` | The key that moves focus to the region, matched with no modifier held. Default `F6` |
+| `label` | `string` | The region's accessible name. Default the locale's word for notifications, then `Notifications` |
+| `aria-label` | `string` | The same name in the platform's spelling, and the one that wins |
+| `closeLabel` | `string` | What a close button is called. Default the locale's word, then `Close notification` |
+| `onDismiss` | `(toast: Toast<ToastMessage>, reason: 'timeout' \| 'api') => void` | Called with each toast as it goes, and why it went |
+
+| `add(message, options?)` | Type | Means |
+|---|---|---|
+| `title` | `string` | The line in bold — the message itself, for a toast that is one line |
+| `description` | `string` | The line under it, drawn only where there is one |
+| `action` | `{ label: string; onPress: () => void }` | The one thing to do about it, drawn as a button beside the close, where the label is not blank |
+| `options.type` | `'info' \| 'success' \| 'warning' \| 'error'` | What kind of thing happened. Default `info` |
+| `options.duration` | `number` | This toast's own lifetime, over the toaster's |
+| `options.id` | `string` | Reuse one and `add` updates that toast instead of raising a second |
+| `options.priority` | `'polite' \| 'assertive'` | Override the priority `type` implies |
+
+Slots: `toast` is the words, handed the toast it is drawing, and taking it
+replaces the title and the description with your own markup. The chrome stays
+the component's either way — the live region's attributes, the action and the
+close button — so a toast a page draws itself is still a toast a screen reader
+reads and a keyboard can reach:
+
+```html
+<v-toaster>
+  <template :slot-toast="{ toast }">
+    <p class="volt-toast-title">{ toast.data().title } <b>{ toast.type() }</b></p>
+  </template>
+</v-toaster>
+```
+
+`toaster()` throws when no toaster is mounted, rather than dropping the
+message: the failure it stands for is a `<v-toaster>` nobody wrote, and a call
+that quietly does nothing turns that into a user reporting a save that said
+nothing. Mount a second toaster and the one mounted last answers, and the one
+before it answers again when that goes — which is what makes a toaster inside a
+route behave the way it reads. Two regions announcing at once is a design
+problem rather than a feature.
+
+`max`, `duration`, `hotkey` and `onDismiss` are read once, when the primitive
+is built, so they are not signals and changing them later does nothing — which
+is why they are written down here. `label`, `aria-label` and `closeLabel` are
+the other kind: bind one and the name follows it, including while toasts are
+up. The two counts take a string because an attribute is only ever one —
+`max="1"` and `duration="2000"` are the same as `:max="1"` and `:duration="2000"`
+— and something that is not a number at all is refused by name rather than
+left to become a toaster that shows nothing.
+
+A toast carrying an action should be raised with `duration: 0`. An undo the
+countdown can take away mid-reach is worse than no undo. Pressing the action
+takes the toast down and then runs it, in that order: a toast left up with a
+pressed undo invites a second undo, and an action that raises the next thing to
+say under this toast's own id becomes this toast rather than being taken down
+by the press that asked for it. An action whose `label` is blank is left out
+rather than drawn unnamed: a button with no accessible name, inside a live
+region, is one a screen reader reaches in the middle of the announcement and
+can say nothing about — and the gap where it should be is what tells you what
+you wrote.
+
+`update(id, message)` — or `add` with an `id` already in use — replaces a
+toast's words and starts its reading time again, which is what a promise wants:
+one notification that becomes its own result rather than a second toast under
+the first.
+
+What you write on the tag reaches the **region**: it is what carries
+`role="region"`, and `<v-toaster class="corner">` is about the element the
+toasts are in. That region is portalled to `<body>`, and not for the usual
+reason — a modal dialog makes every other child of `<body>` inert, and an inert
+subtree is out of the accessibility tree, so a region nested anywhere else
+announces nothing while a dialog is open. Name it with `label` or `aria-label`
+rather than by hand: the primitive's own props are spread onto that element and
+reapplied whenever they change, so an attribute written beside them lasts until
+the first time a pointer pauses the queue.
+
+Type is drawn as a colour down the leading edge, and colour is the one channel
+a forced palette does not have spare — so the same edge carries a border style
+per type, which survives one. That is a second cue rather than a replacement:
+severity belongs in the words of the toast, and `title` is where a reader who
+sees neither edge will find it.
+
+F6 moves focus into the region and Escape puts it back where it came from,
+which is the only keyboard route to the action inside a toast — nothing links
+to one. The countdown stops while the pointer is over the region, while it
+holds focus, and while the tab is in the background, because a toast that
+expires unread was never shown. A dismissed toast stays in the DOM, marked
+`data-state="closed"`, until its exit animation has finished.
+
+The close button has no class of its own: it is a `<button>` drawn with the
+sheet's button rules, like the popover's, and its glyph is decoration — the
+name a screen reader reads is `closeLabel`.
+
+For anything this does not offer — the queue itself, a toaster that is not the
+mounted one, the primitive's props on markup of your own — take the primitive:
+
+```html
+<v-toaster :ref="notices"></v-toaster>
+```
+
+```ts
+notices: VToaster | null = null;
+later(): void { this.notices?.toaster.dismissAll(); }
+```
+
 ## Written by hand
 
 The same look without the tag: the primitive, the markup you want, and the
