@@ -30,6 +30,10 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The live demos on the component pages are a Volt application, compiled
+      # by the plugin and drawn with the styled layer's stylesheet, so the
+      # packages have to be built before the site that embeds them is.
+      - run: pnpm build
       - run: pnpm docs:build
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

@@ -53,3 +53,8 @@ pnpm-debug.log*
 benchmarks/dist-plain/
 benchmarks/dist-grouped/
 benchmarks/browser/.chrome-*/
+
+# The live demos on the component pages: built from docs/demos/ into the site's
+# public directory, and the styled layer's stylesheet generated for them.
+docs/public/demos/
+docs/demos/.generated/

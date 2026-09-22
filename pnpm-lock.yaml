@@ -51,6 +51,39 @@ importers:
 
   docs:
     devDependencies:
+      '@types/node':
+        specifier: ^26.2.0
+        version: 26.2.0
+      '@voltdev/cli':
+        specifier: workspace:*
+        version: link:../packages/cli
+      '@voltdev/core':
+        specifier: workspace:*
+        version: link:../packages/core
+      '@voltdev/editor':
+        specifier: workspace:*
+        version: link:../packages/editor
+      '@voltdev/grid':
+        specifier: workspace:*
+        version: link:../packages/grid
+      '@voltdev/primitives':
+        specifier: workspace:*
+        version: link:../packages/primitives
+      '@voltdev/ui':
+        specifier: workspace:*
+        version: link:../packages/ui
+      '@voltdev/vite-plugin':
+        specifier: workspace:*
+        version: link:../packages/vite-plugin
+      sass:
+        specifier: ^1.102.0
+        version: 1.102.0
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+      vite:
+        specifier: ^8.2.1
+        version: 8.2.1(@types/node@26.2.0)(esbuild@0.28.2)(sass@1.102.0)(terser@5.49.2)
       vitepress:
         specifier: ^1.6.4
         version: 1.6.4(@algolia/client-search@5.56.0)(@types/node@26.2.0)(lightningcss@1.33.0)(postcss@8.5.26)(sass@1.102.0)(search-insights@2.17.3)(terser@5.49.2)(typescript@7.0.2)
@@ -158,6 +191,9 @@ importers:
       '@voltdev/core':
         specifier: workspace:*
         version: link:../core
+      '@voltdev/primitives':
+        specifier: workspace:*
+        version: link:../primitives
 
   packages/vite-plugin:
     dependencies:
