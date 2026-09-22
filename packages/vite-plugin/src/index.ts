@@ -31,6 +31,7 @@ import { transform as esbuildTransform } from 'esbuild';
 import MagicString from 'magic-string';
 import { compileStringAsync } from 'sass';
 import {
+  buildHash,
   checkCatalog,
   compile,
   CompilerError,
@@ -221,6 +222,8 @@ const DEFAULT_INCLUDE = /\.m?ts$/;
 const DEFAULT_EXCLUDE = /[\\/]node_modules[\\/]/;
 const RUNTIME_NAMESPACE = '__volt_rt';
 
+
+
 /**
  * Which side of the render an environment is, which is the only place that
  * knows.
@@ -289,6 +292,19 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
     options.runtimeModule ?? defaultRuntime(target);
   const precompile = options.precompileTemplates ?? true;
   const groupRowBindings = options.groupRowBindings ?? false;
+  /**
+   * What this build calls itself: the hash the compiler stamps on every
+   * template it emits, from the options it is given here.
+   *
+   * `options.runtimeModule` raw rather than resolved, for the reason above —
+   * a hash that differed between the two sides would have a client discard
+   * every page its own server printed.
+   */
+  const identity = buildHash({
+    runtime: RUNTIME_NAMESPACE,
+    runtimeModule: options.runtimeModule,
+    groupRowBindings,
+  });
   const lowerSignals = options.lowerSignals ?? true;
   const serverModule = options.serverModule ?? '@voltdev/server';
   const serverRender = options.serverRender
@@ -719,8 +735,11 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
     },
 
     async load(id) {
-      if (serverRender && id === `\0${SERVER_ID}`) return serverRenderServerModule(serverRender);
-      if (serverRender && id === `\0${CLIENT_ID}`) return serverRenderClientModule(serverRender);
+      // The identity of this build, from the same options the templates are
+      // compiled with: what the server writes onto the mount point is what the
+      // client compares before it claims a node.
+      if (serverRender && id === `\0${SERVER_ID}`) return serverRenderServerModule(serverRender, identity);
+      if (serverRender && id === `\0${CLIENT_ID}`) return serverRenderClientModule(serverRender, identity);
       if (!messages || !id.startsWith(resolvedMessagesId)) return null;
       const loaded = await loadCatalog();
       if (!loaded) return null;

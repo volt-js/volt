@@ -17,6 +17,9 @@ import { resolve } from 'node:path';
 import { volt } from '../src/index.js';
 import { CLIENT_ID, SERVER_ID, clientModule, resolveServerRender, serverModule } from '../src/server-render.js';
 
+/** What a build calls itself; the plugin hands the real hash over. */
+const BUILD = 'test-build-hash';
+
 type Loader = { resolveId?: unknown; load?: unknown; name: string };
 
 /** The plugin in the array that serves virtual modules. */
@@ -58,7 +61,7 @@ describe('what `serverRender` generates', () => {
   const wiring = resolveServerRender(true);
 
   it('produces a server module that parses and wires the four pieces', () => {
-    const code = serverModule(wiring);
+    const code = serverModule(wiring, BUILD);
     expect(() => transformSync(code, { loader: 'js' })).not.toThrow();
 
     // The four the entry names, each by the import that brings it in.
@@ -72,15 +75,16 @@ describe('what `serverRender` generates', () => {
     // Not decoration: the roadmap's edge mode falls out of this shape, and a
     // handler that took a Node request or reached for a builtin would not be
     // deployable to the runtime the check in `render-path.ts` exists for.
-    const code = serverModule(wiring);
+    const code = serverModule(wiring, BUILD);
     expect(code).toContain('export async function handler(request)');
     expect(code).toContain('new URL(request.url)');
-    expect(code).not.toContain('node:');
+    // The import, not the word: a comment may say `node` and mean nothing.
+    expect(code).not.toMatch(/from ['"]node:|require\(['"]node:/);
     expect(code).not.toContain('require(');
   });
 
   it('answers a URL the table does not match with the shell and a 404', () => {
-    const code = serverModule(wiring);
+    const code = serverModule(wiring, BUILD);
     // The application's own not-found route is a route, so it still needs the
     // page — but a 200 for a URL that does not exist would be worse than a 404
     // with a page that says so.
@@ -92,7 +96,7 @@ describe('what `serverRender` generates', () => {
     // nothing about its path, so it has to be answered before the table is
     // consulted — otherwise every server call renders a 404 page at the
     // caller and the application appears to have no server functions at all.
-    const code = serverModule(wiring);
+    const code = serverModule(wiring, BUILD);
     const base = code.indexOf('isServerCall(request');
     const match = code.indexOf('matchRoutes(branches');
     expect(base, 'the server-call check is not there').toBeGreaterThan(-1);
@@ -101,12 +105,12 @@ describe('what `serverRender` generates', () => {
   });
 
   it('sends a csr route its shell without rendering it', () => {
-    const code = serverModule(wiring);
+    const code = serverModule(wiring, BUILD);
     expect(code).toContain("if (mode === 'csr') return page('', '', '', 200)");
   });
 
   it('produces a client module that parses and mounts', () => {
-    const code = clientModule(wiring);
+    const code = clientModule(wiring, BUILD);
     expect(() => transformSync(code, { loader: 'js' })).not.toThrow();
     expect(code).toContain("from '@voltdev/core'");
     expect(code).toContain(wiring.root);
@@ -174,6 +178,8 @@ async function handlerFor(
   overrides: {
     /** Whether each component is interactive, by position: 0 is the layout, 1 the page. */
     interactive?: readonly boolean[];
+    /** Whether the root component is. Default true, as an unasked component was. */
+    root?: boolean;
     render?: () => unknown;
   } = {},
 ): Promise<{
@@ -189,6 +195,7 @@ async function handlerFor(
     '@voltdev/core': `
       export const isComponent = (value) => typeof value === 'function';
       export const needsHydration = (component) => globalThis.__needsHydration(component);
+      export const BUILD_ATTRIBUTE = 'data-volt-build';
     `,
     // The real predicate, and only the handler stubbed: whether a request is a
     // server call is exactly the kind of decision the router stub got wrong.
@@ -197,11 +204,13 @@ async function handlerFor(
       export const createHandler = () => (request) => globalThis.__functions(request);
     `,
     [wiring.routes]: TABLE,
-    [wiring.root]: 'export default class App {}',
+    // Marked, because the root is asked alongside the route's components and
+    // the answers are positional: without this it would share the layout's.
+    [wiring.root]: 'export default class App { static root = true; }',
   };
 
   const built = await esbuildBuild({
-    stdin: { contents: serverModule(wiring), resolveDir: '/', loader: 'js' },
+    stdin: { contents: serverModule(wiring, BUILD), resolveDir: '/', loader: 'js' },
     bundle: true,
     write: false,
     format: 'esm',
@@ -243,8 +252,8 @@ async function handlerFor(
     );
   };
   const answers = overrides.interactive;
-  globals['__needsHydration'] = (component: { index?: number }) =>
-    answers ? (answers[component.index ?? 0] ?? true) : true;
+  globals['__needsHydration'] = (component: { index?: number; root?: boolean }) =>
+    component.root ? (overrides.root ?? true) : answers ? (answers[component.index ?? 0] ?? true) : true;
   globals['__functions'] = (request: Request) => {
     calls.push(`functions ${new URL(request.url).pathname}`);
     return new Response('fn', { status: 200 });
@@ -306,7 +315,9 @@ describe('the handler, running', () => {
     const html = await response.text();
 
     expect(response.status).toBe(200);
-    expect(html).toContain('<div id="app"><p>rendered</p>');
+    // The mount point says which build filled it, which is the only evidence
+    // a client has that there is anything here to attach to.
+    expect(html).toContain(`<div id="app" data-volt-build="${BUILD}"><p>rendered</p>`);
     expect(html).toContain('<script>state</script>');
   });
 
@@ -356,7 +367,7 @@ describe('declining to ship the JavaScript', () => {
     // Partial hydration, once the boundary is known. A page of prose and links
     // has no binding, no listener, no block and no child component, so it does
     // not ask for the bundle that would attach them.
-    const { handler, setShell } = await handlerFor({ interactive: [false, false] });
+    const { handler, setShell } = await handlerFor({ interactive: [false, false], root: false });
     setShell(SHELL);
     const html = await (await handler(new Request('http://x/about'))).text();
 
@@ -378,7 +389,7 @@ describe('declining to ship the JavaScript', () => {
   it('keeps it for a csr route, which is nothing but JavaScript', async () => {
     // The shell is all a `csr` route gets, and removing the script from it would
     // leave a blank page for ever.
-    const { handler, setShell } = await handlerFor({ interactive: [false, false] });
+    const { handler, setShell } = await handlerFor({ interactive: [false, false], root: false });
     setShell(SHELL);
     const html = await (await handler(new Request('http://x/dashboard'))).text();
     expect(html).toContain('<script type="module"');
@@ -387,7 +398,7 @@ describe('declining to ship the JavaScript', () => {
   it('keeps it for a url the table did not match', async () => {
     // Nothing was matched, so nothing said the page is static — and the
     // application's own not-found route still has to render.
-    const { handler, setShell } = await handlerFor({ interactive: [false, false] });
+    const { handler, setShell } = await handlerFor({ interactive: [false, false], root: false });
     setShell(SHELL);
     const html = await (await handler(new Request('http://x/nowhere'))).text();
     expect(html).toContain('<script type="module"');
@@ -412,12 +423,63 @@ describe('what counts as having nothing to attach', () => {
     expect(html).toContain('<script type="module"');
   });
 
-  it('keeps it for a matched route with no component to ask', async () => {
-    // Nothing said the page is static, and a route rendered by something other
-    // than a route component is not evidence that it is.
-    const { handler, setShell } = await handlerFor({ interactive: [false, false] });
-    setShell(SHELL);
-    const html = await (await handler(new Request('http://x/bare'))).text();
-    expect(html).toContain('<script type="module"');
+  it('asks the root as well, since it renders on every page', async () => {
+    // An application whose only binding is in its own navigation was being
+    // sent a page that could never attach it: the root was never asked.
+    const dynamic = await handlerFor({ interactive: [false, false], root: true });
+    dynamic.setShell(SHELL);
+    expect(await (await dynamic.handler(new Request('http://x/bare'))).text()).toContain(
+      '<script type="module"',
+    );
+  });
+
+  it('leaves it out when the root has nothing either', async () => {
+    // "No component to ask" used to mean unknown, and unknown meant ship the
+    // JavaScript. There is always something to ask now.
+    const still = await handlerFor({ interactive: [false, false], root: false });
+    still.setShell(SHELL);
+    expect(await (await still.handler(new Request('http://x/bare'))).text()).not.toContain(
+      '<script type="module"',
+    );
   });
 });
+
+/**
+ * Which of the two entries a page runs, and what decides it.
+ *
+ * Not the mount point's children: a `csr` route's mount point is empty on a
+ * server-rendered site, and a shell with a spinner in it is not. What decides
+ * is what the server said it did — and it says it with the identity of the
+ * build that did it, so a page printed by a deploy that is no longer this one
+ * is built again rather than claimed. Paths resolve either way; they simply
+ * land on the wrong nodes, which nothing on the page could detect afterwards.
+ */
+describe('claiming a page, or building it', () => {
+  const wiring = resolveServerRender(true);
+
+  it('claims only what this build printed', () => {
+    const code = clientModule(wiring, 'build-one');
+
+    expect(code).toContain('getAttribute(BUILD_ATTRIBUTE) === "build-one"');
+    expect(code).toContain('hydrate(App, host)');
+    expect(code).toContain('mount(App, host)');
+    // The guess it replaces.
+    expect(code).not.toContain('host.firstChild');
+  });
+
+  it('imports no hydration walk at all where nothing is ever server-rendered', () => {
+    const code = clientModule(resolveServerRender({ defaultMode: 'csr' }), 'build-one');
+
+    expect(code).not.toContain('hydrate');
+    expect(code).toContain('mount(App, host)');
+  });
+
+  it('marks the mount point with the same identity the client compares', () => {
+    const server = serverModule(wiring, 'build-one');
+    const client = clientModule(wiring, 'build-one');
+
+    expect(server).toContain('const BUILD = "build-one"');
+    expect(client).toContain('"build-one"');
+  });
+});
+

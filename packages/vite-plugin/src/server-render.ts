@@ -94,10 +94,10 @@ export function resolveServerRender(options: ServerRenderOptions | true): Resolv
  * that does not exist would be worse than answering 404 with a page that says
  * so. And a `csr` route gets the shell unrendered, which is the opt-out.
  */
-export function serverModule(options: ResolvedServerRender): string {
+export function serverModule(options: ResolvedServerRender, build: string): string {
   return `import { flattenRoutes, matchRoutes, routeMode } from '@voltdev/router';
 import { renderToString } from '@voltdev/core/server';
-import { needsHydration } from '@voltdev/core';
+import { BUILD_ATTRIBUTE, needsHydration } from '@voltdev/core';
 import { createHandler, isServerCall } from '@voltdev/server';
 import { routes } from ${JSON.stringify(options.routes)};
 import App from ${JSON.stringify(options.root)};
@@ -112,6 +112,16 @@ export function setShell(html) {
 }
 
 const MARKER = '<div id="app"></div>';
+
+/**
+ * What this build calls itself.
+ *
+ * Written onto the mount point when the server rendered into it, and compared
+ * by the client before it claims a single node — markup printed by another
+ * build resolves every path and lands on the wrong nodes, which nothing on the
+ * page can detect afterwards.
+ */
+const BUILD = ${JSON.stringify(build)};
 
 /** The module script, and the only JavaScript the shell asks for. */
 const SCRIPT = /<script\\b[^>]*\\btype=["']module["'][^>]*><\\/script>/;
@@ -128,7 +138,10 @@ const SCRIPT = /<script\\b[^>]*\\btype=["']module["'][^>]*><\\/script>/;
  * A route with no components at all answers "yes". Unknown is not static.
  */
 function interactive(matches) {
-  const components = matches.map((match) => match.route.component).filter(Boolean);
+  // The root is asked with the rest of them. It renders on every page, and an
+  // application whose only binding is in its own navigation would otherwise be
+  // sent a page with nothing to attach it.
+  const components = [App, ...matches.map((match) => match.route.component)].filter(Boolean);
   return components.length === 0 || components.some((component) => needsHydration(component));
 }
 
@@ -139,8 +152,11 @@ function page(html, state, styles, status, script = true) {
   // settled on. A page that will not hydrate has nothing to read it, and on a
   // page of prose it can easily be the larger half.
   const carried = script ? state : '';
+  // The mount point says which build filled it, and says nothing when nothing
+  // did: a page the client must build for itself is a page with no mark.
+  const opened = html ? '<div id="app" ' + BUILD_ATTRIBUTE + '="' + BUILD + '">' : '<div id="app">';
   const filled = shell.includes(MARKER)
-    ? shell.replace(MARKER, '<div id="app">' + html + '</div>' + carried)
+    ? shell.replace(MARKER, opened + html + '</div>' + carried)
     : shell + html + carried;
   // Declining to ship the JavaScript, which is the whole of partial hydration
   // once the boundary is known: a page of prose and links has nothing to
@@ -171,7 +187,7 @@ export async function handler(request) {
   const mode = routeMode(matches, ${JSON.stringify(options.defaultMode)});
   if (mode === 'csr') return page('', '', '', 200);
 
-  const rendered = await renderToString(App, { url: url.href });
+  const rendered = await renderToString(App);
   if (rendered.status !== 200) {
     return new Response('Internal Server Error', { status: 500 });
   }
@@ -190,9 +206,9 @@ export { branches, routes };
  * receiving and should not have to. The mount point either has children the
  * server wrote, or it does not.
  */
-export function clientModule(options: ResolvedServerRender): string {
+export function clientModule(options: ResolvedServerRender, build: string): string {
   const attaches = options.defaultMode !== 'csr';
-  return `import { ${attaches ? 'hydrate, mount' : 'mount'} } from '@voltdev/core';
+  return `import { ${attaches ? 'BUILD_ATTRIBUTE, hydrate, mount' : 'mount'} } from '@voltdev/core';
 import App from ${JSON.stringify(options.root)};
 
 const host = document.querySelector('#app');
@@ -201,11 +217,13 @@ ${
   attaches
     ? `  // Two entries rather than a flag, because a flag would put the hydration
   // walk on \`mount\`'s own path where no bundler could drop it. Which one runs
-  // is decided by what the server sent: an \`ssr\` route's mount point has the
-  // server's nodes in it and a \`csr\` route's is empty, and this build's
-  // templates can do either — \`serverRender\` compiles them to claim, and claiming
-  // nothing is what building is.
-  if (host.firstChild) hydrate(App, host);
+  // is decided by what the server said it did, which is the only thing that
+  // knows: the mount point carries the identity of the build that filled it,
+  // and nothing else on the page answers the question. Children do not — a
+  // \`csr\` route's mount point is empty on a server-rendered site, and a shell
+  // with a spinner in it is not — and an identity that is not this build's is
+  // markup whose paths would resolve onto the wrong nodes.
+  if (host.getAttribute(BUILD_ATTRIBUTE) === ${JSON.stringify(build)}) hydrate(App, host);
   else mount(App, host);`
     : `  // Every route in this project renders in the browser, so there is never
   // anything to attach to and the hydration walk is not imported at all.

@@ -38,6 +38,19 @@ import { Signal, requestState } from '@voltdev/reactivity';
  */
 export const STATE_ATTRIBUTE = 'data-volt-state';
 
+/**
+ * Where the build that printed a page writes its identity.
+ *
+ * On the mount point, and only when the server rendered into it. It answers
+ * the two questions a client has before it touches a single node: was this
+ * page rendered at all, and was it rendered by me. A host that happens to have
+ * children answers neither — a `csr` route's mount point is empty on a
+ * server-rendered site, and a shell with a spinner in it is not — and claiming
+ * another build's markup is the failure `__VOLT_BUILD__` exists to catch,
+ * because paths still resolve when they land on the wrong nodes.
+ */
+export const BUILD_ATTRIBUTE = 'data-volt-build';
+
 // ---------------------------------------------------------------------------
 // The server half
 // ---------------------------------------------------------------------------
