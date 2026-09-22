@@ -29,6 +29,25 @@
  *    declares — `test/component-classes.test.ts` holds the two together — and
  *    nothing here writes a colour or a duration of its own, because those are
  *    tokens and repointing one has to move every component at once.
+ *
+ * Four more, each of which was a defect in the first four components written
+ * after the rules above were set down:
+ *
+ * 5. **`:host` goes on the element that carries the role**, not on a wrapper
+ *    around it. A caller who writes `aria-label` on the tag is naming the
+ *    control; landing it on a `<label>` or a layout `<div>` leaves the thing
+ *    with `role="checkbox"` unnamed, and says nothing about it.
+ * 6. **Add to what a caller wrote; never replace it.** Where a component puts
+ *    a primitive's ARIA onto an element the caller supplied, an entry the
+ *    primitive has no opinion about must be left alone — writing `undefined`
+ *    over it removed the caller's own `aria-label` and `aria-describedby`,
+ *    which is the opposite of what the component existed to do.
+ * 7. **Test the wiring you add.** A prop forwarded to a primitive and
+ *    asserted nowhere can be deleted with the suite green, and several were.
+ *    Prove each one through the DOM or the primitive's own state — the test
+ *    for a prop is the test that it does something.
+ * 8. **Export it.** `@voltdev/ui/components` is the only way in;
+ *    `test/barrel.test.ts` fails when a component is not.
  */
 
 export { TagChildren } from './children.js';
