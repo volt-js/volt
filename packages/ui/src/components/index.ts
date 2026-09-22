@@ -1,65 +1,34 @@
 /**
- * Every component the styled layer ships, and the classes their markup uses.
+ * How a component in this package is written.
  *
- * The list is the registry the sheet is built from and the one the checks in
- * `test/` walk, so a component that is added without forced-colors rules, or
- * with a class no rule selects on, fails the build rather than shipping.
+ * The rules below are not style. Each one is a bug that was found by writing
+ * the first two components and running them.
+ *
+ * 1. **Every prop the template reads is a `Signal.State`.** A plain field is a
+ *    value handed over once, so `:disabled="busy.get()"` would set the button
+ *    up and then never speak to it again. A caller writes the value the same
+ *    way either way — `disabled` or `:disabled="busy.get()"` — and the
+ *    template reads `disabled.get()`. A prop the template never reads may stay
+ *    plain: a callback like `onPress`, or an option a primitive takes once
+ *    while the component's fields initialize, which is why `modal` and
+ *    `defaultOpen` on the dialog are plain and say so.
+ *
+ * 2. **Exactly one element carries `:host`.** It is where everything the
+ *    caller wrote on the tag but the component did not claim lands — their
+ *    class, their id, their `aria-label`, their `data-*`. Without it a caller
+ *    cannot reach the element they can see, and `<v-button class="wide">` goes
+ *    nowhere. For a component that portals, `:host` belongs on the content the
+ *    caller means, not on whatever is left behind.
+ *
+ * 3. **The primitive stays reachable.** It is a readonly field, so `:ref` on
+ *    the tag and `instance.dialog` gets a caller everything the component did
+ *    not think to offer. A component that hides its primitive is a component
+ *    someone has to abandon the first time the design asks for more.
+ *
+ * 4. **The sheet draws it.** Class names come from `classes`, never literals,
+ *    and nothing here writes a colour or a duration — those are tokens, so
+ *    that repointing one moves every component at once.
  */
 
-import type { ComponentStyles } from '../css.js';
-import { accordionClasses, accordionStyles } from './accordion.js';
-import { buttonClasses, buttonStyles } from './button.js';
-import { checkboxClasses, checkboxStyles } from './checkbox.js';
-import { dialogClasses, dialogStyles } from './dialog.js';
-import { menuClasses, menuStyles } from './menu.js';
-import { popoverClasses, popoverStyles } from './popover.js';
-import { tabsClasses, tabsStyles } from './tabs.js';
-import { tooltipClasses, tooltipStyles } from './tooltip.js';
-import { toastClasses, toastStyles } from './toast.js';
-
-export {
-  accordionStyles,
-  buttonStyles,
-  checkboxStyles,
-  dialogStyles,
-  menuStyles,
-  popoverStyles,
-  tabsStyles,
-  toastStyles,
-  tooltipStyles,
-};
-
-/** In the order they are emitted, which is alphabetical and means nothing. */
-export const componentStyles: readonly ComponentStyles[] = [
-  accordionStyles,
-  buttonStyles,
-  checkboxStyles,
-  dialogStyles,
-  menuStyles,
-  popoverStyles,
-  tabsStyles,
-  toastStyles,
-  tooltipStyles,
-];
-
-/**
- * Part name to class name, per component.
- *
- * The one thing a consumer needs at runtime: `classes.dialog.content` is what
- * goes in the `class` attribute. These are the same objects the rules are
- * built from, so a class cannot be renamed in one place only — and they are
- * written out by name rather than gathered from `componentStyles`, so that the
- * type knows which components and parts there are, and so that a bundle which
- * wants the names does not have to take every rule along with them.
- */
-export const classes = {
-  accordion: accordionClasses,
-  button: buttonClasses,
-  checkbox: checkboxClasses,
-  dialog: dialogClasses,
-  menu: menuClasses,
-  popover: popoverClasses,
-  tabs: tabsClasses,
-  toast: toastClasses,
-  tooltip: tooltipClasses,
-} as const;
+export { VButton } from './button.js';
+export { VDialog } from './dialog.js';

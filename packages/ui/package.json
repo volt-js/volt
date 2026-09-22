@@ -1,7 +1,7 @@
 {
   "name": "@voltdev/ui",
   "version": "0.1.0-alpha.1",
-  "description": "Styled components built on @voltdev/primitives.",
+  "description": "Components and a stylesheet, built on @voltdev/primitives.",
   "type": "module",
   "license": "MIT",
   "sideEffects": false,
@@ -12,17 +12,23 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./components": {
+      "types": "./src/components/index.ts",
+      "import": "./src/components/index.ts"
     }
   },
   "files": [
     "dist",
+    "src",
     "README.md"
   ],
   "scripts": {
     "build": "vite build && tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@voltdev/core": "workspace:*"
+    "@voltdev/core": "workspace:*",
+    "@voltdev/primitives": "workspace:*"
   },
   "keywords": [
     "volt",
@@ -45,5 +51,8 @@
   "publishConfig": {
     "access": "public",
     "provenance": true
+  },
+  "volt": {
+    "source": true
   }
 }

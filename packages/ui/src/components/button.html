@@ -1,0 +1,11 @@
+<button
+  :host
+  class="volt-button"
+  :attr-data-variant="variant.get()"
+  :attr-data-size="size.get()"
+  :prop-type="type.get()"
+  :attr-aria-disabled="disabled.get() ? 'true' : undefined"
+  :click="press($event)"
+>
+  <slot></slot>
+</button>

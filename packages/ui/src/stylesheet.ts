@@ -10,7 +10,7 @@
 
 import { keyframesToCss, rulesToCss, wrap, type ComponentStyles } from './css.js';
 import { LAYER_BASE, LAYER_COMPONENTS, layerOrderStatement } from './layers.js';
-import { componentStyles } from './components/index.js';
+import { componentStyles } from './sheet/index.js';
 import { reducedMotionTokens, tokensCss } from './tokens.js';
 
 /** `@media (forced-colors: active)`, spelled once. */
