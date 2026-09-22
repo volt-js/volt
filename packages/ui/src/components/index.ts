@@ -33,8 +33,13 @@
 
 export { TagChildren } from './children.js';
 export { VButton } from './button.js';
+export { VCheckbox } from './checkbox.js';
 export { VDialog } from './dialog.js';
+export { VPopover } from './popover.js';
 export { VSelect, SelectContext } from './select.js';
 export { VOption } from './option.js';
 export { VTable, TableContext, type TableRow } from './table.js';
 export { VTableColumn } from './table-column.js';
+export { VTabs, TabsContext } from './tabs.js';
+export { VTab } from './tab.js';
+export { VTooltip } from './tooltip.js';

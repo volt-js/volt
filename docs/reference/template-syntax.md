@@ -316,6 +316,15 @@ declare is still refused, so `max-count` written for `maxCount` is the mistake
 it always was. A component that is handed a class and marks no `:host` is told
 so rather than dropping it.
 
+One element carries it, and it must be an element: `:host` on a `<template>` is
+refused, because a `<template>` groups nodes without producing one and the
+attributes would have nowhere to go.
+
+A prop written twice — `text="Copied" :text="label.get()"` — is refused as
+well. One of the two would be lost, and which one is an accident of how an
+object literal is read. `class` and `style` are the exceptions, and compose,
+because there both halves can be meant.
+
 ## Slots
 
 ```html
@@ -409,6 +418,18 @@ The other half of the pair is how the child finds the parent to register with,
 which is [context](/reference/reactivity#context) — `useContext` while the
 child's fields initialize, because the content of a tag is built inside the
 render of the tag it sits in.
+
+`:from` is the one `:` on an outlet that is not a prop handed to the content,
+and there is one of it: written twice, or written out as `from="col"`, it is
+refused rather than quietly becoming something else.
+
+Structure belongs around an outlet rather than on it. `:if` and `:for` on a
+`<slot>` are refused — an outlet is a position, and what it draws is what a
+caller sent — so the shape to write is:
+
+```html
+<template :if="expanded.get()"><slot name="detail"></slot></template>
+```
 
 ## Grouping without an element
 
