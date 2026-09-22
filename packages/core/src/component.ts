@@ -291,7 +291,10 @@ export function Component(config: ComponentConfig) {
  * which is the one thing Volt's reactivity does not do.
  */
 export function Prop(options: PropOptions = {}) {
-  return function decorateProp(_target: undefined, context: ClassFieldDecoratorContext): void {
+  return function decorateProp(
+    _target: undefined,
+    context: ClassFieldDecoratorContext,
+  ): (this: unknown, initial: unknown) => unknown {
     const kind = (context as { kind: string }).kind;
     const name = String((context as { name?: unknown }).name);
 
@@ -325,11 +328,16 @@ export function Prop(options: PropOptions = {}) {
     }
 
     const property = context.name;
+    const alias = options.alias ?? property;
     appendMetadata<PropDef>(context.metadata as MetadataRecord, PROPS, {
       property,
-      alias: options.alias ?? property,
+      alias,
       required: options.required ?? false,
     });
+
+    return function initializeProp(this: unknown, initial: unknown): unknown {
+      return takeProp(this as Record<string, unknown>, property, alias, initial);
+    };
   };
 }
 
@@ -513,14 +521,71 @@ function checkRequiredProps(
   }
 }
 
+/**
+ * What the parent passed the instance being constructed, for its own fields to
+ * take as they initialize.
+ *
+ * A prop used to land after the constructor returned, which put every
+ * component that hands a prop to something it builds in a field — which is
+ * every component built on a primitive — in an impossible position: the field
+ * ran first and saw the default. `@Prop` is an initializer now, so a prop is
+ * there while the field that wants it is being made.
+ *
+ * A stack rather than a slot, because a field initializer can construct
+ * another component, and a frame that named the outer one's props while the
+ * inner one initialized would hand them to the wrong instance.
+ */
+const pendingProps: {
+  props: Record<string, unknown> | null;
+  taken: Set<string>;
+}[] = [];
+
+/**
+ * The value a field initializes to: what the parent passed, or its own default.
+ *
+ * A signal keeps its identity and takes the value — `@Prop() open = new
+ * Signal.State(false)` is the child's signal throughout, and the parent writes
+ * into it — while a plain field becomes the value itself. Either way a getter
+ * on the parent's side means the expression is dynamic, so it is kept live.
+ */
+function takeProp(
+  instance: Record<string, unknown>,
+  property: string,
+  alias: string,
+  initial: unknown,
+): unknown {
+  const frame = pendingProps[pendingProps.length - 1];
+  const props = frame?.props;
+  if (!frame || !props || !(alias in props)) return initial;
+
+  frame.taken.add(alias);
+  const descriptor = Object.getOwnPropertyDescriptor(props, alias);
+
+  if (isWritableSignal(initial)) {
+    if (descriptor?.get) renderEffect(() => initial.set(props[alias]));
+    else initial.set(props[alias]);
+    return initial;
+  }
+
+  // The first run of a render effect is synchronous, and the field assignment
+  // that follows this return writes the same value, so the two agree.
+  if (descriptor?.get) {
+    renderEffect(() => {
+      instance[property] = props[alias];
+    });
+  }
+  return props[alias];
+}
+
 function applyProps(
   instance: Record<string, unknown>,
   props: Record<string, unknown> | null,
   resolved: ResolvedConfig,
+  taken: Set<string>,
 ): void {
   if (props) {
     for (const key of Object.keys(props)) {
-      if (key === '__ref') continue;
+      if (key === '__ref' || taken.has(key)) continue;
 
       const def = resolved.propsByAlias.get(key);
       if (!def) {
@@ -598,7 +663,14 @@ function instantiate(
     : null;
   try {
     return runWithScope(scope, () => {
-      const instance = new component() as Record<string, unknown> & LifecycleHooks;
+      const frame = { props: options.props ?? null, taken: new Set<string>() };
+      pendingProps.push(frame);
+      let instance: Record<string, unknown> & LifecycleHooks;
+      try {
+        instance = new component() as Record<string, unknown> & LifecycleHooks;
+      } finally {
+        pendingProps.pop();
+      }
       SLOTS.set(instance, options.slots ?? null);
       attachOwner(scope, {
         component: instance,
@@ -612,7 +684,9 @@ function instantiate(
         onCleanup(() => removeComponent(handle));
       }
 
-      applyProps(instance, options.props ?? null, resolved);
+      // Whatever the fields did not take: a prop this component does not
+      // declare, which is a mistake, and any the initializers never ran for.
+      applyProps(instance, options.props ?? null, resolved, frame.taken);
 
       const render = getRenderFn(component, resolved);
       const dom = render(instance, options.out);
