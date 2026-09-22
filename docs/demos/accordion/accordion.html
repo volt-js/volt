@@ -1,0 +1,39 @@
+<div class="rows">
+  <v-accordion :value="open">
+    <v-accordion-item value="delivery" label="When will it arrive?">
+      <div class="body">
+        <p>Everything ordered before four leaves the same day, and arrives within a week.</p>
+      </div>
+    </v-accordion-item>
+
+    <v-accordion-item value="returns" label="Can I send it back?">
+      <div class="body">
+        <p>Thirty days, no questions asked. Anything unworn is refunded in full.</p>
+        <v-button size="sm" :onPress="toDelivery">Back to delivery</v-button>
+      </div>
+    </v-accordion-item>
+
+    <v-accordion-item value="gifts" label="Do you wrap gifts?" :disabled="true">
+      <div class="body"><p>Not until December.</p></div>
+    </v-accordion-item>
+  </v-accordion>
+
+  <span class="note">Showing { open.get().join(', ') || 'nothing' }. The arrow keys move between
+    the headings, Home and End reach the ends, and the section that is open will not close —
+    one is always open unless the accordion is told it may collapse.</span>
+
+  <v-accordion type="multiple" :defaultValue="['care']">
+    <v-accordion-item value="care">
+      <template :slot-header>Looking after it<span class="count">4 steps</span></template>
+      <div class="body"><p>Cold wash, no tumble, warm iron, and never wring it out.</p></div>
+    </v-accordion-item>
+
+    <v-accordion-item value="materials">
+      <template :slot-header>What it is made of<span class="count">2 fabrics</span></template>
+      <div class="body"><p>Linen outside, cotton in the lining.</p></div>
+    </v-accordion-item>
+  </v-accordion>
+
+  <span class="note">This one holds several open at once, and each heading is a slot rather than
+    a line of text.</span>
+</div>

@@ -1,0 +1,9 @@
+<div
+  :host
+  :ref="root"
+  class="volt-accordion"
+  :spread="accordion.rootProps()"
+  :keydown="accordion.onTriggerKeyDown($event)"
+>
+  <slot></slot>
+</div>

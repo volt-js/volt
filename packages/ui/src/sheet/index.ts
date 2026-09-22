@@ -11,6 +11,7 @@ import { accordionClasses, accordionStyles } from './accordion.js';
 import { buttonClasses, buttonStyles } from './button.js';
 import { checkboxClasses, checkboxStyles } from './checkbox.js';
 import { dialogClasses, dialogStyles } from './dialog.js';
+import { fieldClasses, fieldStyles } from './field.js';
 import { menuClasses, menuStyles } from './menu.js';
 import { popoverClasses, popoverStyles } from './popover.js';
 import { selectClasses, selectStyles } from './select.js';
@@ -24,6 +25,7 @@ export {
   buttonStyles,
   checkboxStyles,
   dialogStyles,
+  fieldStyles,
   menuStyles,
   popoverStyles,
   selectStyles,
@@ -39,6 +41,7 @@ export const componentStyles: readonly ComponentStyles[] = [
   buttonStyles,
   checkboxStyles,
   dialogStyles,
+  fieldStyles,
   menuStyles,
   popoverStyles,
   selectStyles,
@@ -63,6 +66,7 @@ export const classes = {
   button: buttonClasses,
   checkbox: checkboxClasses,
   dialog: dialogClasses,
+  field: fieldClasses,
   menu: menuClasses,
   popover: popoverClasses,
   select: selectClasses,

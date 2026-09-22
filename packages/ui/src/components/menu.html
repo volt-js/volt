@@ -1,0 +1,22 @@
+<button
+  :ref="trigger"
+  class="volt-button"
+  type="button"
+  :attr-data-variant="variant.get()"
+  :attr-data-size="size.get()"
+  :spread="triggerProps()"
+  :click="menu.toggle()"
+  :keydown="menu.onTriggerKeyDown($event)"
+><slot name="trigger"></slot></button>
+
+<div
+  :if="menu.isPresent()"
+  :portal
+  :host
+  :ref="content"
+  class="volt-menu-content"
+  :spread="contentProps()"
+  :keydown="menu.onContentKeyDown($event)"
+  :click="menu.onItemClick($event)"
+  :pointermove="menu.onItemPointerMove($event)"
+><slot></slot></div>

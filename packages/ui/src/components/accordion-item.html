@@ -1,0 +1,20 @@
+<div
+  :host
+  :ref="element"
+  class="volt-accordion-item"
+  :spread="accordion.accordion.itemProps(value.get())"
+>
+  <h3 class="volt-accordion-header" :attr-aria-level="accordion.level.get()">
+    <button
+      class="volt-accordion-trigger"
+      :spread="accordion.accordion.triggerProps(value.get())"
+      :click="accordion.accordion.toggle(value.get())"
+    ><slot name="header">{ label.get() }</slot></button>
+  </h3>
+
+  <div
+    :if="accordion.accordion.isPresent(value.get())"
+    class="volt-accordion-panel"
+    :spread="accordion.accordion.contentProps(value.get())"
+  ><slot></slot></div>
+</div>

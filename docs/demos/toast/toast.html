@@ -1,0 +1,10 @@
+<div class="notices">
+  <div class="row">
+    <v-button variant="primary" :onPress="save">Save</v-button>
+    <v-button :onPress="remove">Delete a message</v-button>
+    <v-button variant="danger" :onPress="fail">Upload</v-button>
+    <span class="note">{ messages.get() } messages. Press F6 to reach the toasts.</span>
+  </div>
+</div>
+
+<v-toaster></v-toaster>

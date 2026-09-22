@@ -1,0 +1,20 @@
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--volt-space-3);
+  row-gap: var(--volt-space-2);
+}
+
+// The sheet draws the row an item sits on; the tick in front of the words is
+// the page's, and it keeps a column of its own so the words line up whether
+// an item is ticked or not.
+.mark {
+  display: inline-block;
+  inline-size: var(--volt-space-3);
+}
+
+.note {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}

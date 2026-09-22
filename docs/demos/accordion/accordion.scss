@@ -1,0 +1,30 @@
+.rows {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-5);
+}
+
+.note {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}
+
+// The panel is clipped to nothing as it collapses, so padding written on it
+// would be padding left behind at zero height. The spacing belongs to the
+// content, which is the page's to write.
+.body {
+  padding-block-end: var(--volt-space-3);
+  padding-inline: var(--volt-space-2);
+}
+
+.body p {
+  margin-block: 0 var(--volt-space-3);
+}
+
+// The heading is a flex row with the words at one end, so anything written
+// beside them lands at the other.
+.count {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+  font-weight: var(--volt-font-weight-regular);
+}

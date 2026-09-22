@@ -1,0 +1,35 @@
+<div class="row">
+  <v-menu variant="primary" :onSelect="run">
+    <template :slot-trigger>Actions</template>
+
+    <v-menu-item value="rename">Rename…</v-menu-item>
+    <v-menu-item value="duplicate">Duplicate</v-menu-item>
+    <v-menu-item
+      value="wrap"
+      role="menuitemcheckbox"
+      :checked="wrap.get()"
+      :closeOnSelect="false"
+      :onSelect="toggleWrap"
+    ><span class="mark" aria-hidden="true">{ wrap.get() ? '✓' : '' }</span> Wrap lines</v-menu-item>
+
+    <v-menu-separator></v-menu-separator>
+
+    <v-menu-item value="delete" :disabled="locked.get()">Delete report</v-menu-item>
+  </v-menu>
+
+  <v-menu variant="ghost" size="sm" label="More actions" placement="bottom-end" :onSelect="run">
+    <template :slot-trigger>⋯</template>
+
+    <v-menu-item value="export">Export as CSV</v-menu-item>
+    <v-menu-item value="print">Print</v-menu-item>
+    <v-menu-separator></v-menu-separator>
+    <v-menu-item
+      value="lock"
+      role="menuitemcheckbox"
+      :checked="locked.get()"
+      :onSelect="toggleLock"
+    ><span class="mark" aria-hidden="true">{ locked.get() ? '✓' : '' }</span> Locked</v-menu-item>
+  </v-menu>
+
+  <span class="note">{ summary() }</span>
+</div>

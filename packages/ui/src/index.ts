@@ -75,6 +75,7 @@ export {
   buttonStyles,
   checkboxStyles,
   dialogStyles,
+  fieldStyles,
   menuStyles,
   popoverStyles,
   selectStyles,

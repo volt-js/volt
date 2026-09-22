@@ -1,0 +1,18 @@
+// The region is fixed to the bottom of the frame, so the frame needs a bottom
+// deep enough to hold the toasts that land in it.
+.notices {
+  min-block-size: var(--volt-space-20);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--volt-space-3);
+  row-gap: var(--volt-space-2);
+}
+
+.note {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}

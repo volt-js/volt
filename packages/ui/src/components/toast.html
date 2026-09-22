@@ -1,0 +1,33 @@
+<div :portal :host :ref="region" class="volt-toast-region" :spread="regionProps()">
+  <div
+    :for="toast in toaster.visible()"
+    :key="toast.id"
+    class="volt-toast"
+    :spread="toaster.toastProps(toast)"
+  >
+    <slot name="toast" :toast="toast">
+      <p class="volt-toast-title">{ toast.data().title }</p>
+      <p :if="described(toast)" class="volt-toast-description">{ toast.data().description }</p>
+    </slot>
+
+    <div class="volt-toast-actions">
+      <button
+        :if="actionLabel(toast) !== undefined"
+        class="volt-button"
+        type="button"
+        data-variant="ghost"
+        data-size="sm"
+        :click="press(toast)"
+      >{ actionLabel(toast) }</button>
+
+      <button
+        class="volt-button"
+        type="button"
+        data-variant="ghost"
+        data-size="sm"
+        :spread="closeProps()"
+        :click="toast.dismiss()"
+      ><span aria-hidden="true">×</span></button>
+    </div>
+  </div>
+</div>

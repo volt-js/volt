@@ -30,6 +30,7 @@ import {
   createCheckbox,
   createDialog,
   createMenu,
+  createFormField,
   createPopover,
   createSelect,
   createTabs,
@@ -314,6 +315,44 @@ class StyledTooltip {
   tip = createTooltip({ trigger: () => this.trigger.get(), content: () => this.content.get() });
 }
 
+/** The field's own two, driven the same way the select's disabled is. */
+let fieldDisabled = false;
+let fieldReadOnly = false;
+
+@Component({
+  selector: 'v-styled-field',
+  render: compileTemplate(`
+    <div class="volt-field" :spread="field.fieldProps()">
+      <label class="volt-field-label" :ref="label" :spread="field.labelProps()">Email</label>
+      <input class="volt-field-control" :ref="control" :spread="field.controlProps()">
+      <p class="volt-field-description" :ref="hint" :spread="field.descriptionProps()">Only used to reply.</p>
+      <p class="volt-field-error" :ref="error" :spread="field.errorProps()">{ field.messages()[0] ?? '' }</p>
+    </div>
+  `),
+})
+class StyledField {
+  label = new Signal.State<Element | null>(null);
+  control = new Signal.State<Element | null>(null);
+  hint = new Signal.State<Element | null>(null);
+  error = new Signal.State<Element | null>(null);
+  /** The verdict, handed in so the scene can put the field in each state. */
+  validity = new Signal.State<{ state: 'valid' | 'invalid' | 'pending'; messages: string[] }>({
+    state: 'valid',
+    messages: [],
+  });
+
+  field = createFormField({
+    control: () => this.control.get(),
+    label: () => this.label.get(),
+    description: () => this.hint.get(),
+    errorMessage: () => this.error.get(),
+    validity: this.validity,
+    disabled: () => fieldDisabled,
+    readOnly: () => fieldReadOnly,
+    required: () => true,
+  });
+}
+
 /** Off for one pass and on for the next, as the placements are. */
 let selectDisabled = false;
 
@@ -417,6 +456,27 @@ const scenes: Record<string, (look: () => void) => void> = {
       look();
       step(() => popover.close());
       look();
+      for (const handle of mounted.splice(0)) handle.unmount();
+      flushSync();
+    }
+  },
+
+  field(look) {
+    for (const [off, locked] of [
+      [false, false],
+      [true, false],
+      [false, true],
+    ] as const) {
+      fieldDisabled = off;
+      fieldReadOnly = locked;
+      const scene = show(StyledField);
+      look();
+      // Every verdict the sheet draws differently, including the one that is
+      // not a verdict yet.
+      for (const state of ['invalid', 'pending', 'valid'] as const) {
+        step(() => scene.validity.set({ state, messages: state === 'invalid' ? ['Required'] : [] }));
+        look();
+      }
       for (const handle of mounted.splice(0)) handle.unmount();
       flushSync();
     }
