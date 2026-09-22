@@ -1208,7 +1208,7 @@ export class Results {
 | `siblings` | `1` | Pages shown either side of the current one |
 | `boundaries` | `1` | Pages pinned at each end of the row |
 | `loop` | `false` | Arrow keys wrap past the ends of the row |
-| `labels` | — | `nav` ("Pagination"), `page(n)` ("Page 3"), `first`, `previous`, `next`, `last` ("First page" and so on), `status(page, count)` ("Page 3 of 9") |
+| `labels` | — | `nav` ("Pagination"), `page(n)` ("Page 3"), `first`, `previous`, `next`, `last` ("First page" and so on), `status(page, count)` — the locale's `pageOf`, else "Page 3 of 9" |
 | `onPageChange` / `onPageSizeChange` | — | |
 
 | Member | Description |

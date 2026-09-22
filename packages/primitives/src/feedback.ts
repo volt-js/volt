@@ -36,7 +36,7 @@ import { Signal, effect, onCleanup } from '@voltdev/core';
 import { createPresence, type PresenceState } from './presence.js';
 import { createCollection, ITEM_ATTRIBUTE } from './collection.js';
 import { createDismiss } from './dismiss.js';
-import { useLocale, type Locale, type MessageKey, type MessageValues } from './i18n.js';
+import { useProvidedLocale, type Locale, type MessageKey, type MessageValues } from './i18n.js';
 import { createId } from './id.js';
 
 // The proposal's own name for reading without subscribing; Volt adds no second
@@ -63,15 +63,24 @@ export interface FeedbackProps {
 const ANNOUNCE_DELAY = 50;
 
 /**
- * A default string: the locale's catalogue first, then English.
+ * A default string: the provided locale's catalogue first, then English.
  *
- * `loading` is one of the library's own keys and always resolves. The rest —
- * `dismiss`, `loaded`, `emptyState`, `noResultsFor` — are not, so a catalogue
- * that declares them is heard and without one the English stands. Read on
- * every call, so a catalogue swapped later reaches words already on screen.
+ * `loading` is one of the library's own keys and always resolves under a
+ * provider. The rest — `dismiss`, `loaded`, `emptyState`, `noResultsFor` — are
+ * not, so a catalogue that declares them is heard and without one the English
+ * stands. Only a provider is asked: without one, the locale `useLocale` would
+ * build in its place has no catalogue but the defaults, which say what the
+ * English here says, and building it would put the whole locale into a bundle
+ * that never translates anything. Read on every call, so a catalogue swapped
+ * later reaches words already on screen.
  */
-function word(locale: Locale, key: MessageKey, fallback: string, values?: MessageValues): string {
-  return locale.has(key) ? locale.t(key, values) : fallback;
+function word(
+  locale: Locale | null,
+  key: MessageKey,
+  fallback: string,
+  values?: MessageValues,
+): string {
+  return locale?.has(key) ? locale.t(key, values) : fallback;
 }
 
 // ---------------------------------------------------------------------------
@@ -344,7 +353,7 @@ export function createAlert(options: AlertOptions): Alert {
   const state = options.open ?? new Signal.State(options.defaultOpen ?? false);
   const priority: AlertPriority = options.priority ?? 'assertive';
   const labels = options.labels ?? {};
-  const locale = useLocale();
+  const locale = useProvidedLocale();
 
   const timing = createLiveRegionTiming(() => options.region(), options.announceDelay);
 
@@ -611,7 +620,7 @@ export interface Skeleton {
 export function createSkeleton(options: SkeletonOptions = {}): Skeleton {
   const state = options.loading ?? new Signal.State(options.defaultLoading ?? false);
   const labels = options.labels ?? {};
-  const locale = useLocale();
+  const locale = useProvidedLocale();
 
   const visibility = createDeferredVisibility(() => state.get(), {
     delay: options.delay,
@@ -773,7 +782,7 @@ export interface Spinner {
 export function createSpinner(options: SpinnerOptions = {}): Spinner {
   const state = options.loading ?? new Signal.State(options.defaultLoading ?? false);
   const labels = options.labels ?? {};
-  const locale = useLocale();
+  const locale = useProvidedLocale();
 
   const visibility = createDeferredVisibility(() => state.get(), {
     delay: options.delay ?? 500,
@@ -943,7 +952,7 @@ export interface EmptyState {
  */
 export function createEmptyState(options: EmptyStateOptions): EmptyState {
   const labels = options.labels ?? {};
-  const locale = useLocale();
+  const locale = useProvidedLocale();
   const messageId = createId('empty-state');
 
   const timing = regionTiming(options.region, options.announceDelay);

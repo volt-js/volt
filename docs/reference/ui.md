@@ -485,29 +485,28 @@ placement, beside it for a `left` or `right` one, and none across it, where it
 would push a popover aligned to one of the trigger's edges off that edge. Pass
 `offset` to `createPopover` and the primitive writes the gap inline instead.
 
-The popover arrow is drawn from `data-placement`, which the primitive writes
-on it, for all twelve placements: the sheet moves it onto the edge that faces
-the trigger, hides the two borders that would show inside the popover, and sets
-it along that edge where the trigger is — the middle for a centred placement,
-and near the aligned end for a `-start` or `-end` one. It is right only while
-two things hold.
+The popover arrow is drawn from `data-placement` and `data-align`, which the
+primitive writes on it, for all twelve placements: the sheet moves it onto the
+edge that faces the trigger, hides the two borders that would show inside the
+popover, and sets it along that edge where the trigger is — the middle for a
+centred placement, and near the aligned edge for a `-start` or `-end` one.
+`data-align` names that edge physically — `left`, `right`, `top` or `bottom` —
+and the primitive resolves it against the trigger's own writing direction,
+which a popover portalled to `<body>` does not share: a trigger inside a
+`dir="rtl"` region of a left-to-right page gets a popover aligned to its right
+edge and an arrow at the popover's right one.
 
-- **The browser uses the placement asked for.** `data-placement` is that
-  placement, not the one in use. When the popover would overflow, the browser
-  may move it to the other side, or to another alignment — a centred popover
-  to one lined up with either edge of the trigger — and nothing on the
-  element changes to say so. The arrow stays where the requested placement put
-  it, pointing at nothing. Chrome can tell a stylesheet which fallback it took,
-  through anchored container queries (`@container anchored(fallback: …)`);
-  Firefox cannot, and the sheet does not use them. Nor can you rule the
-  fallbacks out: `flip: false` stops the move to the other side, but
-  `createPopover` still offers the browser the other alignments.
-- **The trigger's writing direction is the page's.** The sheet sets a
-  `-start` or `-end` arrow against the direction of the popover, which is
-  portalled to `<body>` and takes the page's. The primitive aligns the popover
-  itself against the trigger's direction. A trigger inside a `dir="rtl"`
-  region of a left-to-right page gets a popover aligned to its right edge and
-  an arrow near the popover's left one.
+It is right while the browser uses the placement asked for. `data-placement` is
+that placement, not the one in use. When the popover would overflow, the
+browser may move it to the other side, or to another alignment — a centred
+popover to one lined up with either edge of the trigger — and nothing on the
+element changes to say so. The arrow stays where the requested placement put
+it, pointing at nothing. Chrome can tell a stylesheet which fallback it took,
+through anchored container queries (`@container anchored(fallback: …)`);
+Firefox cannot, and the sheet does not use them. `flip: false` and
+`shift: false` together rule the fallbacks out instead: the popover stays at
+the placement it was given and the arrow stays right, at the price of a popover
+that can run off the edge of the viewport.
 
 The menu marks the item under keyboard focus with `:focus-visible`. Roving
 focus moves real focus between items, so there is no highlighted-item attribute

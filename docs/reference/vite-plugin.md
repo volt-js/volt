@@ -231,9 +231,10 @@ for a screen landing next week is not a mistake. The report names the line in
 the catalogue to delete. It runs on production builds only — a dev-server
 rebuild has seen only the modules that changed, so every message would look
 unused — and `unused: 'off'` turns it off. The strings the component library
-speaks for itself (`close`, `noResults`, `pageOf` and the rest of
-`DEFAULT_MESSAGES`) are never reported, because an application translating them
-is translating what a Dialog says, not what its own templates ask for.
+speaks for itself (`close`, `noResults`, `menu`, `removeItem` and every other
+key its components ask for) are never reported, because an application
+translating them is translating what a Dialog says, not what its own templates
+ask for.
 
 `ignore` lets a project name that list itself. It replaces the default rather
 than adding to it: an application that renders no Dialog is right to want

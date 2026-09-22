@@ -268,19 +268,30 @@ describe('toggle keyboard', () => {
 });
 
 describe('toggle disabled', () => {
-  it('marks itself disabled for both the platform and assistive technology', () => {
+  it('says it is disabled and stays in the tab order, as a disabled checkbox does', () => {
     const disabled = new Signal.State(true);
     setupToggle({ disabled: () => disabled.get() });
 
-    expect((el() as HTMLButtonElement).disabled).toBe(true);
+    // The `disabled` attribute would take the button out of the tab order, and
+    // a control a keyboard user cannot reach is one they cannot find out about.
+    expect((el() as HTMLButtonElement).disabled).toBe(false);
     expect(el().getAttribute('aria-disabled')).toBe('true');
     expect(el().hasAttribute('data-disabled')).toBe(true);
-    expect(el().hasAttribute('tabindex')).toBe(false);
+    expect(el().getAttribute('tabindex')).toBe('0');
+
+    el().focus();
+    expect(document.activeElement).toBe(el());
 
     disabled.set(false);
     flushSync();
     expect(el().hasAttribute('aria-disabled')).toBe(false);
     expect(el().hasAttribute('data-disabled')).toBe(false);
+    expect(el().getAttribute('tabindex')).toBe('0');
+  });
+
+  it('keeps a non-button element reachable while disabled', () => {
+    setupToggle({ disabled: () => true }, 'div');
+    expect(el().getAttribute('tabindex')).toBe('0');
   });
 
   it('ignores clicks and keys while disabled', () => {
@@ -288,8 +299,28 @@ describe('toggle disabled', () => {
 
     click(el());
     el().focus();
-    press(' ');
+    const space = press(' ');
+    press('Enter');
     expect(el().getAttribute('aria-pressed')).toBe('false');
+    // Focus is on it, so Space would scroll the page from under it otherwise.
+    expect(space.defaultPrevented).toBe(true);
+  });
+
+  it('refuses a press on a real button, which nothing but the handler stops now', () => {
+    const changes = vi.fn();
+    setupToggle({ disabled: () => true, onPressedChange: changes });
+
+    click(el());
+    expect(el().getAttribute('aria-pressed')).toBe('false');
+
+    el().focus();
+    // The browser turns Enter on a button into a click, and that click is the
+    // one the handler has to refuse.
+    const enter = press('Enter');
+    expect(enter.defaultPrevented).toBe(false);
+    click(el());
+    expect(el().getAttribute('aria-pressed')).toBe('false');
+    expect(changes).not.toHaveBeenCalled();
   });
 
   it('still answers the application that disabled it', () => {
@@ -739,7 +770,9 @@ describe('group disabled', () => {
 
     expect(group().getAttribute('aria-disabled')).toBe('true');
     expect(item('bold').getAttribute('aria-disabled')).toBe('true');
-    expect(tabStops()).toEqual(['-1', '-1', '-1']);
+    // Still one way in, as a disabled checkbox keeps its tab stop: a group
+    // nobody can reach is a group nobody can find out is there.
+    expect(tabStops()).toEqual(['0', '-1', '-1']);
 
     click(item('bold'));
     item('bold').focus();
@@ -751,5 +784,17 @@ describe('group disabled', () => {
     flushSync();
     click(item('bold'));
     expect(instance.toggles.value()).toBe('bold');
+  });
+
+  it('keeps its tab stop on the chosen item while the whole group is disabled', () => {
+    setupSingle({ disabled: () => true, defaultValue: 'underline' });
+    expect(tabStops()).toEqual(['-1', '-1', '0']);
+    expect(items().every((node) => !(node as HTMLButtonElement).disabled)).toBe(true);
+  });
+
+  it('never gives the tab stop to a disabled item while the group is enabled', () => {
+    setupSingle({ defaultValue: 'italic' }, WITH_DISABLED);
+    // Chosen, but disabled: the arrows pass over it, so Tab does too.
+    expect(tabStops()).toEqual(['0', '-1', '-1']);
   });
 });

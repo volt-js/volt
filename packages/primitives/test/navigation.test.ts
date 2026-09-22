@@ -10,7 +10,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { compileTemplate } from '@voltdev/core/jit';
-import { Component, Signal, flushSync, mount } from '@voltdev/core';
+import { Component, Signal, createRoot, flushSync, mount } from '@voltdev/core';
+import { createLocaleProvider } from '../src/i18n.ts';
 import {
   CRUMB_ATTRIBUTE,
   CRUMB_OVERFLOW_ATTRIBUTE,
@@ -678,6 +679,46 @@ describe('pagination', () => {
       const gap = host.querySelector('span')!;
       expect(gap.getAttribute('aria-hidden')).toBe('true');
       expect(gap.hasAttribute(PAGINATION_ITEM_ATTRIBUTE)).toBe(false);
+    });
+
+    /** A pager under a provider, as an application that translates builds it. */
+    function underProvider(messages: Record<string, string>, status?: (p: number, n: number) => string) {
+      let pager!: ReturnType<typeof createPagination>;
+      let dispose!: () => void;
+      createRoot((d) => {
+        dispose = d;
+        createLocaleProvider({ defaultLocale: 'de-DE', messages });
+        pager = createPagination({
+          list: () => null,
+          total: () => 95,
+          defaultPage: 3,
+          labels: status ? { status } : undefined,
+        });
+      });
+      return { pager, dispose };
+    }
+
+    it('says where the reader is in the catalogue’s words', () => {
+      // `pageOf` is the catalogue's own sentence for exactly this, so a
+      // provider that translates it is heard here.
+      const { pager, dispose } = underProvider({ pageOf: 'Seite {n} von {m}' });
+      expect(pager.announcement()).toBe('Seite 3 von 10');
+      dispose();
+    });
+
+    it('says the default sentence under a provider that leaves it alone', () => {
+      const { pager, dispose } = underProvider({});
+      expect(pager.announcement()).toBe('Page 3 of 10');
+      dispose();
+    });
+
+    it('still prefers a status given outright', () => {
+      const { pager, dispose } = underProvider(
+        { pageOf: 'Seite {n} von {m}' },
+        (p, n) => `S. ${p}/${n}`,
+      );
+      expect(pager.announcement()).toBe('S. 3/10');
+      dispose();
     });
   });
 

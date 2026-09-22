@@ -7,7 +7,9 @@
  * label nobody hears, that a page over plain HTTP still copies, and that a
  * refusal is reported instead of shown as success.
  */
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { build as viteBuild } from 'vite';
 import { compileTemplate } from '@voltdev/core/jit';
 import { defineComponent, flushSync, mount } from '@voltdev/core';
 import { createRoot } from '@voltdev/reactivity';
@@ -264,5 +266,31 @@ describe('what it says, in the application’s language', () => {
 
     expect(spoken()).toBe('Link kopiert');
     dispose();
+  });
+});
+
+describe('what a copy button costs an application that does not translate', () => {
+  beforeEach(() => vi.useRealTimers());
+
+  it('leaves the locale out of the bundle, with no provider for it to ask', async () => {
+    // Neither sentence is a default, so a locale built without a provider
+    // could only say the English the module already holds. Building one
+    // anyway put the whole locale into every bundle with a copy button in it.
+    const result = await viteBuild({
+      configFile: false,
+      logLevel: 'silent',
+      build: {
+        write: false,
+        target: 'esnext',
+        minify: false,
+        rollupOptions: { external: [/^@voltdev\//] },
+        lib: { entry: resolve(import.meta.dirname, '../src/clipboard.ts'), formats: ['es'] },
+      },
+    });
+    const [bundle] = Array.isArray(result) ? result : [result];
+    const code = bundle && 'output' in bundle ? bundle.output[0].code : '';
+
+    expect(code).toMatch(/function createClipboard\b/);
+    expect(code).not.toMatch(/function createLocale\b/);
   });
 });

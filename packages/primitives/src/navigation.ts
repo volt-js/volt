@@ -26,6 +26,7 @@ import { createRovingFocus } from './roving-focus.js';
 import { createDismiss, type DismissReason } from './dismiss.js';
 import { createMenu, type Menu } from './menu.js';
 import { createId } from './id.js';
+import { useProvidedLocale } from './i18n.js';
 
 // The proposal's own name for reading without subscribing; Volt adds no second
 // spelling for it.
@@ -473,7 +474,10 @@ export interface PaginationLabels {
   previous?: string;
   next?: string;
   last?: string;
-  /** The live announcement. Default "Page 3 of 9". */
+  /**
+   * The live announcement. Default the locale's `pageOf`, or "Page 3 of 9"
+   * with no provider.
+   */
   status?: (page: number, pageCount: number) => string;
 }
 
@@ -581,6 +585,7 @@ export interface Pagination {
  */
 export function createPagination(options: PaginationOptions): Pagination {
   const labels = options.labels ?? {};
+  const locale = useProvidedLocale();
   const current = options.page ?? new Signal.State(options.defaultPage ?? 1);
   const size = options.pageSize ?? new Signal.State(options.defaultPageSize ?? 10);
 
@@ -771,7 +776,9 @@ export function createPagination(options: PaginationOptions): Pagination {
     },
 
     announcement() {
-      const format = labels.status ?? ((p: number, count: number) => `Page ${p} of ${count}`);
+      const format =
+        labels.status ??
+        ((p: number, count: number) => locale?.t('pageOf', { n: p, m: count }) ?? `Page ${p} of ${count}`);
       return format(page(), pageCount());
     },
 

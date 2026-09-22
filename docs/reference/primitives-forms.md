@@ -1053,10 +1053,14 @@ class Editor {
 On a real button Enter and Space are left to become the click the browser makes
 of them; elsewhere the keydown handler does the activating.
 
-A disabled toggle leaves the tab order — `props()` writes `disabled` and drops
-the `tabindex` — and so does a disabled toggle group. That is the opposite of
-the checkbox, the switch and the slider thumbs, which stay reachable with
-`aria-disabled`; see [what has not been decided](#what-has-not-been-decided).
+A disabled toggle stays in the tab order with `aria-disabled`, as a disabled
+checkbox, switch or slider thumb does: `props()` never writes the native
+`disabled` attribute, and the click and keydown handlers refuse the activation
+instead — Space is still cancelled first, since a toggle a keyboard user can
+reach is one they can press. A disabled group keeps its one tab stop too, on
+the chosen item, and its arrows and clicks do nothing. An item disabled on its
+own inside an enabled group is passed over by the arrows and never holds the
+tab stop, which is the rule every list in the package follows.
 
 A toggle group is a set of them over one value, holding one tab stop. It is
 `type: 'single'` (the default) or `type: 'multiple'`, where the value is an array
@@ -1638,17 +1642,3 @@ const validateOn: ValidationTrigger = 'blur';
 const caption = (item: UploadItem): string =>
   item.status === 'rejected' ? `${item.file.name}: ${item.error?.message ?? ''}` : item.file.name;
 ```
-
-## What has not been decided
-
-One thing on this page is left as it is because settling it is a decision about
-the library rather than a bug to fix.
-
-- **A disabled toggle leaves the tab order**, where a disabled checkbox, switch
-  or slider thumb stays in it with `aria-disabled`. `createToggle` and
-  `createToggleGroup` write the native `disabled` attribute and drop the
-  `tabindex`, which is what a `<button>` usually does and what their own
-  `press()`, `release()` and `toggle()` already match by staying available to
-  the application. The two rules have not been reconciled, and reconciling them
-  changes the keyboard behaviour of one set of shipped primitives whichever way
-  it goes.

@@ -115,13 +115,15 @@ export function createToggle(options: ToggleOptions = {}): Toggle {
   // would leave one extra listener behind per press, and the toggle would
   // start flipping twice, then three times.
   const onClick: ToggleHandler = () => {
-    // A disabled `<button>` never fires this; a `<div role="button">` does.
+    // `aria-disabled` stops nothing by itself: the press arrives on a
+    // `<button>` exactly as it does on a `<div role="button">`, and is refused
+    // here for both.
     if (isDisabled()) return;
     setPressed(!state.get());
   };
 
   const onKeyDown: ToggleHandler = (event) => {
-    if (!isKeyboardEvent(event) || isDisabled()) return;
+    if (!isKeyboardEvent(event)) return;
     if (event.key !== ' ' && event.key !== 'Enter') return;
     // A modified key is a shortcut, not an activation.
     if (event.ctrlKey || event.metaKey || event.altKey) return;
@@ -131,11 +133,13 @@ export function createToggle(options: ToggleOptions = {}): Toggle {
     // else gets the activation the browser will not give it.
     if (isNativeButton(elementOf(event.currentTarget))) return;
 
-    // Space scrolls the page otherwise. It activates on keydown here, where a
-    // native button waits for keyup; matching that means carrying the press
-    // across two events to catch the one that is released somewhere else,
-    // which is a lot of state for a case a toggle rarely sees.
+    // Space scrolls the page otherwise — a disabled toggle still has focus, so
+    // it is cancelled before the activation is refused. It activates on
+    // keydown here, where a native button waits for keyup; matching that means
+    // carrying the press across two events to catch the one that is released
+    // somewhere else, which is a lot of state for a case a toggle rarely sees.
     event.preventDefault();
+    if (isDisabled()) return;
     setPressed(!state.get());
   };
 
@@ -161,14 +165,12 @@ export function createToggle(options: ToggleOptions = {}): Toggle {
         // it sits in.
         role: 'button',
         type: 'button',
-        // The platform's own disabling, which a `<button>` needs for focus,
-        // clicks and form participation. Elsewhere it is an attribute the
-        // browser ignores, and `aria-disabled` with the guards in the handlers
-        // above carries that case instead.
-        disabled,
-        // A `<div role="button">` is unreachable without this, and a real
-        // button is already at 0.
-        tabindex: disabled ? undefined : '0',
+        // Disabled stays in the tab order, with `aria-disabled` rather than
+        // the `disabled` attribute, because a control a keyboard user cannot
+        // reach is a control they cannot discover is there. The handlers above
+        // refuse the press instead. A `<div role="button">` is unreachable
+        // without this, and a real button is already at 0.
+        tabindex: '0',
         'aria-pressed': pressed ? 'true' : 'false',
         'aria-disabled': disabled ? 'true' : undefined,
         'aria-label': labelFor(options.label, pressed),
@@ -426,8 +428,11 @@ export function createToggleGroup(
   const itemsRevision = new Signal.State(0);
 
   effect(() => {
-    // A disabled group has no way in at all.
-    const items = isDisabled() ? [] : collection.enabled();
+    // A disabled group keeps its one way in, as a disabled checkbox keeps its
+    // tab stop. Every item then carries `data-disabled`, so the stop is chosen
+    // among all of them; in a group that is enabled, an item disabled on its
+    // own is passed over here as the arrows pass over it.
+    const items = isDisabled() ? collection.all() : collection.enabled();
     itemsRevision.get();
 
     const active = activeValue.get();

@@ -687,6 +687,19 @@ describe('the popover', () => {
       expect(side(style, 'inset', OPPOSITE[near]), OPPOSITE[near]).toBe('');
     });
   }
+
+  it('sets it against the trigger’s direction, not the page it is portalled into', () => {
+    host.setAttribute('dir', 'rtl');
+    open('bottom-start');
+    const style = computed('.volt-popover-arrow');
+
+    // The start of a right-to-left trigger is its right edge, and the content
+    // is portalled to <body>, which runs the other way: a logical inset here
+    // would resolve against the page and put the arrow at the far corner. The
+    // primitive says which physical edge it aligned to, and the sheet uses it.
+    expect(style.getPropertyValue('right'), 'the trigger’s start edge').not.toBe('');
+    expect(side(style, 'inset', 'left'), 'the far corner').toBe('');
+  });
 });
 
 describe('the checkbox', () => {

@@ -772,6 +772,37 @@ describe('anchor positioning', () => {
     );
   });
 
+  it('stops offering the other alignments when told not to shift', () => {
+    const centred = mountPopover({ shift: false });
+    centred.trigger().click();
+    flushSync();
+    // The opposite side is still offered; what goes is the move along the
+    // same side, which an arrow drawn from `data-placement` cannot follow.
+    expect(centred.content()!.style.getPropertyValue('position-try-fallbacks')).toBe(
+      'flip-block',
+    );
+    escape();
+    flushSync();
+
+    const aligned = mountPopover({ placement: 'right-start', shift: false });
+    aligned.trigger().click();
+    flushSync();
+    expect(aligned.content()!.style.getPropertyValue('position-try-fallbacks')).toBe(
+      'flip-inline',
+    );
+  });
+
+  it('offers no fallback at all with neither flip nor shift, so it stays where it was put', () => {
+    const { trigger, content } = mountPopover({ placement: 'top-end', flip: false, shift: false });
+    trigger().click();
+    flushSync();
+    // Nothing for the browser to move it to, so the placement asked for is the
+    // one in use, and an arrow drawn from `data-placement` points at the
+    // trigger.
+    expect(content()!.style.getPropertyValue('position-try-fallbacks')).toBe('');
+    expect(content()!.style.getPropertyValue('position-area')).toBe('top span-left');
+  });
+
   it('writes a positioning scheme, because position-area alone does nothing', () => {
     const { trigger, content } = mountPopover();
     trigger().click();
@@ -839,6 +870,74 @@ describe('anchor positioning', () => {
     expect(props['aria-hidden']).toBe('true');
     expect(props.style).toEqual({ 'position-anchor': popover.anchorName() });
     expect(props['data-placement']).toBe('bottom');
+  });
+
+  /** The popover with its arrow rendered, as the styled sheet expects it. */
+  const WITH_ARROW = `
+    <div>
+      <button :ref="trigger" :spread="popover.triggerProps()">open</button>
+      <div :if="popover.isPresent()" :portal :ref="content" :spread="popover.contentProps()">
+        <button class="one">one</button>
+        <div class="arrow" :spread="popover.arrowProps()"></div>
+      </div>
+    </div>
+  `;
+
+  function arrowAt(
+    placement: NonNullable<PopoverOptions['placement']>,
+    container: HTMLElement = host,
+  ): HTMLElement {
+    const { trigger } = mountPopover({ placement }, WITH_ARROW, container);
+    trigger().click();
+    flushSync();
+    const arrow = document.querySelector<HTMLElement>('.arrow')!;
+    return arrow;
+  }
+
+  it('tells an arrow which physical edge an aligned popover lines up with', () => {
+    const cases: [NonNullable<PopoverOptions['placement']>, string | null][] = [
+      ['bottom', null],
+      ['left', null],
+      ['bottom-start', 'left'],
+      ['top-end', 'right'],
+      ['right-start', 'top'],
+      ['left-end', 'bottom'],
+    ];
+    for (const [placement, edge] of cases) {
+      const arrow = arrowAt(placement);
+      // A centred popover has no aligned edge, and says nothing rather than
+      // something a stylesheet would have to know to ignore.
+      expect(arrow.getAttribute('data-align'), placement).toBe(edge);
+      escape();
+      flushSync();
+      for (const handle of mounted.splice(0)) handle.unmount();
+      flushSync();
+    }
+  });
+
+  it('resolves that edge in the trigger’s direction, not the page’s', () => {
+    const rtl = document.createElement('div');
+    rtl.setAttribute('dir', 'rtl');
+    document.body.append(rtl);
+
+    // The popover is portalled into a left-to-right page, and lined up with
+    // the start of a right-to-left trigger — its right edge. A stylesheet
+    // reading the popover's own direction would put the arrow at the left.
+    expect(arrowAt('bottom-start', rtl).getAttribute('data-align')).toBe('right');
+    escape();
+    flushSync();
+    for (const handle of mounted.splice(0)) handle.unmount();
+    flushSync();
+
+    expect(arrowAt('top-end', rtl).getAttribute('data-align')).toBe('left');
+    escape();
+    flushSync();
+    for (const handle of mounted.splice(0)) handle.unmount();
+    flushSync();
+
+    // Beside the trigger the alignment runs down the page, which `dir` does
+    // not turn round.
+    expect(arrowAt('left-start', rtl).getAttribute('data-align')).toBe('top');
   });
 });
 

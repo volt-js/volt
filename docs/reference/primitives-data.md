@@ -730,29 +730,28 @@ translator copies.
 
 Not every key is read by a component yet. The calendar, combobox, listbox,
 tree, form inputs and display primitives read `previous`, `next`, `noResults`,
-`selected`, `remove`, `loading`, `required` and `clear`, and the popover names
-its close button from `close`. Nothing in Volt reads `pageOf`,
+`selected`, `remove`, `loading`, `required` and `clear`; the popover names its
+close button from `close`; and the pager announces where the reader is with
+`pageOf`, unless `labels.status` says otherwise. Nothing in Volt reads
 `sortedAscending` or `sortedDescending` today: a translation of them shows only
-where your own templates call `t`. That includes the pager, which says "Page 3
-of 12" in its own English unless `labels.status` says otherwise, and the grid,
-the component the sort keys were written for: it announces its sort order in
-its own English ("Sorted by Name ascending"), and a catalogue's
-`sortedAscending` does not reach it. Its `sortAnnouncement` option is the way
-to translate that sentence.
+where your own templates call `t`. That includes the grid, the component the
+sort keys were written for: it builds its sort announcement ("Sorted by Name
+ascending") from keys of its own — `gridSortedBy`, `gridAscending`,
+`gridDescending`, `gridThen` and `gridNotSorted` — and its own English, so a
+catalogue's `sortedAscending` does not reach it; see
+[the grid's announcements](./grid#gridoptions).
 
 Going the other way, several components ask for keys that are not in the
 defaults — `resultsAvailable` and `suggestions` in a combobox, `increase` and
 `decrease` on a number input, `tagsCleared` when a tags input is emptied,
-`menu`, `notifications` and `closeNotification` for the overlays — and use
-their own English when `has(key)` says the catalogue lacks one. A catalogue
-that defines them translates those too. They stay out of `DEFAULT_MESSAGES`
-because a key there is always found, and its English would take the place of
-what the component says without it, so copying the defaults does not show a
-translator these keys: each component's page lists the ones it asks for. The
-plugin's report of unused messages spares only the defaults, so it calls an
-entry for one of these unused. Its [`ignore`](./vite-plugin#messages) option
-quiets that, and replaces the list rather than adding to it, so name the
-defaults you translate there as well. Every remove button asks
+`menu`, `notifications` and `closeNotification` for the overlays,
+`gridRowsLeft`, `gridAllRows`, `gridColumnWidth` and the sort keys above for
+the data grid and its grouping — and use their own English when `has(key)`
+says the catalogue lacks one. A catalogue that defines them translates those
+too. They stay out of `DEFAULT_MESSAGES` because a key there is always found,
+and its English would take the place of what the component says without it, so
+copying the defaults does not show a translator these keys: each component's
+page lists the ones it asks for. Every remove button asks
 for `removeItem` before `remove`: a whole phrase with the thing removed as
 `{label}`, so a language that puts the verb last says
 `removeItem: '{label} entfernen'` where `remove` alone could only ever come

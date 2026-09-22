@@ -27,7 +27,7 @@
 
 import { Signal, onCleanup } from '@voltdev/core';
 import { announce } from './announcer.js';
-import { useLocale, type MessageKey } from './i18n.js';
+import { useProvidedLocale, type MessageKey } from './i18n.js';
 
 /** How long the copied state is held, in milliseconds. */
 const COPIED_FOR = 2000;
@@ -118,7 +118,7 @@ async function write(text: string): Promise<void> {
 }
 
 export function createClipboard(options: ClipboardOptions): Clipboard {
-  const locale = useLocale();
+  const locale = useProvidedLocale();
   const status = new Signal.State<CopyStatus>('idle');
   const resetAfter = options.resetAfter ?? COPIED_FOR;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -126,8 +126,12 @@ export function createClipboard(options: ClipboardOptions): Clipboard {
   // A sentence said out loud is the whole of what a screen-reader user is told
   // about a copy, so it comes from the catalogue the rest of the library
   // speaks from. A label given here is about this button and outranks it.
+  // Only a provider is asked: neither key is a default, so the locale
+  // `useLocale` would build without one could only ever answer with the
+  // English below, and building it would carry the whole locale into a
+  // bundle that never translates anything.
   const label = (override: string | undefined, key: MessageKey, fallback: string): string =>
-    override ?? (locale.has(key) ? locale.t(key) : fallback);
+    override ?? (locale?.has(key) ? locale.t(key) : fallback);
 
   const settle = (next: Exclude<CopyStatus, 'idle'>): void => {
     status.set(next);

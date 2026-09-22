@@ -13,7 +13,9 @@
  * than flaky, and `Date.now()` moves with them — which is what the minimum
  * on-screen arithmetic is measured against.
  */
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { build as viteBuild } from 'vite';
 import { compileTemplate } from '@voltdev/core/jit';
 import { Component, Signal, flushSync, mount } from '@voltdev/core';
 import {
@@ -1365,5 +1367,34 @@ describe('the words each component says by default', () => {
     advance(50);
     expect(dismiss().getAttribute('aria-label')).toBe('Dismiss');
     expect(alert.isOpen()).toBe(true);
+  });
+});
+
+describe('what these cost an application that does not translate', () => {
+  beforeEach(() => vi.useRealTimers());
+
+  it('leaves the locale out of the bundle, with no provider for it to ask', async () => {
+    // Without a provider the only catalogue there is holds the defaults, and
+    // they say what the English here says. Building a locale for that put the
+    // whole of it into every bundle with an alert, a skeleton, a spinner or an
+    // empty state in it.
+    const result = await viteBuild({
+      configFile: false,
+      logLevel: 'silent',
+      build: {
+        write: false,
+        target: 'esnext',
+        minify: false,
+        rollupOptions: { external: [/^@voltdev\//] },
+        lib: { entry: resolve(import.meta.dirname, '../src/feedback.ts'), formats: ['es'] },
+      },
+    });
+    const [bundle] = Array.isArray(result) ? result : [result];
+    const code = bundle && 'output' in bundle ? bundle.output[0].code : '';
+
+    for (const name of ['createAlert', 'createSkeleton', 'createSpinner', 'createEmptyState']) {
+      expect(code).toMatch(new RegExp(`function ${name}\\b`));
+    }
+    expect(code).not.toMatch(/function createLocale\b/);
   });
 });

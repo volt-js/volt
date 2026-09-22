@@ -61,7 +61,12 @@ import { Signal, effect, onCleanup } from '@voltdev/core';
 import { createPresence, type PresenceState } from './presence.js';
 import { createDismiss, isInsideLayer, type DismissReason } from './dismiss.js';
 import { createFocusScope, focusableWithin } from './focus-scope.js';
-import { createAnchor, type AnchorPlacement } from './anchoring.js';
+import {
+  createAnchor,
+  type AnchorPlacement,
+  type AnchorSide,
+  type WritingDirection,
+} from './anchoring.js';
 import { createId } from './id.js';
 import { useProvidedLocale } from './i18n.js';
 
@@ -133,6 +138,12 @@ export interface PopoverOptions {
    * because the declaration is simply ignored there.
    */
   flip?: boolean;
+  /**
+   * Let the browser move the popover to another alignment on the same side
+   * when it would overflow. Default true. Costs nothing where anchor
+   * positioning is absent.
+   */
+  shift?: boolean;
 
   /** Escape closes it. Default true. */
   closeOnEscape?: boolean;
@@ -218,6 +229,7 @@ export function createPopover(options: PopoverOptions): Popover {
     defaultPlacement: options.placement ?? 'bottom',
     offset: options.offset,
     flip: options.flip,
+    shift: options.shift,
   });
 
   // Whether a title or description was actually rendered. Read from the DOM
@@ -426,10 +438,40 @@ export function createPopover(options: PopoverOptions): Popover {
         // An arrow is a drawing of the relationship the ARIA already states.
         'aria-hidden': 'true',
       };
+      // Which edge an aligned popover lines up with, so that a stylesheet can
+      // put the arrow over the trigger. It cannot work that out from
+      // `data-placement`: the content is portalled to <body>, so its own
+      // `direction` is the page's rather than the trigger's, and a centred
+      // placement has no aligned edge at all.
+      const alignment = anchor.alignment();
+      if (alignment !== 'center') {
+        props['data-align'] = alignedEdge(anchor.side(), alignment, anchor.direction());
+      }
       if (anchor.isSupported()) props.style = { 'position-anchor': anchor.name() };
       return props;
     },
   };
+}
+
+/**
+ * The physical edge a `-start` or `-end` placement lines up with.
+ *
+ * Direction mirrors the inline axis and nothing else, so a popover above or
+ * below its trigger starts at the trigger's right edge in a right-to-left
+ * region; one beside the trigger lines up down the block axis, which `dir`
+ * leaves alone.
+ */
+function alignedEdge(
+  side: AnchorSide,
+  alignment: 'start' | 'end',
+  direction: WritingDirection,
+): 'left' | 'right' | 'top' | 'bottom' {
+  if (side === 'top' || side === 'bottom') {
+    const rtl = direction === 'rtl';
+    if (alignment === 'start') return rtl ? 'right' : 'left';
+    return rtl ? 'left' : 'right';
+  }
+  return alignment === 'start' ? 'top' : 'bottom';
 }
 
 /**

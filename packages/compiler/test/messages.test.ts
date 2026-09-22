@@ -375,6 +375,22 @@ describe('a message nothing asks for', () => {
     expect(unusedMessages({ close: 'Cerrar', noResults: 'Sin resultados' }, [])).toEqual([]);
   });
 
+  it('says nothing about the keys the components look up beyond the defaults', () => {
+    // A menu trigger, a removable tag and a copy button each ask a catalogue
+    // for a key of their own through `has()`, and speak English otherwise. The
+    // pages tell an application to translate them, so a warning here would
+    // tell it to delete the translation it was told to write.
+    const catalog = {
+      menu: 'Menü',
+      removeItem: '{label} entfernen',
+      tagsCleared: 'Alle Tags entfernt',
+      copied: 'Kopiert',
+      dragLifted: 'Aufgenommen',
+      keyShift: 'Umschalt',
+    };
+    expect(unusedMessages(catalog, [])).toEqual([]);
+  });
+
   it('reports the library’s own keys when a project names its own list', () => {
     // The list is a default, not a rule: an application that never renders a
     // Dialog is right to want `close` reported, and one with a `brandName` of
@@ -388,7 +404,8 @@ describe('a message nothing asks for', () => {
   it('keeps that list in step with the library it mirrors', () => {
     // The compiler depends on nothing, so the list is a copy. This is what
     // stops the copy from drifting.
-    expect([...LIBRARY_MESSAGE_KEYS]).toEqual(Object.keys(DEFAULT_MESSAGES).sort());
+    expect(LIBRARY_MESSAGE_KEYS).toEqual(expect.arrayContaining(Object.keys(DEFAULT_MESSAGES)));
+    expect([...LIBRARY_MESSAGE_KEYS]).toEqual([...LIBRARY_MESSAGE_KEYS].sort());
   });
 });
 

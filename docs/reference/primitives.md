@@ -185,27 +185,38 @@ percentages — and none of its strings. The date field, time picker and file
 upload take the same, and beyond the entries named above none of their strings
 either: the names of a date's fields and a file's size come from the
 formatters, but what they say in sentences, and an upload's rejection, stay
-English until you pass `labels`. Everything else takes its strings through
-`labels` alone: a provider that says `next: 'Weiter'` names the calendar's
-next-month button in German and leaves a pager's saying "Next page". Three
-entries of the catalogue itself — `pageOf`, `sortedAscending` and
-`sortedDescending` — are read by no primitive yet, so translating them changes
-nothing. See [data](./primitives-data).
+English until you pass `labels`. The pager takes `pageOf` for the sentence it
+announces — "Page 3 of 12" — and nothing else. Everything else takes its
+strings through `labels` alone: a provider that says `next: 'Weiter'` names the
+calendar's next-month button in German and leaves a pager's saying "Next page".
+Two entries of the catalogue itself — `sortedAscending` and `sortedDescending`
+— are read by no primitive yet, so translating them changes nothing. See
+[data](./primitives-data).
 
 ### State is written where CSS can reach it
 
 `data-state="open"` or `"closed"`, `data-disabled`, `data-orientation`,
-`data-placement`. Style against those; the primitives add no classes. A
-disabled item in a menu, listbox, tab list or tree carries `aria-disabled`
-rather than the `disabled` attribute, so it can be found and heard to be
-unavailable instead of dropping out of the accessibility tree. Its
-`data-disabled` twin is what the arrow keys skip by, so in a menu, a listbox, a
-tab list or a toggle group a disabled item is passed over. That departs from
-the Authoring Practices, which would rather a disabled item stayed reachable so
-that a keyboard user can find out it is there; the package takes one rule
-across every list over an exception per component, because arrowing onto
+`data-placement`. Style against those; the primitives add no classes.
+
+One rule covers every disabled control in the package: it carries
+`aria-disabled="true"` and `data-disabled`, never the `disabled` attribute, it
+keeps its place in the tab order, and the primitive refuses the activation in
+its own handlers. A control a keyboard user cannot reach is a control they
+cannot discover is there, and the cost is a tab stop that does nothing. It
+holds for the checkbox, the switch, the slider's thumbs, the toggle and the
+toggle group — a group disabled as a whole keeps its one tab stop. An item
+inside a list carries the same attributes; what a list changes is which item
+holds its single tab stop.
+
+Inside a list the `data-disabled` twin is also what the arrow keys skip by, so
+in a menu, a listbox, a tab list or a toggle group a disabled item is passed
+over and never holds the tab stop. That departs from the Authoring Practices,
+which would rather a disabled item stayed arrowable too; the package takes one
+rule across every list over an exception per component, because arrowing onto
 something that cannot be activated has a cost of its own. The tree is the one
-exception it makes, and keeps a disabled node reachable.
+exception it makes, and keeps a disabled node arrowable. A disabled radio is
+the other: the arrows step over it and it never holds the group's tab stop, so
+a radio group disabled as a whole has no tab stop at all.
 
 ### Geometry is read in the measure lane
 

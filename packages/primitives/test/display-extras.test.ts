@@ -1405,6 +1405,13 @@ describe('relative time text', () => {
     expect(texts()).toEqual(['in 10 minutes']);
   });
 
+  it('names a gap that rounds up to the next unit in that unit', () => {
+    // Fifty-nine minutes and forty seconds rounds to sixty minutes, and
+    // "in 60 minutes" is an hour said the long way round.
+    const { texts } = mountTimes([new Date(NOW + (59 * 60 + 40) * 1000)]);
+    expect(texts()).toEqual(['in 1 hour']);
+  });
+
   it('reads a half unit the way the locale formatter reads it', () => {
     const ahead = new Date(NOW + 90 * 1000);
     const { texts } = mountTimes([ahead]);

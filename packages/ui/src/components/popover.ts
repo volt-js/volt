@@ -13,6 +13,12 @@
  * without JavaScript measuring anything. It is the placement that was asked
  * for: when the engine takes a fallback instead, nothing on the element
  * changes, and only some engines let a stylesheet ask which it took.
+ *
+ * The arrow also carries `data-align`, the physical edge an aligned popover
+ * lines up with, which is the one thing about the placement a stylesheet
+ * cannot work out for itself: the content is portalled to `<body>` and takes
+ * its direction from the page, while the primitive aligned it in the
+ * trigger's.
  */
 
 import type { ComponentStyles } from '../css.js';
@@ -32,6 +38,10 @@ const ARROW_INSET = 'var(--volt-space-3)';
 
 function arrowAt(...placements: string[]): string {
   return placements.map((placement) => `.${arrow}[data-placement='${placement}']`).join(', ');
+}
+
+function alignedTo(edge: string): string {
+  return `.${arrow}[data-align='${edge}']`;
 }
 
 /** Part to class, on its own so that a bundle can take it without the rules. */
@@ -177,28 +187,17 @@ export const popoverStyles = /* @__PURE__ */ ((): ComponentStyles => ({
       },
     },
     // Along that edge, where the trigger is: the middle for a centred
-    // placement, and near the end the popover is aligned to for the others.
-    // That end is read in the popover's own direction, which a portalled
-    // popover takes from the page; the primitive aligns it in the trigger's,
-    // and says nothing here about which physical end that turned out to be.
+    // placement, and near the edge the popover is aligned to for the others.
+    // `data-align` names that edge physically, because the primitive resolves
+    // it against the trigger's own direction — a popover portalled to <body>
+    // inherits the page's, and a logical inset here would put the arrow at the
+    // wrong end of a trigger inside a right-to-left region.
     { selector: arrowAt('top', 'bottom'), declarations: { 'inset-inline-start': ARROW_CENTRE } },
-    {
-      selector: arrowAt('top-start', 'bottom-start'),
-      declarations: { 'inset-inline-start': ARROW_INSET },
-    },
-    {
-      selector: arrowAt('top-end', 'bottom-end'),
-      declarations: { 'inset-inline-end': ARROW_INSET },
-    },
     { selector: arrowAt('left', 'right'), declarations: { 'inset-block-start': ARROW_CENTRE } },
-    {
-      selector: arrowAt('left-start', 'right-start'),
-      declarations: { 'inset-block-start': ARROW_INSET },
-    },
-    {
-      selector: arrowAt('left-end', 'right-end'),
-      declarations: { 'inset-block-end': ARROW_INSET },
-    },
+    { selector: alignedTo('left'), declarations: { left: ARROW_INSET } },
+    { selector: alignedTo('right'), declarations: { right: ARROW_INSET } },
+    { selector: alignedTo('top'), declarations: { top: ARROW_INSET } },
+    { selector: alignedTo('bottom'), declarations: { bottom: ARROW_INSET } },
   ],
 
   forcedColors: [

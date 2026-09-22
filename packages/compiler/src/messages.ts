@@ -59,14 +59,18 @@ export type CatalogMessage = string | PluralForms;
 export type MessageCatalog = Record<string, CatalogMessage>;
 
 /**
- * The keys `@voltdev/primitives` speaks for itself, mirroring `LibraryMessages`
- * there.
+ * The keys `@voltdev/primitives` asks a catalogue for: `LibraryMessages` there,
+ * and the keys its components look up through `has()` and say English of their
+ * own for otherwise.
  *
  * Copied rather than imported because the compiler deliberately depends on
  * nothing — it runs inside a Vite plugin, a test, and a `new Function` at
  * runtime, and a dependency on the component library would follow it into all
- * three. `messages.test.ts` pins the copy against the original, so the two
- * cannot drift without a test going red.
+ * three. `messages.test.ts` pins the copy against `DEFAULT_MESSAGES`, so the
+ * defaults cannot drift without a test going red. The `has()` keys have no
+ * list of their own to be pinned against: they are written down here by hand,
+ * in the order `Array.prototype.sort` gives, and a key a component starts
+ * asking for has to be added here as well.
  *
  * The list exists for one job: an application that translates `close` is
  * translating a string its own templates never mention, because a Dialog says
@@ -74,18 +78,106 @@ export type MessageCatalog = Record<string, CatalogMessage>;
  * the first thing that teaches a team to switch the warnings off.
  */
 export const LIBRARY_MESSAGE_KEYS: readonly string[] = [
+  'badgeOverflow',
+  'badgeOverflowBare',
+  'chatActions',
+  'chatCancel',
+  'chatComposer',
+  'chatCopy',
+  'chatCopyCode',
+  'chatEdit',
+  'chatJumpToLatest',
+  'chatLog',
+  'chatNewMessages',
+  'chatNotSent',
+  'chatNotSentNoName',
+  'chatReasoning',
+  'chatRegenerate',
+  'chatReplying',
+  'chatReplyingNoName',
+  'chatRetry',
+  'chatSource',
+  'chatSourceTitled',
+  'chatTyping',
+  'chatTypingNoName',
+  'chooseDate',
   'clear',
   'close',
+  'closeNotification',
+  'codeBlock',
+  'codeBlockLanguage',
+  'copied',
+  'copyFailed',
+  'dateSelected',
+  'decrease',
+  'dismiss',
+  'dragCancelled',
+  'dragDropped',
+  'dragDroppedOn',
+  'dragHandle',
+  'dragInstructions',
+  'dragInvalid',
+  'dragLifted',
+  'dragMoved',
+  'dragMovedOn',
+  'draggable',
+  'empty',
+  'emptyState',
+  'hidePassword',
+  'incomplete',
+  'increase',
+  'keyAlt',
+  'keyArrowDown',
+  'keyArrowLeft',
+  'keyArrowRight',
+  'keyArrowUp',
+  'keyBackspace',
+  'keyCapsLock',
+  'keyCommand',
+  'keyControl',
+  'keyDelete',
+  'keyEnd',
+  'keyEnter',
+  'keyEscape',
+  'keyHome',
+  'keyOption',
+  'keyPageDown',
+  'keyPageUp',
+  'keyShift',
+  'keySpace',
+  'keyTab',
+  'keyWindows',
+  'loaded',
   'loading',
+  'menu',
   'next',
+  'nextYear',
   'noResults',
+  'noResultsFor',
+  'notANumber',
+  'notifications',
   'pageOf',
+  'passwordHidden',
+  'passwordShown',
   'previous',
+  'previousYear',
+  'rangeSelected',
+  'rangeStartSelected',
   'remove',
+  'removeItem',
   'required',
+  'resultsAvailable',
   'selected',
+  'showPassword',
+  'showSuggestions',
   'sortedAscending',
   'sortedDescending',
+  'suggestions',
+  'tags',
+  'tagsCleared',
+  'tagsEmpty',
+  'today',
+  'unavailable',
 ];
 
 /** The placeholder whose value picks the plural category, as at runtime. */

@@ -265,6 +265,7 @@ dialog, and it is a difference of behaviour rather than appearance.
 | `placement` | `'bottom'` | Which side of the trigger, and how it lines up |
 | `offset` | — | The gap to the trigger. A number is pixels, a string any CSS length |
 | `flip` | `true` | Let the browser try the opposite side when this one would overflow |
+| `shift` | `true` | Let the browser try another alignment on the same side when this one would overflow |
 | `closeOnEscape` | `true` | Escape closes it |
 | `closeOnOutsidePointer` | `true` | A press outside closes it |
 | `closeOnFocusOutside` | `true` | Focus landing outside closes it. Non-modal only |
@@ -372,17 +373,22 @@ the popover across a flip; a gap written in your own CSS stays on the side you
 wrote it on.
 
 `arrowProps()` is not the anchor's arrow. It carries `data-placement`,
-`aria-hidden` and the anchor name, but no `position-area`: it is meant to be
-a child of the content, drawn against the content's own edge by your CSS from
-`data-placement`, and an inline `position-area` would lift it out of that box.
+`data-align`, `aria-hidden` and the anchor name, but no `position-area`: it is
+meant to be a child of the content, drawn against the content's own edge by
+your CSS from `data-placement`, and an inline `position-area` would lift it out
+of that box. `data-align` is the physical edge an aligned popover lines up with
+— `left`, `right`, `top` or `bottom`, and absent for a centred placement —
+resolved against the trigger's writing direction, which a popover portalled to
+`<body>` does not inherit. Style the arrow's offset along the edge from that
+rather than from the `-start` or `-end` in `data-placement`.
 
 ### What a popover does not do
 
-- **Take the other anchor options.** Only `placement`, `offset` and `flip`
-  reach [`createAnchor`](#createanchor) from here. The other alignment is
-  always among the fallbacks, and `strategy` is always `absolute`, so content
-  that is itself in the top layer — an element with the `popover` attribute —
-  has the browser's `position: fixed` overridden.
+- **Take the other anchor options.** Only `placement`, `offset`, `flip` and
+  `shift` reach [`createAnchor`](#createanchor) from here, and `strategy` is
+  always `absolute`, so content that is itself in the top layer — an element
+  with the `popover` attribute — has the browser's `position: fixed`
+  overridden.
 - **Move.** The placement is fixed for the popover's life; there is no
   `setPlacement` on it.
 
