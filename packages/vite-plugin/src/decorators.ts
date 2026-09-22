@@ -58,6 +58,8 @@ interface PropSite {
   property: string;
   /** Verbatim text of the options argument, if one was given. */
   options: string | null;
+  /** The `!` of a definite-assignment assertion, if the field carries one. */
+  bang: number | null;
   /** The `=` of the field's initializer, if it has one. */
   equals: number | null;
   /** The `;` that ends the declaration. */
@@ -132,6 +134,7 @@ export function planLowering(code: string, defineName: string, propName: string)
       // has already handed its default to something else.
       const name = JSON.stringify(prop.property);
       if (prop.equals === null) {
+        if (prop.bang !== null) removals.push({ start: prop.bang, end: prop.bang + 1 });
         insertions.push({ at: prop.semicolon, text: ` = ${propName}(this, ${name}, void 0)` });
       } else {
         insertions.push({ at: prop.equals + 1, text: ` ${propName}(this, ${name}, (` });
@@ -324,6 +327,16 @@ function parseProp(code: string, at: number, className: string): PropSite | null
     const word = readIdent(code, i);
     if (!word) break;
 
+    if (word === 'declare' && isModifier(code, i + word.length)) {
+      const name = readIdent(code, skipTrivia(code, i + word.length)) || 'value';
+      throw new DecoratorError(
+        `[volt] @Prop cannot be used on a declared member (${name}) on ${className}.\n` +
+          '  `declare` says the field is somebody else\'s to create, so nothing is\n' +
+          '  emitted for it and there is nothing for a prop to arrive in. Drop\n' +
+          `  \`declare\`, and give it a default if it needs one:\n` +
+          `    @Prop() ${name} = ...;`,
+      );
+    }
     if (MODIFIERS.has(word) && isModifier(code, i + word.length)) {
       i = skipTrivia(code, i + word.length);
       continue;
@@ -385,10 +398,15 @@ function parseProp(code: string, at: number, className: string): PropSite | null
     );
   }
 
-  const span = fieldSpan(code, after);
+  // `label!: string` says the field is assigned elsewhere. A prop is assigned
+  // right here, so the assertion goes when the initializer arrives — and it
+  // has to, because TypeScript refuses a field that carries both.
+  const bang = code[after] === '!' ? after : null;
+
+  const span = fieldSpan(code, bang === null ? after : after + 1);
   if (!span) return null;
 
-  return { start: at, end, property, options, equals: span.equals, semicolon: span.end };
+  return { start: at, end, property, options, bang, equals: span.equals, semicolon: span.end };
 }
 
 /**

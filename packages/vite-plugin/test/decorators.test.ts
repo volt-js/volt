@@ -199,11 +199,13 @@ describe('lowering', () => {
   });
 
   it('accepts TypeScript member modifiers before the field', async () => {
+    // Not `declare`, which is a decorator TypeScript itself refuses — see the
+    // shapes it refuses to rewrite, below.
     const calls = await registrations(`
       @Component({ selector: 'v-mod' })
       export class Mod {
         @Prop() readonly a = 1;
-        @Prop() declare b: number;
+        @Prop() protected b = 2;
         @Prop() override c = 3;
       }
     `);
@@ -447,6 +449,74 @@ export class Thing {
 `))!;
     // esbuild's own lowering, which runs the decorators for real: correct, and
     // only larger. What must never happen is a rewrite this pass guessed at.
+    expect(output).toContain('__decorateElement');
+    expect(output).not.toContain('__volt_prop');
+  });
+});
+
+/**
+ * The shapes a field declaration comes in, now that the pass rewrites it.
+ *
+ * Deleting a decorator needed to find where one ended. Wrapping an initializer
+ * needs to find where the whole declaration ends, and what is between the name
+ * and the value — which is TypeScript, and therefore is not only a type.
+ */
+describe('a field that is not simply `name = value`', () => {
+  const lowered = async (body: string) =>
+    (await lower(`
+@Component({ selector: 'v-thing', render: __volt_render_0 })
+export class Thing {
+  ${body}
+}
+`))!;
+
+  it('takes the definite-assignment assertion off the field it initializes', async () => {
+    // `@Prop() label!: string` is the idiomatic way to declare a prop the
+    // parent must pass. TypeScript refuses a field carrying both an assertion
+    // and an initializer, so the assertion goes — the field is assigned here
+    // now, which is what the assertion was promising.
+    const output = await lowered('@Prop() label!: string;');
+    expect(output).toContain('label: string = __volt_prop(this, "label", void 0);');
+    expect(output).not.toContain('label!');
+  });
+
+  it('refuses a declared field, which emits nothing for a prop to arrive in', async () => {
+    await expect(lowered('@Prop() declare label: string;')).rejects.toThrow(
+      /@Prop cannot be used on a declared member \(label\)/,
+    );
+  });
+
+  it('keeps an arrow type, which carries an `=` of its own', async () => {
+    const output = await lowered('@Prop() format?: (value: number) => string;');
+    expect(output).toContain('format?: (value: number) => string = __volt_prop(');
+  });
+
+  it('reads past a semicolon inside an object type', async () => {
+    const output = await lowered('@Prop() size: { w: number; h: number } = { w: 0, h: 0 };');
+    expect(output).toContain('__volt_prop(this, "size", ( { w: 0, h: 0 }))');
+  });
+
+  it('reads past a semicolon inside a string and inside a regular expression', async () => {
+    expect(await lowered(`@Prop() sep = ';';`)).toContain(`__volt_prop(this, "sep", ( ';'))`);
+    expect(await lowered('@Prop() ends = /;/;')).toContain('__volt_prop(this, "ends", ( /;/))');
+  });
+
+  it('wraps each of two props declared on one line', async () => {
+    const output = await lowered('@Prop() a = 1; @Prop() b = 2;');
+    expect(output).toContain('__volt_prop(this, "a", ( 1))');
+    expect(output).toContain('__volt_prop(this, "b", ( 2))');
+  });
+
+  it('keeps `readonly`, which says nothing about when the field is assigned', async () => {
+    expect(await lowered('@Prop() readonly id = 0;')).toContain(
+      'readonly id = __volt_prop(this, "id", ( 0))',
+    );
+  });
+
+  it('declines a field with no semicolon, rather than guessing where it ends', async () => {
+    // Valid TypeScript, and the scan will not cross a line break, so the file
+    // goes to esbuild and the decorators run for real.
+    const output = await lowered('@Prop() a = 1\n  @Prop() b = 2');
     expect(output).toContain('__decorateElement');
     expect(output).not.toContain('__volt_prop');
   });
