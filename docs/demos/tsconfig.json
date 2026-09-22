@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Not a composite project and not referenced from the root: it exists so
+    // the demos are type-checked, and their templates checked by `volt check`,
+    // the way an application's would be.
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "types": ["vite/client", "node"]
+  },
+  "include": ["**/*.ts"],
+  "exclude": [".generated"]
+}

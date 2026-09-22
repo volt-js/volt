@@ -4,11 +4,23 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vitepress dev",
-    "build": "vitepress build",
+    "dev": "vite build --config demos/vite.config.ts --watch & vitepress dev",
+    "build": "pnpm run demos && vitepress build",
+    "demos": "tsc -p demos/tsconfig.json && volt check -p demos/tsconfig.json && vite build --config demos/vite.config.ts",
     "preview": "vitepress preview"
   },
   "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@voltdev/cli": "workspace:*",
+    "@voltdev/core": "workspace:*",
+    "@voltdev/editor": "workspace:*",
+    "@voltdev/grid": "workspace:*",
+    "@voltdev/primitives": "workspace:*",
+    "@voltdev/ui": "workspace:*",
+    "@voltdev/vite-plugin": "workspace:*",
+    "sass": "^1.102.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.1",
     "vitepress": "^1.6.4"
   }
 }

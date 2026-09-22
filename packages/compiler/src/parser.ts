@@ -386,11 +386,19 @@ class Parser {
 
     if (tag === 'slot') {
       const nameAttr = attrs.find((a) => a.name === 'name');
+      // `:from` says whose slots to look in; everything else a `:` writes on an
+      // outlet is a prop it hands the content, so this is taken out of the list
+      // before the rest are read as props.
+      const from = directives.find((d) => d.kind === 'prop' && d.name === 'from');
+      if (from && !from.exp) {
+        this.error('`:from` needs the component whose content to draw, as in `:from="col"`.');
+      }
       return {
         type: 'slot-outlet',
         name: nameAttr?.value ?? 'default',
+        ...(from ? { from } : {}),
         attrs: attrs.filter((a) => a.name !== 'name'),
-        directives,
+        directives: from ? directives.filter((d) => d !== from) : directives,
         children,
         loc,
       } satisfies SlotOutletNode;

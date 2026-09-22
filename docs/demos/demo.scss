@@ -1,0 +1,42 @@
+// The page a demo frame shows: the component on the styled layer's own
+// palette, and nothing of the documentation's theme.
+
+html {
+  color-scheme: light;
+  font-family: var(--volt-font-family-sans);
+  font-size: var(--volt-font-size-2);
+  color: var(--volt-color-on-surface);
+  background-color: var(--volt-color-surface-sunken);
+}
+
+body {
+  margin: 0;
+}
+
+#app {
+  padding: var(--volt-space-6);
+}
+
+// A dark palette, written the way the styled layer's reference page tells an
+// application to write one: the roles repointed, and nothing else. The package
+// ships one palette; this is what a second one costs.
+html[data-theme='dark'] {
+  color-scheme: dark;
+  --volt-color-surface: #1f2228;
+  --volt-color-surface-sunken: #1b1b1f;
+  --volt-color-surface-hover: #2a2e36;
+  --volt-color-surface-scrim: rgb(0 0 0 / 0.6);
+  --volt-color-on-surface: #e6e8ec;
+  --volt-color-on-surface-muted: #a3aab6;
+  --volt-color-border: #343a44;
+  --volt-color-border-strong: #5a6373;
+  --volt-color-accent: #b392f0;
+  --volt-color-accent-hover: #c7adf5;
+  --volt-color-accent-muted: #2e2442;
+  --volt-color-on-accent: #161a20;
+  --volt-color-danger: #f47067;
+  --volt-color-danger-hover: #f7938c;
+  --volt-color-danger-muted: #3d1f1d;
+  --volt-color-on-danger: #161a20;
+  --volt-focus-ring-color: #b392f0;
+}

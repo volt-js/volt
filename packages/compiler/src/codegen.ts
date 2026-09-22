@@ -2191,7 +2191,13 @@ class Generator {
       body === null ? 'null' : this.server ? this.arrowBlock(body) : this.thunk(body);
 
     const props = this.genSlotProps(node.directives, node.attrs, ctx);
-    const call = `${this.rt}.slot(${this.ctxName}, ${JSON.stringify(node.name)}, ${props}, ${fallback})`;
+    // Whose slots to look in. Normally this component's own; with `:from`, the
+    // component that expression names — which is how a tag draws what was
+    // written inside one of its children.
+    const owner = node.from?.exp
+      ? printExpression(this.parse(node.from.exp, node.from.expLoc ?? node.loc), ctx, 1)
+      : this.ctxName;
+    const call = `${this.rt}.slot(${owner}, ${JSON.stringify(node.name)}, ${props}, ${fallback})`;
     // The slot's content writes into the one writer this render has, which
     // both sides of the call already close over, so nothing is returned.
     return this.server ? `${call};` : call;

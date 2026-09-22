@@ -469,6 +469,11 @@
   "<li></li>"
   stats: templates=1 deduped=0 effects=1 folded=0 delegated=0 static=1 classToggles=0
 
+### slot-from
+  "none"
+  "<td></td>"
+  stats: templates=2 deduped=0 effects=1 folded=0 delegated=0 static=2 classToggles=0
+
 ### portal-default-target
   "<span>hello</span>"
   "<div></div>"
@@ -1026,6 +1031,11 @@
   "<li></li>"
   stats: templates=1 deduped=0 effects=1 folded=0 delegated=0 static=1 classToggles=0
 
+### slot-from
+  "none"
+  "<td></td>"
+  stats: templates=2 deduped=0 effects=1 folded=0 delegated=0 static=2 classToggles=0
+
 ### portal-default-target
   "<span>hello</span>"
   "<div></div>"
@@ -1582,6 +1592,11 @@
 ### slot-sole-child
   "<li></li>"
   stats: templates=1 deduped=0 effects=1 folded=0 delegated=0 static=1 classToggles=0
+
+### slot-from
+  "none"
+  "<td></td>"
+  stats: templates=2 deduped=0 effects=1 folded=0 delegated=0 static=2 classToggles=0
 
 ### portal-default-target
   "<span>hello</span>"

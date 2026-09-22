@@ -190,6 +190,9 @@ export const CORPUS: CorpusEntry[] = [
   { name: 'slot-no-fallback', template: `<div><slot></slot></div>` },
   { name: 'slot-with-props', template: `<div><slot name="row" :item="item.get()" :index="i.get()">none</slot></div>` },
   { name: 'slot-sole-child', template: `<li><slot></slot></li>` },
+  // An outlet that draws what a caller wrote inside another component's tag,
+  // which is how a table draws the template its column was given.
+  { name: 'slot-from', template: `<td><slot :from="col" name="cell" :row="row">none</slot></td>` },
 
   // Portals reserve no slot, so they are the one construct that must leave the
   // surrounding markup exactly as if nothing had been written.

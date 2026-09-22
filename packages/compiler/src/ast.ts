@@ -92,6 +92,16 @@ export interface ElementNode {
 export interface SlotOutletNode {
   type: 'slot-outlet';
   name: string;
+  /**
+   * Whose content this outlet draws, when it is not this component's own.
+   *
+   * `<slot :from="col" name="cell">` renders what a caller wrote inside that
+   * component's tag, here. A parent tag drawing what was written inside a
+   * child tag is the whole of what it is for — a table and its columns, a
+   * select and its options — and without it such a pair can only be built by
+   * rendering the child once per row.
+   */
+  from?: DirectiveNode;
   attrs: AttributeNode[];
   directives: DirectiveNode[];
   children: TemplateChildNode[];

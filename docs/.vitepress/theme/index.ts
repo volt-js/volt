@@ -1,4 +1,12 @@
 import DefaultTheme from 'vitepress/theme';
+import type { Theme } from 'vitepress';
+import Demo from './Demo.vue';
 import './custom.css';
 
-export default DefaultTheme;
+export default {
+  extends: DefaultTheme,
+  enhanceApp({ app }) {
+    // Available on every page without an import: `<Demo name="dialog" />`.
+    app.component('Demo', Demo);
+  },
+} satisfies Theme;

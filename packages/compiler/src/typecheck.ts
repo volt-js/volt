@@ -434,6 +434,7 @@ class BlockEmitter {
   }
 
   private slotOutlet(node: SlotOutletNode, ctx: PrintContext): void {
+    if (node.from?.exp) this.expression(node.from.exp, node.from.expLoc, ctx, 'expression');
     this.directives(node.directives, ctx);
     this.children(node.children, ctx);
   }

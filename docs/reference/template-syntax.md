@@ -369,6 +369,41 @@ content is written bare and has no element to carry the pattern:
 <v-frame :slot-default="{ name }"><b>{ name }</b></v-frame>
 ```
 
+### Drawing what was written inside another tag
+
+An outlet looks in its own component. `:from` points it at another one:
+
+```html
+<!-- v-table -->
+<td :for="col in columns.get()" :key="col.field">
+  <slot :from="col" name="cell" :row="row">{ row[col.field] }</slot>
+</td>
+```
+
+This is what a pair of tags is built out of — a table and its columns, a select
+and its options, tabs and their panels. The caller writes the template where it
+belongs, inside the child:
+
+```html
+<v-table :rows="people.get()">
+  <v-table-column field="name" label="Name"></v-table-column>
+  <v-table-column label="Actions">
+    <template :slot-cell="{ row }">
+      <v-button :onPress="() => edit(row)">Edit</v-button>
+    </template>
+  </v-table-column>
+</v-table>
+```
+
+and the parent draws it where it belongs, in every body cell. Everything else
+about the outlet is unchanged: the props are the same getters, the fallback is
+the same fallback, and the content still follows the row it was handed.
+
+The other half of the pair is how the child finds the parent to register with,
+which is [context](/reference/reactivity#context) — `useContext` while the
+child's fields initialize, because the content of a tag is built inside the
+render of the tag it sits in.
+
 ## Grouping without an element
 
 `<template>` groups nodes without producing DOM:
