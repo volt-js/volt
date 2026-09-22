@@ -1,0 +1,10 @@
+<th
+  :host
+  :ref="head"
+  scope="col"
+  class="volt-table-header-cell"
+  :attr-data-align="align.get()"
+  :style="{ width: width.get() }"
+>
+  <slot name="header">{ label.get() }</slot>
+</th>

@@ -32,3 +32,5 @@
 
 export { VButton } from './button.js';
 export { VDialog } from './dialog.js';
+export { VTable, TableContext, type TableRow } from './table.js';
+export { VTableColumn } from './table-column.js';

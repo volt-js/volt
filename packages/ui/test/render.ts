@@ -12,12 +12,18 @@ import { compileTemplate } from '@voltdev/core/jit';
 
 import buttonHtml from '../src/components/button.html?raw';
 import dialogHtml from '../src/components/dialog.html?raw';
+import tableHtml from '../src/components/table.html?raw';
+import tableColumnHtml from '../src/components/table-column.html?raw';
 import { VButton } from '../src/components/button.js';
 import { VDialog } from '../src/components/dialog.js';
+import { VTable } from '../src/components/table.js';
+import { VTableColumn } from '../src/components/table-column.js';
 
 const TEMPLATES: ReadonlyArray<readonly [ComponentType<unknown>, string]> = [
   [VButton as ComponentType<unknown>, buttonHtml],
   [VDialog as ComponentType<unknown>, dialogHtml],
+  [VTable as ComponentType<unknown>, tableHtml],
+  [VTableColumn as ComponentType<unknown>, tableColumnHtml],
 ];
 
 let compiled = false;
@@ -48,4 +54,4 @@ function propsOf(component: ComponentType<unknown>): { property: string; alias: 
   return props ?? [];
 }
 
-export { VButton, VDialog };
+export { VButton, VDialog, VTable, VTableColumn };

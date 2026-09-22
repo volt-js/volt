@@ -1,0 +1,37 @@
+<table
+  :host
+  class="volt-table"
+  :attr-data-striped="striped.get() ? 'true' : undefined"
+>
+  <thead class="volt-table-header">
+    <tr class="volt-table-row" :ref="headings">
+      <slot></slot>
+    </tr>
+  </thead>
+  <tbody class="volt-table-body">
+    <tr
+      :for="(row, index) in data.get()"
+      :key="keyOf(row)"
+      class="volt-table-row"
+      :attr-data-selected="isSelected(row) ? 'true' : undefined"
+      :attr-aria-selected="isSelected(row) ? 'true' : undefined"
+      :click="pressRow(row, index)"
+    >
+      <td
+        :for="column in columns.get()"
+        :key="column"
+        class="volt-table-cell"
+        :attr-data-align="column.align.get()"
+      >
+        <slot :from="column" name="cell" :row="row" :value="value(column, row)">{
+          value(column, row)
+        }</slot>
+      </td>
+    </tr>
+    <tr :if="data.get().length === 0" class="volt-table-row">
+      <td class="volt-table-empty" :attr-colspan="columns.get().length || 1">
+        <slot name="empty">{ empty.get() }</slot>
+      </td>
+    </tr>
+  </tbody>
+</table>

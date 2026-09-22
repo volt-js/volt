@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { Signal, flushSync, mount } from '@voltdev/core';
 import { compileTemplate } from '@voltdev/core/jit';
 import { Component } from '@voltdev/core';
-import { compileComponents, VButton, VDialog } from './render.js';
+import { compileComponents, VButton, VDialog, VTable, VTableColumn } from './render.js';
 
 compileComponents();
 
@@ -148,5 +148,172 @@ describe('v-dialog', () => {
     instance.box!.dialog.open();
     flushSync();
     expect(instance.box!.dialog.isOpen()).toBe(true);
+  });
+});
+
+describe('v-table', () => {
+  interface Person {
+    id: number;
+    name: string;
+    owed: number;
+  }
+
+  const people: Person[] = [
+    { id: 1, name: 'Ada', owed: 12 },
+    { id: 2, name: 'Grace', owed: 340 },
+  ];
+
+  it('draws a heading per column and a cell per field', () => {
+    @Component({
+      selector: 'v-page',
+      imports: [VTable, VTableColumn],
+      render: compileTemplate(`
+        <v-table :data="rows.get()">
+          <v-table-column field="name" label="Name"></v-table-column>
+          <v-table-column field="owed" label="Owed" align="end"></v-table-column>
+        </v-table>
+      `),
+    })
+    class Page {
+      rows = new Signal.State(people);
+    }
+
+    const { host } = show(Page);
+    expect([...host.querySelectorAll('th')].map((th) => th.textContent?.trim())).toEqual([
+      'Name',
+      'Owed',
+    ]);
+    expect([...host.querySelectorAll('tbody tr')].map((tr) => tr.textContent?.trim())).toEqual([
+      'Ada12',
+      'Grace340',
+    ]);
+    expect(host.querySelector('table')!.className).toBe('volt-table');
+    expect(host.querySelectorAll('th')[1]!.getAttribute('data-align')).toBe('end');
+    expect(host.querySelectorAll('tbody td')[1]!.getAttribute('data-align')).toBe('end');
+  });
+
+  it('draws the template a column was given, once per row, with the row', () => {
+    const pressed: string[] = [];
+
+    @Component({
+      selector: 'v-page',
+      imports: [VTable, VTableColumn, VButton],
+      render: compileTemplate(`
+        <v-table :data="rows.get()">
+          <v-table-column field="name" label="Name"></v-table-column>
+          <v-table-column label="Actions">
+            <template :slot-cell="{ row }">
+              <v-button :onPress="() => edit(row)">Edit { row.name }</v-button>
+            </template>
+          </v-table-column>
+        </v-table>
+      `),
+    })
+    class Page {
+      rows = new Signal.State(people);
+      edit = (row: Person): void => void pressed.push(row.name);
+    }
+
+    const { host } = show(Page);
+    const buttons = [...host.querySelectorAll('tbody button')];
+    expect(buttons.map((b) => b.textContent?.trim())).toEqual(['Edit Ada', 'Edit Grace']);
+
+    (buttons[1] as HTMLButtonElement).click();
+    expect(pressed).toEqual(['Grace']);
+  });
+
+  it('keeps the body in step with a column written later', () => {
+    @Component({
+      selector: 'v-page',
+      imports: [VTable, VTableColumn],
+      render: compileTemplate(`
+        <v-table :data="rows.get()">
+          <v-table-column field="name" label="Name"></v-table-column>
+          <v-table-column :for="field in extra.get()" :key="field" :field="field" :label="field"></v-table-column>
+          <v-table-column field="owed" label="Owed"></v-table-column>
+        </v-table>
+      `),
+    })
+    class Page {
+      rows = new Signal.State(people);
+      extra = new Signal.State<string[]>([]);
+    }
+
+    const { instance, host } = show(Page);
+    instance.extra.set(['id']);
+    flushSync();
+
+    // The heading between the two written ones, and the cells under it: a
+    // column that registers last is not a column that is drawn last.
+    expect([...host.querySelectorAll('th')].map((th) => th.textContent?.trim())).toEqual([
+      'Name',
+      'id',
+      'Owed',
+    ]);
+    expect([...host.querySelectorAll('tbody tr')].map((tr) => tr.textContent?.trim())).toEqual([
+      'Ada112',
+      'Grace2340',
+    ]);
+  });
+
+  it('marks the rows a caller has selected, for the palette and the reader', () => {
+    @Component({
+      selector: 'v-page',
+      imports: [VTable, VTableColumn],
+      render: compileTemplate(`
+        <v-table :data="rows.get()" :selected="chosen.get()">
+          <v-table-column field="name" label="Name"></v-table-column>
+        </v-table>
+      `),
+    })
+    class Page {
+      rows = new Signal.State(people);
+      chosen = new Signal.State<ReadonlySet<number>>(new Set([2]));
+    }
+
+    const { instance, host } = show(Page);
+    const rows = () =>
+      [...host.querySelectorAll('tbody tr')].map((tr) => tr.getAttribute('aria-selected'));
+    expect(rows()).toEqual([null, 'true']);
+
+    instance.chosen.set(new Set([1]));
+    flushSync();
+    expect(rows()).toEqual(['true', null]);
+  });
+
+  it('shows what it was given in place of no rows at all', () => {
+    @Component({
+      selector: 'v-page',
+      imports: [VTable, VTableColumn],
+      render: compileTemplate(`
+        <v-table :data="rows.get()" empty="No one owes anything.">
+          <v-table-column field="name" label="Name"></v-table-column>
+          <v-table-column field="owed" label="Owed"></v-table-column>
+        </v-table>
+      `),
+    })
+    class Page {
+      rows = new Signal.State<Person[]>([]);
+    }
+
+    const { instance, host } = show(Page);
+    const cell = host.querySelector('.volt-table-empty')!;
+    expect(cell.textContent?.trim()).toBe('No one owes anything.');
+    expect(cell.getAttribute('colspan')).toBe('2');
+
+    instance.rows.set(people);
+    flushSync();
+    expect(host.querySelector('.volt-table-empty')).toBe(null);
+  });
+
+  it('refuses to be a column of nothing', () => {
+    @Component({
+      selector: 'v-page',
+      imports: [VTableColumn],
+      render: compileTemplate(`<div><v-table-column field="name"></v-table-column></div>`),
+    })
+    class Page {}
+
+    expect(() => show(Page)).toThrow(/inside <v-table>/);
   });
 });

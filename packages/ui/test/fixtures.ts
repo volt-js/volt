@@ -135,6 +135,44 @@ const tooltip = (state: string): Fixture => ({
   attributes: { 'data-state': state },
 });
 
+/**
+ * A one-row table, because most of the sheet's selectors are descendants: a
+ * `<tr>` on its own is not striped, hovered or selected by anything.
+ */
+const table = (
+  rowAttributes: Record<string, string> = {},
+  tableAttributes: Record<string, string> = {},
+): Fixture => ({
+  tag: 'table',
+  classes: ['volt-table'],
+  attributes: tableAttributes,
+  children: [
+    {
+      tag: 'thead',
+      classes: ['volt-table-header'],
+      children: [
+        {
+          tag: 'tr',
+          classes: ['volt-table-row'],
+          children: [{ tag: 'th', classes: ['volt-table-header-cell'] }],
+        },
+      ],
+    },
+    {
+      tag: 'tbody',
+      classes: ['volt-table-body'],
+      children: [
+        {
+          tag: 'tr',
+          classes: ['volt-table-row'],
+          attributes: rowAttributes,
+          children: [{ tag: 'td', classes: ['volt-table-cell'] }],
+        },
+      ],
+    },
+  ],
+});
+
 const region = (focus = false): Fixture => ({
   classes: ['volt-toast-region'],
   attributes: { tabindex: '-1' },
@@ -253,6 +291,42 @@ export const fixtures: Readonly<Record<string, ComponentFixtures>> = {
       // Focus follows the pointer through a menu without drawing a ring, so the
       // hover background is the only thing marking the item a pointer is on.
       { state: 'hover', off: menuItem(), on: menuItem({ 'data-hover': '' }) },
+    ],
+  },
+
+  table: {
+    states: [
+      // The one state a table draws that is information rather than emphasis:
+      // which rows an action is about to be taken on.
+      {
+        state: 'selected',
+        off: table(),
+        on: table({ 'data-selected': 'true', 'aria-selected': 'true' }),
+      },
+    ],
+    extra: [
+      table({ 'data-hover': '' }),
+      table({}, { 'data-striped': 'true' }),
+      {
+        tag: 'table',
+        classes: ['volt-table'],
+        children: [
+          {
+            tag: 'tbody',
+            classes: ['volt-table-body'],
+            children: [
+              {
+                tag: 'tr',
+                classes: ['volt-table-row'],
+                children: [
+                  { tag: 'td', classes: ['volt-table-cell'], attributes: { 'data-align': 'end' } },
+                  { tag: 'td', classes: ['volt-table-empty'], attributes: { colspan: '2' } },
+                ],
+              },
+            ],
+          },
+        ],
+      },
     ],
   },
 

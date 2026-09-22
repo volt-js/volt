@@ -425,9 +425,14 @@ function selectorsIn(list: string): string[] {
 
 describe('every rule selects something its primitive renders', () => {
   it('covers every component that has a primitive behind it', () => {
-    // The button is the one without: its attributes are ones the consumer
-    // writes, so there is nothing of a primitive's for it to agree with.
-    const styled = componentStyles.map((component) => component.name).filter((name) => name !== 'button');
+    // Two have none, for the same reason: the platform already provides what
+    // a primitive would. A `<button>` is a button, and a `<table>` carries the
+    // row and column relationships a screen reader reads out. Their attributes
+    // are the consumer's, so there is nothing of a primitive's to agree with.
+    const withoutPrimitive = new Set(['button', 'table']);
+    const styled = componentStyles
+      .map((component) => component.name)
+      .filter((name) => !withoutPrimitive.has(name));
     expect(Object.keys(scenes).sort()).toEqual(styled.sort());
   });
 
