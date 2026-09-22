@@ -130,8 +130,21 @@ export function insert(parent: Node, accessor: unknown, marker: Node | null = nu
   // through the effect's return value, which is reserved for cleanup.
   let current: Current = null;
   buildEffect(() => {
-    current = insertExpression(parent, (accessor as Accessor<unknown>)(), marker, current);
+    current = insertExpression(parentOf(marker, parent), (accessor as Accessor<unknown>)(), marker, current);
   });
+}
+
+/**
+ * Where to write, at the moment of writing.
+ *
+ * A binding is built where its template was built, which for a template with
+ * several roots is a fragment the content is about to be moved out of. The
+ * marker is the one node that answers the question later, because it sits in
+ * the content it delimits and is carried along with it. Without a marker the
+ * binding owns its parent outright, and that parent is the element itself.
+ */
+function parentOf(marker: Node | null, built: Node): Node {
+  return marker?.parentNode ?? built;
 }
 
 type Current = Node | Node[] | null;
@@ -491,7 +504,7 @@ export function hInsert(
     return;
   }
   buildEffect(() => {
-    current = insertExpression(parent, (accessor as Accessor<unknown>)(), close, current);
+    current = insertExpression(parentOf(close, parent), (accessor as Accessor<unknown>)(), close, current);
   });
 }
 

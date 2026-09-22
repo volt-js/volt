@@ -467,6 +467,11 @@ describe.skipIf(!built)('what an application bundle is made of', { timeout: 120_
       'materializeBlock',
       'modelText',
       'on',
+      // Four bytes of call for the question every marker-based binding has to
+      // ask each time it writes: where its content is now, rather than where
+      // it was built. A template with several roots is built in a fragment it
+      // is then moved out of.
+      'parentOf',
       'readModel',
       'reconcileArrays',
       'removeNodes',
