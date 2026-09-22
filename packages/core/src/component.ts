@@ -51,7 +51,7 @@ import {
   removeComponent,
 } from './devtools.js';
 import { voltError } from './diagnostics.js';
-import { hydrate as hydrateInto, insert } from './dom.js';
+import { hydrate as hydrateInto, insert, spread } from './dom.js';
 import { enterPosition, exitPosition } from './ids.js';
 
 // `Symbol.metadata` is stage-3 and missing from current engines. Without it
@@ -522,6 +522,53 @@ function checkRequiredProps(
 }
 
 /**
+ * What a caller may write on a component's tag without the component
+ * declaring it.
+ *
+ * Volt refuses a prop a component does not declare, which is what catches
+ * `max-count` written for `maxCount`. These are the names that are never a
+ * prop: the few that describe an element rather than a component, and the two
+ * families the platform reserves. `data-` and `aria-` rather than any
+ * hyphenated name, so that a kebab-cased prop is still the typo it is.
+ *
+ * They reach the element the template marks `:host`, and a component that
+ * marks none is told it was handed something with nowhere to put it.
+ */
+const HOST_ATTRIBUTES = new Set(['class', 'style', 'id', 'title', 'role', 'lang', 'dir']);
+
+function isHostAttribute(key: string): boolean {
+  return HOST_ATTRIBUTES.has(key) || key.startsWith('data-') || key.startsWith('aria-');
+}
+
+/** What the caller wrote on the tag that the component does not declare. */
+const ATTRS = new WeakMap<object, { attrs: Record<string, unknown>; taken: boolean }>();
+
+/**
+ * Apply what the caller wrote on the tag to this element — `:host`.
+ *
+ * The same application `:spread` makes, for the same reason: a class written
+ * on the tag joins the template's own rather than replacing it, a style
+ * merges, and a value that came from an expression stays live.
+ */
+export function hostAttrsOf(ctx: unknown): Record<string, unknown> | null {
+  const held = ATTRS.get(ctx as object);
+  if (!held) return null;
+  held.taken = true;
+  return held.attrs;
+}
+
+export function hostAttrs(el: Element, ctx: unknown): void {
+  const held = ATTRS.get(ctx as object);
+  if (!held) return;
+  held.taken = true;
+  // Copied on every read, which is what makes it live: the copy reads each
+  // getter — so the caller's expressions are tracked — and is a new object
+  // every time, so the binding never mistakes it for the value it already
+  // applied.
+  spread(el, () => ({ ...held.attrs }));
+}
+
+/**
  * What the parent passed the instance being constructed, for its own fields to
  * take as they initialize.
  *
@@ -583,12 +630,18 @@ function applyProps(
   resolved: ResolvedConfig,
   taken: Set<string>,
 ): void {
+  const attrs: Record<string, unknown> = {};
   if (props) {
     for (const key of Object.keys(props)) {
       if (key === '__ref' || taken.has(key)) continue;
 
       const def = resolved.propsByAlias.get(key);
       if (!def) {
+        if (isHostAttribute(key)) {
+          attrs[key] = undefined;
+          Object.defineProperty(attrs, key, Object.getOwnPropertyDescriptor(props, key)!);
+          continue;
+        }
         if (__VOLT_DEV__) reportUnknownProp(key, resolved);
         continue;
       }
@@ -616,6 +669,9 @@ function applyProps(
       }
     }
   }
+
+  const names = Object.keys(attrs);
+  if (names.length) ATTRS.set(instance, { attrs, taken: false });
 
   if (__VOLT_DEV__) checkRequiredProps(props, resolved);
 }
@@ -690,6 +746,22 @@ function instantiate(
 
       const render = getRenderFn(component, resolved);
       const dom = render(instance, options.out);
+
+      if (__VOLT_DEV__) {
+        const held = ATTRS.get(instance);
+        if (held && !held.taken) {
+          const names = Object.keys(held.attrs).join(', ');
+          throw voltError(
+            'V0213',
+            { selector: resolved.config.selector, attrs: names },
+            __VOLT_DEV__ &&
+              `<${resolved.config.selector}> was given ${names}, and its template marks no ` +
+                'element with `:host` to put it on.\n' +
+                '  A component says where what is written on its tag belongs: put `:host` on ' +
+                'the element that stands for it.',
+          );
+        }
+      }
 
       // Not queued at all on a server, rather than queued and then ignored: a
       // microtask fires at the first `await`, and the render awaits its data,

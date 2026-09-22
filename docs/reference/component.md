@@ -71,6 +71,23 @@ kebab-cased spelling of a camelCase prop:
 There is one spelling: the declared one. Cannot be applied to static
 or symbol-named members.
 
+## What a caller writes on the tag
+
+A component refuses a prop it does not declare, which is what catches a
+kebab-cased spelling of a camelCase prop. The exceptions are the names that
+describe an element rather than a component — `class`, `style`, `id`, `title`,
+`role`, `lang`, `dir` — and anything named `data-*` or `aria-*`. Those reach
+the element the component's template marks with
+[`:host`](./template-syntax#host), merged with what the template already put
+there.
+
+```html
+<!-- v-button -->
+<button :host class="volt-button" type="button"><slot></slot></button>
+```
+
+A component handed one of them whose template marks no element is told so.
+
 ## Notifying the parent
 
 A component notifies its parent by calling a function the parent gave it:

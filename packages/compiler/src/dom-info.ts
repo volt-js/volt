@@ -219,7 +219,7 @@ export const COMMON_ATTRIBUTES = new Set([
 /** Directive names a mistyped one is most likely aiming at. */
 export const DIRECTIVE_NAMES = [
   'if', 'else-if', 'else', 'for', 'key', 'text', 'html', 'model', 'ref', 'slot',
-  'portal', 'class', 'style', 'spread',
+  'portal', 'host', 'class', 'style', 'spread',
 ];
 
 /** Edit distance, capped — anything past 1 is not a typo worth guessing at. */

@@ -128,3 +128,53 @@ describe('what it refuses to write', () => {
     }
   });
 });
+
+describe('what a caller wrote on a component tag', () => {
+  it('is written into the element the template marks, with its own class kept', async () => {
+    @Component({
+      selector: 'v-button',
+      render: compileTemplate(`<button :host class="volt-button" type="button"><slot></slot></button>`),
+    })
+    class Button {}
+
+    @Component({
+      selector: 'v-page',
+      imports: [Button],
+      render: compileTemplate(`<v-button class="wide" aria-label="Save" id="go">Go</v-button>`),
+    })
+    class Page {}
+
+    const { html } = await renderToStaticMarkup(Page);
+    expect(html).toContain('aria-label="Save"');
+    expect(html).toContain('id="go"');
+    expect(html).toMatch(/class="[^"]*volt-button[^"]*"/);
+    expect(html).toMatch(/class="[^"]*wide[^"]*"/);
+    expect(html).toContain('>Go<');
+  });
+
+  it('composes with the element’s own spread rather than replacing it', async () => {
+    @Component({
+      selector: 'v-panel',
+      render: compileTemplate(`<div :host class="panel" :spread="own()"><slot></slot></div>`),
+    })
+    class Panel {
+      own(): Record<string, unknown> {
+        return { role: 'region', class: 'own' };
+      }
+    }
+
+    @Component({
+      selector: 'v-page',
+      imports: [Panel],
+      render: compileTemplate(`<v-panel class="wide" data-test="x">body</v-panel>`),
+    })
+    class Page {}
+
+    const { html } = await renderToStaticMarkup(Page);
+    expect(html).toContain('role="region"');
+    expect(html).toContain('data-test="x"');
+    for (const name of ['panel', 'own', 'wide']) {
+      expect(html).toMatch(new RegExp(`class="[^"]*${name}[^"]*"`));
+    }
+  });
+});

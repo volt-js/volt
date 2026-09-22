@@ -45,7 +45,7 @@ import { registeredState, STATE_ATTRIBUTE } from './state.js';
 // between. `defineComponent` is what the plugin lowers every `@Component` to,
 // and in a server build it imports it from here — without it, no decorated
 // component could be built for the server at all.
-export { createComponent, slot, defineComponent } from './component.js';
+export { createComponent, slot, defineComponent, hostAttrsOf } from './component.js';
 export { omit, setRef, toDisplayString, withDefault, writeModel } from './dom.js';
 
 // ---------------------------------------------------------------------------
@@ -340,8 +340,12 @@ export class MarkupWriter {
     let classes = classValue;
     let styles = styleValue;
 
-    if (props && typeof props === 'object') {
-      for (const [key, value] of Object.entries(props as Record<string, unknown>)) {
+    // One object, or several to apply in order: an element can carry both its
+    // own `:spread` and the `:host` attributes its caller wrote, and a class
+    // in either has to reach the one attribute composed here.
+    for (const one of Array.isArray(props) ? (props as unknown[]) : [props]) {
+      if (!one || typeof one !== 'object') continue;
+      for (const [key, value] of Object.entries(one as Record<string, unknown>)) {
         if (typeof value === 'function') continue;
         if (key === 'class') {
           classes = `${classes} ${classText(value)}`;

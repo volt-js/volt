@@ -1240,6 +1240,7 @@ class Generator {
     let hasClass = false;
     let hasStyle = false;
     let spread: string | null = null;
+    let host: string | null = null;
 
     for (const dir of dynamic) {
       switch (dir.kind) {
@@ -1290,6 +1291,12 @@ class Generator {
           spread = this.genValue(dir.exp!, ctx, dir.loc);
           break;
         }
+        case 'host': {
+          hasClass = true;
+          hasStyle = true;
+          host = `${this.rt}.hostAttrsOf(${this.ctxName})`;
+          break;
+        }
         default:
           // A listener and a `:ref` attach behaviour to a node a server has
           // not got. The same bytes with or without them.
@@ -1298,10 +1305,14 @@ class Generator {
     }
 
     const classExpr = classParts.length ? classParts.join(' + ') : "''";
-    if (spread !== null) {
+    if (spread !== null || host !== null) {
       // One call, because a spread can carry `class` and `style` too and they
-      // have to reach the same attribute the directives above composed.
-      lines.push(`${this.out}.spread(${spread}, ${classExpr}, ${styleExpr});`);
+      // have to reach the same attribute the directives above composed. The
+      // caller's own attributes go first, so a component's spread wins where
+      // both name the same thing, and both classes are kept.
+      const sets = [host, spread].filter((one) => one !== null);
+      const props = sets.length === 1 ? sets[0]! : `[${sets.join(', ')}]`;
+      lines.push(`${this.out}.spread(${props}, ${classExpr}, ${styleExpr});`);
       return lines;
     }
     if (hasClass) lines.push(`${this.out}.classAttr(${classExpr});`);
@@ -1583,6 +1594,13 @@ class Generator {
       case 'spread': {
         const accessor = this.genAccessor(dir.exp!, ctx, dir.loc);
         push((el) => [`${this.rt}.spread(${el}, ${accessor});`]);
+        return;
+      }
+
+      // What the caller wrote on this component's tag, applied to the element
+      // the template says stands for it.
+      case 'host': {
+        push((el) => [`${this.rt}.hostAttrs(${el}, ${this.ctxName});`]);
         return;
       }
 
@@ -2192,7 +2210,30 @@ class Generator {
     const props: string[] = [];
     const events: string[] = [];
 
+    // A tag can carry both `class="wide"` and `:class="{ busy }"`, and they
+    // describe one attribute. An element composes the two; a component used to
+    // emit the name twice, where the second entry won and the written-out
+    // classes were lost without a word.
+    const composed = new Map<string, string[]>();
+    for (const kind of ['class', 'style'] as const) {
+      const written = node.attrs.find((attr) => attr.name === kind);
+      const bound = node.directives.find((dir) => dir.kind === kind && dir.exp);
+      if (written && bound) {
+        composed.set(kind, [
+          JSON.stringify(written.value ?? ''),
+          printExpression(this.parse(bound.exp!, bound.loc), ctx, 1),
+        ]);
+      }
+    }
+
+    for (const [name, parts] of composed) {
+      // An array, which the class and style normalisers already flatten, so
+      // both halves reach the element in the order they were written.
+      props.push(`get ${JSON.stringify(name)}() { return [${parts.join(', ')}]; }`);
+    }
+
     for (const attr of node.attrs) {
+      if (composed.has(attr.name)) continue;
       props.push(`${JSON.stringify(attr.name)}: ${JSON.stringify(attr.value ?? true)}`);
     }
 
@@ -2208,6 +2249,7 @@ class Generator {
         case 'style':
         case 'attr': {
           if (!dir.exp) break;
+          if ((dir.kind === 'class' || dir.kind === 'style') && composed.has(dir.kind)) break;
           const parsed = this.parse(dir.exp, dir.loc);
           const name = dir.kind === 'class' ? 'class' : dir.kind === 'style' ? 'style' : dir.name;
 
@@ -2424,6 +2466,9 @@ const ATTRIBUTE_POSITION: Record<DirectiveKind, boolean> = {
   style: true,
   model: true,
   spread: true,
+  // The caller's own attributes, written into the tag on a server exactly as
+  // a spread's are.
+  host: true,
   // Attach behaviour to the node; the same bytes with or without them.
   event: false,
   ref: false,

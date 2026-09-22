@@ -284,6 +284,30 @@ back a property removes the attribute of the same name, which resets a property
 that reflects its attribute, like `tabIndex`, and leaves one that does not, like
 a text field's current `value`, as it was.
 
+### `:host`
+
+What a caller writes on a component's tag — a `class`, a `style`, an `id`, a
+`title`, a `role`, a `lang`, a `dir`, any `data-*` or any `aria-*` — lands on
+the element the component marks with `:host`:
+
+```html
+<!-- v-button -->
+<button :host class="volt-button" type="button"><slot></slot></button>
+```
+
+```html
+<v-button class="wide" aria-label="Save">Go</v-button>
+```
+
+The button ends up with both classes. A class joins the template's own rather
+than replacing it, a style merges, and an expression stays live, exactly as
+[`:spread`](#spread) does — which is what the element is given.
+
+Everything else written on a component's tag is a prop, and a prop it does not
+declare is still refused, so `max-count` written for `maxCount` is the mistake
+it always was. A component that is handed a class and marks no `:host` is told
+so rather than dropping it.
+
 ## Slots
 
 ```html
