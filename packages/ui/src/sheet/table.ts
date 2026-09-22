@@ -45,7 +45,7 @@ export const tableStyles = /* @__PURE__ */ ((): ComponentStyles => {
    */
   const inBody = `.${root} .${body} .${row}`;
   const STRIPED = `.${root}[data-striped='true'] .${row}:nth-child(even)`;
-  const HOVERED = `${inBody}[data-hover], ${inBody}:hover`;
+  const HOVERED = `${inBody}:hover`;
   const SELECTED = `${inBody}[data-selected='true']`;
 
   return {

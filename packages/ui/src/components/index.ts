@@ -30,7 +30,10 @@
  *    that repointing one moves every component at once.
  */
 
+export { TagChildren } from './children.js';
 export { VButton } from './button.js';
 export { VDialog } from './dialog.js';
+export { VSelect, SelectContext } from './select.js';
+export { VOption } from './option.js';
 export { VTable, TableContext, type TableRow } from './table.js';
 export { VTableColumn } from './table-column.js';

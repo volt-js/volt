@@ -31,6 +31,7 @@ import {
   createDialog,
   createMenu,
   createPopover,
+  createSelect,
   createTabs,
   createToaster,
   createTooltip,
@@ -313,6 +314,53 @@ class StyledTooltip {
   tip = createTooltip({ trigger: () => this.trigger.get(), content: () => this.content.get() });
 }
 
+/** Off for one pass and on for the next, as the placements are. */
+let selectDisabled = false;
+
+@Component({
+  selector: 'v-styled-select',
+  render: compileTemplate(`
+    <div class="volt-select">
+      <select :ref="native" :spread="select.nativeProps()">
+        <option value=""></option>
+        <option :for="each in options" :key="each.value"
+                :spread="select.nativeOptionProps({ value: each.value, disabled: each.disabled })">{ each.label }</option>
+      </select>
+
+      <button :ref="trigger" class="volt-select-trigger"
+              :attr-data-placeholder="select.hasValue() ? undefined : ''"
+              :spread="select.triggerProps()">
+        <span class="volt-select-value">{ select.hasValue() ? select.displayValue() : 'Choose one' }</span>
+        <span class="volt-select-arrow"></span>
+      </button>
+
+      <p class="volt-select-status" :spread="select.statusProps()">{ select.status() }</p>
+
+      <div :portal :ref="list" class="volt-select-listbox" :spread="select.listboxProps()">
+        <div :for="each in options" :key="each.value" class="volt-select-option"
+             :spread="select.optionProps({ value: each.value, disabled: each.disabled })">{ each.label }</div>
+        <div class="volt-select-empty">{ select.emptyMessage() }</div>
+      </div>
+    </div>
+  `),
+})
+class StyledSelect {
+  trigger = new Signal.State<Element | null>(null);
+  list = new Signal.State<Element | null>(null);
+  native = new Signal.State<Element | null>(null);
+  options = [
+    { value: 'fr', label: 'France', disabled: false },
+    { value: 'jp', label: 'Japan', disabled: false },
+    { value: 'aq', label: 'Antarctica', disabled: true },
+  ];
+  select = createSelect({
+    trigger: () => this.trigger.get(),
+    listbox: () => this.list.get(),
+    native: () => this.native.get(),
+    disabled: () => selectDisabled,
+  });
+}
+
 const PLACEMENTS: readonly AnchorPlacement[] = [
   'top',
   'top-start',
@@ -368,6 +416,29 @@ const scenes: Record<string, (look: () => void) => void> = {
       step(() => popover.open());
       look();
       step(() => popover.close());
+      look();
+      for (const handle of mounted.splice(0)) handle.unmount();
+      flushSync();
+    }
+  },
+
+  select(look) {
+    for (const off of [false, true]) {
+      selectDisabled = off;
+      const { select } = show(StyledSelect);
+      // Closed, with nothing chosen: the words in the button are a prompt.
+      look();
+      step(() => select.open());
+      look();
+      step(() => select.setActiveValue('jp'));
+      look();
+      step(() => select.select('fr'));
+      look();
+      // Opened again, which is where the two marks meet: the APG opens on the
+      // chosen option, so it is the highlighted one as well.
+      step(() => select.open());
+      look();
+      step(() => select.close());
       look();
       for (const handle of mounted.splice(0)) handle.unmount();
       flushSync();

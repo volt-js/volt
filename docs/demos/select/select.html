@@ -1,0 +1,13 @@
+<div class="row">
+  <v-select :value="chosen" name="country" placeholder="Choose a country">
+    <v-option
+      :for="country in countries"
+      :key="country.code"
+      :value="country.code"
+      :label="country.name"
+      :disabled="country.closed === true"
+    ></v-option>
+  </v-select>
+
+  <span class="note">Going to { name() }.</span>
+</div>

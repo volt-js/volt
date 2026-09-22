@@ -13,6 +13,7 @@ import { checkboxClasses, checkboxStyles } from './checkbox.js';
 import { dialogClasses, dialogStyles } from './dialog.js';
 import { menuClasses, menuStyles } from './menu.js';
 import { popoverClasses, popoverStyles } from './popover.js';
+import { selectClasses, selectStyles } from './select.js';
 import { tableClasses, tableStyles } from './table.js';
 import { tabsClasses, tabsStyles } from './tabs.js';
 import { tooltipClasses, tooltipStyles } from './tooltip.js';
@@ -25,6 +26,7 @@ export {
   dialogStyles,
   menuStyles,
   popoverStyles,
+  selectStyles,
   tableStyles,
   tabsStyles,
   toastStyles,
@@ -39,6 +41,7 @@ export const componentStyles: readonly ComponentStyles[] = [
   dialogStyles,
   menuStyles,
   popoverStyles,
+  selectStyles,
   tableStyles,
   tabsStyles,
   toastStyles,
@@ -62,6 +65,7 @@ export const classes = {
   dialog: dialogClasses,
   menu: menuClasses,
   popover: popoverClasses,
+  select: selectClasses,
   table: tableClasses,
   tabs: tabsClasses,
   toast: toastClasses,

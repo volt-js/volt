@@ -77,6 +77,7 @@ export {
   dialogStyles,
   menuStyles,
   popoverStyles,
+  selectStyles,
   tableStyles,
   tabsStyles,
   toastStyles,

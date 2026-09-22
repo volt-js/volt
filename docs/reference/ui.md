@@ -78,7 +78,7 @@ and that test would fail.
 
 ## The components
 
-Three so far. Each takes what a caller writes on the tag and puts it on the
+Four so far. Each takes what a caller writes on the tag and puts it on the
 element it draws, so a class, an id or an `aria-label` lands where you would
 have put it by hand; each holds its primitive in a field, so `:ref` on the tag
 reaches everything the component does not offer; and every prop a template
@@ -106,6 +106,66 @@ control.
 Disabled is written as `aria-disabled`, not the `disabled` attribute, so the
 button keeps its place in the tab order: a control a keyboard user cannot reach
 is one they cannot discover is there. The press is refused instead.
+
+### `<v-select>` and `<v-option>`
+
+A button showing the value, over a popup list — the APG select-only combobox,
+which `createSelect` implements down to the typeahead.
+
+<Demo name="select" height="300" />
+
+```html
+<v-select :value="chosen" name="country" placeholder="Choose a country">
+  <v-option
+    :for="country in countries"
+    :key="country.code"
+    :value="country.code"
+    :label="country.name"
+    :disabled="country.closed === true"
+  ></v-option>
+</v-select>
+```
+
+Each `<v-option>` draws a real `<option>` inside a hidden native `<select>`,
+which is the part that is easy to skip and expensive to skip: it is what
+submits with the form, what the platform validates, and what lets the control
+show the name of a value it was handed before its popup had ever been opened.
+The rows you see are drawn from the same options when the list opens, so an
+option is one component whether the list is open or shut.
+
+| `<v-select>` | Type | Means |
+|---|---|---|
+| `value` | `Signal.State<readonly string[]>` | Your signal. A list even for one value — `values()` is the list, `value()` the first of it |
+| `defaultValue` | `string \| readonly string[]` | Where it starts, when the value is the select's own |
+| `multiple` | `boolean` | More than one at a time |
+| `name` | `string` | Submitted as `name=value`; without one the native control submits nothing |
+| `open` | `Signal.State<boolean>` | Your signal for the popup, when you need to drive it |
+| `placeholder` | `string` | Shown while nothing is chosen |
+| `disabled`, `readOnly`, `required` | `boolean` | Written through to the native control |
+| `onValueChange`, `onOpenChange` | callbacks | |
+
+| `<v-option>` | Type | Means |
+|---|---|---|
+| `value` | `string` | Identifies the option; everything is keyed off it |
+| `label` | `string` | The name of the value, in the button and the native control |
+| `disabled` | `boolean` | Skipped by navigation and typeahead, still announced |
+
+Write a template inside the tag for a row that is more than a line of text —
+`label` is still needed, because an `<option>` holds text and nothing else, and
+that text is what a screen reader reads and what typeahead searches:
+
+```html
+<v-option value="fr" label="France">
+  <img src="/flags/fr.svg" alt=""> France
+</v-option>
+```
+
+Two things the sheet draws are information rather than emphasis, and both
+survive a forced palette. Which option is chosen is the obvious one. The other
+is the highlight: focus stays on the trigger — it is the element carrying
+`aria-activedescendant` — so an option under the keyboard has no `:focus` for
+CSS to find, and `data-highlighted` is the only mark saying where the keyboard
+is.
 
 ### `<v-dialog>`
 
@@ -559,7 +619,7 @@ one or after it:
 
 ## Markup for everything that is not a tag yet
 
-Seven of the ten styled components have no component of their own. They are
+Seven of the eleven styled components have no component of their own. They are
 written the way the components above are written underneath: a primitive, the
 markup you want, and the sheet's class names on it. The button is here too,
 because `<v-button>` is exactly this markup and a caller may prefer to write it.
@@ -918,12 +978,12 @@ const css = wrap(`@layer ${LAYER_COMPONENTS}`, componentCss(dialogStyles, '  '))
 
 ## What is not here yet
 
-- **Most of the components.** Three of the ten styled components are tags.
-  Select, checkbox, tabs, menu, popover, tooltip, toast and accordion are
-  markup you write, [above](#markup-for-everything-that-is-not-a-tag-yet).
+- **Most of the components.** Four of the eleven styled components are tags.
+  Checkbox, tabs, menu, popover, tooltip, toast and accordion are markup you
+  write, [above](#markup-for-everything-that-is-not-a-tag-yet).
 - **A `.css` file in the package.** Generate one with `stylesheet()`.
 - **A release.** The package is not on npm.
 - **A second palette**, and a `color-scheme` to go with one.
-- **Most of the primitives.** Ten are styled. Switch, radio group, combobox and
+- **Most of the primitives.** Eleven are styled. Switch, radio group, combobox and
   the rest of the collections, form, display and data primitives have no styles
   here; the package covers a subset on purpose.

@@ -1,0 +1,45 @@
+<div :host class="volt-select">
+  <select :ref="native" :spread="select.nativeProps()">
+    <option value=""></option>
+    <slot></slot>
+  </select>
+
+  <button
+    :ref="trigger"
+    class="volt-select-trigger"
+    :spread="select.triggerProps()"
+    :attr-data-placeholder="select.hasValue() ? undefined : ''"
+    :click="select.onTriggerClick()"
+    :keydown="select.onTriggerKeyDown($event)"
+    :blur="select.onTriggerBlur()"
+  >
+    <span class="volt-select-value">{ shown() }</span>
+    <span class="volt-select-arrow" aria-hidden="true"></span>
+  </button>
+
+  <div
+    :if="select.isPresent()"
+    :portal
+    :ref="listbox"
+    class="volt-select-listbox"
+    :spread="select.listboxProps()"
+    :click="select.onOptionClick($event)"
+    :pointerdown="select.onListboxPointerDown($event)"
+    :pointermove="select.onOptionPointerMove($event)"
+  >
+    <div
+      :for="option in options.all.get()"
+      :key="option"
+      class="volt-select-option"
+      :spread="select.optionProps({ value: option.value.get(), disabled: option.disabled.get() })"
+    >
+      <slot :from="option" name="default">{ option.label.get() }</slot>
+    </div>
+
+    <div :if="options.all.get().length === 0" class="volt-select-empty">
+      { select.emptyMessage() }
+    </div>
+  </div>
+
+  <p class="volt-select-status" :spread="select.statusProps()">{ select.status() }</p>
+</div>

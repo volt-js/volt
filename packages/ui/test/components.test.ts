@@ -11,7 +11,15 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { Signal, flushSync, mount } from '@voltdev/core';
 import { compileTemplate } from '@voltdev/core/jit';
 import { Component } from '@voltdev/core';
-import { compileComponents, VButton, VDialog, VTable, VTableColumn } from './render.js';
+import {
+  compileComponents,
+  VButton,
+  VDialog,
+  VOption,
+  VSelect,
+  VTable,
+  VTableColumn,
+} from './render.js';
 
 compileComponents();
 
@@ -315,5 +323,112 @@ describe('v-table', () => {
     class Page {}
 
     expect(() => show(Page)).toThrow(/inside <v-table>/);
+  });
+});
+
+describe('v-select', () => {
+  @Component({
+    selector: 'v-page',
+    imports: [VSelect, VOption],
+    render: compileTemplate(`
+      <v-select :value="chosen" name="country" placeholder="Choose a country">
+        <v-option value="fr" label="France"></v-option>
+        <v-option value="jp" label="Japan"></v-option>
+        <v-option value="aq" label="Antarctica" :disabled="true"></v-option>
+      </v-select>
+    `),
+  })
+  class Page {
+    chosen = new Signal.State<readonly string[]>([]);
+  }
+
+  const trigger = (host: HTMLElement): HTMLButtonElement =>
+    host.querySelector('button.volt-select-trigger')!;
+
+  it('draws an option into the control that submits, per tag', () => {
+    const { host } = show(Page);
+    const native = host.querySelector('select')!;
+
+    // The empty one the select renders itself, then one per tag.
+    expect([...native.options].map((option) => option.value)).toEqual(['', 'fr', 'jp', 'aq']);
+    expect([...native.options].map((option) => option.textContent)).toEqual([
+      '',
+      'France',
+      'Japan',
+      'Antarctica',
+    ]);
+    expect(native.name).toBe('country');
+    // Hidden by the primitive, not by this package: a control that submits has
+    // to stay in the page.
+    expect(native.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('shows the placeholder until something is chosen, then the name', () => {
+    const { instance, host } = show(Page);
+    expect(trigger(host).textContent?.trim()).toBe('Choose a country');
+    expect(trigger(host).getAttribute('data-placeholder')).toBe('');
+
+    instance.chosen.set(['jp']);
+    flushSync();
+    expect(trigger(host).textContent?.trim()).toBe('Japan');
+    expect(trigger(host).getAttribute('data-placeholder')).toBe(null);
+  });
+
+  it('opens on a press, with a row per option', () => {
+    const { host } = show(Page);
+    expect(document.querySelector('.volt-select-listbox')).toBe(null);
+
+    trigger(host).click();
+    flushSync();
+
+    const rows = [...document.querySelectorAll('.volt-select-option')];
+    expect(rows.map((row) => row.textContent?.trim())).toEqual(['France', 'Japan', 'Antarctica']);
+    expect(rows[2]!.getAttribute('aria-disabled')).toBe('true');
+    expect(trigger(host).getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('writes the page’s signal when a row is taken', () => {
+    const { instance, host } = show(Page);
+    trigger(host).click();
+    flushSync();
+
+    (document.querySelectorAll('.volt-select-option')[1] as HTMLElement).click();
+    flushSync();
+
+    expect(instance.chosen.get()).toEqual(['jp']);
+    expect(trigger(host).textContent?.trim()).toBe('Japan');
+  });
+
+  it('draws the template an option was given, in the popup only', () => {
+    @Component({
+      selector: 'v-page2',
+      imports: [VSelect, VOption],
+      render: compileTemplate(`
+        <v-select>
+          <v-option value="fr" label="France"><b>Fr</b>ance</v-option>
+        </v-select>
+      `),
+    })
+    class Page2 {}
+
+    const { host } = show(Page2);
+    // An `<option>` holds text and nothing else, so the native control shows
+    // the label; the row in the popup shows what was written.
+    expect(host.querySelector('select')!.options[1]!.textContent).toBe('France');
+
+    trigger(host).click();
+    flushSync();
+    expect(document.querySelector('.volt-select-option b')!.textContent).toBe('Fr');
+  });
+
+  it('refuses to be an option of nothing', () => {
+    @Component({
+      selector: 'v-page3',
+      imports: [VOption],
+      render: compileTemplate(`<div><v-option value="x" label="X"></v-option></div>`),
+    })
+    class Page3 {}
+
+    expect(() => show(Page3)).toThrow(/inside <v-select>/);
   });
 });

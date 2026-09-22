@@ -18,7 +18,7 @@
       :click="pressRow(row, index)"
     >
       <td
-        :for="column in columns.get()"
+        :for="column in columns.all.get()"
         :key="column"
         class="volt-table-cell"
         :attr-data-align="column.align.get()"
@@ -29,7 +29,7 @@
       </td>
     </tr>
     <tr :if="data.get().length === 0" class="volt-table-row">
-      <td class="volt-table-empty" :attr-colspan="columns.get().length || 1">
+      <td class="volt-table-empty" :attr-colspan="columns.all.get().length || 1">
         <slot name="empty">{ empty.get() }</slot>
       </td>
     </tr>

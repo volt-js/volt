@@ -232,7 +232,14 @@ describe('a floating panel keeps an edge once the palette is the user’s', () =
 
     // Every panel the sheet floats, so that a document that stopped computing
     // shadows cannot pass this by finding none.
-    expect([...panels].sort()).toEqual(['dialog', 'menu', 'popover', 'toast', 'tooltip']);
+    expect([...panels].sort()).toEqual([
+      'dialog',
+      'menu',
+      'popover',
+      'select',
+      'toast',
+      'tooltip',
+    ]);
     expect(unedged).toEqual([]);
   });
 });

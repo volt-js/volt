@@ -1,4 +1,5 @@
-import { Component, Prop, Signal, createContext, measureEffect, provideContext } from '@voltdev/core';
+import { Component, Prop, Signal, createContext, provideContext } from '@voltdev/core';
+import { TagChildren } from './children.js';
 import type { VTableColumn } from './table-column.js';
 
 /** A row is whatever the caller's data holds; a column names fields of it. */
@@ -59,49 +60,17 @@ export class VTable {
   /** Called with the row a press landed on. */
   @Prop() onRowPress?: (row: TableRow, index: number) => void;
 
-  /** The columns, in the order their headings are in. */
-  readonly columns = new Signal.State<readonly VTableColumn[]>([]);
-
   /** The row the headings are in, which is where their order is kept. */
   headings: Element | null = null;
 
+  /** The columns, in the order their headings are in. */
+  readonly columns = new TagChildren<VTableColumn>(
+    () => this.headings,
+    (column) => column.head,
+  );
+
   constructor() {
     provideContext(TableContext, this);
-    // Columns register as they are built, which is the order they are written
-    // — until a `:for` among them grows, and a column written after it
-    // registers before it. The headings are placed correctly either way,
-    // because that is the DOM's job and not this one's, so once the DOM has
-    // been written this asks it and puts the list straight. The measure lane
-    // is where a read of the DOM belongs, and a write from it comes back
-    // through the render lane in the same flush, so nothing is ever painted
-    // out of order. A server has no measure lane and needs none: nothing is
-    // ever added to a table it has already rendered.
-    measureEffect(() => this.reorder());
-  }
-
-  register(column: VTableColumn): void {
-    this.columns.set([...this.columns.get(), column]);
-  }
-
-  unregister(column: VTableColumn): void {
-    this.columns.set(this.columns.get().filter((each) => each !== column));
-  }
-
-  /** Put the columns in their headings' order, if they are not already. */
-  private reorder(): void {
-    const columns = this.columns.get();
-    const headings = this.headings;
-    if (!headings || columns.length < 2) return;
-
-    const order = [...headings.children];
-    const sorted = [...columns].sort((a, b) => {
-      const left = a.head ? order.indexOf(a.head) : -1;
-      const right = b.head ? order.indexOf(b.head) : -1;
-      // A heading that is not in the row yet says nothing about where its
-      // column goes, so the pair keeps the order it had.
-      return left < 0 || right < 0 ? 0 : left - right;
-    });
-    if (sorted.some((column, at) => column !== columns[at])) this.columns.set(sorted);
   }
 
   /** What a row is keyed by, falling back to the row itself. */

@@ -12,16 +12,22 @@ import { compileTemplate } from '@voltdev/core/jit';
 
 import buttonHtml from '../src/components/button.html?raw';
 import dialogHtml from '../src/components/dialog.html?raw';
+import optionHtml from '../src/components/option.html?raw';
+import selectHtml from '../src/components/select.html?raw';
 import tableHtml from '../src/components/table.html?raw';
 import tableColumnHtml from '../src/components/table-column.html?raw';
 import { VButton } from '../src/components/button.js';
 import { VDialog } from '../src/components/dialog.js';
+import { VOption } from '../src/components/option.js';
+import { VSelect } from '../src/components/select.js';
 import { VTable } from '../src/components/table.js';
 import { VTableColumn } from '../src/components/table-column.js';
 
 const TEMPLATES: ReadonlyArray<readonly [ComponentType<unknown>, string]> = [
   [VButton as ComponentType<unknown>, buttonHtml],
   [VDialog as ComponentType<unknown>, dialogHtml],
+  [VSelect as ComponentType<unknown>, selectHtml],
+  [VOption as ComponentType<unknown>, optionHtml],
   [VTable as ComponentType<unknown>, tableHtml],
   [VTableColumn as ComponentType<unknown>, tableColumnHtml],
 ];
@@ -54,4 +60,4 @@ function propsOf(component: ComponentType<unknown>): { property: string; alias: 
   return props ?? [];
 }
 
-export { VButton, VDialog, VTable, VTableColumn };
+export { VButton, VDialog, VOption, VSelect, VTable, VTableColumn };

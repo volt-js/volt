@@ -1,4 +1,4 @@
-import { Component, Prop, Signal, onCleanup, useContext } from '@voltdev/core';
+import { Component, Prop, Signal, useContext } from '@voltdev/core';
 import { TableContext, type VTable } from './table.js';
 
 /**
@@ -55,7 +55,6 @@ export class VTableColumn {
   })();
 
   constructor() {
-    this.table.register(this);
-    onCleanup(() => this.table.unregister(this));
+    this.table.columns.add(this);
   }
 }
