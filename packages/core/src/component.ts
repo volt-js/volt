@@ -354,6 +354,38 @@ export function Prop(options: PropOptions = {}) {
   };
 }
 
+/**
+ * What `@Prop` installs as a field's initializer, for a build that resolved
+ * the decorator away.
+ *
+ * `@voltdev/vite-plugin` knows every prop name before the browser does, so it
+ * deletes the decorators and registers the names itself — which has to leave
+ * the field behaving identically, and the field's behaviour is that it takes
+ * what the parent passed *while it initializes*. A component built on a
+ * primitive hands its props to that primitive in a field initializer, so a
+ * build that let props arrive after the constructor would build every one of
+ * them out of defaults.
+ *
+ * The alias is read from the class rather than passed in: the plugin copies a
+ * `@Prop({ alias })` argument through verbatim so that an alias computed from
+ * a constant keeps working, and evaluating that expression a second time here
+ * would run whatever is in it twice.
+ */
+export function initProp<T>(instance: unknown, property: string, initial: T): T {
+  const target = (instance as { constructor?: ComponentType<unknown> } | null)?.constructor;
+  const resolved = target ? CONFIGS.get(target) : undefined;
+  let alias = property;
+  if (resolved) {
+    for (const def of resolved.propsByAlias.values()) {
+      if (def.property === property) {
+        alias = def.alias;
+        break;
+      }
+    }
+  }
+  return takeProp(instance as Record<string, unknown>, property, alias, initial) as T;
+}
+
 // ---------------------------------------------------------------------------
 // Resolution
 // ---------------------------------------------------------------------------

@@ -58,6 +58,10 @@ interface PropSite {
   property: string;
   /** Verbatim text of the options argument, if one was given. */
   options: string | null;
+  /** The `=` of the field's initializer, if it has one. */
+  equals: number | null;
+  /** The `;` that ends the declaration. */
+  semicolon: number;
 }
 
 export interface ComponentSite {
@@ -93,7 +97,7 @@ export type LoweringPlan =
  * A `foreign` result means the caller should fall back to esbuild, which is
  * always correct and only larger.
  */
-export function planLowering(code: string, defineName: string): LoweringPlan {
+export function planLowering(code: string, defineName: string, propName: string): LoweringPlan {
   const sites = findDecorators(code);
   if (sites.length === 0) return { kind: 'none' };
 
@@ -122,6 +126,17 @@ export function planLowering(code: string, defineName: string): LoweringPlan {
     for (const prop of parsed.props) {
       consumed.add(prop.start);
       removals.push({ start: prop.start, end: prop.end });
+
+      // What the decorator did, kept: the field takes what the parent passed
+      // while it initializes, rather than being assigned after the constructor
+      // has already handed its default to something else.
+      const name = JSON.stringify(prop.property);
+      if (prop.equals === null) {
+        insertions.push({ at: prop.semicolon, text: ` = ${propName}(this, ${name}, void 0)` });
+      } else {
+        insertions.push({ at: prop.equals + 1, text: ` ${propName}(this, ${name}, (` });
+        insertions.push({ at: prop.semicolon, text: '))' });
+      }
     }
 
     insertions.push({
@@ -216,14 +231,10 @@ function parseComponent(code: string, at: number): ComponentSite | null {
   const bodyStart = i;
   const bodyEnd = matchDelimiter(code, bodyStart);
 
-  return {
-    start: at,
-    end: configEnd,
-    config,
-    bodyEnd,
-    className,
-    props: parseProps(code, bodyStart, bodyEnd, className),
-  };
+  const props = parseProps(code, bodyStart, bodyEnd, className);
+  if (!props) return null;
+
+  return { start: at, end: configEnd, config, bodyEnd, className, props };
 }
 
 /**
@@ -232,7 +243,12 @@ function parseComponent(code: string, at: number): ComponentSite | null {
  * Nested brackets are stepped over wholesale, so only member-level decorators
  * are seen — never anything inside a method body or an initializer.
  */
-function parseProps(code: string, bodyStart: number, bodyEnd: number, className: string): PropSite[] {
+function parseProps(
+  code: string,
+  bodyStart: number,
+  bodyEnd: number,
+  className: string,
+): PropSite[] | null {
   const props: PropSite[] = [];
   let i = bodyStart + 1;
   const end = bodyEnd - 1;
@@ -265,6 +281,7 @@ function parseProps(code: string, bodyStart: number, bodyEnd: number, className:
     }
     if (ch === '@' && code.startsWith('@Prop', i) && !isIdentChar(code[i + 5])) {
       const prop = parseProp(code, i, className);
+      if (!prop) return null;
       props.push(prop);
       i = prop.end;
       continue;
@@ -289,7 +306,7 @@ function isModifier(code: string, afterWord: number): boolean {
   return !'=;:!?},('.includes(ch) && ch !== '<';
 }
 
-function parseProp(code: string, at: number, className: string): PropSite {
+function parseProp(code: string, at: number, className: string): PropSite | null {
   let i = skipTrivia(code, at + '@Prop'.length);
 
   let options: string | null = null;
@@ -368,5 +385,81 @@ function parseProp(code: string, at: number, className: string): PropSite {
     );
   }
 
-  return { start: at, end, property, options };
+  const span = fieldSpan(code, after);
+  if (!span) return null;
+
+  return { start: at, end, property, options, equals: span.equals, semicolon: span.end };
+}
+
+/**
+ * Where a field's initializer starts and where its declaration ends.
+ *
+ * Needed because the lowering has to keep what `@Prop` does, and what it does
+ * is wrap the initializer — so the pass has to find it rather than only delete
+ * the decorator in front of it.
+ *
+ * Brackets of every kind are stepped over whole, which is what makes a `;`
+ * inside an object type or an arrow's parameters invisible here. A newline
+ * before the `;` is not read at all: a declaration spread over lines is one
+ * this pass declines, and declining costs nothing but size, because the file
+ * then goes to esbuild and the decorators run for real.
+ */
+function fieldSpan(code: string, from: number): { equals: number | null; end: number } | null {
+  let equals: number | null = null;
+
+  for (let i = from; i < code.length; i++) {
+    const ch = code[i]!;
+
+    if (ch === '"' || ch === "'") {
+      i = skipQuoted(code, i, ch) - 1;
+      continue;
+    }
+    if (ch === '`') {
+      i = skipTemplateLiteral(code, i) - 1;
+      continue;
+    }
+    if (ch === '/') {
+      const next = skipTrivia(code, i);
+      if (next !== i) {
+        // A comment inside a declaration may carry a newline, which is the one
+        // thing this scan will not cross.
+        if (code.slice(i, next).includes('\n')) return null;
+        i = next - 1;
+        continue;
+      }
+      if (equals !== null && isRegexStart(code, i)) {
+        i = skipRegex(code, i) - 1;
+        continue;
+      }
+    }
+    if (ch === '(' || ch === '[' || ch === '{') {
+      const close = matchDelimiter(code, i);
+      if (close <= i) return null;
+      i = close - 1;
+      continue;
+    }
+    if (ch === '<' && equals === null) {
+      const close = matchAngle(code, i);
+      if (close === null) return null;
+      i = close - 1;
+      continue;
+    }
+    // A closing bracket here belongs to something that opened before the
+    // declaration, so the scan has lost its place — or the class body ended
+    // without a `;`, which is a field this pass will not rewrite.
+    if (ch === ')' || ch === ']' || ch === '}') return null;
+    if (ch === '\n') return null;
+    if (ch === ';') return { equals, end: i };
+    if (ch === '=' && equals === null) {
+      // `=>` in a type annotation — a callback prop's own type, most often.
+      if (code[i + 1] === '>') {
+        i++;
+        continue;
+      }
+      if (code[i + 1] === '=') return null;
+      equals = i;
+    }
+  }
+
+  return null;
 }

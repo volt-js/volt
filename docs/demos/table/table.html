@@ -1,0 +1,16 @@
+<v-table :data="people.get()" :selected="chosen.get()" :striped="true">
+  <v-table-column field="name" label="Name"></v-table-column>
+  <v-table-column field="role" label="Role"></v-table-column>
+
+  <v-table-column label="Owed" align="end">
+    <template :slot-cell="{ row }">{ money(row.owed) }</template>
+  </v-table-column>
+
+  <v-table-column label="" align="end">
+    <template :slot-cell="{ row }">
+      <v-button size="sm" :onPress="() => toggle(row)">
+        { isChosen(row) ? 'Deselect' : 'Select' }
+      </v-button>
+    </template>
+  </v-table-column>
+</v-table>

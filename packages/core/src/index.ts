@@ -16,6 +16,7 @@ export {
   Component,
   Prop,
   defineComponent,
+  initProp,
   mount,
   hydrate,
   needsHydration,

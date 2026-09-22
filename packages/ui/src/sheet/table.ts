@@ -33,9 +33,20 @@ const empty = 'volt-table-empty';
 export const tableClasses = { root, header, headerCell, body, row, cell, empty } as const;
 
 export const tableStyles = /* @__PURE__ */ ((): ComponentStyles => {
-  /** The pointer is on the row; the harness writes it, happy-dom having none. */
-  const HOVERED = `.${row}[data-hover], .${row}:hover`;
-  const SELECTED = `.${row}[data-selected='true']`;
+  /**
+   * The three things drawn on a row, written to the same depth on purpose.
+   *
+   * They have to rank — a stripe says where you are, a selection says what is
+   * about to be acted on — and rank is not decided by writing one rule after
+   * another. It is decided by specificity first, and striping needs the table
+   * in its selector to know the table is striped. So the other two name the
+   * same path, which leaves all three equal and the order they are written in
+   * is the order they win in.
+   */
+  const inBody = `.${root} .${body} .${row}`;
+  const STRIPED = `.${root}[data-striped='true'] .${row}:nth-child(even)`;
+  const HOVERED = `${inBody}[data-hover], ${inBody}:hover`;
+  const SELECTED = `${inBody}[data-selected='true']`;
 
   return {
   name: 'table',
@@ -115,7 +126,7 @@ export const tableStyles = /* @__PURE__ */ ((): ComponentStyles => {
     // Emphasis, in the order the darker one has to win: striping first, then
     // the pointer, then the row that is actually selected.
     {
-      selector: `.${root}[data-striped='true'] .${row}:nth-child(even)`,
+      selector: STRIPED,
       declarations: { 'background-color': 'var(--volt-color-surface-sunken)' },
     },
     { selector: HOVERED, declarations: { 'background-color': 'var(--volt-color-surface-hover)' } },
@@ -160,10 +171,7 @@ export const tableStyles = /* @__PURE__ */ ((): ComponentStyles => {
     // Striping and the pointer are emphasis, and are handed back: a forced
     // palette has two colours for a surface, and spending them on "this is the
     // second row" would leave none for the row that is selected.
-    {
-      selector: `.${root}[data-striped='true'] .${row}:nth-child(even)`,
-      declarations: { 'background-color': 'Canvas' },
-    },
+    { selector: STRIPED, declarations: { 'background-color': 'Canvas' } },
     { selector: HOVERED, declarations: { 'background-color': 'Canvas' } },
     {
       selector: SELECTED,

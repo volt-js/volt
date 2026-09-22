@@ -1,20 +1,13 @@
-<button class="volt-button" data-variant="danger"
-        :ref="trigger" :spread="dialog.triggerProps()" :click="dialog.open()">
-  Delete project
-</button>
+<v-button variant="danger" :onPress="show">Delete project</v-button>
 <p :if="deleted.get()">Deleted.</p>
 
-<div :if="dialog.isPresent()" :portal
-     class="volt-dialog-overlay" :data-state="dialog.state()"></div>
-
-<div :if="dialog.isPresent()" :portal class="volt-dialog-content"
-     :ref="content" :spread="dialog.contentProps()">
-  <h2 class="volt-dialog-title" :spread="dialog.titleProps()">Delete this project?</h2>
-  <p class="volt-dialog-description" :spread="dialog.descriptionProps()">
-    Its history goes with it, and this cannot be undone.
-  </p>
-  <div class="volt-dialog-footer">
-    <button class="volt-button" data-variant="ghost" :click="dialog.close()">Cancel</button>
-    <button class="volt-button" data-variant="danger" :click="remove()">Delete</button>
-  </div>
-</div>
+<v-dialog
+  :open="open"
+  title="Delete this project?"
+  description="Its history goes with it, and this cannot be undone."
+>
+  <template :slot-footer>
+    <v-button variant="ghost" :onPress="hide">Cancel</v-button>
+    <v-button variant="danger" :onPress="remove">Delete</v-button>
+  </template>
+</v-dialog>

@@ -1,0 +1,22 @@
+<div class="rows">
+  <div class="row">
+    <v-button>Default</v-button>
+    <v-button variant="primary">Primary</v-button>
+    <v-button variant="danger">Danger</v-button>
+    <v-button variant="ghost">Ghost</v-button>
+  </div>
+
+  <div class="row">
+    <v-button variant="primary" size="sm">Small</v-button>
+    <v-button variant="primary">Medium</v-button>
+    <v-button variant="primary" size="lg">Large</v-button>
+  </div>
+
+  <div class="row">
+    <v-button variant="primary" :disabled="busy.get()" :onPress="start">
+      { busy.get() ? 'Working…' : 'Start' }
+    </v-button>
+    <span class="note">Pressed { presses.get() } times. A disabled button keeps its
+      place in the tab order and refuses the press.</span>
+  </div>
+</div>

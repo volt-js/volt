@@ -64,7 +64,15 @@ async function registrations(code: string) {
 
   const Signal = { State: class {} };
   const render = () => null;
-  new Function('__volt_define', 'Signal', '__volt_render_0', body)(define, Signal, render);
+  // What the runtime's `initProp` does when no parent passed anything: hand
+  // the field its own initializer back.
+  const prop = (_instance: unknown, _property: string, initial: unknown) => initial;
+  new Function('__volt_define', '__volt_prop', 'Signal', '__volt_render_0', body)(
+    define,
+    prop,
+    Signal,
+    render,
+  );
   return calls;
 }
 
@@ -84,10 +92,14 @@ describe('lowering', () => {
     expect(output).not.toContain('@Component');
     expect(output).not.toContain('@Prop');
     expect(output).toContain('__volt_define(Counter,');
-    expect(output).toContain('import { defineComponent as __volt_define }');
+    expect(output).toContain(
+      'import { defineComponent as __volt_define, initProp as __volt_prop }',
+    );
     // The class keeps its export and its members.
     expect(output).toContain('export class Counter');
-    expect(output).toContain('start = new Signal.State(0)');
+    // The initializer is kept, wrapped in what the decorator would have done:
+    // taken what the parent passed while the field was initializing.
+    expect(output).toContain('start = __volt_prop(this, "start", ( new Signal.State(0)))');
   });
 
   it('emits no decorator runtime — that is the entire point', async () => {
@@ -334,3 +346,109 @@ describe('scanning', () => {
     expect(calls[0]!.props).toEqual([{ property: 'real' }]);
   });
 });
+
+/**
+ * A prop is what the parent passed, from the moment the field exists.
+ *
+ * `@Prop` is a field initializer: it returns what the parent wrote, or the
+ * field's own default when they wrote nothing. Lowering it away has to keep
+ * that, because a component built on a primitive hands its props to that
+ * primitive in a field — so a build that let props land after the constructor
+ * would build every primitive out of defaults, and a dialog handed the page's
+ * `open` signal would sit there owning one of its own.
+ */
+describe('what the lowered field does', () => {
+  /** Run a lowered class and report every `initProp` call it made. */
+  async function initialized(code: string, create = 'new Thing()') {
+    const output = (await lower(code))!;
+    const stripped = await esbuildTransform(output, {
+      loader: 'ts',
+      target: 'es2022',
+      tsconfigRaw: { compilerOptions: { useDefineForClassFields: true } },
+    });
+    const body = stripped.code
+      .replaceAll(/^import[^\n]*\n/gm, '')
+      .replaceAll(/\bexport (?=class|const|let|var|function)/g, '')
+      .concat(`\nreturn ${create};`);
+
+    const seen: { property: string; initial: unknown; self: unknown }[] = [];
+    const prop = (self: unknown, property: string, initial: unknown) => {
+      seen.push({ property, initial, self });
+      return initial;
+    };
+    const Signal = { State: class {} };
+    const instance = new Function(
+      '__volt_define',
+      '__volt_prop',
+      'Signal',
+      '__volt_render_0',
+      body,
+    )(() => undefined, prop, Signal, () => null);
+
+    const taken = seen.map(({ property, initial, self }) => ({
+      property,
+      initial,
+      sameInstance: self === instance,
+    }));
+    return { taken, instance: instance as Record<string, unknown> };
+  }
+
+  it('asks the runtime for the value, naming itself and its property', async () => {
+    const { taken } = await initialized(`
+@Component({ selector: 'v-thing', render: __volt_render_0 })
+export class Thing {
+  @Prop() count = 7;
+}
+`);
+    expect(taken).toEqual([{ property: 'count', initial: 7, sameInstance: true }]);
+  });
+
+  it('asks for one it was given no default for', async () => {
+    const { taken } = await initialized(`
+@Component({ selector: 'v-thing', render: __volt_render_0 })
+export class Thing {
+  @Prop() open?: { get(): boolean };
+}
+`);
+    expect(taken).toEqual([{ property: 'open', initial: undefined, sameInstance: true }]);
+  });
+
+  it('has the value before the next field is built, which is the whole point', async () => {
+    const { instance } = await initialized(`
+@Component({ selector: 'v-thing', render: __volt_render_0 })
+export class Thing {
+  @Prop() label = 'fallback';
+  shouted = this.label.toUpperCase();
+}
+`);
+    expect(instance['shouted']).toBe('FALLBACK');
+  });
+
+  it('keeps a callback prop, whose type carries an arrow of its own', async () => {
+    const { taken } = await initialized(`
+@Component({ selector: 'v-thing', render: __volt_render_0 })
+export class Thing {
+  @Prop() onDone?: (value: number) => void;
+  @Prop() format: (value: number) => string = (value) => String(value);
+}
+`);
+    expect(taken.map((each) => each.property)).toEqual(['onDone', 'format']);
+    expect(typeof taken[1]!.initial).toBe('function');
+  });
+
+  it('declines a declaration spread over lines rather than guessing at it', async () => {
+    const output = (await lower(`
+@Component({ selector: 'v-thing', render: __volt_render_0 })
+export class Thing {
+  @Prop() tone:
+    | 'quiet'
+    | 'loud' = 'quiet';
+}
+`))!;
+    // esbuild's own lowering, which runs the decorators for real: correct, and
+    // only larger. What must never happen is a rewrite this pass guessed at.
+    expect(output).toContain('__decorateElement');
+    expect(output).not.toContain('__volt_prop');
+  });
+});
+

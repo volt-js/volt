@@ -353,10 +353,15 @@ describe.skipIf(!built)('what an application bundle is made of', { timeout: 120_
       .join('\n');
     const layer = (prefix: string): number => share(bytes, [prefix]) / code.length;
 
-    // 9,649 B of 23,936: 40.3%, which is the roadmap's "41%" confirmed by a
-    // method somebody can rerun rather than by memory.
+    // 11,137 B of 25,752: 43.2%, which is the roadmap's "41%" confirmed by a
+    // method somebody can rerun rather than by memory. It rose by about three
+    // points when props began arriving while a field initializes: a build that
+    // lowers `@Prop` away calls `initProp` from every field, so the code that
+    // reads what the parent passed is in the bundle for the first time. That
+    // is the feature, not overhead — the alternative was every component built
+    // on a primitive handing it a default.
     expect(layer('packages/core/src/'), `\n${report}\n`).toBeGreaterThan(0.37);
-    expect(layer('packages/core/src/'), `\n${report}\n`).toBeLessThan(0.43);
+    expect(layer('packages/core/src/'), `\n${report}\n`).toBeLessThan(0.46);
 
     // 7,403 B: 30.9%, and the largest single item in the whole table after
     // `dom.ts` is the reactive graph.

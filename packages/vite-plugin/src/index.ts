@@ -270,6 +270,7 @@ function indentBody(body: string): string {
     .join('\n');
 }
 const DEFINE_LOCAL = '__volt_define';
+const PROP_LOCAL = '__volt_prop';
 
 export function volt(options: VoltPluginOptions = {}): Plugin[] {
   const include = options.include ?? DEFAULT_INCLUDE;
@@ -567,7 +568,7 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
 
       let plan;
       try {
-        plan = planLowering(code, DEFINE_LOCAL);
+        plan = planLowering(code, DEFINE_LOCAL, PROP_LOCAL);
       } catch (err) {
         if (err instanceof DecoratorError) this.error(`${err.message}\n  in ${id}`);
         throw err;
@@ -580,7 +581,7 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
         for (const { start, end } of plan.removals) s.remove(start, end);
         for (const { at, text } of plan.insertions) s.appendRight(at, text);
         s.prepend(
-          `import { defineComponent as ${DEFINE_LOCAL} } from ` +
+          `import { defineComponent as ${DEFINE_LOCAL}, initProp as ${PROP_LOCAL} } from ` +
             `${JSON.stringify(runtimeFor(targetFor(this.environment, hydrate)))};\n`,
         );
         // Only decorators were removed, so what is left is ordinary

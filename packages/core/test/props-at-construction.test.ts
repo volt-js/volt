@@ -11,7 +11,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { compileTemplate } from '@voltdev/core/jit';
-import { Component, Prop, Signal, flushSync, mount } from '@voltdev/core';
+import { Component, Prop, Signal, defineComponent, flushSync, initProp, mount } from '@voltdev/core';
 
 let unmount: (() => void) | null = null;
 
@@ -117,5 +117,123 @@ describe('a prop while the fields are being made', () => {
     }
 
     expect(new Alone().label).toBe('default');
+  });
+});
+
+/**
+ * The same thing, for a build that resolved the decorator away.
+ *
+ * `@voltdev/vite-plugin` knows every prop name before the browser does, so it
+ * deletes `@Prop` and registers the names itself — and what it leaves in the
+ * field's place is a call to `initProp`. These are the two halves that have to
+ * agree: what the decorator installs, and what the plugin writes instead. A
+ * build where they disagreed would be one where components work in tests and
+ * hand their primitives defaults in production.
+ */
+describe('a prop whose decorator a build resolved away', () => {
+  /** What the plugin emits for `@Prop() label = 'default'`. */
+  class Lowered {
+    label = initProp<string>(this, 'label', 'default');
+    shouted = this.label.toUpperCase();
+  }
+  defineComponent(
+    Lowered as never,
+    { selector: 'v-lowered', render: compileTemplate(`<b>{ shouted }</b>`) },
+    [{ property: 'label' }],
+  );
+
+  /** And for `@Prop({ alias: 'for' }) htmlFor = ''`. */
+  class Aliased {
+    htmlFor = initProp<string>(this, 'htmlFor', '');
+  }
+  defineComponent(
+    Aliased as never,
+    { selector: 'v-aliased', render: compileTemplate(`<b>{ htmlFor }</b>`) },
+    [{ property: 'htmlFor', alias: 'for' }],
+  );
+
+  it('takes what the parent passed while the field initializes', () => {
+    @Component({
+      selector: 'v-page',
+      imports: [Lowered as never],
+      render: compileTemplate(`<v-lowered label="written"></v-lowered>`),
+    })
+    class Page {}
+
+    // `shouted` was built from `label` in the next field along, so this is the
+    // prop having been there already — the default would have said DEFAULT.
+    expect(show(Page).host.querySelector('b')!.textContent).toBe('WRITTEN');
+  });
+
+  it('keeps its own default where the parent wrote nothing', () => {
+    @Component({
+      selector: 'v-page',
+      imports: [Lowered as never],
+      render: compileTemplate(`<v-lowered></v-lowered>`),
+    })
+    class Page {}
+
+    expect(show(Page).host.querySelector('b')!.textContent).toBe('DEFAULT');
+  });
+
+  it('has the value in its own signal, where the field is one', () => {
+    class Counted {
+      count = initProp(this, 'count', new Signal.State(0));
+      /** Read at construction, as a primitive built in a field would. */
+      started = this.count.get();
+    }
+    defineComponent(
+      Counted as never,
+      { selector: 'v-counted', render: compileTemplate(`<b>{ started }</b>`) },
+      [{ property: 'count' }],
+    );
+
+    @Component({
+      selector: 'v-page',
+      imports: [Counted as never],
+      render: compileTemplate(`<v-counted :count="count.get()"></v-counted>`),
+    })
+    class Page {
+      count = new Signal.State(7);
+    }
+
+    expect(show(Page).host.querySelector('b')!.textContent).toBe('7');
+  });
+
+  it('is the parent’s own signal, where the field only holds one', () => {
+    // The shape every controlled component has: the page keeps the state and
+    // the child is handed the signal itself, to read and to write.
+    class Controlled {
+      open = initProp<Signal.State<boolean> | undefined>(this, 'open', undefined);
+      /** What a primitive built in the next field would have been given. */
+      answered = this.open?.get() ?? 'nothing';
+    }
+    defineComponent(
+      Controlled as never,
+      { selector: 'v-controlled', render: compileTemplate(`<b>{ answered }</b>`) },
+      [{ property: 'open' }],
+    );
+
+    @Component({
+      selector: 'v-page',
+      imports: [Controlled as never],
+      render: compileTemplate(`<v-controlled :open="open"></v-controlled>`),
+    })
+    class Page {
+      open = new Signal.State(true);
+    }
+
+    expect(show(Page).host.querySelector('b')!.textContent).toBe('true');
+  });
+
+  it('reads the name the parent writes, which an alias may rename', () => {
+    @Component({
+      selector: 'v-page',
+      imports: [Aliased as never],
+      render: compileTemplate(`<v-aliased for="surname"></v-aliased>`),
+    })
+    class Page {}
+
+    expect(show(Page).host.querySelector('b')!.textContent).toBe('surname');
   });
 });

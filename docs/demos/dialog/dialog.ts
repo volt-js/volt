@@ -1,19 +1,20 @@
 import { Component, Signal } from '@voltdev/core';
-import { createDialog } from '@voltdev/primitives';
+import { VButton, VDialog } from '@voltdev/ui/components';
 
-@Component({ selector: 'v-delete-project', templateUrl: './dialog.html' })
+@Component({
+  selector: 'v-delete-project',
+  templateUrl: './dialog.html',
+  imports: [VButton, VDialog],
+})
 export class DeleteProject {
-  trigger = new Signal.State<Element | null>(null);
-  content = new Signal.State<Element | null>(null);
+  open = new Signal.State(false);
   deleted = new Signal.State(false);
 
-  dialog = createDialog({
-    trigger: () => this.trigger.get(),
-    content: () => this.content.get(),
-  });
+  show = (): void => this.open.set(true);
+  hide = (): void => this.open.set(false);
 
-  remove(): void {
+  remove = (): void => {
     this.deleted.set(true);
-    this.dialog.close();
-  }
+    this.open.set(false);
+  };
 }
