@@ -25,9 +25,10 @@
  *    not think to offer. A component that hides its primitive is a component
  *    someone has to abandon the first time the design asks for more.
  *
- * 4. **The sheet draws it.** Class names come from `classes`, never literals,
- *    and nothing here writes a colour or a duration — those are tokens, so
- *    that repointing one moves every component at once.
+ * 4. **The sheet draws it.** Every class a template writes is one the sheet
+ *    declares — `test/component-classes.test.ts` holds the two together — and
+ *    nothing here writes a colour or a duration of its own, because those are
+ *    tokens and repointing one has to move every component at once.
  */
 
 export { TagChildren } from './children.js';
