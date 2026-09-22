@@ -394,7 +394,7 @@ class BlockEmitter {
       this.slotContent(node, slotDir, ctx);
       return;
     }
-    this.directives(node.directives, ctx);
+    this.directives(node.directives, ctx, node.isComponent);
     this.children(node.children, ctx);
   }
 

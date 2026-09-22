@@ -163,3 +163,30 @@ describe('content that fills a slot', () => {
     expect(code).not.toContain('_ctx.row');
   });
 });
+
+/**
+ * `:text` on a component tag is a prop, so the display rule has no business
+ * with it.
+ *
+ * The rule exists because `{ count }` where `count` is a signal renders
+ * `[object Object]`. A prop handed a signal is the opposite: it is how a
+ * caller gives a child something to read and write, and marking that as a
+ * mistake would report the controlled shape this framework is built on.
+ */
+describe('the display rule, on a component', () => {
+  const rules = (template: string): (string | undefined)[] =>
+    block(template).spans.map((span) => span.check?.rule);
+
+  it('checks what an element renders', () => {
+    expect(rules('<p :text="label"></p>')).toContain('display');
+  });
+
+  it('leaves a prop of a component alone', () => {
+    expect(rules('<v-tip :text="label"></v-tip>')).not.toContain('display');
+    expect(rules('<v-tip :html="body"></v-tip>')).not.toContain('display');
+  });
+
+  it('still checks what a component renders inside itself', () => {
+    expect(rules('<v-tip><p :text="label"></p></v-tip>')).toContain('display');
+  });
+});
