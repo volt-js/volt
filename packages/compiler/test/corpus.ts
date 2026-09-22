@@ -180,7 +180,9 @@ export const CORPUS: CorpusEntry[] = [
   { name: 'component-props', template: `<div><v-child :label="'count'" :n="value.get()" :onBumped="(v) => onBump(v)"></v-child></div>` },
   { name: 'component-static-attrs', template: `<div><v-real label="x" active></v-real></div>` },
   { name: 'component-spread', template: `<div><v-child :spread="props()"></v-child></div>` },
-  { name: 'component-model', template: `<div><v-field :model="name"></v-field></div>` },
+  // Two-way state between components is one signal both sides hold, passed as
+  // an ordinary prop; `:model` on a component is an error.
+  { name: 'component-signal-prop', template: `<div><v-field :value="name"></v-field></div>` },
   { name: 'component-ref', template: `<div><v-child :ref="child"></v-child></div>` },
   { name: 'component-pascal-case', template: `<div><MyWidget :n="1"></MyWidget></div>` },
   { name: 'component-with-children', template: `<v-card><h1 :slot-title>Hello</h1><p>Body content</p></v-card>` },

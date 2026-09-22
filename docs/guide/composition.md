@@ -61,12 +61,29 @@ signal they all read rather than fanning a notification out.
 
 ## Two-way binding
 
-`:model` on a component pairs a `modelValue` input with an
-`update:modelValue` output:
+There is no two-way binding between components, because there is nothing to
+synchronise: a signal is one value both sides hold. Pass yours in, and the
+component reads and writes it.
+
+```ts
+@Component({ selector: 'v-text-field', templateUrl: './text-field.html' })
+export class TextField {
+  // A plain field, so the prop is the signal itself rather than its value.
+  @Prop() value!: Signal.State<string>;
+}
+```
 
 ```html
-<v-text-field :model="name"></v-text-field>
+<v-text-field :value="name"></v-text-field>
 ```
+
+```html
+<!-- text-field.html -->
+<input :model="value.get()" :input="value.set($event.target.value)">
+```
+
+`:model` itself is for a form control — an `<input>`, a `<select>`, a
+`<textarea>` — and says so if it is written on a component.
 
 ## Slots
 

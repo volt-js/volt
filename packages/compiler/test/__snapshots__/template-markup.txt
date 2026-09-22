@@ -434,7 +434,7 @@
   "<div></div>"
   stats: templates=1 deduped=0 effects=1 folded=0 delegated=0 static=1 classToggles=0
 
-### component-model
+### component-signal-prop
   "<div></div>"
   stats: templates=1 deduped=0 effects=1 folded=0 delegated=0 static=1 classToggles=0
 
@@ -991,7 +991,7 @@
   "<div></div>"
   stats: templates=1 deduped=0 effects=1 folded=0 delegated=0 static=1 classToggles=0
 
-### component-model
+### component-signal-prop
   "<div></div>"
   stats: templates=1 deduped=0 effects=1 folded=0 delegated=0 static=1 classToggles=0
 
@@ -1548,7 +1548,7 @@
   "<div></div>"
   stats: templates=1 deduped=0 effects=1 folded=0 delegated=0 static=1 classToggles=0
 
-### component-model
+### component-signal-prop
   "<div></div>"
   stats: templates=1 deduped=0 effects=1 folded=0 delegated=0 static=1 classToggles=0
 

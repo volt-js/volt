@@ -2277,14 +2277,6 @@ class Generator {
           }
           break;
         }
-        case 'model': {
-          const target = this.genAccessor(dir.exp!, ctx, dir.loc);
-          const setter = this.genModelSetter(dir.exp!, ctx, dir);
-          // A value in and a callback out — both ordinary inputs.
-          props.push(`get "modelValue"() { return (${target})(); }`);
-          props.push(`"onModelValue": ${setter}`);
-          break;
-        }
         case 'spread': {
           props.push(`...${printExpression(this.parse(dir.exp!, dir.loc), ctx, 1)}`);
           break;
@@ -2295,6 +2287,38 @@ class Generator {
           );
           break;
         }
+
+        // Written on a component, each of these used to be dropped without a
+        // word, which is the worst answer: the page renders, and what was
+        // asked for is simply absent.
+        case 'text':
+        case 'html': {
+          this.error(
+            `\`:${dir.kind}\` writes the content of an element, and <${node.tag}> is a component.\n` +
+              '  Pass what it should show as a prop, and let its own template write it.',
+            dir,
+          );
+          break;
+        }
+        case 'host': {
+          this.error(
+            `\`:host\` marks the element a component's own attributes reach, inside that\n` +
+              `  component's template. <${node.tag}> is the component, not its element.`,
+            dir,
+          );
+          break;
+        }
+        case 'model': {
+          this.error(
+            `\`:model\` is for a form control, and <${node.tag}> is a component.\n` +
+              '  Two-way state is one signal both sides hold: pass yours in —\n' +
+              `  \`<${node.tag} :value="name">\` — and declare it on the component as\n` +
+              '  `@Prop() value!: Signal.State<string>`, which it reads and writes.',
+            dir,
+          );
+          break;
+        }
+
         default:
           break;
       }

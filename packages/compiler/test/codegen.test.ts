@@ -436,3 +436,33 @@ describe('filling a slot', () => {
     expect(() => gen(`<v-rows><b :slot-row="row +">x</b></v-rows>`)).toThrow(/is not a pattern/);
   });
 });
+
+describe('a name one edit from a directive, on a component', () => {
+  it('is a prop, because a component has props a guess cannot know', () => {
+    // `modal` is an option of createDialog, `mode` of a router route, `styles`
+    // of a component's own config. Each is one edit from a directive.
+    for (const name of ['modal', 'mode', 'styles', 'form', 'stile']) {
+      expect(() => gen(`<v-dialog :${name}="x"></v-dialog>`)).not.toThrow();
+    }
+  });
+
+  it('is still a typo on an element, where the props are the platform’s', () => {
+    expect(() => gen(`<div :modle="x"></div>`)).toThrow(/did you mean .:model/);
+  });
+});
+
+describe('a directive that means nothing on a component', () => {
+  it('says so, rather than being dropped', () => {
+    expect(() => gen(`<v-card :text="label"></v-card>`)).toThrow(
+      /`:text` writes the content of an element/,
+    );
+    expect(() => gen(`<v-card :html="body"></v-card>`)).toThrow(/is a component/);
+    expect(() => gen(`<v-card :host></v-card>`)).toThrow(/is the component, not its element/);
+  });
+
+  it('answers `:model` on a component with the one signal both sides hold', () => {
+    expect(() => gen(`<v-field :model="name"></v-field>`)).toThrow(
+      /Two-way state is one signal both sides hold[\s\S]*:value="name"/,
+    );
+  });
+});

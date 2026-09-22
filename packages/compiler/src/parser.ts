@@ -487,7 +487,7 @@ class Parser {
       return { type: 'attribute', name: rawName, value, loc: this.finishLoc(start) };
     }
 
-    return this.resolveDirective(rawName, value, valueLoc, this.finishLoc(start));
+    return this.resolveDirective(rawName, value, valueLoc, this.finishLoc(start), tag);
   }
 
   /** The value's text, and where it starts — inside the quotes, not on them. */
@@ -527,6 +527,7 @@ class Parser {
     value: string | null,
     valueLoc: SourceLocation | null,
     loc: SourceLocation,
+    tag: string,
   ): DirectiveNode {
     const withoutColon = rawName.slice(1);
     const parts = withoutColon.split('.');
@@ -600,7 +601,12 @@ class Parser {
     // renders unconditionally, with nothing to see in the output. A name one
     // edit from a directive, and not an attribute anyone actually writes, is a
     // typo rather than a property.
-    if (!COMMON_ATTRIBUTES.has(base) && !base.includes('-')) {
+    // On a component the guess is the wrong side of the bet: `modal`, `mode`
+    // and `styles` are real options of real primitives, and a component
+    // refuses a prop it does not declare anyway — with the same "did you
+    // mean" and the list of props it really has, which is a better answer
+    // than a guess made without knowing any of them.
+    if (!COMMON_ATTRIBUTES.has(base) && !base.includes('-') && !isComponentTag(tag)) {
       const meant = DIRECTIVE_NAMES.find((name) => isOneEditFrom(base, name));
       if (meant) {
         // A slot carries its name, so the suggestion has to show the shape
