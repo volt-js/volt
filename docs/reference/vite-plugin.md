@@ -165,6 +165,31 @@ target counting every byte, and accept that a failure then arrives as a bare
 code. See [Errors](./component#errors) for what an error carries, and
 [Error codes](/e/) for every code there is.
 
+### A dependency that ships Volt source
+
+A component library cannot ship compiled templates, and the plugin compiles
+one that says so:
+
+```json
+{ "name": "@acme/widgets", "volt": { "source": true } }
+```
+
+Its `.ts` files are compiled by the build that uses it, as if they were the
+application's own — templates, styles and decorators alike — and everything
+else in `node_modules` is left alone as before. Setting `exclude` yourself
+turns this off, since the pattern is then yours to write.
+
+It has to work this way. What a template compiles to depends on which side of
+the render it is for, and that is this build's choice, made per environment: a
+client clones markup, a hydrating client claims it, a server writes bytes. And
+`__VOLT_BUILD__` identifies the build that printed a page, so a client can
+refuse markup another build wrote — which a page compiled half by the
+application and half by whoever published a dependency would silently break,
+because it would claim to be one build while being two.
+
+The cost is a compile per template in the consuming build, which is about
+0.124 ms each.
+
 `groupRowBindings` drives a `:for` row's bindings from one effect rather than
 one each. It saves about 2.3 kB a row and costs 13–35% on updating a selection
 across a long list, while winning 5–11% on building one — measured in a real

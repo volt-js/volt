@@ -23,8 +23,9 @@
  *     `signals.ts`.
  */
 
+import { existsSync, readFileSync } from 'node:fs';
 import { readdir, readFile, writeFile } from 'node:fs/promises';
-import { basename, dirname, relative, resolve as resolvePath } from 'node:path';
+import { basename, dirname, join, relative, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { transform as esbuildTransform } from 'esbuild';
 import MagicString from 'magic-string';
@@ -295,9 +296,65 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
   // that pair contradicting the first.
   const hydrate = options.hydrate ?? start !== null;
 
+  /**
+   * Whether a dependency ships Volt source for this build to compile.
+   *
+   * A component library cannot ship compiled templates. What a template
+   * compiles to depends on which side of the render it is for — a client
+   * clones, a hydrating client claims, a server writes bytes — and that is the
+   * consuming build's choice, made per environment. It depends on the compiler
+   * too: `__VOLT_BUILD__` identifies the build that printed a page so a client
+   * can refuse markup from another one, and a page built half by the
+   * application's compiler and half by whichever one a dependency was
+   * published with would claim to be one build while being two.
+   *
+   * So a package says it ships source, and this build compiles it as if it
+   * were its own:
+   *
+   *     "volt": { "source": true }
+   *
+   * Answered per directory and remembered, because it is asked for every
+   * module a build touches.
+   */
+  const shipsSource = new Map<string, boolean>();
+  const packageShipsSource = (file: string): boolean => {
+    let dir = dirname(file);
+    for (;;) {
+      const known = shipsSource.get(dir);
+      if (known !== undefined) return known;
+
+      const manifest = join(dir, 'package.json');
+      if (existsSync(manifest)) {
+        let says = false;
+        try {
+          const read = JSON.parse(readFileSync(manifest, 'utf8')) as {
+            volt?: { source?: boolean };
+          };
+          says = read.volt?.source === true;
+        } catch {
+          // A manifest this build cannot read is one it cannot be told by.
+          says = false;
+        }
+        shipsSource.set(dir, says);
+        return says;
+      }
+
+      const up = dirname(dir);
+      if (up === dir) {
+        shipsSource.set(dir, false);
+        return false;
+      }
+      dir = up;
+    }
+  };
+
   const shouldProcess = (id: string): boolean => {
     const clean = id.split('?')[0] ?? id;
-    return include.test(clean) && !exclude.test(clean);
+    if (!include.test(clean)) return false;
+    if (!exclude.test(clean)) return true;
+    // Excluded — unless it is a dependency that ships its templates as source
+    // for this build to compile.
+    return options.exclude === undefined && packageShipsSource(clean);
   };
 
   const messages = options.messages;
