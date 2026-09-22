@@ -37,6 +37,8 @@ export { createId, resetIds } from './ids.js';
  * a client bundle and find the payload there.
  */
 export { hydratable, wasHydrated, BUILD_ATTRIBUTE, STATE_ATTRIBUTE } from './state.js';
+export { provideOutlet, type OutletRender } from './outlet.js';
+export { renderComponent } from './component.js';
 
 /**
  * A boundary is content, like `:if` is: it decides what is on screen. It lives

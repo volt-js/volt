@@ -19,6 +19,7 @@ export type DirectiveKind =
   | 'ref'
   | 'slot'
   | 'host'
+  | 'outlet'
   | 'portal'
   | 'event'
   | 'prop'
@@ -160,4 +161,5 @@ export const STRUCTURAL_DIRECTIVES = new Set<string>([
   'ref',
   'portal',
   'host',
+  'outlet',
 ]);

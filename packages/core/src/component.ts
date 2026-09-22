@@ -1185,23 +1185,25 @@ export interface MountHandle {
 }
 
 /**
- * The root of a server render: instantiate `component` and let its template
- * write into `out`.
+ * Render a component where the caller is, rather than into a host.
  *
- * `mount` is the same question answered for a browser — build the DOM and put
- * it in a host. There is no host here and nothing to insert, because the
- * template writes its own bytes as it walks; what this adds over calling the
- * render function directly is everything `mount` also does not skip: props,
- * styles, the component's position for its ids, and the lifecycle gate.
+ * The root of a server render — instantiate `component` and let its template
+ * write into `out` — and the same question answered for a browser, where there
+ * is no writer and what comes back is the DOM the template built. `mount` is
+ * this plus a host to put it in; what both add over calling the render
+ * function directly is everything neither skips: props, styles, the
+ * component's position for its ids, and the lifecycle gate.
  *
- * Called by `renderToStaticMarkup`, which owns the request scope this runs in.
+ * Called by `renderToStaticMarkup`, which owns the request scope it runs in,
+ * and by anything that renders a component into a hole of its own — an
+ * `:outlet` filled by a router being the one that made it public.
  */
 export function renderComponent(
   component: ComponentType<unknown>,
-  out: unknown,
+  out?: unknown,
   props: Record<string, unknown> | null = null,
-): void {
-  instantiate(component, { props, out });
+): unknown {
+  return instantiate(component, { props, out });
 }
 
 /**

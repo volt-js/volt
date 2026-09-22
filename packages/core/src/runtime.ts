@@ -7,6 +7,7 @@
  */
 
 export * from './dom.js';
+export { outlet } from './outlet.js';
 export {
   createComponent,
   slot,

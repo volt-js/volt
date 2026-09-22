@@ -597,7 +597,13 @@ class Parser {
       if (base === 'host' && node.exp) {
         this.error('`:host` does not take a value — it marks the element the tag\'s own attributes reach.');
       }
-      if (base !== 'else' && base !== 'portal' && base !== 'host' && !node.exp) {
+      if (base === 'outlet' && node.exp) {
+        this.error(
+          '`:outlet` does not take a value — it marks where a child route renders, and which ' +
+            'route that is belongs to the router.',
+        );
+      }
+      if (base !== 'else' && base !== 'portal' && base !== 'host' && base !== 'outlet' && !node.exp) {
         this.error(`\`${rawName}\` requires a value, e.g. \`${rawName}="expression"\``);
       }
       if (base === 'else' && node.exp) {

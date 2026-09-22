@@ -45,6 +45,8 @@ import { registeredState, STATE_ATTRIBUTE } from './state.js';
 // between. `defineComponent` is what the plugin lowers every `@Component` to,
 // and in a server build it imports it from here — without it, no decorated
 // component could be built for the server at all.
+export { outlet } from './outlet.js';
+export { renderComponent } from './component.js';
 export {
   createComponent,
   slot,

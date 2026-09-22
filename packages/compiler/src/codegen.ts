@@ -1205,8 +1205,11 @@ class Generator {
 
     const isVoid = VOID_TAGS.has(tag.toLowerCase());
     if (!isVoid) {
+      const outletDir = node.directives.find((d) => d.kind === 'outlet');
       const contentDir = node.directives.find((d) => d.kind === 'text' || d.kind === 'html');
-      if (contentDir) {
+      if (outletDir) {
+        this.genOutlet(node, outletDir, block, selfPath, ctx);
+      } else if (contentDir) {
         // The binding owns everything between the tags, so the children the
         // author wrote are never emitted at all.
         block.hole(
@@ -1397,6 +1400,58 @@ class Generator {
         : `${this.rt}.insert(${resolve(selfPath)}, ${accessor});`,
     ]);
     return true;
+  }
+
+  /**
+   * `:outlet` — where a child route renders.
+   *
+   * A route's branch is nested, and the nesting is the router's: a layout
+   * renders, and inside it renders the route below it. This is that place,
+   * and it is a hole like any other — which is the whole point. A server
+   * writes the child's bytes into the same walk, in order, so a page arrives
+   * complete rather than as a shell with a gap in it; a client hydrating that
+   * page claims the child's nodes the way it claims everything else; and a
+   * client with nothing to claim builds the child where the hole is.
+   *
+   * The element owns its content, so it has no children of its own — an outlet
+   * with markup inside it is content nobody would ever see, since whatever the
+   * router renders replaces it.
+   */
+  private genOutlet(
+    node: ElementNode,
+    dir: DirectiveNode,
+    block: Block,
+    selfPath: number[],
+    ctx: PrintContext,
+  ): void {
+    const meaningful = node.children.filter(
+      (c) => c.type !== 'comment' && !(c.type === 'text' && !c.content.trim()),
+    );
+    if (meaningful.length > 0) {
+      this.error(
+        `\`:outlet\` marks where a child route renders, and <${node.tag}> has content of its ` +
+          'own.\n' +
+          '  Whatever the router renders goes here, so nothing written inside would ever be ' +
+          'seen. Put a fallback outside the outlet, or none.',
+        dir,
+      );
+    }
+
+    void ctx;
+    this.stats.effects++;
+    if (this.server) {
+      // The child writes into the same writer, at this point in the walk.
+      block.hole({ kind: 'content', path: selfPath, tag: node.tag }, [
+        `${this.rt}.outlet(${this.out});`,
+      ]);
+      return;
+    }
+    block.hole({ kind: 'content', path: selfPath, tag: node.tag });
+    block.effects.push((resolve) => [
+      this.hydrate
+        ? `${this.rt}.hInsert(${resolve(selfPath)}, null, null, ${this.thunk(`${this.rt}.outlet()`)});`
+        : `${this.rt}.insert(${resolve(selfPath)}, ${this.rt}.outlet());`,
+    ]);
   }
 
   /**
@@ -2568,6 +2623,9 @@ const ATTRIBUTE_POSITION: Record<DirectiveKind, boolean> = {
   key: false,
   slot: false,
   portal: false,
+  // Where a child route renders: a position in the content, not a word in the
+  // tag.
+  outlet: false,
 };
 
 /**
