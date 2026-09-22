@@ -1,14 +1,26 @@
-# Styled components
+# Components and the sheet that draws them
 
-`@voltdev/ui` is the styled layer over [`@voltdev/primitives`](./primitives).
-The primitives own behaviour — state, keyboard, focus, ARIA, positioning — and
-write what they know onto the element as `data-` attributes. This package owns
-what those elements look like, and nothing else: one stylesheet, the class
-names it selects on, and the design tokens every rule is written in.
+`@voltdev/ui` is two things over [`@voltdev/primitives`](./primitives), and you
+can take either without the other.
 
-There is no component here to render. A styled dialog is `createDialog` from
-the primitives, spread onto markup you write, with `volt-dialog-content` in its
-`class`. What you install is a stylesheet and a vocabulary, not a tag.
+The **components** are tags. `<v-button variant="primary">Save</v-button>` is a
+button, `<v-table>` with `<v-table-column>` inside it is a table. Each is the
+primitive with the markup already written, and each keeps that primitive within
+reach — so a component is a shortcut, never a wall.
+
+The **sheet** is what draws them: one stylesheet, the class names it selects on,
+and the design tokens every rule is written in. Components use it; so can you,
+on markup of your own with a primitive under it, for anything the components do
+not cover yet.
+
+<Demo name="button" />
+
+```html
+<v-button>Default</v-button>
+<v-button variant="primary">Primary</v-button>
+<v-button variant="danger">Danger</v-button>
+<v-button variant="ghost">Ghost</v-button>
+```
 
 ::: warning Not on npm yet
 `@voltdev/ui` has not been released — see
@@ -17,37 +29,189 @@ page works from a checkout of the Volt repository, where the package resolves
 from the workspace.
 :::
 
-**It is early, and the delivery is not built.** The package is
-`0.1.0-alpha.1` and styles nine components. It is designed to be copied into
-your repository by a CLI, as source you own and edit rather than a dependency
-you override; that CLI does not exist, so today the sheet is a string you
-generate and write to a file. What is missing is listed
-[at the end](#what-is-not-here-yet).
+**It is early.** The package is `0.1.0-alpha.1`: three components are tags, ten
+are styled, and the rest of the primitives have no styles here at all. What is
+missing is listed [at the end](#what-is-not-here-yet).
 
-## Primitives alone, or with this on top
+## Two entries, because the halves run in different places
+
+```ts
+import { VButton, VTable, VTableColumn } from '@voltdev/ui/components';
+import { stylesheet, classes } from '@voltdev/ui';
+```
+
+`@voltdev/ui/components` ships as **TypeScript source**, and your build compiles
+it with the rest of your application. That is not a convenience: a compiled
+template is compiled for one target — a client clones nodes, a server writes
+bytes — and carries the identity of the build that made it, so only the build
+that renders your page can compile it. The package says so with `"volt": {
+"source": true }` in its manifest, and `@voltdev/vite-plugin` compiles any
+dependency that does.
+
+`@voltdev/ui` is ordinary built JavaScript, because `stylesheet()` is called
+from a build script in Node, where nothing is compiling templates.
+
+## Primitives alone, a component, or the sheet in between
 
 | You want | Use |
 |---|---|
+| A button, a dialog, a table | `@voltdev/ui/components` — the tags below |
+| Something a component does not do, in markup of your own | A primitive, with the sheet's class names on it |
 | Your own design system, or one you already have to match | `@voltdev/primitives` alone |
-| A working default look you can repoint and override | The primitives, with this sheet |
-| A button | This sheet — a `<button>` already has the behaviour, so there is no primitive |
 
-The line between the two is drawn so that the styled layer can always be taken
-away. Everything the sheet selects on is something a primitive already writes,
-or a class or attribute you put on your own element; remove the sheet and every
+The line between the layers is drawn so that any of them can be taken away.
+Everything the sheet selects on is something a primitive already writes, or a
+class or attribute you put on your own element; remove the sheet and every
 component still opens, closes, traps focus and speaks to a screen reader. A
-styled layer that owned any behaviour would be one you could not drop, and
-theming would become something to fight rather than use.
+component that owned behaviour, or a sheet that did, would be one you could not
+drop — and theming would become something to fight rather than use.
 
-For the same reason this package does not import `@voltdev/primitives`. It
-restates the contract between them — the `data-` attributes each primitive
-writes, and the one custom property a primitive measures — in its own source,
-and its tests hold that restatement against the primitives themselves. Each
-component's documented markup is mounted with a real primitive's props spread
-onto it, through every state the rules distinguish, on an engine with anchor
-positioning and on one without, and every selector in the sheet has to match
-something the primitive rendered. A primitive that renamed an attribute would
-leave a rule selecting on nothing, and that test would fail.
+The sheet does not import the primitives. It restates the contract between them
+— the `data-` attributes each primitive writes, and the one custom property a
+primitive measures — in its own source, and its tests hold that restatement
+against the primitives themselves. Each component's documented markup is
+mounted with a real primitive's props spread onto it, through every state the
+rules distinguish, on an engine with anchor positioning and on one without, and
+every selector in the sheet has to match something the primitive rendered. A
+primitive that renamed an attribute would leave a rule selecting on nothing,
+and that test would fail.
+
+## The components
+
+Three so far. Each takes what a caller writes on the tag and puts it on the
+element it draws, so a class, an id or an `aria-label` lands where you would
+have put it by hand; each holds its primitive in a field, so `:ref` on the tag
+reaches everything the component does not offer; and every prop a template
+reads is a signal, so binding one keeps it live.
+
+### `<v-button>`
+
+A `<button>`, with the sheet's look and the package's rule for a disabled
+control.
+
+| Prop | Type | Means |
+|---|---|---|
+| `variant` | `'primary' \| 'danger' \| 'ghost'` | Absent for the plain button |
+| `size` | `'sm' \| 'lg'` | Absent for the middle size |
+| `type` | `'button' \| 'submit' \| 'reset'` | `button` unless asked, rather than the platform's submit |
+| `disabled` | `boolean` | Refuses the press |
+| `onPress` | `(event: MouseEvent) => void` | Called on a press it did not refuse |
+
+```html
+<v-button variant="primary" :disabled="busy.get()" :onPress="save">
+  { busy.get() ? 'Saving…' : 'Save' }
+</v-button>
+```
+
+Disabled is written as `aria-disabled`, not the `disabled` attribute, so the
+button keeps its place in the tab order: a control a keyboard user cannot reach
+is one they cannot discover is there. The press is refused instead.
+
+### `<v-dialog>`
+
+`createDialog`, with the markup written. The state is one signal both sides
+hold: pass `open` and it is yours to read and write, pass nothing and the
+dialog owns it.
+
+<Demo name="dialog" height="300" />
+
+```html
+<v-button variant="danger" :onPress="show">Delete project</v-button>
+
+<v-dialog
+  :open="open"
+  title="Delete this project?"
+  description="Its history goes with it, and this cannot be undone."
+>
+  <template :slot-footer>
+    <v-button variant="ghost" :onPress="hide">Cancel</v-button>
+    <v-button variant="danger" :onPress="remove">Delete</v-button>
+  </template>
+</v-dialog>
+```
+
+| Prop | Type | Means |
+|---|---|---|
+| `open` | `Signal.State<boolean>` | Your signal, when the state is yours |
+| `defaultOpen` | `boolean` | Where it starts, when the dialog owns its state |
+| `modal` | `boolean` | Traps focus, makes the rest inert, locks scrolling |
+| `closeOnEscape`, `closeOnOutsidePointer` | `boolean` | Both default to true |
+| `title`, `description` | `string` | Rendered, and named to the screen reader by the primitive's own ids |
+| `onOpenChange` | `(open: boolean) => void` | |
+
+Slots: the default one is the body, `header` replaces the title line when a
+heading needs markup, and `footer` is the row of buttons. `modal`,
+`defaultOpen` and the two `closeOn` props are read once, when the primitive is
+built, so they are not signals and changing them later does nothing — which is
+also why they are written down here.
+
+For anything this does not offer — `dialog.open()` from elsewhere, the
+primitive's own props on your own markup — take the primitive:
+
+```html
+<v-dialog :ref="box" title="Delete this project?"></v-dialog>
+```
+
+```ts
+box: VDialog | null = null;
+later(): void { this.box?.dialog.open(); }
+```
+
+### `<v-table>` and `<v-table-column>`
+
+A real `<table>`: the row and column relationships a screen reader reads out
+are the platform's, not a grid of `<div>`s.
+
+<Demo name="table" height="260" />
+
+```html
+<v-table :data="people.get()" :selected="chosen.get()" :striped="true">
+  <v-table-column field="name" label="Name"></v-table-column>
+  <v-table-column field="role" label="Role"></v-table-column>
+
+  <v-table-column label="Owed" align="end">
+    <template :slot-cell="{ row }">{ money(row.owed) }</template>
+  </v-table-column>
+
+  <v-table-column label="" align="end">
+    <template :slot-cell="{ row }">
+      <v-button size="sm" :onPress="() => toggle(row)">Select</v-button>
+    </template>
+  </v-table-column>
+</v-table>
+```
+
+A column is a tag because that is where its template belongs: the markup for a
+cell is written inside the column that draws it. The table fetches it from
+there with [`<slot :from>`](./template-syntax#drawing-what-was-written-inside-another-tag),
+which means a column is rendered once — for its heading — and never once per
+cell.
+
+| `<v-table>` | Type | Means |
+|---|---|---|
+| `data` | `readonly Record<string, unknown>[]` | The rows, in the order they are shown |
+| `rowKey` | `string` | The field that identifies a row. Default `id` |
+| `striped` | `boolean` | Shade every second row |
+| `selected` | `ReadonlySet<unknown> \| null` | The keys of the rows an action is about to be taken on |
+| `empty` | `string` | Shown in place of the rows when there are none |
+| `onRowPress` | `(row, index) => void` | |
+
+| `<v-table-column>` | Type | Means |
+|---|---|---|
+| `field` | `string` | The field of a row this column shows |
+| `label` | `string` | The heading, when it is a line of text |
+| `align` | `'start' \| 'center' \| 'end'` | `end` for numbers |
+| `width` | `string` | Any CSS width, put on the heading, which sizes the column |
+
+Slots: `cell` is drawn per row and is handed `{ row, value }`; `header` replaces
+the label when a heading needs markup. The table's own `empty` slot replaces the
+empty message.
+
+Selection is drawn, not owned. What selecting means — one row or many, and what
+happens next — is yours; what the table does is mark those rows with
+`aria-selected` and a colour a forced palette keeps. Striping and the pointer
+are emphasis, and are handed back when the palette is the user's, which leaves
+its two surface colours for the row that is actually selected.
 
 ## Getting the styles onto the page
 
@@ -393,7 +557,12 @@ one or after it:
 | `layerOrder` | The three, weakest first |
 | `layerOrderStatement()` | `'@layer volt.base, volt.components, volt.overrides;'` |
 
-## What each component expects
+## Markup for everything that is not a tag yet
+
+Seven of the ten styled components have no component of their own. They are
+written the way the components above are written underneath: a primitive, the
+markup you want, and the sheet's class names on it. The button is here too,
+because `<v-button>` is exactly this markup and a caller may prefer to write it.
 
 ### Button
 
@@ -638,7 +807,7 @@ a system colour other than its own fill, since that edge is all that is left
 to tell it from the page.
 
 Beside the fixtures, each primitive is mounted with its documented markup and
-the sheet in the document, as described [at the top](#primitives-alone-or-with-this-on-top),
+the sheet in the document, as described [at the top](#primitives-alone-a-component-or-the-sheet-in-between),
 and what the two do together is measured there: the hover on a menu item, the
 gap and the arrow of a popover in each of its twelve placements, the edge of a
 tab in either orientation, the box and mark of a checkbox with its words
@@ -749,11 +918,12 @@ const css = wrap(`@layer ${LAYER_COMPONENTS}`, componentCss(dialogStyles, '  '))
 
 ## What is not here yet
 
-- **The CLI.** Copying each component into your repository as source is the
-  intended distribution, and the reason the styles are data. Nothing ships it.
+- **Most of the components.** Three of the ten styled components are tags.
+  Select, checkbox, tabs, menu, popover, tooltip, toast and accordion are
+  markup you write, [above](#markup-for-everything-that-is-not-a-tag-yet).
 - **A `.css` file in the package.** Generate one with `stylesheet()`.
 - **A release.** The package is not on npm.
 - **A second palette**, and a `color-scheme` to go with one.
-- **Most of the primitives.** Nine are styled. Switch, radio group, select,
-  combobox and the rest of the collections, form, display and data primitives
-  have no styles here; the package covers a subset on purpose.
+- **Most of the primitives.** Ten are styled. Switch, radio group, combobox and
+  the rest of the collections, form, display and data primitives have no styles
+  here; the package covers a subset on purpose.

@@ -14,7 +14,7 @@
       "import": "./dist/index.js"
     },
     "./components": {
-      "types": "./src/components/index.ts",
+      "types": "./dist/components/index.d.ts",
       "import": "./src/components/index.ts"
     }
   },

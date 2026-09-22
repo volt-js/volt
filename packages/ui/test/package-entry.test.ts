@@ -53,9 +53,20 @@ describe('what the manifest publishes', () => {
 
   it('ships the directory each entry is in', () => {
     for (const condition of Object.values(manifest.exports)) {
-      const top = condition.import.split('/')[1];
-      expect(manifest.files).toContain(top);
+      for (const target of [condition.import, condition.types]) {
+        expect(manifest.files).toContain(target.split('/')[1]);
+      }
     }
+  });
+
+  it('answers with declarations and runs from source', () => {
+    // The two halves of a source-shipping entry. A consumer type-checks
+    // against built declarations, as they would any package — their own
+    // `strict` settings are not applied to somebody else's source — while what
+    // their bundler loads is the TypeScript their build has to compile.
+    const components = manifest.exports['./components']!;
+    expect(components.types).toMatch(/^\.\/dist\/.*\.d\.ts$/);
+    expect(components.import).toMatch(/^\.\/src\/.*\.ts$/);
   });
 
   it('compiles no template of its own into what it publishes', async () => {
