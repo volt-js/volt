@@ -1,0 +1,9 @@
+<div
+  :host
+  :ref="group"
+  class="volt-radio-group"
+  :spread="groupProps()"
+  :keydown="radioGroup.onKeyDown($event)"
+>
+  <slot></slot>
+</div>

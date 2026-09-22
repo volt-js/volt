@@ -1,0 +1,24 @@
+// A form is a column of fields. The gap is wider than the one inside a field,
+// so that a label reads as belonging to the box under it rather than to the
+// message above it.
+.form {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-4);
+  max-inline-size: 26rem;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--volt-space-3);
+  row-gap: var(--volt-space-2);
+}
+
+.aside,
+.note {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+  font-weight: var(--volt-font-weight-regular);
+}

@@ -32,7 +32,9 @@ import {
   createMenu,
   createFormField,
   createPopover,
+  createRadioGroup,
   createSelect,
+  createSwitch,
   createTabs,
   createToaster,
   createTooltip,
@@ -174,6 +176,35 @@ class StyledCheckbox {
 }
 
 @Component({
+  selector: 'v-styled-switch',
+  render: compileTemplate(`
+    <div>
+      <label :for="row in rows" :key="row.name" class="volt-switch-field">
+        <input :spread="row.control.inputProps()">
+        <span class="volt-switch" :spread="row.control.controlProps()">
+          <span class="volt-switch-track" aria-hidden="true"><span class="volt-switch-thumb"></span></span>
+          { row.name }
+        </span>
+      </label>
+    </div>
+  `),
+})
+class StyledSwitch {
+  // Both settings, and both of them unavailable: the sheet draws an
+  // unavailable switch over the top of whichever setting it is in, so a rule
+  // for one of those two would otherwise never be reached here.
+  rows = [
+    { name: 'off', control: createSwitch() },
+    { name: 'on', control: createSwitch({ defaultChecked: true }) },
+    { name: 'off and unavailable', control: createSwitch({ disabled: () => true }) },
+    {
+      name: 'on and unavailable',
+      control: createSwitch({ defaultChecked: true, disabled: () => true }),
+    },
+  ];
+}
+
+@Component({
   selector: 'v-styled-dialog',
   render: compileTemplate(`
     <div>
@@ -253,6 +284,45 @@ class StyledPopover {
     content: () => this.content.get(),
     placement,
   });
+}
+
+/** Stacked for one pass and in a row for the next, as the placements are. */
+let radioOrientation: 'vertical' | 'horizontal' = 'vertical';
+
+@Component({
+  selector: 'v-styled-radio-group',
+  render: compileTemplate(`
+    <div class="volt-radio-group" :ref="group" :attr-data-orientation="orientation()"
+         :spread="plans.groupProps()" :keydown="plans.onKeyDown($event)">
+      <label :for="option in options" :key="option.value" class="volt-radio-field"
+             :click="plans.select(option.value)">
+        <input :spread="plans.inputProps(option.value, option.disabled)">
+        <span class="volt-radio" :spread="plans.itemProps(option.value, option.disabled)">
+          <span class="volt-radio-indicator" aria-hidden="true"><span class="volt-radio-dot"></span></span>
+          { option.label }
+        </span>
+      </label>
+    </div>
+  `),
+})
+class StyledRadioGroup {
+  group = new Signal.State<Element | null>(null);
+  options = [
+    { value: 'monthly', label: 'Monthly', disabled: false },
+    { value: 'yearly', label: 'Yearly', disabled: false },
+    { value: 'lifetime', label: 'Lifetime', disabled: true },
+  ];
+  plans = createRadioGroup({ group: () => this.group.get(), name: 'plan', label: 'Billing plan' });
+
+  /**
+   * Written here rather than spread from the primitive, which is where it
+   * comes from in the component too: `createRadioGroup` says the orientation
+   * in `aria-orientation`, and the sheet reads nothing from ARIA — so the
+   * attribute it lays the group out from is one the markup writes.
+   */
+  orientation(): string {
+    return radioOrientation;
+  }
 }
 
 @Component({
@@ -482,6 +552,19 @@ const scenes: Record<string, (look: () => void) => void> = {
     }
   },
 
+  'radio-group'(look) {
+    for (const each of ['vertical', 'horizontal'] as const) {
+      radioOrientation = each;
+      const { plans } = show(StyledRadioGroup);
+      // Nothing chosen, which is the state every radio is in to start with.
+      look();
+      step(() => plans.select('yearly'));
+      look();
+      for (const handle of mounted.splice(0)) handle.unmount();
+      flushSync();
+    }
+  },
+
   select(look) {
     for (const off of [false, true]) {
       selectDisabled = off;
@@ -503,6 +586,11 @@ const scenes: Record<string, (look: () => void) => void> = {
       for (const handle of mounted.splice(0)) handle.unmount();
       flushSync();
     }
+  },
+
+  switch(look) {
+    show(StyledSwitch);
+    look();
   },
 
   tabs(look) {
@@ -864,5 +952,55 @@ describe('the checkbox', () => {
     expect(box('unchecked').getPropertyValue('color')).toBe('transparent');
     expect(box('checked').getPropertyValue('color')).toBe(primitiveTokens['--volt-palette-white']);
     expect(box('indeterminate').getPropertyValue('color')).toBe(primitiveTokens['--volt-palette-white']);
+  });
+});
+
+describe('the switch', () => {
+  /** A length in pixels, whichever unit the sheet wrote it in. */
+  const px = (value: string): number =>
+    value.endsWith('rem') ? Number.parseFloat(value) * 16 : (Number.parseFloat(value) || 0);
+
+  /** A border-box length, less the border and the padding on both sides. */
+  const inner = (style: CSSStyleDeclaration, axis: 'inline' | 'block'): number => {
+    const [start, end] = axis === 'inline' ? (['left', 'right'] as const) : (['top', 'bottom'] as const);
+    return (
+      px(style.getPropertyValue(`${axis}-size`)) -
+      px(side(style, 'border-*-width', start)) -
+      px(side(style, 'border-*-width', end)) -
+      px(side(style, 'padding-*', start)) -
+      px(side(style, 'padding-*', end))
+    );
+  };
+
+  it('gives the thumb exactly the track to travel in, and no more', () => {
+    show(StyledSwitch);
+    const track = computed('.volt-switch-track');
+    const thumb = computed('.volt-switch-thumb');
+    const moved = computed(`.volt-switch[data-state='checked'] .volt-switch-thumb`);
+
+    // The whole of what a switch says is where the thumb has come to rest, so
+    // the travel is a length the sheet has to get exactly right: a track wider
+    // than the thumb plus its travel leaves the thumb short of the end, and a
+    // narrower one pushes it past.
+    expect(inner(track, 'inline')).toBe(
+      px(thumb.getPropertyValue('inline-size')) + px(side(moved, 'margin-*', 'left')),
+    );
+    // Across the track there is no travel: the thumb fills it.
+    expect(inner(track, 'block')).toBe(px(thumb.getPropertyValue('block-size')));
+    expect(isZero(side(thumb, 'margin-*', 'left'))).toBe(true);
+  });
+
+  it('moves the thumb along the writing direction, not to the right', () => {
+    show(StyledSwitch);
+    const moved = computed(`.volt-switch[data-state='checked'] .volt-switch-thumb`);
+
+    // A translation, or a physical `margin-left`, would send the thumb the
+    // wrong way in a right-to-left page — and this sheet may not write the
+    // `[dir='rtl']` rule that would be the repair, because every compound in
+    // it has to name a class the markup carries.
+    expect(moved.getPropertyValue('margin-inline-start')).not.toBe('');
+    for (const property of ['translate', 'transform', 'inset-inline-start', 'left']) {
+      expect(['', 'none', 'auto'], property).toContain(moved.getPropertyValue(property));
+    }
   });
 });

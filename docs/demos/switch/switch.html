@@ -1,0 +1,15 @@
+<div class="rows">
+  <v-switch :checked="quiet">Do not disturb</v-switch>
+
+  <div class="rows nested">
+    <v-switch
+      :for="channel in channels"
+      :key="channel.name"
+      :checked="channel.on"
+      :disabled="quiet.get()"
+    >{ channel.name }</v-switch>
+  </div>
+
+  <span class="note">Sending you { sending() }. Every switch here has already
+    taken effect — there is no form under them and nothing to submit.</span>
+</div>

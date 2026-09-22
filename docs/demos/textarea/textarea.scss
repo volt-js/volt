@@ -1,0 +1,13 @@
+// The field fills whatever it is given, so the demo gives it the width a form
+// would rather than the width of the frame.
+.report {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-3);
+  max-inline-size: 32rem;
+}
+
+.note {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}

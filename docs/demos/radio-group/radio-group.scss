@@ -1,0 +1,19 @@
+.stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  row-gap: var(--volt-space-4);
+}
+
+.heading {
+  margin-block: 0;
+  font-size: var(--volt-font-size-2);
+  font-weight: var(--volt-font-weight-semibold);
+}
+
+.note {
+  margin-block: 0;
+  max-inline-size: 34rem;
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}

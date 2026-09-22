@@ -1,0 +1,24 @@
+<div class="stack">
+  <h3 class="heading" id="plan-heading">Billing plan</h3>
+  <v-radio-group :value="plan" name="plan" labelledBy="plan-heading">
+    <v-radio
+      :for="option in plans"
+      :key="option.value"
+      :value="option.value"
+      :disabled="option.soldOut === true"
+    >{ option.label } <span class="note">{ option.note }</span></v-radio>
+  </v-radio-group>
+
+  <v-radio-group
+    :value="delivery"
+    name="delivery"
+    label="Delivery"
+    orientation="horizontal"
+  >
+    <v-radio value="standard">Standard</v-radio>
+    <v-radio value="express">Express</v-radio>
+  </v-radio-group>
+
+  <p class="note">Paying { chosen() }, { delivery.get() } delivery. One Tab press reaches
+    a group and the next leaves it; inside, the arrows move and answer in one press.</p>
+</div>

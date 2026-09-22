@@ -262,3 +262,37 @@ describe('the selected tab, once the palette is the user’s', () => {
     }
   });
 });
+
+describe('the switch, once the palette is the user’s', () => {
+  /** A length in pixels, whichever unit the sheet wrote it in. */
+  const px = (value: string): number =>
+    value.endsWith('rem') ? Number.parseFloat(value) * 16 : (Number.parseFloat(value) || 0);
+
+  it('keeps the thumb flush at the end of a track whose ring has thickened', () => {
+    // Which way a switch is set survives this mode as the distance the thumb
+    // has travelled, and as a ring round the track that doubles in width —
+    // and the second of those eats into the first, because the track is a
+    // border box. The sheet hands back the padding to pay for it. If the two
+    // ever stop cancelling, the thumb of a switch that is on overflows the
+    // track it is meant to come to rest inside, and only a user with a forced
+    // palette ever sees it.
+    const control = forced.mount({
+      classes: ['volt-switch'],
+      attributes: { 'data-state': 'checked' },
+      children: [{ classes: ['volt-switch-track'], children: [{ classes: ['volt-switch-thumb'] }] }],
+    });
+    const track = computed(control.querySelector('.volt-switch-track')!);
+    const thumb = computed(control.querySelector('.volt-switch-thumb')!);
+
+    const edges = (property: string): number =>
+      ['inline-start', 'inline-end', 'left', 'right']
+        .map((edge) => px(track.getPropertyValue(`${property}-${edge}${property === 'padding' ? '' : '-width'}`)))
+        .reduce((total, value) => total + value, 0);
+
+    const inner = px(track.getPropertyValue('inline-size')) - edges('border') - edges('padding');
+    expect(inner).toBe(
+      px(thumb.getPropertyValue('inline-size')) +
+        px(thumb.getPropertyValue('margin-inline-start')),
+    );
+  });
+});

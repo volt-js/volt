@@ -1,0 +1,9 @@
+<div class="volt-field" :spread="textarea.fieldProps()">
+  <label class="volt-field-label" :ref="labelEl" :spread="textarea.labelProps()"><slot name="label">{ label.get() }</slot></label>
+
+  <textarea :host class="volt-field-control" :ref="control" :spread="textareaProps()"></textarea>
+
+  <p class="volt-field-description" :ref="descriptionEl" :spread="textarea.descriptionProps()"><slot name="description">{ description.get() }</slot></p>
+
+  <p class="volt-field-error" :ref="errorEl" :spread="textarea.errorMessageProps()">{ message() }</p>
+</div>

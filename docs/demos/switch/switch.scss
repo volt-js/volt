@@ -1,0 +1,19 @@
+.rows {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  row-gap: var(--volt-space-2);
+}
+
+// The channels the switch above them governs, set in by the width of a track
+// and the gap that follows one, so the words line up under the words.
+.nested {
+  padding-inline-start: calc(var(--volt-space-8) + var(--volt-space-2));
+}
+
+.note {
+  max-inline-size: 34rem;
+  margin-block-start: var(--volt-space-2);
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}

@@ -1,0 +1,16 @@
+<label
+  :ref="field"
+  class="volt-radio-field"
+  :click="group.radioGroup.select(value.get())"
+>
+  <input :spread="group.radioGroup.inputProps(value.get(), disabled.get())">
+
+  <span
+    :host
+    class="volt-radio"
+    :spread="group.itemProps(value.get(), disabled.get())"
+  >
+    <span class="volt-radio-indicator" aria-hidden="true"><span class="volt-radio-dot"></span></span>
+    <slot></slot>
+  </span>
+</label>

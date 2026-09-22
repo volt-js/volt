@@ -1,0 +1,18 @@
+<div class="report">
+  <v-textarea
+    :value="message"
+    name="message"
+    label="What went wrong?"
+    placeholder="Start with what you were doing."
+    :description="hint()"
+    :maxLength="limit"
+    :validate="check"
+    validateOn="blur"
+    rows="2"
+    maxRows="6"
+    required
+  ></v-textarea>
+
+  <span class="note">Type past the second line and the box follows. Leave it with
+    almost nothing in it and the message under it says so.</span>
+</div>

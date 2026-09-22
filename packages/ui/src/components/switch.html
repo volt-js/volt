@@ -1,0 +1,14 @@
+<label
+  class="volt-switch-field"
+  :click="switch.toggle()"
+  :keydown="switch.onKeyDown($event)"
+>
+  <input :ref="input" :spread="switch.inputProps()">
+
+  <span :host class="volt-switch" :spread="controlProps()">
+    <span class="volt-switch-track" aria-hidden="true"><span
+      class="volt-switch-thumb"
+    ><slot name="thumb" :checked="switch.checked()"></slot></span></span>
+    <slot></slot>
+  </span>
+</label>

@@ -72,10 +72,22 @@ async function shipped(name: string): Promise<string> {
   return result.outputFiles[0]!.text;
 }
 
+/**
+ * The export a component's styles are published under.
+ *
+ * A component's name is the one the CSS, the classes map and the fixture file
+ * are keyed by, and it is spelled the way a selector is — `radio-group`. An
+ * export cannot be, so a name of two words is camel-cased and nothing else
+ * changes: `radio-group` is `radioGroupStyles`.
+ */
+function exportName(name: string): string {
+  return `${name.replaceAll(/-(.)/g, (_, letter: string) => letter.toUpperCase())}Styles`;
+}
+
 describe('the entry', () => {
   it('exports every component’s styles under its own name', () => {
     for (const component of entry.componentStyles) {
-      expect((entry as Record<string, unknown>)[`${component.name}Styles`], component.name).toBe(
+      expect((entry as Record<string, unknown>)[exportName(component.name)], component.name).toBe(
         component,
       );
     }

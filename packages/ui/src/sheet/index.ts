@@ -14,7 +14,9 @@ import { dialogClasses, dialogStyles } from './dialog.js';
 import { fieldClasses, fieldStyles } from './field.js';
 import { menuClasses, menuStyles } from './menu.js';
 import { popoverClasses, popoverStyles } from './popover.js';
+import { radioGroupClasses, radioGroupStyles } from './radio-group.js';
 import { selectClasses, selectStyles } from './select.js';
+import { switchClasses, switchStyles } from './switch.js';
 import { tableClasses, tableStyles } from './table.js';
 import { tabsClasses, tabsStyles } from './tabs.js';
 import { tooltipClasses, tooltipStyles } from './tooltip.js';
@@ -28,7 +30,9 @@ export {
   fieldStyles,
   menuStyles,
   popoverStyles,
+  radioGroupStyles,
   selectStyles,
+  switchStyles,
   tableStyles,
   tabsStyles,
   toastStyles,
@@ -44,7 +48,9 @@ export const componentStyles: readonly ComponentStyles[] = [
   fieldStyles,
   menuStyles,
   popoverStyles,
+  radioGroupStyles,
   selectStyles,
+  switchStyles,
   tableStyles,
   tabsStyles,
   toastStyles,
@@ -69,7 +75,9 @@ export const classes = {
   field: fieldClasses,
   menu: menuClasses,
   popover: popoverClasses,
+  'radio-group': radioGroupClasses,
   select: selectClasses,
+  switch: switchClasses,
   table: tableClasses,
   tabs: tabsClasses,
   toast: toastClasses,

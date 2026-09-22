@@ -1,0 +1,31 @@
+<form class="form" :submit="save($event)">
+  <v-input
+    :value="email"
+    label="Email"
+    name="email"
+    type="email"
+    autoComplete="email"
+    placeholder="ada@example.com"
+    description="Only used to reply."
+    required
+    validateOn="blur"
+  ></v-input>
+
+  <v-input
+    :value="handle"
+    name="handle"
+    :maxLength="12"
+    :description="left()"
+    :validate="check"
+    validateOn="blur"
+  >
+    <template :slot-label>Handle <span class="aside">— ada and grace are taken</span></template>
+  </v-input>
+
+  <v-input label="Member since" name="since" defaultValue="2019" readOnly></v-input>
+
+  <div class="row">
+    <v-button type="submit" variant="primary">Create account</v-button>
+    <span class="note">{ result.get() }</span>
+  </div>
+</form>

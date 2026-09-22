@@ -1,0 +1,9 @@
+<div class="volt-field" :spread="input.fieldProps()">
+  <label class="volt-field-label" :ref="labelEl" :spread="input.labelProps()"><slot name="label">{ label.get() }</slot></label>
+
+  <input :host class="volt-field-control" :ref="control" :spread="inputProps()">
+
+  <p class="volt-field-description" :ref="descriptionEl" :spread="input.descriptionProps()"><slot name="description">{ description.get() }</slot></p>
+
+  <p class="volt-field-error" :ref="errorEl" :spread="input.errorMessageProps()">{ message() }</p>
+</div>
