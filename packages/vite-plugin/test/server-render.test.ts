@@ -148,16 +148,37 @@ describe('what a project supplies', () => {
  * matches, so the stub agreed with the code and neither agreed with the
  * router: the handler read `.branch` off an array, and every page request
  * threw. Every test here passed. The router is therefore the real
- * `routes.ts`, over a real route table, and only the renderer, the function
+ * router package, over a real route table, and only the renderer, the function
  * handler and the hydration answer are stubbed — the handler's own decisions
  * are what is under test, and those three are its inputs.
+ *
+ * The whole package rather than `routes.ts` alone, because the handler now
+ * makes a router per request and resolves the URL on it before rendering.
+ * That is only testable at all because `createRouter` reads no browser: the
+ * refactor that made a server-rendered route possible is what lets this run
+ * in node.
  */
-const ROUTER = resolve(import.meta.dirname, '../../router/src/routes.ts');
+const ROUTER = resolve(import.meta.dirname, '../../router/src/index.ts');
+const CORE = resolve(import.meta.dirname, '../../core/src/index.ts');
 const SERVER_HANDLER = resolve(import.meta.dirname, '../../server/src/handler.ts');
 
-/** A route table that exercises every branch of the handler. */
+/**
+ * A route table that exercises every branch of the handler.
+ *
+ * The components are registered rather than bare classes, because the router
+ * asks `isComponent` whether a route's `component` is one — and treats
+ * anything else as a function that loads one, which is what a lazy route is.
+ * A bare class was called, and being a class, refused.
+ */
 const TABLE = `
-  const component = (index) => { const C = class {}; C.index = index; return C; };
+  import { defineComponent } from ${JSON.stringify(CORE)};
+  const component = (index) => {
+    const C = class {};
+    C.index = index;
+    defineComponent(C, { selector: 'v-route-' + index + '-' + (n++), render: () => null }, []);
+    return C;
+  };
+  let n = 0;
   export const routes = [
     {
       path: '/',
@@ -192,10 +213,13 @@ async function handlerFor(
 
   const stubs: Record<string, string> = {
     '@voltdev/core/server': 'export const renderToString = async () => (globalThis.__render());',
+    // `needsHydration` is the one answer this suite drives, so it is the one
+    // thing wrapped; everything else a router asks of the component runtime is
+    // the real thing, because a stub that disagreed with it is exactly the
+    // failure this file's own history records.
     '@voltdev/core': `
-      export const isComponent = (value) => typeof value === 'function';
+      export * from ${JSON.stringify(CORE)};
       export const needsHydration = (component) => globalThis.__needsHydration(component);
-      export const BUILD_ATTRIBUTE = 'data-volt-build';
     `,
     // The real predicate, and only the handler stubbed: whether a request is a
     // server call is exactly the kind of decision the router stub got wrong.
@@ -461,17 +485,39 @@ describe('claiming a page, or building it', () => {
     const code = clientModule(wiring, 'build-one');
 
     expect(code).toContain('getAttribute(BUILD_ATTRIBUTE) === "build-one"');
-    expect(code).toContain('hydrate(App, host)');
-    expect(code).toContain('mount(App, host)');
+    expect(code).toContain('hydrate(App, host, { setup })');
+    expect(code).toContain('mount(App, host, { setup })');
     // The guess it replaces.
     expect(code).not.toContain('host.firstChild');
+  });
+
+  it('resolves before it attaches, and listens after', () => {
+    const code = clientModule(wiring, 'build-one');
+
+    // The order is the whole of it. Claiming with an unresolved router claims
+    // a branch that is not there; building with one builds the shell and
+    // nothing under it; and listening first lets a click arrive before the
+    // page it would navigate from exists.
+    const resolved = code.indexOf('await router.resolve(location.href)');
+    const attached = code.indexOf('hydrate(App, host, { setup })');
+    const listening = code.indexOf('router.start({ resolve: false })');
+    expect(resolved).toBeGreaterThan(-1);
+    expect(attached).toBeGreaterThan(resolved);
+    expect(listening).toBeGreaterThan(attached);
+  });
+
+  it('hands the router and its first outlet to whatever renders', () => {
+    const code = clientModule(wiring, 'build-one');
+
+    expect(code).toContain('provideRouter(router)');
+    expect(code).toContain('provideOutlet(router.outletAt(0))');
   });
 
   it('imports no hydration walk at all where nothing is ever server-rendered', () => {
     const code = clientModule(resolveServerRender({ defaultMode: 'csr' }), 'build-one');
 
     expect(code).not.toContain('hydrate');
-    expect(code).toContain('mount(App, host)');
+    expect(code).toContain('mount(App, host, { setup })');
   });
 
   it('marks the mount point with the same identity the client compares', () => {

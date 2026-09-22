@@ -95,9 +95,9 @@ export function resolveServerRender(options: ServerRenderOptions | true): Resolv
  * so. And a `csr` route gets the shell unrendered, which is the opt-out.
  */
 export function serverModule(options: ResolvedServerRender, build: string): string {
-  return `import { flattenRoutes, matchRoutes, routeMode } from '@voltdev/router';
+  return `import { createRouter, flattenRoutes, matchRoutes, provideRouter, routeMode } from '@voltdev/router';
 import { renderToString } from '@voltdev/core/server';
-import { BUILD_ATTRIBUTE, needsHydration } from '@voltdev/core';
+import { BUILD_ATTRIBUTE, needsHydration, provideOutlet } from '@voltdev/core';
 import { createHandler, isServerCall } from '@voltdev/server';
 import { routes } from ${JSON.stringify(options.routes)};
 import App from ${JSON.stringify(options.root)};
@@ -187,7 +187,23 @@ export async function handler(request) {
   const mode = routeMode(matches, ${JSON.stringify(options.defaultMode)});
   if (mode === 'csr') return page('', '', '', 200);
 
-  const rendered = await renderToString(App);
+  // One router per request, and never one at module scope: a router there
+  // would be shared by every request in flight, and the second reader would
+  // see the first reader's page.
+  const router = createRouter({ routes });
+  const resolved = await router.resolve(url);
+  if (resolved.status === 'failed') {
+    return new Response('Internal Server Error', { status: 500 });
+  }
+  // Everything a route reads is in place before a byte is written, and the
+  // branch renders through the outlets in the application's own templates —
+  // which is what makes this a page rather than a shell with a gap in it.
+  const rendered = await renderToString(App, {
+    setup: () => {
+      provideRouter(router);
+      provideOutlet(router.outletAt(0));
+    },
+  });
   if (rendered.status !== 200) {
     return new Response('Internal Server Error', { status: 500 });
   }
@@ -200,19 +216,38 @@ export { branches, routes };
 }
 
 /**
- * The client half: hydrate what the server sent, or mount if it sent nothing.
+ * The client half: take over the page the server sent, or build one.
  *
  * One entry for both, because the page cannot tell the browser which it is
- * receiving and should not have to. The mount point either has children the
- * server wrote, or it does not.
+ * receiving and should not have to. What decides is what the server said it
+ * did, which it says with the identity of the build that did it.
+ *
+ * The order matters and is the same either way: resolve, then attach, then
+ * listen. Resolving first puts every route's data and every depth's component
+ * in place, so the render — whether it claims the server's nodes or builds its
+ * own — is the render the page is meant to show. Listening last means the
+ * first click cannot arrive before the page it would navigate from exists.
  */
 export function clientModule(options: ResolvedServerRender, build: string): string {
   const attaches = options.defaultMode !== 'csr';
-  return `import { ${attaches ? 'BUILD_ATTRIBUTE, hydrate, mount' : 'mount'} } from '@voltdev/core';
+  return `import { ${attaches ? 'BUILD_ATTRIBUTE, hydrate, mount, provideOutlet' : 'mount, provideOutlet'} } from '@voltdev/core';
+import { createRouter, provideRouter } from '@voltdev/router';
+import { routes } from ${JSON.stringify(options.routes)};
 import App from ${JSON.stringify(options.root)};
 
 const host = document.querySelector('#app');
 if (host) {
+  const router = createRouter({ routes });
+  const setup = () => {
+    provideRouter(router);
+    provideOutlet(router.outletAt(0));
+  };
+
+  // Before anything renders: a page claimed with an unresolved router would
+  // claim a branch that is not there yet, and a page built with one would
+  // build the shell and nothing under it.
+  await router.resolve(location.href);
+
 ${
   attaches
     ? `  // Two entries rather than a flag, because a flag would put the hydration
@@ -223,12 +258,17 @@ ${
   // \`csr\` route's mount point is empty on a server-rendered site, and a shell
   // with a spinner in it is not — and an identity that is not this build's is
   // markup whose paths would resolve onto the wrong nodes.
-  if (host.getAttribute(BUILD_ATTRIBUTE) === ${JSON.stringify(build)}) hydrate(App, host);
-  else mount(App, host);`
+  if (host.getAttribute(BUILD_ATTRIBUTE) === ${JSON.stringify(build)}) hydrate(App, host, { setup });
+  else mount(App, host, { setup });`
     : `  // Every route in this project renders in the browser, so there is never
   // anything to attach to and the hydration walk is not imported at all.
-  mount(App, host);`
+  mount(App, host, { setup });`
 }
+
+  // Listening, and not resolving again: the page the reader is looking at is
+  // the page this router just resolved, and running every loader a second time
+  // for it is work nobody asked for.
+  await router.start({ resolve: false });
 }
 `;
 }
