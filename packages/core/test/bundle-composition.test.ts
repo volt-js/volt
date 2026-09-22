@@ -336,13 +336,18 @@ function modulesUnder(bytes: Map<string, number>, prefix: string): string[] {
  * bundle, and `graph.ts` and `effect.ts` together are another quarter.
  */
 describe.skipIf(!built)('what an application bundle is made of', { timeout: 120_000 }, () => {
-  it('weighs 24 kB minified and 8.7 kB gzipped', async () => {
+  it('weighs 26 kB minified and 9 kB gzipped', async () => {
     const { code } = await bundled;
     const gzipped = gzipSync(code, { level: 9 }).length;
+    // It was 24 kB. Two correctness changes bought the rest and are named so
+    // that the next person can argue with them: props that arrive while a
+    // field initializes put `initProp` and what it calls into every lowered
+    // build for the first time, and a block that owns what its holes draw
+    // added the span walk and the sweep that goes with it.
     expect(code.length, 'minified').toBeGreaterThan(22_000);
-    expect(code.length, 'minified').toBeLessThanOrEqual(25_500);
+    expect(code.length, 'minified').toBeLessThanOrEqual(27_000);
     expect(gzipped, 'gzipped').toBeGreaterThan(8_000);
-    expect(gzipped, 'gzipped').toBeLessThanOrEqual(9_500);
+    expect(gzipped, 'gzipped').toBeLessThanOrEqual(10_000);
   });
 
   it('spends two fifths on the component and DOM runtime and three tenths on reactivity', async () => {
@@ -486,6 +491,12 @@ describe.skipIf(!built)('what an application bundle is made of', { timeout: 120_
       // it — a list that never takes the fast path pays one pointer comparison
       // per row to find that out.
       'sameKeysInOrder',
+      // A block is the span between its first root and its last, so that what
+      // a hole among them draws afterwards belongs to it: `spanOf` reads that
+      // span back, and `sweepOrphans` lets go of what is in it and in neither
+      // list when a row goes.
+      'spanOf',
+      'sweepOrphans',
       'template',
       'toDisplayString',
       'writeModel',

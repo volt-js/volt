@@ -153,3 +153,109 @@ describe('the other holes that are one root among several', () => {
     expect(host.textContent).toBe('xtwo');
   });
 });
+
+/**
+ * What a block is, once one of its roots has grown.
+ *
+ * The roots of a multi-root block are snapshotted when it is built, and a hole
+ * among them fills *later* — so the nodes it inserts are in the page and in no
+ * block's list. While a binding could only ever write into the fragment it was
+ * built in, that was invisible. Now that it writes where the content actually
+ * is, the block has to own what appears between its roots: otherwise removing
+ * it leaves those nodes behind, and moving it in a keyed list moves everything
+ * except them.
+ *
+ * A block is therefore the span from its first root to its last, not the list
+ * of roots it started with.
+ */
+describe('a block whose roots grew after it was built', () => {
+  /** A hole after the static root, and one before it. */
+  @Component({
+    selector: 'v-after',
+    render: compileTemplate(`<b>{ n }</b><s :if="shown.get()">{ n }</s>`),
+  })
+  class After {
+    @Prop() n = 0;
+    @Prop() shown = new Signal.State(false);
+  }
+
+  @Component({
+    selector: 'v-before',
+    render: compileTemplate(`<s :if="shown.get()">{ n }</s><b>{ n }</b>`),
+  })
+  class Before {
+    @Prop() n = 0;
+    @Prop() shown = new Signal.State(false);
+  }
+
+  it.each(['v-after', 'v-before'])('takes what grew with it when it goes — %s', (tag) => {
+    @Component({
+      selector: 'v-page',
+      imports: [After, Before],
+      render: compileTemplate(
+        `<div>|<${tag} :if="on.get()" :n="7" :shown="shown.get()"></${tag}>|</div>`,
+      ),
+    })
+    class Page {
+      on = new Signal.State(true);
+      shown = new Signal.State(false);
+    }
+
+    const { instance, host } = show(Page);
+    instance.shown.set(true);
+    flushSync();
+    expect(host.textContent).toBe('|77|');
+
+    instance.on.set(false);
+    flushSync();
+    expect(host.textContent).toBe('||');
+  });
+
+  it.each(['v-after', 'v-before'])('carries it along when the list reorders — %s', (tag) => {
+    @Component({
+      selector: 'v-page',
+      imports: [After, Before],
+      render: compileTemplate(
+        `<div><${tag} :for="n in items.get()" :key="n" :n="n" :shown="shown.get()"></${tag}></div>`,
+      ),
+    })
+    class Page {
+      items = new Signal.State([1, 2]);
+      shown = new Signal.State(false);
+    }
+
+    const { instance, host } = show(Page);
+    instance.shown.set(true);
+    flushSync();
+    expect(host.textContent).toBe('1122');
+
+    instance.items.set([2, 1]);
+    flushSync();
+    // Each row draws its own number twice, together. A row that left half of
+    // itself behind shows up here as an interleaving.
+    expect(host.textContent).toBe('2211');
+  });
+
+  it.each(['v-after', 'v-before'])('leaves nothing behind when a row goes — %s', (tag) => {
+    @Component({
+      selector: 'v-page',
+      imports: [After, Before],
+      render: compileTemplate(
+        `<div><${tag} :for="n in items.get()" :key="n" :n="n" :shown="shown.get()"></${tag}></div>`,
+      ),
+    })
+    class Page {
+      items = new Signal.State([1, 2, 3]);
+      shown = new Signal.State(false);
+    }
+
+    const { instance, host } = show(Page);
+    instance.shown.set(true);
+    flushSync();
+    expect(host.textContent).toBe('112233');
+
+    instance.items.set([1, 3]);
+    flushSync();
+    expect(host.textContent).toBe('1133');
+  });
+});

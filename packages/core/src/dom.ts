@@ -99,8 +99,20 @@ export function template(html: string, rootCount = 1, isSvg = false): () => Node
   return () => (cached ??= create()).cloneNode(true);
 }
 
-/** Snapshot a fragment's top-level nodes before insertion moves them out. */
+/**
+ * A block's roots, before insertion moves them out of their fragment.
+ *
+ * A hole writes its content immediately before its own marker, which is where
+ * the block's span has to start when that hole is the first root — and
+ * "immediately before the start" is outside it. So a block that begins with a
+ * marker is given an empty text node to begin with instead: one node, in the
+ * one shape that needs it, and the block then owns everything its holes draw.
+ */
 export function childNodes(node: Node): Node[] {
+  const first = node.firstChild;
+  if (first !== null && first.nodeType === 8 && first.nextSibling !== null) {
+    node.insertBefore(document.createTextNode(''), first);
+  }
   return Array.from(node.childNodes);
 }
 
@@ -188,6 +200,7 @@ function insertExpression(
     const nodes = flattenToNodes(resolved);
     if (nodes.length === 0) return replaceContent(parent, previous, marker, null);
     if (Array.isArray(previous) && previous.length > 0 && previous[0]!.parentNode === parent) {
+      if (previous.length > 1) sweepOrphans(previous, nodes, parent);
       reconcileArrays(parent, previous, nodes, marker);
       return nodes;
     }
@@ -225,11 +238,71 @@ function appendAll(parent: Node, value: Node | Node[], before: Node | null): voi
 
 function removeNodes(current: Current): void {
   if (current === null || current === undefined) return;
-  if (Array.isArray(current)) {
-    for (const node of current) (node as ChildNode).remove();
-  } else {
+  if (!Array.isArray(current)) {
     (current as ChildNode).remove();
+    return;
   }
+  const walked = current.length > 1 ? spanOf(current[0]!, current[current.length - 1]!) : null;
+  for (const node of walked ?? current) (node as ChildNode).remove();
+}
+
+/**
+ * Let go of what appeared inside this binding's region and belongs to nobody.
+ *
+ * A block among these nodes may have a hole of its own, and a hole fills after
+ * the block was recorded — so what it draws is between nodes this binding
+ * knows about and in none of its lists. While the block lives, the list it
+ * reports covers it; when the block goes, the node is in neither the old list
+ * nor the new one, and nothing would ever remove it.
+ *
+ * The region is walked only when its ends are still its ends, and nothing is
+ * allocated unless the walk finds more nodes than were recorded.
+ */
+function sweepOrphans(previous: Node[], next: Node[], parent: Node): void {
+  const first = previous[0]!;
+  const last = previous[previous.length - 1]!;
+  if (last.parentNode !== parent) return;
+
+  let count = 0;
+  for (let node: Node | null = first; node !== null; node = node.nextSibling) {
+    count++;
+    if (node === last) break;
+  }
+  if (count <= previous.length) return;
+
+  const known = new Set(previous);
+  const wanted = new Set(next);
+  const stop = (last as ChildNode).nextSibling;
+  let node = first as ChildNode | null;
+  while (node !== null && node !== stop) {
+    const following = node.nextSibling;
+    if (!known.has(node) && !wanted.has(node)) node.remove();
+    node = following;
+  }
+}
+
+/**
+ * Every node from `first` to `last`, which are the ends of one block.
+ *
+ * A block with several roots is recorded as the roots it was built with, and a
+ * hole among them fills afterwards — so what it draws is in the page and in no
+ * list. Reading the span back instead of trusting the list is what makes the
+ * block own what grew inside it: removing it takes that along, and a keyed
+ * list moves it with the row it belongs to.
+ *
+ * `null` when the two are not the ends of a span after all — different
+ * parents, or reordered since. Nothing is assumed in that case; the caller
+ * falls back to the nodes it recorded.
+ */
+function spanOf(first: Node, last: Node): Node[] | null {
+  if (first === last) return null;
+  if (first.parentNode === null || first.parentNode !== last.parentNode) return null;
+  const nodes: Node[] = [];
+  for (let node: Node | null = first; node !== null; node = node.nextSibling) {
+    nodes.push(node);
+    if (node === last) return nodes;
+  }
+  return null;
 }
 
 function flattenToNodes(value: unknown[], out: Node[] = []): Node[] {
@@ -1230,7 +1303,19 @@ function materializeBlock(value: unknown): MountedBlock {
 
   if (Array.isArray(value)) {
     const parts = value.map(materializeBlock);
-    return { nodes: () => parts.flatMap((part) => part.nodes()) };
+    // The roots of one block, when that is what this is: then what the block
+    // occupies is the span between the first and the last, which is the only
+    // reading that includes what a hole among them drew after the fact.
+    const roots = value.every((each) => each instanceof Node) ? (value as Node[]) : null;
+    return {
+      nodes: () => {
+        if (roots !== null && roots.length > 1) {
+          const walked = spanOf(roots[0]!, roots[roots.length - 1]!);
+          if (walked !== null) return walked;
+        }
+        return parts.flatMap((part) => part.nodes());
+      },
+    };
   }
 
   if (typeof value === 'function') {
