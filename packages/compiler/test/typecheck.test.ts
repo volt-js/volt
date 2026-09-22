@@ -16,6 +16,9 @@ function block(template: string, className = 'Widget') {
   return generateTypeCheckBlock(parse(template, { comments: true }), { className });
 }
 
+/** The block without the position markers, for reading a restatement plainly. */
+const plain = (code: string) => code.replaceAll(/\/\*@volt:\d+\*\//g, '');
+
 const shape = (spans: TemplateSpan[]) =>
   spans.map((s) => ({ exp: s.exp, ignored: s.ignored, marks: s.marks.length }));
 
@@ -137,5 +140,26 @@ describe('the block itself', () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]!.loc.line).toBe(1);
     expect(spans).toEqual([]);
+  });
+});
+
+describe('content that fills a slot', () => {
+  it('declares what the pattern binds, so the content checks against its own component', () => {
+    const code = plain(
+      block(`<v-rows><template :slot-row="{ row, index }">{ row.name }{ index }</template></v-rows>`)
+        .code,
+    );
+    expect(code).toContain('const { row, index }');
+    expect(code).toContain('row.name');
+  });
+
+  it('still checks everything else in that content against the component', () => {
+    const code = plain(
+      block(`<v-rows><template :slot-row="{ row }">{ row.name }{ ttile }</template></v-rows>`).code,
+    );
+    // `ttile` is the component's to have or not; the checker restates it as
+    // the member access it is, so the real checker reports the typo.
+    expect(code).toContain('_ctx.ttile');
+    expect(code).not.toContain('_ctx.row');
   });
 });

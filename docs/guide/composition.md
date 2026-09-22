@@ -81,11 +81,11 @@ signal they all read rather than fanning a notification out.
 
 ```html
 <v-card>
-  <h2 :slot="'title'">Settings</h2>
+  <h2 :slot-title>Settings</h2>
 
   <p>Body content goes to the default slot.</p>
 
-  <template :slot="'actions'">
+  <template :slot-actions>
     <button :click="cancel()">Cancel</button>
     <button :click="save()">Save</button>
   </template>
@@ -96,6 +96,24 @@ A `<slot>`'s children are its fallback, rendered when nothing is projected.
 
 Slot content is compiled in the **parent's** scope, so it reads the parent's
 state and calls the parent's methods — exactly where it is written.
+
+A slot can also hand its content values, which is how a component draws the
+same markup once per row or per option and gives each one its own. The
+component passes them on the `<slot>`, and the content names them:
+
+```html
+<!-- v-list -->
+<li :for="item in items.get()" :key="item.id"><slot :item="item">{ item.name }</slot></li>
+```
+
+```html
+<v-list :items="people.get()" :slot-default="{ item }">
+  <b>{ item.name }</b> — { item.role }
+</v-list>
+```
+
+See [what a slot passes back](../reference/template-syntax#what-a-slot-passes-back)
+for named slots and the patterns the binding accepts.
 
 ## Component references
 

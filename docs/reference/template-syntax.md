@@ -296,13 +296,52 @@ a text field's current `value`, as it was.
 
 ```html
 <v-card>
-  <h1 :slot="'title'">Hello</h1>
+  <h1 :slot-title>Hello</h1>
   <p>Body</p>
 </v-card>
 ```
 
-Content without `:slot` goes to the default slot. A `<slot>`'s children are
-its fallback, used when nothing is projected.
+`:slot-<name>` fills the slot of that name. Content without one goes to the
+default slot, and a `<slot>`'s children are its fallback, used when nothing is
+projected.
+
+### What a slot passes back
+
+A slot can hand its content something to draw with. The component writes what
+it has:
+
+```html
+<!-- v-rows -->
+<li :for="row in rows.get()" :key="row.id">
+  <slot name="row" :row="row" :index="row.id">{ row.label }</slot>
+</li>
+```
+
+and the content names it, with the pattern `:for` takes on its left:
+
+```html
+<v-rows :rows="people.get()">
+  <template :slot-row="{ row, index }">
+    <b>{ index }. { row.label }</b>
+  </template>
+</v-rows>
+```
+
+That is what lets a component render one piece of markup many times — a row, a
+cell, an option — and hand each rendering its own value. Bind the whole object
+under one name with `:slot-row="scope"`, or destructure and rename it the way
+`:for` allows: `:slot-row="{ row: person }"`.
+
+The names are live. Each is an accessor over what the slot passed, so content
+that draws a row follows that row's own signals; it is never rebuilt to show a
+new value, and the elements it made stay the elements they were.
+
+The default slot's own values are named on the component's tag, because its
+content is written bare and has no element to carry the pattern:
+
+```html
+<v-frame :slot-default="{ name }"><b>{ name }</b></v-frame>
+```
 
 ## Grouping without an element
 

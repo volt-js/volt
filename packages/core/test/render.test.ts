@@ -518,7 +518,7 @@ describe('components', () => {
       selector: 'v-page',
       render: compileTemplate(`
         <v-card>
-          <h1 :slot="'title'">Hello</h1>
+          <h1 :slot-title>Hello</h1>
           <p>Body content</p>
         </v-card>
       `),

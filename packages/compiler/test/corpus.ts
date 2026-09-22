@@ -183,7 +183,7 @@ export const CORPUS: CorpusEntry[] = [
   { name: 'component-model', template: `<div><v-field :model="name"></v-field></div>` },
   { name: 'component-ref', template: `<div><v-child :ref="child"></v-child></div>` },
   { name: 'component-pascal-case', template: `<div><MyWidget :n="1"></MyWidget></div>` },
-  { name: 'component-with-children', template: `<v-card><h1 :slot="'title'">Hello</h1><p>Body content</p></v-card>` },
+  { name: 'component-with-children', template: `<v-card><h1 :slot-title>Hello</h1><p>Body content</p></v-card>` },
   { name: 'slot-default-and-named', template: `<div class="card"><header><slot name="title">Untitled</slot></header><main><slot></slot></main></div>` },
   { name: 'slot-no-fallback', template: `<div><slot></slot></div>` },
   { name: 'slot-with-props', template: `<div><slot name="row" :item="item.get()" :index="i.get()">none</slot></div>` },

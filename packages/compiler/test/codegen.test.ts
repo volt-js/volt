@@ -313,14 +313,14 @@ describe('a tag one character away from a real element', () => {
 describe('a mistyped directive is an error, not a property', () => {
   for (const [written, meant] of [
     ['iff', 'if'], ['clas', 'class'], ['kay', 'key'], ['styel', 'style'],
-    ['slto', 'slot'], ['fro', 'for'], ['refe', 'ref'], ['modle', 'model'],
+    ['slto', 'slot-<name>'], ['fro', 'for'], ['refe', 'ref'], ['modle', 'model'],
   ] as const) {
     it(`rejects :${written} and names :${meant}`, () => {
       // Without this it becomes a property binding: `:iff="open"` sets a
       // property called `iff` and the element renders unconditionally, with
       // nothing wrong in the output to notice.
       expect(() => gen(`<div :${written}="x"></div>`)).toThrow(
-        new RegExp(`Unknown directive .:${written}.*did you mean .:${meant}`),
+        new RegExp(`Unknown directive .:${written}.*did you mean .:${meant.replace(/[<>]/g, '.')}`),
       );
     });
   }
@@ -374,5 +374,65 @@ describe('message keys a template asks for', () => {
 
   it('is empty for a template that says nothing', () => {
     expect(keys(`<p>plain</p>`)).toEqual([]);
+  });
+});
+
+describe('filling a slot', () => {
+  it('names the slot in the directive, and binds what it passes', () => {
+    const body = gen(`<v-rows><template :slot-row="{ row, index }">{ row.name }{ index }</template></v-rows>`);
+    // The content is a function of the slot's props, and each bound name reads
+    // through to the outlet's getter rather than to a value copied once.
+    expect(body).toMatch(/"row":\s*\(_slotProps\d*\)\s*=>/);
+    expect(body).toMatch(/const row = \(\) => \(\(_slotProps\d*\)\?\.row\);/);
+    expect(body).toMatch(/const index = \(\) => \(\(_slotProps\d*\)\?\.index\);/);
+  });
+
+  it('fills a slot that passes nothing, with no function parameter', () => {
+    expect(gen(`<v-card><h1 :slot-title>Hello</h1></v-card>`)).toMatch(/"title":\s*\(\)\s*=>/);
+  });
+
+  it('binds the whole bag under one name', () => {
+    expect(gen(`<v-rows><b :slot-row="scope">{ scope.index }</b></v-rows>`)).toMatch(
+      /const scope = \(\) => _slotProps\d*;/,
+    );
+  });
+
+  it('refuses the old spelling, and says what replaced it', () => {
+    expect(() => gen(`<v-card><h1 :slot="'title'">Hello</h1></v-card>`)).toThrow(
+      /`:slot` names its slot in the directive now[\s\S]*`:slot-title`/,
+    );
+    // The value was never really an expression: `:slot="title"` named the same
+    // slot as `:slot="'title'"`, so both are answered the same way.
+    expect(() => gen(`<v-card><h1 :slot="title">Hello</h1></v-card>`)).toThrow(/`:slot-title`/);
+  });
+
+  it('refuses a slot with no name', () => {
+    expect(() => gen(`<v-card><h1 :slot-="x">Hello</h1></v-card>`)).toThrow(
+      /`:slot-` needs a slot name/,
+    );
+  });
+
+  it('refuses two patterns for one slot', () => {
+    expect(() =>
+      gen(
+        `<v-rows><b :slot-row="{ row }">{ row.a }</b><i :slot-row="{ row }">{ row.b }</i></v-rows>`,
+      ),
+    ).toThrow(/binds what the slot passes twice/);
+  });
+
+  it('refuses a slot directive on an element, which has no slot to fill', () => {
+    expect(() => gen(`<div :slot-row="{ row }">{ row.a }</div>`)).toThrow(
+      /fills a slot of the component it is written inside/,
+    );
+  });
+
+  it('refuses a named slot on the component tag, where only the default is written', () => {
+    expect(() => gen(`<v-rows :slot-row="{ row }">{ row.a }</v-rows>`)).toThrow(
+      /names a slot of the component around it/,
+    );
+  });
+
+  it('refuses a pattern that is not one', () => {
+    expect(() => gen(`<v-rows><b :slot-row="row +">x</b></v-rows>`)).toThrow(/is not a pattern/);
   });
 });

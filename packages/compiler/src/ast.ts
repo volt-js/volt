@@ -147,6 +147,5 @@ export const STRUCTURAL_DIRECTIVES = new Set<string>([
   'html',
   'model',
   'ref',
-  'slot',
   'portal',
 ]);

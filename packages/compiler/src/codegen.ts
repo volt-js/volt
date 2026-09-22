@@ -1078,7 +1078,17 @@ class Generator {
     // Pass 1 — fold every provably-constant binding into the markup so it
     // costs nothing at runtime.
     for (const dir of node.directives) {
-      if (dir.kind === 'key' || dir.kind === 'slot') continue;
+      if (dir.kind === 'key') continue;
+      // A slot directive is taken by the component whose child it is. One that
+      // reaches an element has no component to fill, and silently filling
+      // nothing is how a misplaced one would never be found.
+      if (dir.kind === 'slot') {
+        this.error(
+          `\`${dir.rawName}\` fills a slot of the component it is written inside.\n` +
+            `  \`<${node.tag}>\` is an element, so there is no slot here to fill.`,
+          dir,
+        );
+      }
 
       if ((dir.kind === 'prop' || dir.kind === 'attr' || dir.kind === 'class') && dir.exp) {
         const parsed = this.parse(dir.exp, dir.loc);
@@ -2262,43 +2272,135 @@ class Generator {
   }
 
   private genSlots(node: ElementNode, ctx: PrintContext): string {
-    const named = new Map<string, TemplateChildNode[]>();
+    interface Filled {
+      readonly nodes: TemplateChildNode[];
+      /** The pattern its content binds the slot's props with, if it named one. */
+      pattern: DirectiveNode | null;
+    }
+
+    const named = new Map<string, Filled>();
     const defaultChildren: TemplateChildNode[] = [];
+    let defaultPattern: DirectiveNode | null = null;
 
     for (const child of node.children) {
       if (child.type === 'element') {
         const slotDir = findDirective(child, 'slot');
-        if (slotDir?.exp) {
-          const name = stripQuotes(slotDir.exp);
-          const list = named.get(name) ?? [];
+        if (slotDir) {
           const stripped = stripDirectives(child, ['slot']);
-          list.push(stripped.isTemplate ? ({ ...stripped } as ElementNode) : stripped);
-          named.set(name, list);
+          const filled = named.get(slotDir.name) ?? { nodes: [], pattern: null };
+          if (slotDir.exp) {
+            if (filled.pattern) {
+              this.error(
+                `\`:slot-${slotDir.name}\` binds what the slot passes twice.\n` +
+                  '  One element fills a slot and names the pattern; the rest of\n' +
+                  '  that slot goes inside it.',
+                slotDir,
+              );
+            }
+            filled.pattern = slotDir;
+          }
+          filled.nodes.push(stripped.isTemplate ? ({ ...stripped } as ElementNode) : stripped);
+          named.set(slotDir.name, filled);
           continue;
         }
       }
       defaultChildren.push(child);
     }
 
+    // `:slot-default` on the tag itself binds what the default slot passes,
+    // because default content is written bare and has no element of its own to
+    // put the pattern on.
+    const tagPattern = findDirective(node, 'slot');
+    if (tagPattern) {
+      if (tagPattern.name !== 'default') {
+        this.error(
+          `\`:slot-${tagPattern.name}\` on a component names a slot of the component around it.\n` +
+            `  To fill \`${tagPattern.name}\` here, put it on a child:\n` +
+            `  \`<template :slot-${tagPattern.name}="{ row }">\`.`,
+          tagPattern,
+        );
+      }
+      defaultPattern = tagPattern;
+    }
+
     const entries: string[] = [];
     const meaningfulDefault = defaultChildren.filter(
       (c) => c.type !== 'comment' && !(c.type === 'text' && !c.content.trim()),
     );
-    const content = (nodes: TemplateChildNode[]): string => {
-      const generated = this.genChildrenExpression(nodes, ctx);
-      return this.server ? this.arrowBlock(generated) : `() => ${generated}`;
+
+    const content = (nodes: TemplateChildNode[], pattern: DirectiveNode | null): string => {
+      if (!pattern) {
+        const generated = this.genChildrenExpression(nodes, ctx);
+        return this.server ? this.arrowBlock(generated) : `() => ${generated}`;
+      }
+      return this.genSlotContentWithProps(nodes, pattern, ctx);
     };
+
     if (meaningfulDefault.length) {
-      entries.push(`default: ${content(defaultChildren)}`);
+      entries.push(`default: ${content(defaultChildren, defaultPattern)}`);
+    } else if (defaultPattern) {
+      this.error(
+        '`:slot-default` binds what the default slot passes, and there is no content here to bind it for.',
+        defaultPattern,
+      );
     }
-    for (const [name, children] of named) {
-      const nodes = children.flatMap((c) =>
+    for (const [name, filled] of named) {
+      const nodes = filled.nodes.flatMap((c) =>
         c.type === 'element' && c.isTemplate ? c.children : [c],
       );
-      entries.push(`${JSON.stringify(name)}: ${content(nodes)}`);
+      entries.push(`${JSON.stringify(name)}: ${content(nodes, filled.pattern)}`);
     }
 
     return entries.length ? `{ ${entries.join(', ')} }` : 'null';
+  }
+
+  /**
+   * Slot content that binds what the slot passes it.
+   *
+   * The props object the outlet builds is one of getters, so a destructured
+   * name becomes an accessor over it, exactly as a destructured `:for` item
+   * does: the content reads through to the live value rather than to a copy
+   * taken when the slot was first rendered. So a table's cell template follows
+   * the row it was handed when that row's own signals change, and re-rendering
+   * it is never necessary.
+   */
+  private genSlotContentWithProps(
+    nodes: TemplateChildNode[],
+    dir: DirectiveNode,
+    ctx: PrintContext,
+  ): string {
+    let pattern;
+    try {
+      pattern = parseForExpression(`${dir.exp} in _`).item;
+    } catch (err) {
+      this.error(
+        `\`${dir.rawName}="${dir.exp}"\` is not a pattern.\n` +
+          '  It binds what the slot passes, the way `:for` binds an item:\n' +
+          `  \`${dir.rawName}="{ row, index }"\`, or \`${dir.rawName}="scope"\` for all of it.\n` +
+          `  ${(err as Error).message}`,
+        dir,
+      );
+    }
+
+    const propsVar = this.nextId('slotProps');
+    const body = (names: string[], lines: string[]): string => {
+      const generated = withScope(ctx, names, () => this.genChildrenExpression(nodes, ctx), true);
+      // A server body is statements that write into the one writer this render
+      // has; a client body is an expression the caller inserts.
+      const last = this.server ? generated : `return ${generated};`;
+      return `(${propsVar}) => {\n${indent([...lines, last].join('\n'), 2)}\n}`;
+    };
+
+    if (pattern.type === 'IdentifierPattern') {
+      // The whole bag, under one name. It stays the object the outlet built,
+      // so reading a property off it reads that getter every time.
+      return body([pattern.name], [`const ${pattern.name} = () => ${propsVar};`]);
+    }
+
+    const lines: string[] = [];
+    const names: string[] = [];
+    this.genPatternAccessors(pattern, propsVar, lines, names);
+    return body(names, lines);
   }
 }
 
@@ -2421,16 +2523,6 @@ function isSafeIdentifier(name: string): boolean {
   return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name);
 }
 
-function stripQuotes(value: string): string {
-  const trimmed = value.trim();
-  if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
-  ) {
-    return trimmed.slice(1, -1);
-  }
-  return trimmed;
-}
 
 /**
  * An options object carrying only what was actually set.

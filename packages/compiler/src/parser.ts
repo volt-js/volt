@@ -562,6 +562,27 @@ class Parser {
 
     if (base === 'spread') return make('spread', '');
 
+    // `:slot-<name>` fills the slot of that name, and its value — when it has
+    // one — is the pattern its content binds the slot's props with, the same
+    // pattern `:for` takes on its left. The name is in the directive rather
+    // than in the value so that it reads as the other escapes below do, and so
+    // that there is nothing to quote: `:slot="'cell'"` and `:slot="cell"` used
+    // to mean the same slot while `:slot="cell(row)"` silently named one
+    // `cell(row)`.
+    if (base.startsWith('slot-')) {
+      const name = base.slice(5);
+      if (!name) this.error('`:slot-` needs a slot name, as in `:slot-cell`.');
+      return make('slot', name);
+    }
+    if (base === 'slot') {
+      const name = exp ? stripQuotes(exp) : 'name';
+      this.error(
+        '`:slot` names its slot in the directive now.\n' +
+          `  Write \`:slot-${name}\`, and to bind what the slot passes:\n` +
+          `  \`:slot-${name}="{ row }"\`.`,
+      );
+    }
+
     if (base.startsWith('on-')) return make('event', base.slice(3));
     if (base.startsWith('prop-')) return make('prop', base.slice(5));
     if (base.startsWith('attr-')) return make('attr', base.slice(5));
@@ -579,8 +600,11 @@ class Parser {
     if (!COMMON_ATTRIBUTES.has(base) && !base.includes('-')) {
       const meant = DIRECTIVE_NAMES.find((name) => isOneEditFrom(base, name));
       if (meant) {
+        // A slot carries its name, so the suggestion has to show the shape
+        // rather than a directive that means nothing on its own.
+        const suggestion = meant === 'slot' ? 'slot-<name>' : meant;
         this.error(
-          `Unknown directive \`:${base}\` — did you mean \`:${meant}\`?\n` +
+          `Unknown directive \`:${base}\` — did you mean \`:${suggestion}\`?\n` +
             `  If \`${base}\` really is a property, write \`:prop-${base}\` to say so.`,
         );
       }
@@ -653,4 +677,13 @@ function trimmedLoc(loc: SourceLocation, raw: string): SourceLocation {
   }
   const start = loc.start + lead;
   return { start, end: start + raw.trim().length, line, column };
+}
+
+/** `'cell'` and `cell` alike, for naming the slot in the replacement message. */
+function stripQuotes(value: string): string {
+  const trimmed = value.trim();
+  const quote = trimmed[0];
+  return (quote === "'" || quote === '"') && trimmed.endsWith(quote)
+    ? trimmed.slice(1, -1)
+    : trimmed;
 }

@@ -389,8 +389,48 @@ class BlockEmitter {
       this.forElement(node, forDir, ctx);
       return;
     }
+    const slotDir = findDirective(node, 'slot');
+    if (slotDir?.exp) {
+      this.slotContent(node, slotDir, ctx);
+      return;
+    }
     this.directives(node.directives, ctx);
     this.children(node.children, ctx);
+  }
+
+  /**
+   * `:slot-<name>="pattern"` binds what the slot passes, for its content.
+   *
+   * The names are declared, so the content is checked against the component
+   * it is written in rather than reported as missing members of it. Their type
+   * is not known here: it belongs to the component being filled, and a
+   * template does not yet type a child component's own slots. Declaring them
+   * as `any` is what keeps the check honest either way — it reports nothing it
+   * cannot stand behind, and reports everything else in the content as usual.
+   */
+  private slotContent(node: ElementNode, dir: DirectiveNode, ctx: PrintContext): void {
+    let pattern;
+    try {
+      pattern = parseForExpression(`${dir.exp} in _`).item;
+    } catch (err) {
+      this.errors.push({ message: (err as Error).message, loc: dir.expLoc ?? dir.loc });
+      return;
+    }
+
+    this.line('{');
+    this.depth++;
+    this.line(`const ${printPattern(pattern, ctx)}: any = {} as any;`);
+
+    withScope(ctx, patternNames(pattern), () => {
+      this.directives(
+        node.directives.filter((d) => d !== dir),
+        ctx,
+      );
+      this.children(node.children, ctx);
+    });
+
+    this.depth--;
+    this.line('}');
   }
 
   private slotOutlet(node: SlotOutletNode, ctx: PrintContext): void {
