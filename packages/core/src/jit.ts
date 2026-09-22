@@ -18,7 +18,7 @@
  */
 
 import { compile } from '@voltdev/compiler';
-import type { RenderFn } from './component.js';
+import { HAS_HOST, type RenderFn } from './component.js';
 import * as runtime from './runtime.js';
 import * as server from './server.js';
 
@@ -36,11 +36,16 @@ import * as server from './server.js';
  * which; a client build drops the server namespace with the branch that
  * reaches it.
  */
+
 export function compileTemplate(source: string, filename = 'template'): RenderFn {
   const target = __VOLT_SERVER__ ? 'server' : 'client';
-  const { body } = compile(source, { filename, runtime: '_rt', target });
+  const { body, hasHost } = compile(source, { filename, runtime: '_rt', target });
   const factory = new Function('_rt', body) as (rt: unknown) => RenderFn;
-  return factory(__VOLT_SERVER__ ? server : runtime);
+  const render = factory(__VOLT_SERVER__ ? server : runtime);
+  // Whether this template marks an element for what a caller writes on the
+  // tag. A build writes the same answer into the component's config; here
+  // there is no build, so it rides on the function.
+  return Object.defineProperty(render, HAS_HOST, { value: hasHost }) as RenderFn;
 }
 
 export { compile } from '@voltdev/compiler';

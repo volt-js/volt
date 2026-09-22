@@ -117,6 +117,16 @@ export interface ComponentConfig {
    */
   needsHydration?: boolean;
 
+  /**
+   * Whether the template marks an element with `:host` — what a caller writes
+   * on this component's tag goes there.
+   *
+   * Filled in by `@voltdev/vite-plugin` beside `render`, from the compiler's
+   * own answer. Absent means unknown, and a JIT-compiled render carries it
+   * itself.
+   */
+  host?: boolean;
+
   /** Path(s) to CSS files, relative to this file. Inlined at build time. */
   styleUrl?: string;
   styleUrls?: string[];
@@ -291,10 +301,13 @@ export function Component(config: ComponentConfig) {
  * which is the one thing Volt's reactivity does not do.
  */
 export function Prop(options: PropOptions = {}) {
-  return function decorateProp(
+  // Generic over the field it decorates, so the initializer it returns has the
+  // field's own type: a decorator that returned `unknown` would refuse every
+  // prop whose type is written down.
+  return function decorateProp<T>(
     _target: undefined,
-    context: ClassFieldDecoratorContext,
-  ): (this: unknown, initial: unknown) => unknown {
+    context: ClassFieldDecoratorContext<unknown, T>,
+  ): (this: unknown, initial: T) => T {
     const kind = (context as { kind: string }).kind;
     const name = String((context as { name?: unknown }).name);
 
@@ -335,8 +348,8 @@ export function Prop(options: PropOptions = {}) {
       required: options.required ?? false,
     });
 
-    return function initializeProp(this: unknown, initial: unknown): unknown {
-      return takeProp(this as Record<string, unknown>, property, alias, initial);
+    return function initializeProp(this: unknown, initial: T): T {
+      return takeProp(this as Record<string, unknown>, property, alias, initial) as T;
     };
   };
 }
@@ -585,6 +598,21 @@ export function withSpread(
   });
 }
 
+/**
+ * Where a JIT-compiled render function says whether its template marks a host.
+ *
+ * A build writes `host` into the component's config instead. Either way the
+ * answer is the template's rather than the render's: the marked element may be
+ * inside an `:if`, so "nothing took them this time" is not "there is nowhere
+ * to put them".
+ */
+export const HAS_HOST: unique symbol = Symbol('volt.hasHost');
+
+function hasHost(resolved: ResolvedConfig, render: unknown): boolean {
+  if (resolved.config.host !== undefined) return resolved.config.host;
+  return (render as Record<symbol, unknown> | null)?.[HAS_HOST] === true;
+}
+
 export function hostAttrsOf(ctx: unknown): Record<string, unknown> | null {
   const held = ATTRS.get(ctx as object);
   if (!held) return null;
@@ -784,7 +812,7 @@ function instantiate(
 
       if (__VOLT_DEV__) {
         const held = ATTRS.get(instance);
-        if (held && !held.taken) {
+        if (held && !hasHost(resolved, render)) {
           const names = Object.keys(held.attrs).join(', ');
           throw voltError(
             'V0213',

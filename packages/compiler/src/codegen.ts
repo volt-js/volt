@@ -207,6 +207,16 @@ export interface CodegenResult {
    * static ships a page that does not work.
    */
   needsHydration: boolean;
+  /**
+   * Whether the template marks an element with `:host`.
+   *
+   * What a caller writes on a component's tag goes there, and a component
+   * that marks none is told it was handed something with nowhere to put it.
+   * Answered here rather than at render time, because the element may be
+   * inside an `:if` — an overlay's content exists only while it is open — and
+   * "nothing consumed it this time" is not the same as "there is nowhere".
+   */
+  hasHost: boolean;
   /** What the compiler removed or folded before runtime ever sees it. */
   stats: CompileStats;
   /**
@@ -425,6 +435,8 @@ class Generator {
   private blocks: TemplateBlock[] = [];
   private delegatedEventNames = new Set<string>();
   private rowRootCounts: (number | null)[] = [];
+  /** Set by the first `:host` this template carries; see `CodegenResult`. */
+  private hasHost = false;
   private hoisted: string[] = [];
   private uid = 0;
 
@@ -504,6 +516,7 @@ class Generator {
       delegatedEventNames: [...this.delegatedEventNames].sort(),
       rowRootCounts: this.rowRootCounts,
       needsHydration: callsRuntime(renderBody, this.rt),
+      hasHost: this.hasHost,
       stats: this.stats,
       messageKeys: [...new Set(this.messageSites.map((site) => site.key))].sort(),
       messageSites: this.messageSites,
@@ -1294,6 +1307,7 @@ class Generator {
         case 'host': {
           hasClass = true;
           hasStyle = true;
+          this.hasHost = true;
           host = `${this.rt}.hostAttrsOf(${this.ctxName})`;
           break;
         }
@@ -1600,6 +1614,7 @@ class Generator {
       // What the caller wrote on this component's tag, applied to the element
       // the template says stands for it.
       case 'host': {
+        this.hasHost = true;
         push((el) => [`${this.rt}.hostAttrs(${el}, ${this.ctxName});`]);
         return;
       }

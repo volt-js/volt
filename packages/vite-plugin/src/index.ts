@@ -1092,7 +1092,9 @@ async function compileTemplates(
     edits.push({
       start: site.start,
       end: site.end,
-      text: `render: ${renderName}, needsHydration: ${result.needsHydration}`,
+      text:
+        `render: ${renderName}, needsHydration: ${result.needsHydration}` +
+        (result.hasHost ? ', host: true' : ''),
     });
   }
 
