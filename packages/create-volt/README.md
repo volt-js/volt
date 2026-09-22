@@ -20,7 +20,7 @@ pnpm dev
 | --- | --- |
 | `minimal` | One component, its template, a stylesheet and a test. |
 | `router-query` | Nested routes and a shared server-state cache. |
-| `start` | Server rendering, per-route rendering modes and server functions, from `volt({ start: true })`. |
+| `server-render` | Server rendering, per-route rendering modes and server functions, from `volt({ serverRender: true })`. |
 
 Pick one up front with `--template`, or answer the prompt.
 

@@ -39,7 +39,7 @@ export const TEMPLATES: readonly TemplateDefinition[] = [
     devDependencies: TOOLCHAIN,
   },
   {
-    id: 'start',
+    id: 'server-render',
     summary: 'Server rendering, per-route modes and server functions, wired.',
     dependencies: ['@voltdev/core', '@voltdev/query', '@voltdev/router', '@voltdev/server'],
     devDependencies: TOOLCHAIN,

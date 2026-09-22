@@ -465,13 +465,13 @@ describe('which emit a build gets', () => {
     expect(emitOf(out!)).toBe('hydrate');
   });
 
-  it('claims them for a project in start mode, which did not say so twice', async () => {
+  it('claims them for a project in `serverRender`, which did not say so twice', async () => {
     // `start` server-renders, so its client half has to attach to what the
     // server wrote. Making the project write `hydrate: true` beside `start:
     // true` would be asking it to restate a decision it has already made, and
     // getting one of the two wrong produces a page that builds a second copy
     // on top of the first.
-    const { templates } = plugins({ start: true });
+    const { templates } = plugins({ serverRender: true });
     const out = await runTransform(templates, COMPONENT);
     expect(emitOf(out!)).toBe('hydrate');
   });
@@ -479,7 +479,7 @@ describe('which emit a build gets', () => {
   it('still builds from nothing for a start project whose routes are all csr', async () => {
     // The escape hatch stays reachable: `hydrate` is only implied, so a
     // project that wants the wiring without the server rendering says so.
-    const { templates } = plugins({ start: true, hydrate: false });
+    const { templates } = plugins({ serverRender: true, hydrate: false });
     const out = await runTransform(templates, COMPONENT);
     expect(emitOf(out!)).toBe('client');
   });

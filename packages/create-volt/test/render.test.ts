@@ -79,16 +79,16 @@ describe('the router-query template', () => {
   });
 });
 
-describe('the start template', () => {
+describe('the server-render template', () => {
   it('turns the mode on in one line, and nothing else configures it', async () => {
-    const files = await render('start');
+    const files = await render('server-render');
     // The claim the template exists to make: the wiring is one option, not a
     // page of setup a reader has to keep in their head.
-    expect(files.get('vite.config.ts')).toContain('volt({ start: true })');
+    expect(files.get('vite.config.ts')).toContain('volt({ serverRender: true })');
   });
 
   it('says where each route is rendered, all three ways', async () => {
-    const routes = files_(await render('start'), 'src/routes.ts');
+    const routes = files_(await render('server-render'), 'src/routes.ts');
     // A template that demonstrated only server rendering would demonstrate
     // half of it. The point is that the choice survives per route.
     expect(routes).toContain("mode: 'ssg'");
@@ -97,9 +97,9 @@ describe('the start template', () => {
   });
 
   it('ships a deployable entry that is a Request in and a Response out', async () => {
-    const files = await render('start');
+    const files = await render('server-render');
     const server = files_(files, 'server.ts');
-    expect(server).toContain("from 'virtual:volt-start/server'");
+    expect(server).toContain("from 'virtual:volt/server'");
     expect(server).toContain('export default { fetch: handler }');
     // No `node:` *import* — the file says the words in a comment explaining
     // why, so the assertion has to be about the import and not the string.
@@ -110,16 +110,16 @@ describe('the start template', () => {
   });
 
   it('reaches the generated client through its own entry', async () => {
-    const files = await render('start');
+    const files = await render('server-render');
     expect(files.get('index.html')).toContain('/src/main.ts');
-    expect(files_(files, 'src/main.ts')).toContain("'virtual:volt-start/client'");
+    expect(files_(files, 'src/main.ts')).toContain("'virtual:volt/client'");
   });
 
   it('declares the virtual modules, so the project type-checks without the plugin running', async () => {
-    const files = await render('start');
-    const types = files_(files, 'src/volt-start.d.ts');
-    expect(types).toContain("declare module 'virtual:volt-start/server'");
-    expect(types).toContain("declare module 'virtual:volt-start/client'");
+    const files = await render('server-render');
+    const types = files_(files, 'src/volt-server-render.d.ts');
+    expect(types).toContain("declare module 'virtual:volt/server'");
+    expect(types).toContain("declare module 'virtual:volt/client'");
   });
 });
 

@@ -1,5 +1,5 @@
 /**
- * `start`: the wiring, and the promise that it stays a choice.
+ * `serverRender`: the wiring, and the promise that it stays a choice.
  *
  * Two claims, and the second is a roadmap entry of its own. The mode has to
  * wire the router, the renderer and the server functions together so an
@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 import { build as esbuildBuild, transformSync } from 'esbuild';
 import { resolve } from 'node:path';
 import { volt } from '../src/index.js';
-import { CLIENT_ID, SERVER_ID, clientModule, resolveStart, serverModule } from '../src/start.js';
+import { CLIENT_ID, SERVER_ID, clientModule, resolveServerRender, serverModule } from '../src/server-render.js';
 
 type Loader = { resolveId?: unknown; load?: unknown; name: string };
 
@@ -39,7 +39,7 @@ async function loadVirtual(plugins: readonly unknown[], id: string): Promise<str
 describe('staying a choice', () => {
   it('serves nothing at all unless a project asked for it', async () => {
     // The entry this proves is "It must stay opt-in", and the way it fails is
-    // by someone giving `start` a default. Then this goes red.
+    // by someone giving `serverRender` a default. Then this goes red.
     const plugins = volt();
     expect(await loadVirtual(plugins, SERVER_ID)).toBeNull();
     expect(await loadVirtual(plugins, CLIENT_ID)).toBeNull();
@@ -54,25 +54,25 @@ describe('staying a choice', () => {
 
 });
 
-describe('what start generates', () => {
-  const start = resolveStart(true);
+describe('what `serverRender` generates', () => {
+  const wiring = resolveServerRender(true);
 
   it('produces a server module that parses and wires the four pieces', () => {
-    const code = serverModule(start);
+    const code = serverModule(wiring);
     expect(() => transformSync(code, { loader: 'js' })).not.toThrow();
 
     // The four the entry names, each by the import that brings it in.
     expect(code).toContain("from '@voltdev/router'");
     expect(code).toContain("from '@voltdev/core/server'");
     expect(code).toContain("from '@voltdev/server'");
-    expect(code).toContain(start.routes);
+    expect(code).toContain(wiring.routes);
   });
 
   it('is a Request in and a Response out, which is what edge means', () => {
     // Not decoration: the roadmap's edge mode falls out of this shape, and a
     // handler that took a Node request or reached for a builtin would not be
     // deployable to the runtime the check in `render-path.ts` exists for.
-    const code = serverModule(start);
+    const code = serverModule(wiring);
     expect(code).toContain('export async function handler(request)');
     expect(code).toContain('new URL(request.url)');
     expect(code).not.toContain('node:');
@@ -80,7 +80,7 @@ describe('what start generates', () => {
   });
 
   it('answers a URL the table does not match with the shell and a 404', () => {
-    const code = serverModule(start);
+    const code = serverModule(wiring);
     // The application's own not-found route is a route, so it still needs the
     // page — but a 200 for a URL that does not exist would be worse than a 404
     // with a page that says so.
@@ -92,7 +92,7 @@ describe('what start generates', () => {
     // nothing about its path, so it has to be answered before the table is
     // consulted — otherwise every server call renders a 404 page at the
     // caller and the application appears to have no server functions at all.
-    const code = serverModule(start);
+    const code = serverModule(wiring);
     const base = code.indexOf('isServerCall(request');
     const match = code.indexOf('matchRoutes(branches');
     expect(base, 'the server-call check is not there').toBeGreaterThan(-1);
@@ -101,34 +101,34 @@ describe('what start generates', () => {
   });
 
   it('sends a csr route its shell without rendering it', () => {
-    const code = serverModule(start);
+    const code = serverModule(wiring);
     expect(code).toContain("if (mode === 'csr') return page('', '', '', 200)");
   });
 
   it('produces a client module that parses and mounts', () => {
-    const code = clientModule(start);
+    const code = clientModule(wiring);
     expect(() => transformSync(code, { loader: 'js' })).not.toThrow();
     expect(code).toContain("from '@voltdev/core'");
-    expect(code).toContain(start.root);
+    expect(code).toContain(wiring.root);
   });
 });
 
 describe('what a project supplies', () => {
   it('defaults to a route table and a root it can override', () => {
-    expect(resolveStart(true)).toMatchObject({
+    expect(resolveServerRender(true)).toMatchObject({
       routes: '/src/routes.js',
       root: '/src/app.js',
       defaultMode: 'ssr',
       base: '/_volt/',
     });
-    expect(resolveStart({ routes: '/app/table.js', defaultMode: 'csr' })).toMatchObject({
+    expect(resolveServerRender({ routes: '/app/table.js', defaultMode: 'csr' })).toMatchObject({
       routes: '/app/table.js',
       defaultMode: 'csr',
     });
   });
 
   it('serves both halves once it is asked', async () => {
-    const plugins = volt({ start: true });
+    const plugins = volt({ serverRender: true });
     const server = await loadVirtual(plugins, SERVER_ID);
     const client = await loadVirtual(plugins, CLIENT_ID);
     expect(server).toContain('export async function handler');
@@ -182,7 +182,7 @@ async function handlerFor(
   calls: string[];
 }> {
   const calls: string[] = [];
-  const start = resolveStart(true);
+  const wiring = resolveServerRender(true);
 
   const stubs: Record<string, string> = {
     '@voltdev/core/server': 'export const renderToString = async () => (globalThis.__render());',
@@ -196,12 +196,12 @@ async function handlerFor(
       export { isServerCall } from ${JSON.stringify(SERVER_HANDLER)};
       export const createHandler = () => (request) => globalThis.__functions(request);
     `,
-    [start.routes]: TABLE,
-    [start.root]: 'export default class App {}',
+    [wiring.routes]: TABLE,
+    [wiring.root]: 'export default class App {}',
   };
 
   const built = await esbuildBuild({
-    stdin: { contents: serverModule(start), resolveDir: '/', loader: 'js' },
+    stdin: { contents: serverModule(wiring), resolveDir: '/', loader: 'js' },
     bundle: true,
     write: false,
     format: 'esm',

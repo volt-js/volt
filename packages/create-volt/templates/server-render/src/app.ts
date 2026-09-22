@@ -5,7 +5,7 @@ import { routes } from './routes.js';
 export const router = createRouter({ routes });
 
 /**
- * The root, and the only component `start` needs to be told about.
+ * The root, and the only component `serverRender` needs to be told about.
  *
  * It is the default export because that is what the generated wiring imports
  * — one name, on both sides of the network, so the server render and the

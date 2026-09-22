@@ -48,7 +48,7 @@ is part of a framework.
 
 That is what makes it mountable anywhere a `Request` arrives — an edge function,
 a Node server, a route inside another framework — and it is why
-[start mode](./start) generates its wiring into the application rather than
+[`serverRender`](./server-render) generates its wiring into the application rather than
 putting it here. The cost is that server functions are not aware of pages: a
 function cannot read which route the caller was on unless the caller passes it.
 

@@ -4,7 +4,7 @@ import { Server, guard } from '@voltdev/server';
  * A server function, called from the browser as if it were local.
  *
  * The plugin rewrites the call site into a POST to the same origin and leaves
- * the body on the server, so nothing in this file reaches a bundle. `start`
+ * the body on the server, so nothing in this file reaches a bundle. `serverRender`
  * mounts the handler for it at the same base the transform posts to — which is
  * the wiring this template exists to demonstrate.
  */

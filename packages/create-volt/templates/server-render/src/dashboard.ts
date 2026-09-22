@@ -5,7 +5,7 @@ import { Component, Signal } from '@voltdev/core';
  * server sends the shell and this renders in the browser.
  *
  * That is the promise the roadmap makes about server rendering being a choice.
- * Turning `start` on for the application did not take it away for this route.
+ * Turning `serverRender` on for the application did not take it away for this route.
  */
 @Component({ selector: 'v-dashboard', templateUrl: './dashboard.html' })
 export class Dashboard {

@@ -4,7 +4,7 @@
  * The templates are type-checked as generated, and that is not enough here:
  * TypeScript accepts `@Server()` on a static method, and the plugin's
  * server-function pass refuses one — so a template can type-check cleanly and
- * still fail `vite build` on the first run. The `start` template did exactly
+ * still fail `vite build` on the first run. The server-render template did exactly
  * that. The refusals are the point of the pass (no guard, not async, static),
  * so each file carrying `@Server()` is run through it, on both sides, the way a
  * build would.

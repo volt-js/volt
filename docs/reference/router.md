@@ -31,7 +31,7 @@ await router.start(document.querySelector('#app')!);
 The table is data rather than a directory of files. A route is found by reading
 the table, which a server and a build can do as easily as a browser — the same
 table decides what a URL renders, what a prerender writes, and how a request is
-answered. See [start mode](./start) for all three at once.
+answered. See [`serverRender`](./server-render) for all three at once.
 
 ## The route table
 
@@ -294,7 +294,7 @@ It takes either what `matchRoutes` returns for one URL or a branch from
 one request has matches, and a build enumerating every route has branches.
 
 `fallback` is the application's own default. Nothing in the router decides that
-server rendering happens at all. [Start mode](./start) is what reads this.
+server rendering happens at all. [`serverRender`](./server-render) is what reads this.
 
 ## Without a browser
 

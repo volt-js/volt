@@ -121,7 +121,7 @@ interface VoltPluginOptions {
   lowerSignals?: boolean;        // default: true
   runtimeModule?: string;        // default: '@voltdev/core/runtime'
   debug?: boolean;               // default: false
-  start?: StartOptions | boolean;// default: false, see Start mode
+  start?: ServerRenderOptions | boolean;// default: false, see `serverRender`
   hydrate?: boolean;             // default: whether `start` is on
   serverModule?: string;         // default: '@voltdev/server'
   groupRowBindings?: boolean;    // default: false
@@ -139,12 +139,12 @@ interface VoltPluginOptions {
 ```
 
 `start` wires the router, the query cache, server rendering and server
-functions together, and is the subject of [its own page](./start). It is off
+functions together, and is the subject of [its own page](./server-render). It is off
 until a project writes it.
 
 `start` wires the router, the query cache, server rendering and server functions
 together, and is off until a project writes it. It has [a page of its
-own](./start), which also covers per-route rendering modes, static generation,
+own](./server-render), which also covers per-route rendering modes, static generation,
 partial hydration, and the `renderPath` build check that keeps a render off
 `node:` builtins.
 

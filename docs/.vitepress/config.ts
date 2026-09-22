@@ -53,7 +53,7 @@ export default defineConfig({
         text: 'Rendering',
         items: [
           { text: 'Server rendering', link: '/reference/server' },
-          { text: 'Start mode', link: '/reference/start' },
+          { text: 'The serverRender option', link: '/reference/server-render' },
         ],
       },
       {

@@ -70,10 +70,10 @@ navigation, a list of users and a user page reached by `/users/:id`, with the
 data behind them in [the query cache](./query). Uses
 [`@voltdev/router`](./router) and `@voltdev/query`.
 
-### `start`
+### `server-render`
 
-[Start mode](./start): server rendering, per-route rendering modes and server
-functions, wired by one line of configuration — `volt({ start: true })`.
+[`serverRender`](./server-render): server rendering, per-route rendering modes and server
+functions, wired by one line of configuration — `volt({ serverRender: true })`.
 
 Its three routes use all three modes: a home page built once, a pricing page
 rendered per request with the value the server settled on carried to the client
@@ -82,14 +82,14 @@ demonstrated only server rendering would demonstrate half of the promise; the
 point is that the choice survives route by route.
 
 `server.ts` is the deployable entry — a `(Request) => Promise<Response>` with no
-`node:` import, which is the shape an edge host expects. `src/volt-start.d.ts`
+`node:` import, which is the shape an edge host expects. `src/volt-server-render.d.ts`
 declares the two virtual modules the plugin generates, so the project
-type-checks without the plugin running. Delete `start: true` and it becomes an
+type-checks without the plugin running. Delete `serverRender: true` and it becomes an
 ordinary client-rendered project with nothing else to change.
 
 **It does not run as a server yet.** Its dev server renders every page in the
 browser, its build produces the client alone, and its server entry cannot load
-its router on a server — see [the status of start mode](./start).
+its router on a server — see [the status of `serverRender`](./server-render).
 
 ## Availability
 
@@ -100,7 +100,7 @@ Today that is `@voltdev/core` and `@voltdev/vite-plugin`, so:
 |---|---|---|
 | `minimal` | core, vite-plugin | Yes |
 | `router-query` | core, vite-plugin, router, query | No |
-| `start` | core, vite-plugin, router, query, server | No |
+| `server-render` | core, vite-plugin, router, query, server | No |
 
 The refusal is deliberate and applies from a checkout too. The generated project
 lives outside the Volt repository, so its `pnpm install` resolves from npm — and
@@ -115,7 +115,7 @@ can name that the release workflow publishes. (The release also publishes
 arrive with core and the plugin.) When a package is released, adding it there is
 the whole change, and the templates that needed it become available.
 
-Until then, `router-query` and `start` are best read in the repository, under
+Until then, `router-query` and `server-render` are best read in the repository, under
 `packages/create-volt/templates/`, and tried from inside it, where every package
 resolves from the workspace.
 

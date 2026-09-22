@@ -1,13 +1,13 @@
 /**
- * `start`: the wiring an application would otherwise write by hand.
+ * `serverRender`: the wiring an application would otherwise write by hand.
  *
  * The router, the query cache, server rendering and server functions are each
  * a deliverable and each works; none of them is a way to begin. This mode puts
  * them together — and it is opt-in, because the roadmap's own position is that
  * CSR is first-class and server rendering is something an application chooses,
  * never the price of using the framework. A turnkey mode that quietly made
- * every project a server project would contradict that, so `start` is `false`
- * until somebody writes `true`.
+ * every project a server project would contradict that, so `serverRender` is
+ * `false` until somebody writes `true`.
  *
  * **The wiring is generated into the application's own module graph**, as two
  * virtual modules, rather than shipped as a package the application depends
@@ -30,7 +30,7 @@
 /** Where a route's markup is produced; the router's own type, restated. */
 export type RenderMode = 'csr' | 'ssr' | 'ssg';
 
-export interface StartOptions {
+export interface ServerRenderOptions {
   /**
    * The module exporting `routes`, as the application would import it.
    *
@@ -59,17 +59,17 @@ export interface StartOptions {
   base?: string;
 }
 
-export const SERVER_ID = 'virtual:volt-start/server';
-export const CLIENT_ID = 'virtual:volt-start/client';
+export const SERVER_ID = 'virtual:volt/server';
+export const CLIENT_ID = 'virtual:volt/client';
 
-export interface ResolvedStart {
+export interface ResolvedServerRender {
   readonly routes: string;
   readonly root: string;
   readonly defaultMode: RenderMode;
   readonly base: string;
 }
 
-export function resolveStart(options: StartOptions | true): ResolvedStart {
+export function resolveServerRender(options: ServerRenderOptions | true): ResolvedServerRender {
   const given = options === true ? {} : options;
   return {
     routes: given.routes ?? '/src/routes.js',
@@ -94,16 +94,16 @@ export function resolveStart(options: StartOptions | true): ResolvedStart {
  * that does not exist would be worse than answering 404 with a page that says
  * so. And a `csr` route gets the shell unrendered, which is the opt-out.
  */
-export function serverModule(start: ResolvedStart): string {
+export function serverModule(options: ResolvedServerRender): string {
   return `import { flattenRoutes, matchRoutes, routeMode } from '@voltdev/router';
 import { renderToString } from '@voltdev/core/server';
 import { needsHydration } from '@voltdev/core';
 import { createHandler, isServerCall } from '@voltdev/server';
-import { routes } from ${JSON.stringify(start.routes)};
-import App from ${JSON.stringify(start.root)};
+import { routes } from ${JSON.stringify(options.routes)};
+import App from ${JSON.stringify(options.root)};
 
 const branches = flattenRoutes(routes);
-const functions = createHandler({ base: ${JSON.stringify(start.base)} });
+const functions = createHandler({ base: ${JSON.stringify(options.base)} });
 
 /** The shell, with the render dropped into it. Set by the caller. */
 let shell = '<!doctype html><html><body><div id="app"></div></body></html>';
@@ -160,7 +160,7 @@ export async function handler(request) {
   // against the base with its trailing slash, so a page at \`/_voltage\` — or a
   // reader who typed a function URL into the address bar — is routed as a page
   // instead of being handed to the function handler and answered 405.
-  if (isServerCall(request, ${JSON.stringify(start.base)})) return functions(request);
+  if (isServerCall(request, ${JSON.stringify(options.base)})) return functions(request);
 
   // Every route that renders for this URL, outermost first — and an empty list,
   // not null, when nothing does. An empty array is truthy, so the test is on
@@ -168,7 +168,7 @@ export async function handler(request) {
   const matches = matchRoutes(branches, url.pathname);
   if (matches.length === 0) return page('', '', '', 404);
 
-  const mode = routeMode(matches, ${JSON.stringify(start.defaultMode)});
+  const mode = routeMode(matches, ${JSON.stringify(options.defaultMode)});
   if (mode === 'csr') return page('', '', '', 200);
 
   const rendered = await renderToString(App, { url: url.href });
@@ -190,10 +190,10 @@ export { branches, routes };
  * receiving and should not have to. The mount point either has children the
  * server wrote, or it does not.
  */
-export function clientModule(start: ResolvedStart): string {
-  const attaches = start.defaultMode !== 'csr';
+export function clientModule(options: ResolvedServerRender): string {
+  const attaches = options.defaultMode !== 'csr';
   return `import { ${attaches ? 'hydrate, mount' : 'mount'} } from '@voltdev/core';
-import App from ${JSON.stringify(start.root)};
+import App from ${JSON.stringify(options.root)};
 
 const host = document.querySelector('#app');
 if (host) {
@@ -203,7 +203,7 @@ ${
   // walk on \`mount\`'s own path where no bundler could drop it. Which one runs
   // is decided by what the server sent: an \`ssr\` route's mount point has the
   // server's nodes in it and a \`csr\` route's is empty, and this build's
-  // templates can do either — \`start\` compiles them to claim, and claiming
+  // templates can do either — \`serverRender\` compiles them to claim, and claiming
   // nothing is what building is.
   if (host.firstChild) hydrate(App, host);
   else mount(App, host);`

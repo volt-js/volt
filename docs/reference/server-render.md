@@ -1,8 +1,8 @@
-# Start mode
+# The `serverRender` option
 
 An application that server-renders needs the router, the query cache, the
 server package and the plugin wired together. Each of those is a deliverable
-and each works; none of them is a way to begin. `start` is that wiring.
+and each works; none of them is a way to begin. `serverRender` is that wiring.
 
 ```ts
 // vite.config.ts
@@ -10,14 +10,14 @@ import { defineConfig } from 'vite';
 import { volt } from '@voltdev/vite-plugin';
 
 export default defineConfig({
-  plugins: [volt({ start: true })],
+  plugins: [volt({ serverRender: true })],
 });
 ```
 
 ::: danger Not finished — it does not run end to end yet
 The pieces on this page are built and tested on their own: the handler's
 logic, per-route modes, the partial-hydration decision, static generation and
-the edge check. What is missing is what runs them, and building the `start`
+the edge check. What is missing is what runs them, and building the server-render
 template and requesting its pages shows where:
 
 - **Routes are not part of the server render.** The router mounts each matched
@@ -40,7 +40,7 @@ template and requesting its pages shows where:
 
 Until those are done, server rendering works through
 [the renderers directly](./server), with a server entry you write yourself.
-Start mode also needs `@voltdev/router`, `@voltdev/query` and
+`serverRender` also needs `@voltdev/router`, `@voltdev/query` and
 `@voltdev/server`, none of which are published yet.
 :::
 
@@ -60,7 +60,7 @@ else to change.
 A route table and a root component, both by path.
 
 ```ts
-interface StartOptions {
+interface ServerRenderOptions {
   routes?: string;              // default: '/src/routes.js'
   root?: string;                // default: '/src/app.js'
   defaultMode?: 'csr' | 'ssr' | 'ssg'; // default: 'ssr'
@@ -84,8 +84,8 @@ than shipped as a package.
 
 | Module | Exports |
 |---|---|
-| `virtual:volt-start/server` | `handler(request): Promise<Response>`, `setShell(html)` |
-| `virtual:volt-start/client` | nothing — imported for its effect |
+| `virtual:volt/server` | `handler(request): Promise<Response>`, `setShell(html)` |
+| `virtual:volt/client` | nothing — imported for its effect |
 
 Generating rather than publishing is deliberate, for three reasons.
 [`@voltdev/server`](./server-functions) is dependency-free — a
@@ -96,14 +96,14 @@ by *your* build, at the versions you have, where a package would have pinned
 its own.
 
 Neither module exists on disk, so a project that type-checks without the plugin
-running needs them declared. The `start` template `create-volt` generates ships
-that declaration in `src/volt-start.d.ts`.
+running needs them declared. The `serverRender` template `create-volt` generates ships
+that declaration in `src/volt-server-render.d.ts`.
 
 ### The server entry
 
 ```ts
 // server.ts
-import { handler, setShell } from 'virtual:volt-start/server';
+import { handler, setShell } from 'virtual:volt/server';
 import shell from './index.html?raw';
 
 setShell(shell);
@@ -134,7 +134,7 @@ It answers in three branches, and the order is the logic:
 ```ts
 // src/main.ts
 import './styles.scss';
-import 'virtual:volt-start/client';
+import 'virtual:volt/client';
 ```
 
 It calls [`hydrate`](./server#hydration) when the server sent markup and
@@ -197,7 +197,7 @@ The compiler's answer travels with the render the plugin writes, and
 interactive if *any* component on its branch is: the outlet renders the leaf's
 markup inside the layout's and either can hold a binding.
 
-When a route is not, `start` omits two things from the page — the module
+When a route is not, `serverRender` omits two things from the page — the module
 script, and the state payload hydration would have read. On a page of prose the
 payload is easily the larger half.
 
@@ -286,7 +286,7 @@ fails where the tests never ran. `renderPath` refuses it at build time.
 import { volt, renderPath } from '@voltdev/vite-plugin';
 
 export default defineConfig({
-  plugins: [renderPath(), volt({ start: true })],
+  plugins: [renderPath(), volt({ serverRender: true })],
 });
 ```
 
@@ -312,11 +312,11 @@ the pass that erases it.
 
 ## The example
 
-`create-volt` has a `start` template: three routes using all three modes, a
+`create-volt` has a `serverRender` template: three routes using all three modes, a
 `server.ts` in the shape a host expects, and one line of configuration. It is
 the example the status note at the top of this page was found with, and it does
 not run as a server yet for the reasons listed there. It also cannot be
 generated into a standalone project until the packages it needs are published —
 a project outside the repository installs from npm — so read it in the
-repository, under `packages/create-volt/templates/start/`. See
+repository, under `packages/create-volt/templates/server-render/`. See
 [`create-volt`](./create-volt) for why that refusal is deliberate.

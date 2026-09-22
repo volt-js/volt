@@ -886,7 +886,7 @@ nothing is being added to a project that was not there.
       which is what that file is for.
 - [x] `create-volt` generates a project that uses it, so the wiring is
       demonstrated rather than described. The `start` template is one line of
-      configuration — `volt({ start: true })` — and three routes that between
+      configuration — `volt({ serverRender: true })` — and three routes that between
       them use all three modes: a home page built once, a pricing page rendered
       per request with the value the server settled on carried across in the
       payload rather than fetched again, and a dashboard the server does not

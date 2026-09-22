@@ -155,7 +155,7 @@ const app = hydrate(App, '#app');
 The same as `mount`, and the same handle back, except that it attaches to
 markup a server already wrote instead of building it. The templates have to be
 compiled to claim nodes rather than create them — `hydrate: true` on
-[the Vite plugin](./vite-plugin), which [start mode](./start) turns on. See
+[the Vite plugin](./vite-plugin), which [`serverRender`](./server-render) turns on. See
 [Hydration](./server#hydration) for what is claimed and why this is a separate
 entry rather than a flag on `mount`.
 
@@ -169,7 +169,7 @@ Whether rendering this component in a browser has anything to do. The Vite
 plugin records the compiler's answer beside the render function: a template
 that only clones fixed markup has no binding, listener, block or child to set
 up, and a page made only of components like that needs no JavaScript.
-[Start mode](./start#partial-hydration) reads it to leave the script off such a
+[`serverRender`](./server-render#partial-hydration) reads it to leave the script off such a
 page.
 
 It is `true` unless the build said otherwise — a component compiled without the

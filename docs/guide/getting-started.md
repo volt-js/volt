@@ -184,7 +184,7 @@ node packages/create-volt/bin/create-volt.js my-app --template minimal
 
 `minimal` is the one template it can generate today. `router-query` and `start` —
 the second wiring server rendering, per-route modes and server functions through
-[start mode](../reference/start) — need packages that are not published yet, and a
+[`serverRender`](../reference/server-render) — need packages that are not published yet, and a
 generated project installs from npm, so it refuses them rather than producing a
 project that cannot install. See [create-volt](../reference/create-volt).
 
