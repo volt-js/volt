@@ -174,3 +174,57 @@ describe('content that names what its slot passes', () => {
     expect(show(Page).host.querySelector('b')!.textContent).toBe('Ada');
   });
 });
+
+describe('what an outlet costs when nothing fills it', () => {
+  it('does not build the props for a slot with no content', () => {
+    let built = 0;
+
+    @Component({
+      selector: 'v-counted',
+      render: compileTemplate(`<div><slot name="cell" :value="count()">fallback</slot></div>`),
+    })
+    class Counted {
+      count(): number {
+        built += 1;
+        return built;
+      }
+    }
+
+    @Component({
+      selector: 'v-page',
+      imports: [Counted],
+      render: compileTemplate(`<v-counted></v-counted>`),
+    })
+    class Page {}
+
+    expect(show(Page).host.textContent).toContain('fallback');
+    // The getter is never reached, and neither is the object that holds it:
+    // a cell with no template is a cell that costs nothing.
+    expect(built).toBe(0);
+  });
+
+  it('builds them once for a slot that is filled', () => {
+    let built = 0;
+
+    @Component({
+      selector: 'v-counted',
+      render: compileTemplate(`<div><slot name="cell" :value="count()">fallback</slot></div>`),
+    })
+    class Counted {
+      count(): number {
+        built += 1;
+        return built;
+      }
+    }
+
+    @Component({
+      selector: 'v-page',
+      imports: [Counted],
+      render: compileTemplate(`<v-counted><b :slot-cell="{ value }">{ value }</b></v-counted>`),
+    })
+    class Page {}
+
+    expect(show(Page).host.querySelector('b')!.textContent).toBe('1');
+    expect(built).toBe(1);
+  });
+});

@@ -1097,13 +1097,15 @@ function applyCustomElementProp(el: Element, name: string, value: unknown): void
 export function slot(
   ctx: unknown,
   name: string,
-  props: Record<string, unknown> | null,
+  props: (() => Record<string, unknown>) | Record<string, unknown> | null,
   fallback: (() => unknown) | null,
 ): unknown {
   const slots = SLOTS.get(ctx as object);
   const render = slots?.[name];
-  if (render) return render(props ?? undefined);
-  return fallback ? fallback() : null;
+  if (!render) return fallback ? fallback() : null;
+  // Built here rather than at the call site, so an outlet nobody filled costs
+  // nothing but the thunk it did not call.
+  return render(typeof props === 'function' ? props() : (props ?? undefined));
 }
 
 // ---------------------------------------------------------------------------
