@@ -13,7 +13,9 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { compileTemplate } from '@voltdev/core/jit';
-import { Component, Prop, Signal, flushSync, mount } from '@voltdev/core';
+import { Component, Prop, Signal, defineComponent, flushSync, mount } from '@voltdev/core';
+// What a render written by hand reaches for, and what the compiler emits.
+import { hostAttrs } from '@voltdev/core/runtime';
 
 let unmount: (() => void) | null = null;
 
@@ -139,3 +141,68 @@ describe('a tag that writes a class and binds one', () => {
   });
 });
 
+
+/**
+ * The question the error asks is whether the attributes landed anywhere.
+ *
+ * The compiler answers it for a template, which is how a `:host` inside a
+ * branch nobody took stopped being reported as no host at all. It cannot
+ * answer it for a render somebody wrote by hand, or for one wrapped around
+ * another — and a render that applied the attributes has answered it already,
+ * by applying them.
+ */
+describe('a render that is not a compiled template', () => {
+  it('is believed when it took the attributes itself', () => {
+    class Written {}
+    defineComponent(
+      Written as never,
+      {
+        selector: 'v-written',
+        render: (ctx: unknown) => {
+          const el = document.createElement('i');
+          hostAttrs(el, ctx);
+          el.textContent = 'hi';
+          return el;
+        },
+      },
+      [],
+    );
+
+    @Component({
+      selector: 'v-page',
+      imports: [Written as never],
+      render: compileTemplate(`<v-written class="mine"></v-written>`),
+    })
+    class Page {}
+
+    const host = document.createElement('div');
+    document.body.append(host);
+    unmount = mount(Page, host).unmount;
+    flushSync();
+
+    expect(host.querySelector('i')!.className).toBe('mine');
+  });
+
+  it('is still told when the attributes landed nowhere', () => {
+    class Silent {}
+    defineComponent(
+      Silent as never,
+      { selector: 'v-silent', render: () => document.createElement('i') },
+      [],
+    );
+
+    @Component({
+      selector: 'v-page2',
+      imports: [Silent as never],
+      render: compileTemplate(`<v-silent class="mine"></v-silent>`),
+    })
+    class Page2 {}
+
+    const host = document.createElement('div');
+    document.body.append(host);
+    expect(() => {
+      unmount = mount(Page2, host).unmount;
+      flushSync();
+    }).toThrow(/V0213/);
+  });
+});

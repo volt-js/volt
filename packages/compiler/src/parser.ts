@@ -385,6 +385,18 @@ class Parser {
     children = this.condenseWhitespace(children, tag);
 
     if (tag === 'slot') {
+      // An outlet is a position, not an element: there is nothing for `:if` to
+      // keep and nothing for `:for` to repeat. Both were dropped without a
+      // word, so the outlet drew whatever a caller sent, always.
+      for (const kind of ['if', 'else-if', 'else', 'for'] as const) {
+        if (!directives.some((d) => d.kind === kind)) continue;
+        this.error(
+          `\`:${kind}\` on a \`<slot>\` decides nothing: an outlet is where content goes, and ` +
+            'what it draws is what a caller sent.\n' +
+            `  Put it on a \`<template>\` around the outlet: ` +
+            `\`<template :${kind}="…"><slot></slot></template>\`.`,
+        );
+      }
       const nameAttr = attrs.find((a) => a.name === 'name');
       // `:from` says whose slots to look in; everything else a `:` writes on an
       // outlet is a prop it hands the content, so this is taken out of the list
@@ -392,6 +404,17 @@ class Parser {
       const from = directives.find((d) => d.kind === 'prop' && d.name === 'from');
       if (from && !from.exp) {
         this.error('`:from` needs the component whose content to draw, as in `:from="col"`.');
+      }
+      if (directives.filter((d) => d.kind === 'prop' && d.name === 'from').length > 1) {
+        this.error('`:from` names one component, and this outlet names two.');
+      }
+      if (attrs.some((a) => a.name === 'from')) {
+        this.error(
+          '`from` on a slot outlet names the component whose content to draw, which is an ' +
+            'expression: write `:from="col"`.\n' +
+            '  To hand the content a value of your own under that name, call it something else — ' +
+            'a slot passes what its component chooses, and `from` is taken here.',
+        );
       }
       return {
         type: 'slot-outlet',
@@ -402,6 +425,17 @@ class Parser {
         children,
         loc,
       } satisfies SlotOutletNode;
+    }
+
+    // `:host` marks the element that stands for the component, and a
+    // `<template>` produces no element: written there it did nothing, and the
+    // component was then told it had nowhere to put what its caller wrote.
+    if (tag === 'template' && directives.some((d) => d.kind === 'host')) {
+      this.error(
+        '`:host` marks the element that stands for the component, and a `<template>` is not ' +
+          'an element — it groups nodes without producing one.\n' +
+          '  Put `:host` on the element a caller would have written their class on.',
+      );
     }
 
     return {

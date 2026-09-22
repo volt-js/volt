@@ -2258,8 +2258,10 @@ class Generator {
       props.push(`get ${JSON.stringify(name)}() { return [${parts.join(', ')}]; }`);
     }
 
+    const written = new Set<string>();
     for (const attr of node.attrs) {
       if (composed.has(attr.name)) continue;
+      written.add(attr.name);
       props.push(`${JSON.stringify(attr.name)}: ${JSON.stringify(attr.value ?? true)}`);
     }
 
@@ -2293,6 +2295,20 @@ class Generator {
                 : dir.kind === 'text' || dir.kind === 'html'
                   ? dir.kind
                   : dir.name;
+
+          // `class` and `style` are composed above, because both halves can be
+          // meant. Every other prop is one value, so writing it twice means
+          // one of the two was going to be lost — silently, since a later key
+          // wins in an object literal.
+          if (written.has(name)) {
+            this.error(
+              `<${node.tag}> is given \`${name}\` twice, written out and bound.\n` +
+                '  One of them would be lost. Keep the binding, and put the written value in ' +
+                'the expression if it is the default.',
+              dir,
+            );
+          }
+          written.add(name);
 
           // A callback prop given a bare method reference would arrive
           // unbound, and `this` inside it would be the child. Wrap it so the

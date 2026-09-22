@@ -483,3 +483,49 @@ describe('a directive that means nothing on a component', () => {
     );
   });
 });
+
+/**
+ * Four things a template could say that meant nothing, and said it quietly.
+ *
+ * Each of these compiled, rendered a page, and left out what was asked for —
+ * which is the worst answer a compiler can give, because the author has no
+ * reason to look. None of them can be made to work: an outlet is a position,
+ * a `<template>` is not an element, a prop is one value, and a slot outlet's
+ * `from` already names the component to draw from.
+ */
+describe('a template that asks for something impossible', () => {
+  it('refuses structure on an outlet, and says where it goes instead', () => {
+    expect(() => gen(`<div><slot :if="on.get()">f</slot></div>`)).toThrow(
+      /`:if` on a `<slot>` decides nothing[\s\S]*<template :if/,
+    );
+    expect(() => gen(`<div><slot :for="x in xs" :key="x"></slot></div>`)).toThrow(
+      /`:for` on a `<slot>` decides nothing/,
+    );
+  });
+
+  it('refuses `:host` on a `<template>`, which produces no element', () => {
+    expect(() => gen(`<template :host><b>x</b></template>`)).toThrow(/is not an element/);
+  });
+
+  it('refuses a prop written out and bound, since one would be lost', () => {
+    expect(() => gen(`<v-tip text="a" :text="b"></v-tip>`)).toThrow(
+      /<v-tip> is given `text` twice/,
+    );
+    expect(() => gen(`<v-tip label="a" :label="b"></v-tip>`)).toThrow(/given `label` twice/);
+  });
+
+  it('composes `class` and `style`, which are the two that can both be meant', () => {
+    const code = gen(`<v-tip class="wide" :class="{ busy }"></v-tip>`);
+    expect(code).toContain('get "class"()');
+  });
+
+  it('refuses a written-out `from` on an outlet, which is an expression', () => {
+    expect(() => gen(`<div><slot from="col" name="cell"></slot></div>`)).toThrow(
+      /names the component whose content to draw[\s\S]*:from="col"/,
+    );
+    expect(() => gen(`<div><slot :from="a" :from="b"></slot></div>`)).toThrow(
+      /names one component, and this outlet names two/,
+    );
+  });
+});
+

@@ -844,7 +844,12 @@ function instantiate(
 
       if (__VOLT_DEV__) {
         const held = ATTRS.get(instance);
-        if (held && !hasHost(resolved, render)) {
+        // `taken` first, because it is the fact rather than the promise: a
+        // render that applied the attributes has answered the question the
+        // error asks, whoever wrote it and whatever its config claims. What
+        // the compiler knows is consulted second, since a template may mark a
+        // host inside a branch this render did not take.
+        if (held && !held.taken && !hasHost(resolved, render)) {
           const names = Object.keys(held.attrs).join(', ');
           throw voltError(
             'V0213',
