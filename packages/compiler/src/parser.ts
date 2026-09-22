@@ -526,6 +526,19 @@ class Parser {
     }
 
     if (!rawName.startsWith(':')) {
+      // The router used to find its outlet by searching the layout's DOM for
+      // this attribute, which a server — writing bytes in one pass, never
+      // going back — cannot do at all. An outlet is a place in a template now,
+      // and a template still marked the old way compiles to a plain `<div>`
+      // and renders no child route: the page is short a route, and nothing
+      // anywhere says so.
+      if (rawName.toLowerCase() === 'data-volt-outlet') {
+        this.error(
+          '`data-volt-outlet` was a DOM search the router did after mounting, and it is gone.\n' +
+            `  Write \`<${tag} :outlet></${tag}>\` instead: the child route is part of this ` +
+            'render, which is what lets a server write the whole page in one pass.',
+        );
+      }
       return { type: 'attribute', name: rawName, value, loc: this.finishLoc(start) };
     }
 

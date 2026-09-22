@@ -509,6 +509,35 @@ export function hClaim(create: () => Node, first: string, rootCount = 1): Node |
 }
 
 /**
+ * Keep the server's nodes for the hole being claimed, without building any.
+ *
+ * For a block that has nothing to put here *yet* and must not throw the
+ * server's work away while it waits. A router outlet is the case that made it
+ * public: a page whose branch has not resolved when the client hydrates would
+ * otherwise render nothing into a hole the server filled, and `insert` reads
+ * nothing as "clear it" — so the markup the reader is already looking at
+ * disappears, and comes back a moment later as different nodes.
+ *
+ * The nodes are handed back in the shape `hInsert` seeded `current` with, so
+ * returning them is the identity that makes it do nothing at all. The cursor
+ * is moved to the end because they have been spoken for: whatever fills this
+ * hole later replaces them wholesale rather than claiming them one at a time,
+ * which is the honest description of a render that arrived after the fact.
+ *
+ * Null wherever there is nothing being claimed — a client build, a hole the
+ * server left empty, a range already given up on — which is exactly the value
+ * that renders nothing.
+ */
+export function takeClaimed(): Node | Node[] | null {
+  const claim = claiming;
+  if (claim === null || claim.stalled) return null;
+  const rest = claim.nodes.slice(claim.index);
+  claim.index = claim.nodes.length;
+  if (rest.length === 0) return null;
+  return rest.length === 1 ? rest[0]! : rest;
+}
+
+/**
  * The far end of a hole: the `<!--]-->` closing what `open` opened.
  *
  * Given anything else — the `<!>` a clone carries, because this block was

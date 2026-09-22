@@ -1,5 +1,4 @@
 import { createRouter, defineRoutes } from '@voltdev/router';
-import { Shell } from './shell.js';
 import { Home } from './home.js';
 import { Users } from './users.js';
 import { User } from './user.js';
@@ -14,7 +13,10 @@ import { User } from './user.js';
 export const routes = defineRoutes([
   {
     path: '/',
-    component: Shell,
+    // No component: the shell is the application's own root, mounted in
+    // `main.ts`, and this route groups the pages that render inside it. A
+    // route with no component contributes its slice of the URL and nothing to
+    // the page, so the page below it renders where it would have.
     children: [
       { index: true, component: Home },
       { path: 'users', component: Users },

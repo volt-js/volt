@@ -3,7 +3,7 @@
  *
  * A navigation here is a transaction. Between `navigate()` and the first pixel
  * changing, the router asks the blockers whether it may leave, works out which
- * of the currently mounted routes survive, fetches the chunks and the loader
+ * of the routes on screen survive, fetches the chunks and the loader
  * data for the ones that do not, and only then touches the history, the
  * signals and the DOM. Nothing renders in a half-loaded state, because nothing
  * renders until the state it needs is already there.
@@ -22,6 +22,14 @@
  *     discover you need something — is what spinner-shaped layouts are for,
  *     and they exist because the navigation gave up too early.
  *
+ * **The router renders nothing.** It publishes, per depth of the branch, the
+ * segment that renders there, and hands out one `OutletRender` per depth for
+ * the `:outlet` in the template above it to call. So the branch is part of the
+ * render rather than something mounted into it afterwards — which is what lets
+ * a server write a whole page in one pass, and a hydrating client claim the
+ * nodes it would have built. `resolve()` is the half of a navigation that does
+ * that and nothing else; `start()` is the browser around it.
+ *
  * The History API is used directly. There is no history abstraction to pick
  * between, because there is nothing to abstract over: `pushState` is the
  * platform's answer and a second implementation would only be a place for the
@@ -34,10 +42,14 @@
 import {
   Signal,
   batch,
+  createRoot,
   flushSync,
-  mount,
+  provideOutlet,
+  renderComponent,
+  renderEffect,
+  takeClaimed,
   type ComponentType,
-  type MountHandle,
+  type OutletRender,
 } from '@voltdev/core';
 
 import {
@@ -58,8 +70,7 @@ import {
 } from './routes.js';
 import { findAnchor, isRoutableAnchor, shouldInterceptClick } from './link.js';
 
-/** Marks the element a child route renders into: `<div data-volt-outlet></div>`. */
-export const OUTLET_ATTRIBUTE = 'data-volt-outlet';
+const { untrack } = Signal.subtle;
 
 /** Where the application is, as the parts a route cares about. */
 export interface RouteLocation {
@@ -138,6 +149,19 @@ export interface RouterOptions<R extends readonly RouteDefinition[]> {
   readonly viewTransition?: boolean;
 }
 
+export interface StartOptions {
+  /**
+   * Resolve the current URL as part of starting. Default true.
+   *
+   * A page a server rendered has been resolved already — `resolve()` ran, and
+   * then `hydrate()` claimed the markup that render produced, which is the
+   * only order in which a client claims the nodes it would have built.
+   * Resolving a second time would run every loader again for the page the
+   * reader is already looking at.
+   */
+  readonly resolve?: boolean;
+}
+
 /**
  * A parameter name from anywhere in the route table.
  *
@@ -187,8 +211,50 @@ export interface Router<Paths extends string = string> {
   /** Register a blocker. Returns the function that removes it. */
   block(blocker: Blocker): () => void;
 
-  /** Match the current URL, mount it, and start listening. */
-  start(root: Element): Promise<void>;
+  /**
+   * What renders at this depth of the branch, as a template's `:outlet` calls
+   * it.
+   *
+   * The application provides depth 0 where it mounts its own root; every depth
+   * below that is provided by the depth above it as that one renders, so an
+   * application names this once:
+   *
+   *   mount(App, host, {
+   *     setup: () => {
+   *       provideRouter(router);
+   *       provideOutlet(router.outletAt(0));
+   *     },
+   *   });
+   *
+   * A depth with no segment renders nothing — except on a page a server wrote
+   * and a client has not resolved yet, where it holds what the server put
+   * there rather than blanking it.
+   */
+  outletAt(depth: number): OutletRender;
+
+  /**
+   * Match a URL, load what it needs, and publish it.
+   *
+   * Everything a route can read — its location, its parameters, its matches,
+   * its loader data, and which component renders at which depth — is in place
+   * when this resolves, and nothing else has happened: no history entry, no
+   * scroll, no listeners, no DOM. It is what a server render calls before it
+   * writes a byte, and what a browser calls before it hydrates.
+   *
+   * A relative URL is resolved against the browser's location, or against a
+   * stand-in origin where there is no browser — only the path, the query and
+   * the fragment are ever read.
+   */
+  resolve(url: string | URL): Promise<NavigationResult>;
+
+  /**
+   * Take over the browser: listen for clicks, pops and unloads, take scroll
+   * restoration off the browser, and resolve the current URL.
+   *
+   * It renders nothing and is given nothing to render into. The application
+   * mounts its own root; this fills the outlets in it.
+   */
+  start(options?: StartOptions): Promise<void>;
   stop(): void;
 }
 
@@ -231,19 +297,26 @@ interface Segment {
   readonly pattern: string;
   readonly pathname: string;
   readonly data: Signal.State<unknown>;
-  readonly host: Element;
-  handle: MountHandle | null;
-  /** This segment's outlet, resolved the first time a child needs it. */
-  outlet: Element | null;
+  /** Null for a layout that groups routes without rendering anything. */
+  readonly component: ComponentType<unknown> | null;
 }
 
-/** Set only while a route component is being constructed. */
-let mounting: Segment | null = null;
+/**
+ * Set only while a route component is being constructed.
+ *
+ * Module state, unlike everything else a request owns, and safe for the same
+ * reason the DOM runtime's claim cursor is: the span it covers is one
+ * synchronous construction. Nothing awaits between the assignment and the
+ * restore, so a second request cannot arrive inside it — while a *value* held
+ * here across an await, or a depth signal held out here, would be exactly the
+ * leak this is careful not to be.
+ */
+let constructing: Segment | null = null;
 
 /**
  * This route's loader data, as an accessor.
  *
- * Call it in a field initializer — that is the moment the router is mounting
+ * Call it in a field initializer — that is the moment the router is rendering
  * this route and therefore the moment it knows which route "this" is:
  *
  *   class UserPage {
@@ -253,11 +326,11 @@ let mounting: Segment | null = null;
  *   <h1>{ user()?.name }</h1>
  *
  * An accessor rather than a value because `revalidate()` writes new data into
- * a route that is still mounted, and a snapshot taken in the constructor would
- * never see it.
+ * a route that is still on screen, and a snapshot taken in the constructor
+ * would never see it.
  */
 export function routeData<T = unknown>(): () => T | undefined {
-  if (!mounting) {
+  if (!constructing) {
     throw new Error(
       __VOLT_DEV__
         ? '[volt] routeData() is only available while a route component is being ' +
@@ -267,7 +340,7 @@ export function routeData<T = unknown>(): () => T | undefined {
     );
   }
 
-  const data = mounting.data;
+  const data = constructing.data;
   return () => data.get() as T | undefined;
 }
 
@@ -307,9 +380,13 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
   // Off unless asked for; see `RouterOptions.viewTransition` for why.
   const viewTransition = options.viewTransition === true;
 
-  const pathnameSignal = new Signal.State(normalizePathname(window.location.pathname));
-  const searchSignal = new Signal.State(window.location.search);
-  const hashSignal = new Signal.State(window.location.hash);
+  // Empty until something resolves. A router is created where the routes are
+  // declared, which on a server is a module loaded once for every request
+  // there will ever be — so it reads nothing about where anything is, and
+  // `resolve()` is the only thing that says.
+  const pathnameSignal = new Signal.State('');
+  const searchSignal = new Signal.State('');
+  const hashSignal = new Signal.State('');
   const stateSignal = new Signal.State<unknown>(undefined);
   const paramsSignal = new Signal.State<Params>({});
   const matchesSignal = new Signal.State<readonly RouteMatch[]>([]);
@@ -340,8 +417,8 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
    */
   const scrollPositions = new Map<string, readonly [number, number]>();
 
-  let root: Element | null = null;
-  let segments: Segment[] = [];
+  /** The branch as loaded, which is what `countReusable` compares against. */
+  const segments: Segment[] = [];
   let started = false;
 
   /** Which navigation is allowed to finish. Everything older is dropped. */
@@ -365,7 +442,20 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
     href: `${url.pathname}${url.search}${url.hash}`,
   });
 
-  const currentLocation = (): RouteLocation => locationOf(new URL(window.location.href));
+  /**
+   * Where the application is, from what has been published rather than from
+   * the address bar.
+   *
+   * The two agree except while a navigation is mid-flight, and there the
+   * signals are the honest answer: they name the page on screen, which is what
+   * a blocker is being asked about.
+   */
+  const here = (): RouteLocation => {
+    const pathname = pathnameSignal.get();
+    const search = searchSignal.get();
+    const hash = hashSignal.get();
+    return { pathname, search, hash, href: `${pathname}${search}${hash}` };
+  };
 
   const readParam = (name: string): Signal.Computed<string | undefined> => {
     let read = paramReads.get(name);
@@ -422,75 +512,151 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
   };
 
   // -------------------------------------------------------------------------
-  // Mounting
+  // Rendering
   // -------------------------------------------------------------------------
 
   /**
-   * Where this segment's child renders.
+   * What renders at each depth of the branch, one signal per depth.
    *
-   * Resolved on demand rather than at mount time, because whether a route has
-   * a child at all depends on the URL: `/settings` may render `Settings`
-   * alone today and `Settings` around `Profile` after the next navigation,
-   * and the outlet is only required in the second case.
+   * Per depth rather than one signal holding the whole branch, because that is
+   * what keeps a layout still: a navigation between siblings writes the leaf's
+   * depth and leaves the ones above it alone, so nothing above the first
+   * difference is woken at all — and a signal that was not written is a
+   * stronger guarantee than a diff that decided not to act on itself.
    *
-   * A segment that rendered nothing — a pathless layout with no component of
-   * its own — passes its host straight through, so grouping routes under a
-   * layout that does not exist yet costs nothing.
+   * They belong to this router. Two of them in one process is two requests on
+   * a server, and a depth held at module scope would be one request's branch
+   * rendering into the other's page.
    */
-  const childHostOf = (segment: Segment): Element => {
-    if (!segment.handle) return segment.host;
-    segment.outlet ??= segment.host.querySelector(`[${OUTLET_ATTRIBUTE}]`);
-    if (segment.outlet) return segment.outlet;
+  const depths: Signal.State<Segment | null>[] = [];
 
-    throw new Error(
-      __VOLT_DEV__
-        ? `[volt] Route "${segment.pattern}" has a child route to render but its component ` +
-          `has no outlet. Add <div ${OUTLET_ATTRIBUTE}></div> where the child should appear.`
-        : `[volt] no outlet for ${segment.pattern}`,
-    );
+  /**
+   * Whether an `:outlet` has ever asked what renders at this depth.
+   *
+   * The only evidence a layout rendered no outlet. There is nothing to search
+   * any more — an outlet is a place in a template, and a template without one
+   * simply never calls the render — so what is observable is the call that was
+   * never made. `requireOutlets` is where that is turned into a complaint.
+   */
+  const reached: boolean[] = [];
+
+  const depthAt = (depth: number): Signal.State<Segment | null> => {
+    while (depths.length <= depth) depths.push(new Signal.State<Segment | null>(null));
+    return depths[depth]!;
   };
 
-  const hostFor = (index: number): Element =>
-    index === 0 ? (root as Element) : childHostOf(segments[index - 1]!);
-
-  const unmountFrom = (index: number): void => {
-    // Deepest first, so a parent is never torn down while a child is still
-    // observing something inside it.
-    for (let i = segments.length - 1; i >= index; i--) {
-      segments[i]!.handle?.unmount();
+  /**
+   * The segment that renders at this depth, and where it was found.
+   *
+   * A route with no component is not a hole: it contributes a loader, a slice
+   * of the URL and a place to hang children, and nothing to the page — so the
+   * depth below it renders where it would have. The walk reads each depth's
+   * signal, and those reads are the caller's dependencies: a navigation that
+   * changes what is under a pathless layout has to rebuild through it.
+   */
+  const segmentFor = (depth: number): { segment: Segment | null; depth: number } => {
+    let at = depth;
+    reached[at] = true;
+    let segment = depthAt(at).get();
+    while (segment !== null && segment.component === null) {
+      at += 1;
+      reached[at] = true;
+      segment = depthAt(at).get();
     }
-    segments.length = index;
+    return { segment, depth: at };
   };
 
-  const mountSegment = (
-    match: RouteMatch,
-    component: ComponentType<unknown> | null,
-    data: unknown,
-  ): Segment => {
-    const segment: Segment = {
-      route: match.route,
-      pattern: match.pattern,
-      pathname: match.pathname,
-      data: new Signal.State(data),
-      host: hostFor(segments.length),
-      handle: null,
-      outlet: null,
+  /** The complaint a layout with no `:outlet` earns, wherever it is noticed. */
+  const noOutlet = (pattern: string): Error =>
+    new Error(
+      __VOLT_DEV__
+        ? `[volt] Route "${pattern}" has a child route to render and its component has no ` +
+          `outlet. Mark the element the child renders into with \`:outlet\`, as in ` +
+          `<main :outlet></main>.`
+        : `[volt] no :outlet for ${pattern}`,
+    );
+
+  /**
+   * Render one segment where the caller is, with the depth below it in scope.
+   *
+   * The provision is made on whatever scope this runs in, and that scope owns
+   * this child and nothing else — the render effect below, or the root the
+   * server opens. Provided on the calling scope instead, every other `:outlet`
+   * in the layout would draw the same child, and the child would go on living
+   * after the parent that asked for it had gone.
+   */
+  const renderSegment = (segment: Segment, depth: number, out?: unknown): unknown => {
+    provideOutlet(outletAt(depth + 1));
+
+    // The ambient segment is what lets `routeData()` work without a route
+    // knowing its own id: the only route component being constructed right now
+    // is this one. Restored rather than cleared, because a branch is a stack
+    // of these.
+    const previous = constructing;
+    constructing = segment;
+    try {
+      return renderComponent(segment.component as ComponentType<unknown>, out);
+    } finally {
+      constructing = previous;
+    }
+  };
+
+  const outletAt =
+    (depth: number): OutletRender =>
+    (out?: unknown): unknown => {
+      if (__VOLT_SERVER__) {
+        const found = segmentFor(depth);
+        if (!found.segment) return null;
+        // A root of its own, for the containment the client gets from its
+        // effect. Nothing disposes it on its own — the request owns everything
+        // this render creates and drops the lot together.
+        createRoot(() => {
+          renderSegment(found.segment as Segment, found.depth, out);
+        });
+        // Noticed here rather than at the end, because a server has no end to
+        // wait for: the bytes are written as the walk passes, and the walk is
+        // over by the time anything could sweep it.
+        if (depthAt(found.depth + 1).get() !== null && !reached[found.depth + 1]) {
+          throw noOutlet(found.segment.pattern);
+        }
+        return null;
+      }
+
+      const view = new Signal.State<unknown>(null);
+      // A render effect, not a computed: rendering a segment creates effects,
+      // and re-running this disposes the previous segment's scope along with
+      // them. It runs once, immediately, and that is what puts the build
+      // inside the claim window `hInsert` has open — a node built any later
+      // claims nothing, and the server's markup would be dropped for a copy of
+      // itself.
+      renderEffect(() => {
+        const found = segmentFor(depth);
+        view.set(
+          // Untracked: what a route reads is the route's business. Tracked,
+          // every signal the branch touched would rebuild the branch, which is
+          // a re-render with extra steps.
+          untrack(() =>
+            found.segment ? renderSegment(found.segment, found.depth) : takeClaimed(),
+          ),
+        );
+      });
+      return () => view.get();
     };
 
-    if (component) {
-      // The ambient handle is what lets `routeData()` work without a route
-      // knowing its own id: the only route component being constructed right
-      // now is this one.
-      const previous = mounting;
-      mounting = segment;
-      try {
-        segment.handle = mount(component, segment.host);
-      } finally {
-        mounting = previous;
-      }
+  /**
+   * A child route that never reached the page.
+   *
+   * The old shape of this was a DOM search: mount the layout, look for its
+   * outlet, refuse if there was none. There is nothing to search now, so the
+   * evidence is the render that was never called — a depth with a segment,
+   * below a depth that rendered, whose `:outlet` never asked for it. Which is
+   * the same mistake with the same answer, and it names `:outlet` because that
+   * is what is missing from the template.
+   */
+  const requireOutlets = (matched: readonly RouteMatch[]): void => {
+    for (let depth = 0; depth + 1 < matched.length; depth += 1) {
+      if (reached[depth] && !reached[depth + 1]) throw noOutlet(matched[depth]!.pattern);
     }
-
-    return segment;
   };
 
   // -------------------------------------------------------------------------
@@ -498,7 +664,7 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
   // -------------------------------------------------------------------------
 
   /**
-   * How many of the mounted segments the next branch keeps.
+   * How many of the rendered segments the next branch keeps.
    *
    * Same route object and same slice of the URL means same component with the
    * same parameters, so there is nothing a re-mount would change — and
@@ -509,9 +675,9 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
   const countReusable = (next: readonly RouteMatch[]): number => {
     let count = 0;
     while (count < segments.length && count < next.length) {
-      const mounted = segments[count]!;
+      const rendered = segments[count]!;
       const candidate = next[count]!;
-      if (mounted.route !== candidate.route || mounted.pathname !== candidate.pathname) break;
+      if (rendered.route !== candidate.route || rendered.pathname !== candidate.pathname) break;
       count += 1;
     }
     return count;
@@ -556,6 +722,16 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
     readonly delta?: number;
     /** Ask every surviving route's loader again, whatever `shouldRevalidate` says. */
     readonly forceRevalidate?: boolean;
+    /**
+     * Whether this commit owns the address bar and the scroll position.
+     *
+     * Only what a browser drives sets it. `resolve()` does not: it publishes
+     * the branch and stops, which is all a server can do and all a client
+     * wants done before it hydrates — a history entry written for a page the
+     * browser itself just loaded is an entry over the top of the one it is
+     * already on.
+     */
+    readonly browser?: boolean;
   }
 
   /**
@@ -583,21 +759,20 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
 
   const commit = async (url: URL, options: CommitOptions): Promise<NavigationResult> => {
     const id = (generation += 1);
-    const from = { pathname: pathnameSignal.get(), search: searchSignal.get() } as const;
+    const browser = options.browser === true;
+    const from = here();
     const to = locationOf(url);
-    const hash = hashSignal.get();
-    const here: RouteLocation = { ...from, hash, href: `${from.pathname}${from.search}${hash}` };
 
     // Going where you already are replaces rather than pushes. The entry a
     // push would add is one that Back lands on to find the very same page,
     // which reads as a Back that did nothing — and clicking the link for the
     // page you are on is the ordinary way a stack fills up with them.
     const samePlace =
-      to.pathname === here.pathname && to.search === here.search && to.hash === here.hash;
+      to.pathname === from.pathname && to.search === from.search && to.hash === from.hash;
     const mode: NavigationMode = options.mode === 'push' && samePlace ? 'replace' : options.mode;
 
     if (blockers.size > 0 && mode !== 'initial') {
-      const blocked = await askBlockers({ from: here, to, mode });
+      const blocked = await askBlockers({ from, to, mode });
       if (id !== generation) return { status: 'aborted' };
       if (blocked) {
         // The URL has already moved for a pop, so refusing means putting it
@@ -616,7 +791,7 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
           window.history.replaceState(
             { volt: 1, key: currentKey, index: currentIndex, state: stateSignal.get() },
             '',
-            here.href,
+            from.href,
           );
         }
         // A refusal ends the transaction, including one that interrupted a
@@ -649,7 +824,10 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
           const should =
             options.forceRevalidate ||
             match.route.shouldRevalidate?.({
-              from: new URL(`${from.pathname}${from.search}`, window.location.origin),
+              // Against the URL being navigated to rather than against the
+              // browser's origin, which a server does not have and which is
+              // the same origin anyway wherever there is one.
+              from: new URL(`${from.pathname}${from.search}`, url),
               to: url,
               params: match.params,
             });
@@ -674,7 +852,7 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
 
     if (id !== generation) return { status: 'aborted' };
 
-    saveScroll();
+    if (browser) saveScroll();
 
     const entry = options.entry ?? {
       volt: 1,
@@ -683,28 +861,54 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
       state: options.state,
     };
 
-    if (mode === 'push') window.history.pushState(entry, '', to.href);
-    else if (mode === 'replace' || mode === 'initial') {
-      window.history.replaceState(entry, '', to.href);
+    if (browser) {
+      if (mode === 'push') window.history.pushState(entry, '', to.href);
+      else if (mode === 'replace' || mode === 'initial') {
+        window.history.replaceState(entry, '', to.href);
+      }
     }
 
     currentKey = entry.key;
     currentIndex = entry.index;
 
     /**
-     * Everything the navigation does to the document, as one function.
+     * Everything the navigation changes, as one function.
      *
      * It has to be one function because a view transition is defined by a
      * callback: the platform takes a snapshot, runs this, takes another, and
-     * animates between them. The `flushSync` at the end is what makes that
-     * work at all here — Volt patches the DOM when effects drain, so without
-     * it the callback would return having only written signals and the second
+     * animates between them. The `flushSync` calls are what make that work at
+     * all here — Volt patches the DOM when effects drain, so without them the
+     * callback would return having only written signals and the second
      * snapshot would be of a page that had not changed yet.
      */
     const swap = (): void => {
       // Torn down before the signals move, so a component on its way out never
       // runs an effect against the location of the page that replaced it.
-      unmountFrom(reusable);
+      // Emptying the first depth that changed is the whole teardown: every
+      // depth under it was built inside that one's render and goes with it.
+      if (reusable < depths.length) {
+        batch(() => {
+          for (let i = reusable; i < depths.length; i++) depths[i]!.set(null);
+        });
+        flushSync();
+        // What the outgoing branch reached says nothing about the incoming
+        // one. The depth this navigation keeps is still rendered by the layout
+        // above it, so its own mark stands.
+        reached.length = reusable + 1;
+      }
+
+      segments.length = reusable;
+      for (let i = reusable; i < next.length; i++) {
+        const match = next[i]!;
+        const result = loaded.get(i)!;
+        segments.push({
+          route: match.route,
+          pattern: match.pattern,
+          pathname: match.pathname,
+          data: new Signal.State(result.data),
+          component: result.component,
+        });
+      }
 
       batch(() => {
         pathnameSignal.set(to.pathname);
@@ -715,12 +919,12 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
         matchesSignal.set(next);
         errorSignal.set(undefined);
         for (const [index, data] of revalidated) segments[index]!.data.set(data);
+        // Only the depths that changed. A depth that survived holds the very
+        // segment it held before, so its signal is never written and the
+        // layout rendering there is never woken — which is "a layout does not
+        // re-mount", said as a write that did not happen.
+        for (let i = reusable; i < next.length; i++) depthAt(i).set(segments[i]!);
       });
-
-      for (let i = reusable; i < next.length; i++) {
-        const result = loaded.get(i)!;
-        segments.push(mountSegment(next[i]!, result.component, result.data));
-      }
 
       // The DOM the scroll is about to be measured against has to be final, and
       // a route whose template reads a signal set in the batch above is still
@@ -732,10 +936,19 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
     // snapshots, and the initial render has nothing to animate away from —
     // running one there fades the whole page in on load, which is not a
     // navigation and is not what the option asked for.
-    await withViewTransition(swap, viewTransition && mode !== 'initial');
+    await withViewTransition(swap, browser && viewTransition && mode !== 'initial');
 
-    if (!options.preserveScroll) restoreScroll(mode, entry.key, to.hash);
+    // The navigation itself is over: the data landed and the branch is
+    // published, whatever the templates did with it.
     statusSignal.set('idle');
+
+    // Asked after the render, because that is when the answer exists: a layout
+    // with no `:outlet` is a render that never asked for the depth below it,
+    // and asking before the flush would be asking before it had the chance not
+    // to.
+    requireOutlets(next);
+
+    if (browser && !options.preserveScroll) restoreScroll(mode, entry.key, to.hash);
 
     return { status: 'completed' };
   };
@@ -744,7 +957,19 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
   // Listeners
   // -------------------------------------------------------------------------
 
-  const resolve = (to: string): URL => new URL(to, window.location.href);
+  /**
+   * A URL as an absolute one.
+   *
+   * The base is where the browser is, and a stand-in where there is no
+   * browser: nothing here reads an origin — the path, the query and the
+   * fragment are the whole of what a route sees — but `URL` insists on one to
+   * parse a relative reference at all. A server that has a real request URL
+   * passes it whole and gets its own origin back.
+   */
+  const urlFor = (to: string | URL): URL =>
+    typeof to === 'string'
+      ? new URL(to, typeof window === 'undefined' ? 'http://volt.invalid/' : window.location.href)
+      : to;
 
   /**
    * Thrown rather than rejected: `navigate()` is called from click handlers
@@ -752,11 +977,12 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
    * nothing about the mistake that caused it.
    */
   const requireStarted = (method: string): void => {
-    if (root) return;
+    if (started) return;
     throw new Error(
       __VOLT_DEV__
-        ? `[volt] ${method} before start(). The router has no element to render into until ` +
-          `start() has been given one.`
+        ? `[volt] ${method} before start(). The router is not listening to the browser — and ` +
+          `not writing its history — until start() has run. On a server, resolve() is the ` +
+          `whole of it.`
         : '[volt] router not started',
     );
   };
@@ -767,7 +993,7 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
   ): Promise<NavigationResult> => {
     requireStarted('navigate()');
 
-    const url = resolve(to);
+    const url = urlFor(to);
     if (matchRoutes(branches, url.pathname).length === 0) {
       // A click on such a link is left to the browser, because a same-origin
       // URL the table does not describe belongs to the server. There is no
@@ -789,6 +1015,7 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
     return commit(url, {
       ...navigateOptions,
       mode: navigateOptions.replace ? 'replace' : 'push',
+      browser: true,
     });
   };
 
@@ -811,6 +1038,7 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
       mode: 'pop',
       entry,
       delta: entry.index - currentIndex,
+      browser: true,
     });
   };
 
@@ -823,7 +1051,7 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
     // would replace a working link with a blank screen, so the click is left
     // alone and the browser loads it. An application that wants its own 404
     // page says so with a `'*'` route, which matches this too.
-    const url = resolve(anchor.href);
+    const url = urlFor(anchor.href);
     if (matchRoutes(branches, url.pathname).length === 0) return;
 
     event.preventDefault();
@@ -840,12 +1068,12 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
   const onBeforeUnload = (event: BeforeUnloadEvent): void => {
     if (blockers.size === 0) return;
 
-    const here = currentLocation();
+    const from = here();
     for (const blocker of blockers) {
       // Only a synchronous refusal counts. The browser decides whether to
       // prompt the moment this handler returns, so a promise resolving later
       // has nothing left to stop.
-      if (blocker({ from: here, to: here, mode: 'unload' }) === true) {
+      if (blocker({ from, to: from, mode: 'unload' }) === true) {
         event.preventDefault();
         return;
       }
@@ -853,7 +1081,7 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
   };
 
   const preload = async (to: string): Promise<void> => {
-    const url = resolve(to);
+    const url = urlFor(to);
     await Promise.all(
       matchRoutes(branches, url.pathname).map(async (match) => loadRouteComponent(match.route)),
     );
@@ -882,12 +1110,16 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
 
     navigate,
     preload,
+    outletAt,
+
+    resolve: (to) => commit(urlFor(to), { mode: 'initial' }),
 
     revalidate: () => {
       requireStarted('revalidate()');
       return commit(new URL(window.location.href), {
         mode: 'replace',
-        // Every mounted route is asked again, which is what an application
+        browser: true,
+        // Every route on screen is asked again, which is what an application
         // does after a mutation it cannot describe as a single key. The entry
         // is the one already there, so a revalidation is not a place Back can
         // land on and the scroll position stays where the user left it.
@@ -902,10 +1134,9 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
       return () => blockers.delete(blocker);
     },
 
-    start: async (element) => {
+    start: async (startOptions: StartOptions = {}) => {
       if (started) throw new Error('[volt] This router is already started.');
       started = true;
-      root = element;
 
       // A reload keeps `history.state`, so an entry written before it still
       // has its key and index — and its saved scroll position is the one the
@@ -925,7 +1156,18 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
       document.addEventListener('click', onClick);
       if (preloadOnHover) document.addEventListener('pointerover', onPointerOver);
 
-      await commit(new URL(window.location.href), { mode: 'initial', entry });
+      if (startOptions.resolve === false) {
+        // The page was resolved before it was hydrated, so the entry still has
+        // to be stamped — it carries the key a scroll position is filed under
+        // — but the branch on screen is already the branch for this URL.
+        currentKey = entry.key;
+        currentIndex = entry.index;
+        const { pathname, search, hash } = window.location;
+        window.history.replaceState(entry, '', `${pathname}${search}${hash}`);
+        return;
+      }
+
+      await commit(new URL(window.location.href), { mode: 'initial', entry, browser: true });
     },
 
     stop: () => {
@@ -946,9 +1188,16 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
       generation += 1;
       abortInFlight('The router stopped');
 
-      unmountFrom(0);
-      segments = [];
-      root = null;
+      // Emptying the depths is the teardown now: whatever each one rendered is
+      // owned by the render that put it there, and goes when that render is
+      // told there is nothing here. The tree the application mounted is the
+      // application's, and stays.
+      batch(() => {
+        for (const depth of depths) depth.set(null);
+      });
+      flushSync();
+      segments.length = 0;
+      reached.length = 0;
     },
   };
 }
@@ -965,6 +1214,11 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
  * arriving mid-animation would be queued behind something the reader has
  * already navigated away from.
  *
+ * `transitionRunning` is module state on purpose and is not a router's: the
+ * platform serializes transitions per *document*, so two routers in one page
+ * are two callers of one queue, and on a server neither of them ever gets
+ * here.
+ *
  * Awaited on `updateCallbackDone` rather than on `finished`. The first settles
  * once the DOM has been changed, which is what the rest of a navigation is
  * waiting for; the second settles when the animation ends, and holding scroll
@@ -974,10 +1228,16 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
 let transitionRunning = false;
 
 async function withViewTransition(swap: () => void, enabled: boolean): Promise<void> {
+  // The two cheap refusals first, because everything below them reads a
+  // document: this is reached from a server render, where the answer is always
+  // no and where naming `document` at all would throw.
+  if (!enabled || transitionRunning) {
+    swap();
+    return;
+  }
+
   const start = (document as StartsViewTransitions).startViewTransition;
   if (
-    !enabled ||
-    transitionRunning ||
     typeof start !== 'function' ||
     window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
   ) {

@@ -75,7 +75,7 @@ describe('the router-query template', () => {
     expect(files.get('src/router.ts')).toContain('createRouter');
     // The outlet is what makes a layout a layout; without it the router
     // throws on the first navigation into a child route.
-    expect(files.get('src/shell.html')).toContain('data-volt-outlet');
+    expect(files.get('src/shell.html')).toContain(':outlet');
   });
 });
 

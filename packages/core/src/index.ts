@@ -38,7 +38,7 @@ export { createId, resetIds } from './ids.js';
  */
 export { hydratable, wasHydrated, BUILD_ATTRIBUTE, STATE_ATTRIBUTE } from './state.js';
 export { provideOutlet, type OutletRender } from './outlet.js';
-export { renderComponent } from './component.js';
+export { renderComponent, type MountOptions } from './component.js';
 
 /**
  * A boundary is content, like `:if` is: it decides what is on screen. It lives
@@ -47,6 +47,14 @@ export { renderComponent } from './component.js';
  * template.
  */
 export { errorBoundary } from './dom.js';
+/**
+ * What a hole's content holds on to while it has nothing of its own yet.
+ *
+ * Hydration machinery, exported for the one caller outside this package that
+ * fills a hole from somewhere other than the template around it: a router
+ * whose branch resolves after the page has been claimed. See `takeClaimed`.
+ */
+export { takeClaimed } from './dom.js';
 /**
  * The error every refusal in this framework throws.
  *

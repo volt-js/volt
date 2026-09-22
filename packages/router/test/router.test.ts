@@ -12,10 +12,26 @@
  *     fails if `param()` reaches into a single params object;
  *   - Back and Forward restoring both the route and the scroll position,
  *     which fails if scroll is saved per URL rather than per history entry.
+ *
+ * The application mounts its own root and the router fills the outlets in it.
+ * That is the shape of every test here, and it is the shape because the branch
+ * is part of the render now: nothing is mounted into anything afterwards, so
+ * the router is given no element and hands back no DOM.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Component, createRoot, effect, flushSync, onCleanup } from '@voltdev/core';
+import {
+  Component,
+  createRoot,
+  effect,
+  flushSync,
+  mount,
+  onCleanup,
+  provideOutlet,
+  type ComponentType,
+  type MountHandle,
+} from '@voltdev/core';
 import { compileTemplate } from '@voltdev/core/jit';
+import { provideRouter } from '../src/context.js';
 import { createRouter, routeData, type Router, type Transition } from '../src/router.js';
 import { defineRoutes } from '../src/routes.js';
 
@@ -30,7 +46,7 @@ let destroyed: string[] = [];
 
 @Component({
   selector: 'v-root',
-  render: compileTemplate(`<div class="root"><span>root</span><div data-volt-outlet></div></div>`),
+  render: compileTemplate(`<div class="root"><span>root</span><div :outlet></div></div>`),
 })
 class Root {
   constructor() {
@@ -41,7 +57,7 @@ class Root {
 
 @Component({
   selector: 'v-users',
-  render: compileTemplate(`<div class="users"><h1>users</h1><div data-volt-outlet></div></div>`),
+  render: compileTemplate(`<div class="users"><h1>users</h1><div :outlet></div></div>`),
 })
 class UsersLayout {
   constructor() {
@@ -91,12 +107,24 @@ class Doc {
   }
 }
 
+/**
+ * The application's own root, which is not a route.
+ *
+ * Every test mounts this and the router fills the outlet in it. Nothing the
+ * router does replaces it — a navigation changes the branch, not the
+ * application — and it is not in `built`, because it is not something the
+ * router builds.
+ */
+@Component({ selector: 'v-app', render: compileTemplate(`<div class="app" :outlet></div>`) })
+class App {}
+
 // ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------
 
 let host: HTMLElement;
 let routers: Router<string>[] = [];
+let mounted: MountHandle[] = [];
 
 /** Track a router so the test tears it down, and its listeners with it. */
 function track<T extends Router<never>>(router: T): T {
@@ -104,9 +132,29 @@ function track<T extends Router<never>>(router: T): T {
   return router;
 }
 
+/**
+ * What an application does: mount its own root, with the router in scope and
+ * depth 0 of the branch provided to the outlet in it.
+ *
+ * The provider has to be installed in `setup`, because the scope the root
+ * renders in is created inside `mount` — provided out here it would be
+ * provided to nothing.
+ */
+function attach(router: Router<never>, root: ComponentType<unknown> = App): MountHandle {
+  const handle = mount(root, host, {
+    setup: () => {
+      provideRouter(router);
+      provideOutlet(router.outletAt(0));
+    },
+  });
+  mounted.push(handle);
+  return handle;
+}
+
 beforeEach(() => {
   built = [];
   destroyed = [];
+  mounted = [];
   document.body.innerHTML = '<div id="app"></div>';
   host = document.querySelector('#app')!;
   window.history.replaceState(null, '', '/');
@@ -114,6 +162,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  for (const handle of mounted) handle.unmount();
+  mounted = [];
   for (const router of routers) router.stop();
   routers = [];
   flushSync();
@@ -152,7 +202,8 @@ describe('nested layouts', () => {
 
   it('keeps a layout mounted while its children change', async () => {
     const router = track(createRouter({ routes }));
-    await router.start(host);
+    attach(router);
+    await router.start();
     await router.navigate('/users');
     await router.navigate('/users/1');
     await router.navigate('/users/2');
@@ -166,7 +217,8 @@ describe('nested layouts', () => {
 
   it('keeps the layout’s DOM node, not merely its instance', async () => {
     const router = track(createRouter({ routes }));
-    await router.start(host);
+    attach(router);
+    await router.start();
     await router.navigate('/users/1');
 
     const layout = host.querySelector('.users');
@@ -180,7 +232,8 @@ describe('nested layouts', () => {
 
   it('rebuilds everything below the first difference', async () => {
     const router = track(createRouter({ routes }));
-    await router.start(host);
+    attach(router);
+    await router.start();
     await router.navigate('/users/1');
     built = [];
 
@@ -192,7 +245,8 @@ describe('nested layouts', () => {
 
   it('tears the branch down from the leaf up', async () => {
     const router = track(createRouter({ routes }));
-    await router.start(host);
+    attach(router);
+    await router.start();
     await router.navigate('/users/1');
     destroyed = [];
 
@@ -213,7 +267,8 @@ describe('nested layouts', () => {
     ]);
     const router = track(createRouter({ routes: scoped }));
     window.history.replaceState(null, '', '/org/a/users/1');
-    await router.start(host);
+    attach(router);
+    await router.start();
     built = [];
 
     await router.navigate('/org/a/users/2');
@@ -237,11 +292,32 @@ describe('nested layouts', () => {
     ]);
     const router = track(createRouter({ routes: grouped }));
     window.history.replaceState(null, '', '/about');
-    await router.start(host);
+    attach(router);
+    await router.start();
     await router.navigate('/users');
 
     expect(built).toEqual(['root', 'about', 'list']);
     expect(router.pathname()).toBe('/users');
+  });
+
+  it('renders through a layout that has no component of its own', async () => {
+    // A route can contribute a loader and a slice of the URL and nothing to
+    // the page. That is not a hole in the branch: the depth below it renders
+    // where it would have, and `/x` is one element deep.
+    const grouped = defineRoutes([
+      {
+        path: '/',
+        component: Root,
+        children: [{ path: 'x', children: [{ index: true, component: About }] }],
+      },
+    ]);
+    const router = track(createRouter({ routes: grouped }));
+    window.history.replaceState(null, '', '/x');
+    attach(router);
+    await router.start();
+
+    expect(built).toEqual(['root', 'about']);
+    expect(host.querySelector('.root .about')).not.toBeNull();
   });
 
   it('says which route has no outlet rather than rendering into the wrong one', async () => {
@@ -250,7 +326,12 @@ describe('nested layouts', () => {
     ]);
     const router = track(createRouter({ routes: broken }));
     window.history.replaceState(null, '', '/x');
-    await expect(router.start(host)).rejects.toThrow(/no outlet/);
+    attach(router);
+
+    // There is nothing to search for any more — an outlet is a place in a
+    // template — so what is caught is the render that was never asked for: a
+    // child with a segment under a parent that rendered without one.
+    await expect(router.start()).rejects.toThrow(/:outlet/);
   });
 });
 
@@ -279,7 +360,8 @@ describe('loaders', () => {
 
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/users/7');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     // The assertion that matters: the data was in place when the class ran,
     // not delivered to it afterwards.
@@ -295,7 +377,8 @@ describe('loaders', () => {
     ]);
 
     const router = track(createRouter({ routes }));
-    await router.start(host);
+    attach(router);
+    await router.start();
     expect(host.textContent).toBe('about');
 
     const navigation = router.navigate('/users/1');
@@ -329,7 +412,8 @@ describe('loaders', () => {
     ]);
 
     const router = track(createRouter({ routes }));
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     const navigation = router.navigate('/users/1');
     await Promise.resolve();
@@ -364,7 +448,8 @@ describe('loaders', () => {
     ]);
 
     const router = track(createRouter({ routes }));
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     const slow = router.navigate('/slow');
     await Promise.resolve();
@@ -394,7 +479,8 @@ describe('loaders', () => {
     ]);
 
     const router = track(createRouter({ routes }));
-    await router.start(host);
+    attach(router);
+    await router.start();
     const result = await router.navigate('/users/1');
 
     expect(result.status).toBe('failed');
@@ -413,7 +499,8 @@ describe('loaders', () => {
     ]);
 
     const router = track(createRouter({ routes }));
-    await router.start(host);
+    attach(router);
+    await router.start();
     expect((await router.navigate('/broken')).status).toBe('failed');
     expect(router.error()).toBeInstanceOf(Error);
 
@@ -442,7 +529,8 @@ describe('loaders', () => {
 
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/users/1');
-    await router.start(host);
+    attach(router);
+    await router.start();
     expect(layoutLoads).toBe(1);
 
     await router.navigate('/users/2');
@@ -466,7 +554,8 @@ describe('loaders', () => {
 
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/users');
-    await router.start(host);
+    attach(router);
+    await router.start();
     expect(host.textContent).toBe('page 1');
 
     await router.navigate('/users?sort=name');
@@ -486,7 +575,8 @@ describe('parameters as signals', () => {
   it('wakes only the reader of the parameter that changed', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/users/1/posts');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     let idRuns = 0;
     let tabRuns = 0;
@@ -520,7 +610,8 @@ describe('parameters as signals', () => {
   it('does the same for a query parameter', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/users/1/posts?page=1&sort=name');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     let sortRuns = 0;
     let dispose = () => {};
@@ -549,7 +640,8 @@ describe('parameters as signals', () => {
   it('reports the branch it matched', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/users/1/posts');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     expect(router.matches().map((match) => match.pattern)).toEqual(['/users/:id/:tab']);
     expect(router.params()).toEqual({ id: '1', tab: 'posts' });
@@ -567,7 +659,8 @@ describe('history', () => {
   it('restores the route and the scroll position on back and forward', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     window.scrollTo(0, 250);
     await router.navigate('/b');
@@ -590,7 +683,8 @@ describe('history', () => {
   it('replaces an entry when asked, so Back skips it', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
     await router.navigate('/b');
 
     const depth = window.history.length;
@@ -610,7 +704,8 @@ describe('history', () => {
   it('does not stack an entry for the URL it is already on', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
     await router.navigate('/b');
 
     const depth = window.history.length;
@@ -626,7 +721,8 @@ describe('history', () => {
   it('gives a different query string an entry of its own', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
     await router.navigate('/b');
 
     const depth = window.history.length;
@@ -643,7 +739,8 @@ describe('history', () => {
   it('carries application state on the entry', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     await router.navigate('/b', { state: { from: 'a' } });
     expect(router.state()).toEqual({ from: 'a' });
@@ -666,7 +763,8 @@ describe('scroll', () => {
 
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
     // The browser's guess is made against a document this application has
     // already replaced, so the router does the job instead.
     expect(window.history.scrollRestoration).toBe('manual');
@@ -680,7 +778,9 @@ describe('scroll', () => {
     window.history.replaceState(null, '', '/a');
     window.scrollTo(0, 120);
 
-    await router.start(host);
+    attach(router);
+
+    await router.start();
     // A reload lands where the reader was. Only a navigation the application
     // performed goes back to the top.
     expect(window.scrollY).toBe(120);
@@ -689,7 +789,8 @@ describe('scroll', () => {
   it('scrolls to the element a hash names instead of to the top', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     const scrolled: string[] = [];
     const spy = vi
@@ -710,7 +811,8 @@ describe('scroll', () => {
   it('leaves the position alone when the navigation asks it to', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     window.scrollTo(0, 250);
     await router.navigate('/b', { preserveScroll: true });
@@ -723,7 +825,8 @@ describe('scroll', () => {
     const live = defineRoutes([{ path: '/a', component: UserPage, loader: () => ({ name: `v${++loads}` }) }]);
     const router = track(createRouter({ routes: live }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     window.scrollTo(0, 250);
     await router.revalidate();
@@ -736,7 +839,8 @@ describe('scroll', () => {
   it('hands scrolling back to the browser when it is turned off', async () => {
     const router = track(createRouter({ routes, scroll: false }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     // Nothing is taken over, so the browser's own restoration stays on.
     expect(window.history.scrollRestoration).toBe('auto');
@@ -763,7 +867,8 @@ describe('blocking', () => {
   it('stops a navigation and leaves the URL alone', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     const unblock = router.block(() => true);
     const result = await router.navigate('/b');
@@ -780,7 +885,8 @@ describe('blocking', () => {
   it('sees where the navigation was going', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     const seen: string[] = [];
     router.block(({ from, to, mode }) => {
@@ -795,7 +901,8 @@ describe('blocking', () => {
   it('waits for an asynchronous answer', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     const gate = deferred<boolean>();
     router.block(() => gate.promise);
@@ -827,7 +934,8 @@ describe('blocking', () => {
 
     const router = track(createRouter({ routes: slowRoutes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     const slow = router.navigate('/slow');
     await Promise.resolve();
@@ -866,7 +974,8 @@ describe('blocking', () => {
 
     const router = track(createRouter({ routes: loaded }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
     await router.navigate('/b');
 
     router.block(() => true);
@@ -881,7 +990,8 @@ describe('blocking', () => {
   it('asks the blockers that were there when the navigation started', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     const asked: string[] = [];
     const unblockFirst = router.block(() => {
@@ -908,7 +1018,8 @@ describe('blocking', () => {
   it('asks before the tab closes, and stops asking once it is stopped', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     const seen: Transition[] = [];
     router.block((transition) => {
@@ -936,7 +1047,8 @@ describe('blocking', () => {
   it('lets the tab close when no blocker refuses on the spot', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     router.block(() => false);
     // The browser decides whether to prompt the moment the handler returns, so
@@ -953,7 +1065,8 @@ describe('blocking', () => {
   it('corrects the URL when it refuses a Back onto an entry it did not write', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     // A third-party script pushing its own state is the ordinary way an entry
     // with no bookkeeping of ours ends up in the middle of the stack. The
@@ -982,7 +1095,8 @@ describe('blocking', () => {
   it('does not ask a second time about the Back it just refused', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
     await router.navigate('/b');
 
     let asked = 0;
@@ -1010,7 +1124,8 @@ describe('blocking', () => {
     // reading '/b', and only the second spends '/a' to do it.
     window.history.replaceState(null, '', '/before');
     window.history.pushState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
     await router.navigate('/b');
 
     const unblock = router.block(() => true);
@@ -1047,7 +1162,8 @@ describe('preloading', () => {
 
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     await router.preload('/b');
     expect(loads).toBe(1);
@@ -1069,7 +1185,8 @@ describe('preloading', () => {
 
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     await router.preload('/b');
     // A pointer crossing a link asked for nothing. The loader behind it can be
@@ -1104,14 +1221,18 @@ describe('href', () => {
 describe('lifecycle', () => {
   const routes = defineRoutes([{ path: '/a', component: About }]);
 
-  it('unmounts everything and stops listening', async () => {
+  it('empties every outlet and stops listening', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
     expect(host.textContent).toBe('about');
 
     router.stop();
+    // The branch is gone and the application is not: what the router filled
+    // was an outlet, and the page around it belongs to whoever mounted it.
     expect(host.textContent).toBe('');
+    expect(host.querySelector('.app')).not.toBeNull();
 
     // The listeners are gone, so a history move is nobody's business now.
     window.history.pushState(null, '', '/a?x=1');
@@ -1123,7 +1244,8 @@ describe('lifecycle', () => {
   it('refuses a URL the route table does not describe', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
+    attach(router);
+    await router.start();
 
     const result = await router.navigate('/nowhere');
 
@@ -1142,11 +1264,39 @@ describe('lifecycle', () => {
     expect(() => router.navigate('/a')).toThrow(/before start/);
   });
 
+  it('resolves without a browser, and starts without resolving again', async () => {
+    let loads = 0;
+    const counted = defineRoutes([
+      { path: '/a', component: UserPage, loader: () => ({ name: `load ${++loads}` }) },
+      { path: '/b', component: About },
+    ]);
+    const router = track(createRouter({ routes: counted }));
+    window.history.replaceState(null, '', '/a');
+
+    // The order a server-rendered page boots in: resolve, then attach to what
+    // was rendered from it, then take over the browser. Starting would
+    // otherwise run every loader a second time for the page already on screen.
+    await router.resolve('/a');
+    attach(router);
+    expect(host.textContent).toBe('load 1');
+
+    await router.start({ resolve: false });
+    expect(loads).toBe(1);
+    expect(host.textContent).toBe('load 1');
+
+    // Started all the same: the entry is stamped and the router navigates.
+    expect(window.history.state).toMatchObject({ volt: 1 });
+    await router.navigate('/b');
+    expect(host.textContent).toBe('about');
+    expect(loads).toBe(1);
+  });
+
   it('refuses to start twice', async () => {
     const router = track(createRouter({ routes }));
     window.history.replaceState(null, '', '/a');
-    await router.start(host);
-    await expect(router.start(host)).rejects.toThrow(/already started/);
+    attach(router);
+    await router.start();
+    await expect(router.start()).rejects.toThrow(/already started/);
   });
 });
 
@@ -1208,7 +1358,8 @@ addEventListener: () => {},
     const stub = stubTransitions();
     try {
       const router = track(createRouter({ routes }));
-      await router.start(host);
+      attach(router);
+      await router.start();
       await router.navigate('/users');
 
       expect(stub.calls).toHaveLength(0);
@@ -1222,7 +1373,8 @@ addEventListener: () => {},
     const stub = stubTransitions();
     try {
       const router = track(createRouter({ routes, viewTransition: true }));
-      await router.start(host);
+      attach(router);
+      await router.start();
       await router.navigate('/users');
 
       // One for the navigation. `start` itself is an initial commit and must
@@ -1239,7 +1391,8 @@ addEventListener: () => {},
     const doc = document as unknown as Record<string, unknown>;
     delete doc.startViewTransition;
     const router = track(createRouter({ routes, viewTransition: true }));
-    await router.start(host);
+    attach(router);
+    await router.start();
     await router.navigate('/users');
 
     expect(router.pathname()).toBe('/users');
@@ -1251,7 +1404,8 @@ addEventListener: () => {},
     const restoreMedia = stubReducedMotion(true);
     try {
       const router = track(createRouter({ routes, viewTransition: true }));
-      await router.start(host);
+      attach(router);
+      await router.start();
       await router.navigate('/users');
 
       expect(stub.calls).toHaveLength(0);
@@ -1283,7 +1437,8 @@ addEventListener: () => {},
 
     try {
       router = track(createRouter({ routes, viewTransition: true }));
-      await router.start(host);
+      attach(router);
+      await router.start();
       await router.navigate('/users');
       await inner;
 

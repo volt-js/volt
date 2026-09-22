@@ -581,6 +581,15 @@ export interface StaticMarkup {
 export interface RenderOptions {
   /** Props for the root component, as a parent would pass them. */
   props?: Record<string, unknown> | null;
+  /**
+   * What to do inside this render's own scope, before the component is built.
+   *
+   * The only place a per-request provider can be installed: the scope a render
+   * runs in is created in here, so anything provided outside it is provided to
+   * nothing — and on a server "outside it" is shared by every request in
+   * flight, which is the other half of why this exists.
+   */
+  setup?: () => void;
 }
 
 /**
@@ -617,6 +626,7 @@ export async function renderToStaticMarkup(
     // it, rather than left observing a tree nobody will look at again.
     createRoot((disposeRoot) => {
       dispose = disposeRoot;
+      options.setup?.();
       renderComponent(component, writer, options.props ?? null);
     });
   });
@@ -914,6 +924,7 @@ export async function renderToString(
             failure.error = error;
           }
         });
+        options.setup?.();
         renderComponent(component, writer, options.props ?? null);
       });
     });

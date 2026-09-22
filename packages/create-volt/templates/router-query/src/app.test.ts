@@ -1,10 +1,15 @@
 import { afterEach, expect, it } from 'vitest';
-import { flushSync } from '@voltdev/core';
+import { flushSync, mount, provideOutlet, type MountHandle } from '@voltdev/core';
+import { provideRouter } from '@voltdev/router';
 import { router } from './router.js';
+import { Shell } from './shell.js';
 
 let host: HTMLElement | null = null;
+let app: MountHandle | null = null;
 
 afterEach(() => {
+  app?.unmount();
+  app = null;
   router.stop();
   host?.remove();
   host = null;
@@ -16,7 +21,13 @@ async function start(path: string): Promise<HTMLElement> {
   window.history.replaceState(null, '', path);
   host = document.createElement('div');
   document.body.append(host);
-  await router.start(host);
+  app = mount(Shell, host, {
+    setup: () => {
+      provideRouter(router);
+      provideOutlet(router.outletAt(0));
+    },
+  });
+  await router.start();
   return host;
 }
 

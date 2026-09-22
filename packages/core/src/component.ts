@@ -1177,6 +1177,18 @@ export function slot(
 // Bootstrapping
 // ---------------------------------------------------------------------------
 
+/**
+ * What to do inside the root's own scope, before the component is built.
+ *
+ * The one thing an application cannot do from outside: a context provided out
+ * here would be provided to nothing, since the root's scope is created in
+ * there. A router hands its outlet down this way, which is what makes the
+ * branch part of the render rather than something applied to it afterwards.
+ */
+export interface MountOptions {
+  setup?: () => void;
+}
+
 export interface MountHandle {
   /** Tear the component down and clear the host element. */
   unmount(): void;
@@ -1213,6 +1225,7 @@ export function renderComponent(
 export function mount(
   component: ComponentType<unknown>,
   target: Element | string,
+  options: MountOptions = {},
 ): MountHandle {
   const host = typeof target === 'string' ? document.querySelector(target) : target;
   if (!host) {
@@ -1228,6 +1241,7 @@ export function mount(
 
   createRoot((disposeRoot) => {
     dispose = disposeRoot;
+    options.setup?.();
     const resolved = CONFIGS.get(component);
     if (!resolved) {
       throw voltError(
@@ -1279,6 +1293,7 @@ export function mount(
 export function hydrate(
   component: ComponentType<unknown>,
   target: Element | string,
+  options: MountOptions = {},
 ): MountHandle {
   const host = typeof target === 'string' ? document.querySelector(target) : target;
   if (!host) {
@@ -1294,6 +1309,7 @@ export function hydrate(
 
   createRoot((disposeRoot) => {
     dispose = disposeRoot;
+    options.setup?.();
     const resolved = CONFIGS.get(component);
     if (!resolved) {
       throw voltError(

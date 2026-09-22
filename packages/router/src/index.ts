@@ -29,14 +29,27 @@
  *   ]);
  *
  *   export const router = createRouter({ routes });
- *   await router.start(document.querySelector('#app')!);
  *
- * A layout renders its child wherever it puts an outlet:
+ *   mount(App, '#app', {
+ *     setup: () => {
+ *       provideRouter(router);
+ *       provideOutlet(router.outletAt(0));
+ *     },
+ *   });
+ *   await router.start();
+ *
+ * The router renders nothing and is given nothing to render into. The
+ * application mounts its own root; the branch is part of that render, and a
+ * layout says where its child goes with `:outlet`:
  *
  *   <nav>…</nav>
- *   <div data-volt-outlet></div>
+ *   <main :outlet></main>
  *
- * and a route reads its own loader's result and its own parameters:
+ * which is what lets a server write a page whole, in one pass, instead of a
+ * shell with a hole in it. `resolve()` is that server's entry: it matches,
+ * loads and publishes, and touches no history, no scroll and no listeners.
+ *
+ * A route reads its own loader's result and its own parameters:
  *
  *   class UserPage {
  *     user = routeData<User>();
@@ -61,7 +74,6 @@
 export {
   createRouter,
   routeData,
-  OUTLET_ATTRIBUTE,
   type Blocker,
   type HrefOptions,
   type NavigateOptions,
@@ -71,8 +83,15 @@ export {
   type RouteLocation,
   type Router,
   type RouterOptions,
+  type StartOptions,
   type Transition,
 } from './router.js';
+
+/**
+ * The router found in scope rather than imported, which is what lets one
+ * process render two pages at once. See `context.ts`.
+ */
+export { provideRouter, useRouter } from './context.js';
 
 export {
   defineRoutes,

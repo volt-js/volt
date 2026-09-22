@@ -33,7 +33,7 @@ src/app.test.ts   navigates between routes and asserts on the DOM
 ## What to notice
 
 - **The layout does not re-mount.** Going from `/users` to `/users/2` swaps
-  what is inside `<main data-volt-outlet>` and leaves the header alone.
+  what is inside `<main :outlet>` and leaves the header alone.
 - **Links are ordinary anchors.** `<a href="/users/2">` has a real `href`, so
   it previews in the status bar and opens in a new tab on middle-click. The
   router intercepts only the plain left-click.

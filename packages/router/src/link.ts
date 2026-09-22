@@ -66,7 +66,12 @@ export function isRoutableAnchor(anchor: HTMLAnchorElement): boolean {
 
   // Another origin, and every non-http scheme with it: mailto:, tel:, blob:
   // and a `javascript:` href all report an origin that is not this one.
-  return anchor.origin === window.location.origin;
+  //
+  // "This one" is the anchor's own document rather than `window`. They are the
+  // same page in the ordinary case; they are not for an anchor in a frame, and
+  // reaching for a global here is how a module that only ever runs in a
+  // browser still manages to name one on a server.
+  return anchor.origin === anchor.ownerDocument.location?.origin;
 }
 
 /**

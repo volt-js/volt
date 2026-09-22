@@ -11,14 +11,16 @@
  * the delegated listener is where they are actually consulted.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Component, flushSync } from '@voltdev/core';
+import { Component, flushSync, mount, provideOutlet, type MountHandle } from '@voltdev/core';
 import { compileTemplate } from '@voltdev/core/jit';
+import { provideRouter } from '../src/context.js';
 import { findAnchor, isRoutableAnchor, shouldInterceptClick } from '../src/link.js';
 import { createRouter, type Router } from '../src/router.js';
 import { defineRoutes } from '../src/routes.js';
 
 let host: HTMLElement;
 let routers: Router<string>[] = [];
+let mounted: MountHandle[] = [];
 
 function track<T extends Router<never>>(router: T): T {
   routers.push(router as unknown as Router<string>);
@@ -28,10 +30,13 @@ function track<T extends Router<never>>(router: T): T {
 beforeEach(() => {
   document.body.innerHTML = '<div id="app"></div>';
   host = document.querySelector('#app')!;
+  mounted = [];
   window.history.replaceState(null, '', '/');
 });
 
 afterEach(() => {
+  for (const handle of mounted) handle.unmount();
+  mounted = [];
   for (const router of routers) router.stop();
   routers = [];
   flushSync();
@@ -142,6 +147,10 @@ class Page {
 @Component({ selector: 'v-other', render: compileTemplate(`<div class="other">other</div>`) })
 class Other {}
 
+/** The application's own root; the router fills the outlet in it. */
+@Component({ selector: 'v-link-app', render: compileTemplate(`<div :outlet></div>`) })
+class App {}
+
 describe('through a started router', () => {
   const routes = defineRoutes([
     { path: '/', component: Page },
@@ -150,7 +159,15 @@ describe('through a started router', () => {
 
   const start = async () => {
     const router = track(createRouter({ routes, preloadOnHover: false }));
-    await router.start(host);
+    mounted.push(
+      mount(App, host, {
+        setup: () => {
+          provideRouter(router);
+          provideOutlet(router.outletAt(0));
+        },
+      }),
+    );
+    await router.start();
     return router;
   };
 
@@ -241,7 +258,15 @@ describe('through a started router', () => {
     ]);
 
     const router = track(createRouter({ routes: lazy }));
-    await router.start(host);
+    mounted.push(
+      mount(App, host, {
+        setup: () => {
+          provideRouter(router);
+          provideOutlet(router.outletAt(0));
+        },
+      }),
+    );
+    await router.start();
     const link = anchor({ href: '/other' });
 
     link.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));

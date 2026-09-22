@@ -143,7 +143,16 @@ const BUDGETS: Record<string, number> = {
   // element that stands for it. 927 B measured. Each is on the path a
   // component library is made of, and none is reachable from a template that
   // does not use it.
-  'packages/core/dist/runtime.js': 940,
+  //
+  // Raised again from 940 by what a route's outlet is: a hole in a template
+  // rather than an element the router finds afterwards. 975 B measured. The
+  // call itself is four lines; the rest is `takeClaimed`, which is what keeps
+  // a page that hydrates before its branch has resolved from throwing away
+  // the markup the reader is already looking at. An application that routes
+  // nothing carries none of it — `bundle-composition.test.ts` asserts the
+  // module is absent from an application that names no outlet, which is what
+  // the pure annotation on the context is for.
+  'packages/core/dist/runtime.js': 985,
   // Raised from 400 when ids moved here from @voltdev/primitives, which is
   // where they have to be minted: an id is now a component's position in the
   // tree rather than a number from a counter, and only the component runtime
@@ -165,7 +174,14 @@ const BUDGETS: Record<string, number> = {
   // the chunk below with them — building without the re-export emits no
   // `state-*.js` at all — because nothing in a client emit reaches them
   // unless that application wrote the call itself.
-  'packages/core/dist/index.js': 675,
+  //
+  // Raised from 675 by the two entries a router needs of the component
+  // runtime: `provideOutlet`, and a `renderComponent` that hands back what it
+  // built rather than writing only into a server's writer. 716 B measured.
+  // `mount` and `hydrate` also take a `setup` now — the one place a
+  // per-request provider can be installed, since the scope it would be
+  // provided to is created inside them.
+  'packages/core/dist/index.js': 730,
   // The state a server render hands to the page that hydrates it. Its own
   // chunk because both entries import it — the index for the browser and the
   // server entry for `renderToString` — and it is budgeted for the reason the
@@ -196,7 +212,12 @@ const BUDGETS: Record<string, number> = {
   // table and it is paid only by a server: the client entry, the runtime and
   // the state chunk are all unchanged by it, which is the point of the entry
   // being separate at all.
-  'packages/core/dist/server.js': 400,
+  //
+  // 403 B after the outlet: a server fills one by writing the child into the
+  // same walk, which is three bytes of re-export and the reason a
+  // server-rendered route arrives whole rather than as a shell with a gap in
+  // it.
+  'packages/core/dist/server.js': 415,
   // Raised from 4400 by making the streamed and buffered failure paths one
   // mechanism rather than two: an error raised anywhere under a boundary now
   // reaches the same fallback whether the headers have gone or not. Measured

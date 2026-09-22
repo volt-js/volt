@@ -31,7 +31,12 @@ import { createContext, provideContext, useContext } from '@voltdev/reactivity';
  */
 export type OutletRender = (out?: unknown) => unknown;
 
-const OutletContext = createContext<OutletRender | null>(null, 'volt.outlet');
+/**
+ * Annotated pure so an application that routes nothing drops the module
+ * whole: a call at module scope is a side effect as far as a bundler knows,
+ * and this one is a symbol and an object.
+ */
+const OutletContext = /* @__PURE__ */ createContext<OutletRender | null>(null, 'volt.outlet');
 
 /**
  * Say what the next `:outlet` below here renders.

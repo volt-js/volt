@@ -25,7 +25,23 @@ export const routes = defineRoutes([
 ]);
 
 export const router = createRouter({ routes });
-await router.start(document.querySelector('#app')!);
+```
+
+```ts
+// main.ts — the application mounts its own root; the router fills its outlets.
+import { mount, provideOutlet } from '@voltdev/core';
+import { provideRouter } from '@voltdev/router';
+import { Shell } from './shell.js';
+import { router } from './routes.js';
+
+mount(Shell, '#app', {
+  setup: () => {
+    provideRouter(router);
+    provideOutlet(router.outletAt(0));
+  },
+});
+
+await router.start();
 ```
 
 The table is data rather than a directory of files. A route is found by reading
@@ -80,15 +96,23 @@ segment ties, the longer pattern wins.
 
 ### Layouts and the outlet
 
-A route with children renders them into an element marked `data-volt-outlet`
-in its template:
+A route with children renders them into the element its template marks with
+`:outlet`:
 
 ```html
 <div class="shell">
   <nav>…</nav>
-  <main data-volt-outlet></main>
+  <main :outlet></main>
 </div>
 ```
+
+An outlet is a hole in a template, not an element the router looks for
+afterwards, and that is what lets a route render anywhere a template does: a
+server writes the branch into the same walk, so a page arrives whole rather
+than as a shell with a gap in it, and a client hydrating that page claims those
+nodes like any others. The element that marks it has no content of its own —
+whatever the router renders goes there — and a template that writes one and
+renders no child route is told so, naming the layout that has no outlet.
 
 **A layout does not re-mount.** The old and new matches are compared position by
 position, and every route that matches the same slice of the URL keeps its
@@ -194,8 +218,10 @@ the difference between updating one thing and updating everything that looked.
 | `preload(to)` | Fetch what a URL would need to render, without going there |
 | `revalidate()` | Run the current routes' loaders again, in place, without re-mounting |
 | `block(blocker)` | Register a blocker; returns the function that removes it |
-| `start(root)` | Match the current URL, mount it, and start listening |
-| `stop()` | Stop listening |
+| `resolve(url)` | Match a URL, load what it needs, and publish it. No history, no listeners — this is what a server render calls |
+| `start(options?)` | Listen, and resolve where the browser already is. `{ resolve: false }` keeps what a server render already published |
+| `stop()` | Stop listening, and empty the outlets |
+| `outletAt(depth)` | What renders at a depth, for `provideOutlet`. Depth 0 is the first matched route |
 
 `href` is typed against the table:
 
@@ -325,11 +351,15 @@ not have. Test it with `.length` — an empty array is truthy.
 
 ## What it does not do
 
-- **It does not run on a server.** `createRouter` reads `window.location` when
-  it is created and navigates with the History API, so a server bundle that
-  creates one throws as it loads. A server decides what a URL resolves to with
-  [`matchRoutes`, `flattenRoutes` and `routeMode`](#without-a-browser),
-  which touch no DOM.
+- **It does not navigate on a server**, which is not the same as not running
+  there. `createRouter` reads nothing at construction, so a server makes one
+  per request and calls `resolve(url)`: the branch renders through the outlets
+  like any other markup, and every signal a route reads — its params, its
+  matches, its location — is published by that call. What a server has no use
+  for is the rest: history, scroll and the listeners, which `start` installs
+  and `resolve` does not. A router per request rather than one at module
+  scope, because one at module scope would be shared by every request in
+  flight.
 - **No file-system routing.** The table is declared. A generator that writes one
   from a directory is a reasonable thing to build on top; it is not built here.
 - **No hash routing.** URLs are paths, handled with the History API.

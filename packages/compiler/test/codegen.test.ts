@@ -519,6 +519,14 @@ describe('a template that asks for something impossible', () => {
     expect(code).toContain('get "class"()');
   });
 
+  it('refuses `data-volt-outlet`, the DOM search `:outlet` replaced', () => {
+    // The worst kind of stale template: it compiles, it renders, and the child
+    // route it was marking is simply not on the page.
+    expect(() => gen(`<div><main data-volt-outlet></main></div>`)).toThrow(
+      /`data-volt-outlet` was a DOM search[\s\S]*<main :outlet><\/main>/,
+    );
+  });
+
   it('refuses a written-out `from` on an outlet, which is an expression', () => {
     expect(() => gen(`<div><slot from="col" name="cell"></slot></div>`)).toThrow(
       /names the component whose content to draw[\s\S]*:from="col"/,
