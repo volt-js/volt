@@ -10,12 +10,12 @@
 </button>
 
 <div :if="popover.isPresent()" :portal :host class="volt-popover-content"
-     :ref="content" :spread="popover.contentProps()">
-  <h2 :if="title.get()" class="volt-popover-title" :spread="popover.titleProps()">
+     :ref="content" :spread="contentProps()">
+  <h2 :if="titled()" class="volt-popover-title" :spread="popover.titleProps()">
     <slot name="title">{ title.get() }</slot>
   </h2>
 
-  <p :if="description.get()" class="volt-popover-description"
+  <p :if="described()" class="volt-popover-description"
      :spread="popover.descriptionProps()">
     <slot name="description">{ description.get() }</slot>
   </p>

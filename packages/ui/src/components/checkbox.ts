@@ -1,5 +1,10 @@
 import { Component, Prop, Signal } from '@voltdev/core';
-import { createCheckbox, type Checkbox, type CheckedState } from '@voltdev/primitives';
+import {
+  createCheckbox,
+  type Checkbox,
+  type CheckedState,
+  type ControlProps,
+} from '@voltdev/primitives';
 
 /**
  * A checkbox: a box, and the words that name it.
@@ -11,8 +16,9 @@ import { createCheckbox, type Checkbox, type CheckedState } from '@voltdev/primi
  * The words are the default slot and they go *inside* the control, which is
  * how the control takes its accessible name from its own contents — so a
  * checkbox written this way needs no `label` and no id pointing at one. A box
- * with nothing written inside it is named with `label` instead, because a
- * control with no text has nothing to be named from.
+ * with nothing written inside it is named with `label` — or with `aria-label`,
+ * the same thing in the platform's own spelling — because a control with no
+ * text has nothing to be named from.
  *
  * Behind the box is a real `<input type="checkbox">`, visually hidden by the
  * primitive and carrying the value. That is what submits with the form, what
@@ -34,7 +40,7 @@ export class VCheckbox {
   /** Your own signal, if the checked state belongs to your component. */
   @Prop() checked?: Signal.State<CheckedState>;
   /**
-   * The five below are what the primitive is built with, read once while this
+   * The three below are what the primitive is built with, read once while this
    * field list initializes — plain, because a signal would promise a caller
    * they can change them later and the primitive would not hear it.
    */
@@ -44,10 +50,38 @@ export class VCheckbox {
   @Prop() name?: string;
   /** What is submitted under that name. `on` is what a native checkbox sends. */
   @Prop() value?: string;
+
   /** Names a box that has no words written inside the tag to be named from. */
-  @Prop() label?: string;
+  @Prop() label = new Signal.State<string | undefined>(undefined);
   /** Id of the element that names it, when something already on the page does. */
-  @Prop() labelledBy?: string;
+  @Prop() labelledBy = new Signal.State<string | undefined>(undefined);
+
+  /**
+   * The same two, in the spelling the platform already has — and the third,
+   * which only the platform has a spelling for.
+   *
+   * These are declared rather than left to fall through to `:host`, and that
+   * is the whole of the fix they are. `:host` is on the row, because the row
+   * is what a caller sees and would have classed by hand; everything they
+   * write that this does not claim lands there. For a class or a `data-*`
+   * that is right. For these three it is a silent loss: the row carries no
+   * role, so a name on it names nothing, and the `role="checkbox"` element is
+   * left with none. A declared prop is never a host attribute, so writing
+   * them down is what keeps them off the row and puts them on the control
+   * with the rest of its bag.
+   *
+   * `aria-describedby` has no prop of its own because nothing is handed a
+   * description — not the primitive, not the control. Its ids are what a hint
+   * or a validation message is, and `createFormField` computes exactly this
+   * string for a field that has both.
+   */
+  @Prop({ alias: 'aria-label' }) ariaLabel = new Signal.State<string | undefined>(undefined);
+  @Prop({ alias: 'aria-labelledby' }) ariaLabelledBy = new Signal.State<string | undefined>(
+    undefined,
+  );
+  @Prop({ alias: 'aria-describedby' }) describedBy = new Signal.State<string | undefined>(
+    undefined,
+  );
 
   /**
    * Refuses the press and the keyboard, and is written through to the input so
@@ -85,10 +119,31 @@ export class VCheckbox {
     ...(this.defaultChecked !== undefined ? { defaultChecked: this.defaultChecked } : {}),
     ...(this.name !== undefined ? { name: this.name } : {}),
     ...(this.value !== undefined ? { value: this.value } : {}),
-    ...(this.label !== undefined ? { label: this.label } : {}),
-    ...(this.labelledBy !== undefined ? { labelledBy: this.labelledBy } : {}),
     ...(this.onCheckedChange ? { onCheckedChange: this.onCheckedChange } : {}),
   });
+
+  /**
+   * What the control carries: the primitive's bag, and what names it.
+   *
+   * One bag rather than a spread and an attribute beside it. `:spread`
+   * rewrites the element whenever the state it reads changes and clears the
+   * keys the new object does not carry, so a name written next to it is a
+   * name the first press wipes. The names are not handed to the primitive
+   * either, which reads its options once: they are read here, so a name bound
+   * to a signal — a row's label, a message that appears — follows it.
+   *
+   * What the caller wrote in ARIA wins over the prop that says the same
+   * thing. Two spellings of one name can only disagree by mistake, and the
+   * attribute is the one they wrote on the tag.
+   */
+  controlProps(): ControlProps {
+    return {
+      ...this.checkbox.controlProps(),
+      'aria-label': this.ariaLabel.get() ?? this.label.get(),
+      'aria-labelledby': this.ariaLabelledBy.get() ?? this.labelledBy.get(),
+      'aria-describedby': this.describedBy.get(),
+    };
+  }
 
   /**
    * The mark inside the box, when nothing was written for the `mark` slot.

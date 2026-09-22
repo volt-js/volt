@@ -84,6 +84,9 @@ and that test would fail.
 | [Navigation](./ui-navigation) | `<v-tabs>` and `<v-tab>` |
 | [Data](./ui-data) | `<v-table>` and `<v-table-column>` |
 
+Eight tags over eleven styled components; menu, toast and accordion are the
+three that are still markup you write, and each group's page carries it.
+
 Each is the primitive with the markup already written, and each keeps that
 primitive within reach — so a component is a shortcut, never a wall. What a
 caller writes on the tag lands on the element the component draws, the

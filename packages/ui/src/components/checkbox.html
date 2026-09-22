@@ -6,7 +6,7 @@
 >
   <input :ref="input" :spread="checkbox.inputProps()">
 
-  <span class="volt-checkbox" :spread="checkbox.controlProps()">
+  <span class="volt-checkbox" :spread="controlProps()">
     <span class="volt-checkbox-indicator" aria-hidden="true"><slot
       name="mark"
       :state="checkbox.checked()"

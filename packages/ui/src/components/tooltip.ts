@@ -1,5 +1,50 @@
 import { Component, Prop, Signal, effect } from '@voltdev/core';
-import { createTooltip, type AnchorPlacement, type Tooltip } from '@voltdev/primitives';
+import {
+  createTooltip,
+  focusableWithin,
+  type AnchorPlacement,
+  type Tooltip,
+} from '@voltdev/primitives';
+
+/**
+ * The ARIA attributes whose value is a list of ids rather than one value.
+ *
+ * This is ARIA's own grammar, not a restatement of what the primitive's bag
+ * holds today, so it does not go stale as the bag grows. It is the difference
+ * between adding to what a caller wrote and overwriting it: a control can be
+ * described by the caller's help text *and* by this tooltip at once, while a
+ * name is one name.
+ */
+const ID_LISTS = new Set([
+  'aria-describedby',
+  'aria-labelledby',
+  'aria-details',
+  'aria-controls',
+  'aria-owns',
+  'aria-flowto',
+]);
+
+/**
+ * What the control should say, given what the caller wrote on it themselves
+ * and what the primitive has to add.
+ *
+ * Nothing is ever removed for the tooltip having no value of its own: the
+ * attribute goes back to the caller's. A closed tooltip is not a reason to
+ * take the name off an icon button, and the two bag entries are undefined for
+ * most of a tooltip's life — `aria-describedby` whenever it is shut, and
+ * `aria-label` whenever `label` was not passed.
+ *
+ * Where both have something to say and only one value fits, the prop wins:
+ * `label` is a caller asking this tooltip to name their trigger, and a caller
+ * who had a name already would not have asked.
+ */
+function merged(name: string, own: string | null, value: string | undefined): string | null {
+  if (value === undefined) return own;
+  if (!own) return value;
+  if (!ID_LISTS.has(name)) return value;
+  const ids = own.split(/\s+/).filter(Boolean);
+  return ids.includes(value) ? own : [...ids, value].join(' ');
+}
 
 /**
  * A tooltip: a short description of the control it is written around.
@@ -36,8 +81,10 @@ import { createTooltip, type AnchorPlacement, type Tooltip } from '@voltdev/prim
  *
  * - **What is announced belongs on the control.** `aria-describedby` on a
  *   `<span>` around a button describes nothing a screen reader will ever
- *   read. So the ARIA half of the primitive's bag is written onto the element
- *   inside the wrapper instead, and the rest is spread on the wrapper.
+ *   read. So the ARIA half of the primitive's bag is written onto the control
+ *   inside the wrapper instead, and the rest is spread on the wrapper. That
+ *   control is the caller's own markup, so what this writes is added to what
+ *   they wrote rather than put in its place.
  * - **Focus does not bubble.** A `focus` listener on the wrapper never hears
  *   the control take focus. `focusin` and `focusout` do bubble, and what they
  *   run is the primitive's own handlers.
@@ -89,6 +136,14 @@ export class VTooltip {
   content = new Signal.State<Element | null>(null);
 
   /**
+   * The control this has written ARIA onto, and what that control said for
+   * itself before it did — read once per attribute, because after the first
+   * write the element's own answer is this component's.
+   */
+  private control: Element | null = null;
+  private readonly own = new Map<string, string | null>();
+
+  /**
    * The primitive, built from the props above — which is why props have to be
    * there while a field initializes.
    */
@@ -120,14 +175,45 @@ export class VTooltip {
     // happened, and a tooltip whose trigger is replaced mid-description is not
     // worth a MutationObserver per tooltip on the page.
     effect(() => {
-      const control = this.trigger.get()?.firstElementChild;
+      const control = this.describedControl();
       if (!control) return;
+      // A different control says nothing about what this one already carried.
+      if (control !== this.control) {
+        this.control = control;
+        this.own.clear();
+      }
       for (const [name, value] of Object.entries(this.tooltip.triggerProps())) {
         if (!name.startsWith('aria-')) continue;
-        if (typeof value === 'string') control.setAttribute(name, value);
-        else control.removeAttribute(name);
+        if (!this.own.has(name)) this.own.set(name, control.getAttribute(name));
+        const next = merged(
+          name,
+          this.own.get(name) ?? null,
+          typeof value === 'string' ? value : undefined,
+        );
+        if (next === null) control.removeAttribute(name);
+        else control.setAttribute(name, next);
       }
     });
+  }
+
+  /**
+   * The element inside the trigger slot that a reader announces.
+   *
+   * The first tab stop, not the slot's first element: a caller who groups
+   * their button with an icon or a badge hands the slot a `<span>`, and ARIA
+   * written on that `<span>` is the same description on a wrapper this
+   * component exists to avoid, one level further in. `focusableWithin` is the
+   * package's one answer to which element focus lands on, so it answers here
+   * too.
+   *
+   * The slot's own root is the fallback, for a trigger with nothing focusable
+   * in it. Such a tooltip is unreachable by keyboard whatever this writes, and
+   * the pointer user is still better off with the description than without it.
+   */
+  private describedControl(): Element | null {
+    const wrapper = this.trigger.get();
+    if (!wrapper) return null;
+    return focusableWithin(wrapper)[0] ?? wrapper.firstElementChild;
   }
 
   /**

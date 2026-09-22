@@ -60,7 +60,242 @@ box: VDialog | null = null;
 later(): void { this.box?.dialog.open(); }
 ```
 
-## Dialog
+## `<v-popover>`
+
+A panel anchored to the button that opened it — `createPopover`, with the
+markup written. Non-modal: focus moves into the panel, and the page behind
+stays live, scrollable and readable.
+
+<Demo name="popover" height="300" />
+
+```html
+<v-popover
+  variant="primary"
+  placement="bottom-start"
+  :title="heading()"
+  description="Only the runs that match stay in the list."
+>
+  <template :slot-trigger>Filters</template>
+  <v-button size="sm" :onPress="clear">Clear them</v-button>
+</v-popover>
+```
+
+The trigger is the component's, where the dialog's is markup of your own, and
+the difference is the positioning: the panel is placed against the trigger in
+CSS, and the `anchor-name` that does it has to be on an element the component
+renders. So the trigger is a `<button>` drawn with the sheet's button rules —
+`variant` and `size` are that button's — and the `trigger` slot is what goes
+inside it.
+
+| Prop | Type | Means |
+|---|---|---|
+| `open` | `Signal.State<boolean>` | Your signal, when the state is yours. A signal or nothing — see below |
+| `defaultOpen` | `boolean` | Where it starts, when the popover owns its state |
+| `placement` | `'top' \| 'right' \| 'bottom' \| 'left'`, each also as `-start` and `-end` | Which side of the trigger it sits on, and which edge it lines up with. Default `bottom` |
+| `offset` | `number \| string` | The gap between trigger and panel, written inline in place of the sheet's. A bare number is pixels either way you write it: `offset="8"` and `:offset="8"` are the same gap |
+| `flip`, `shift` | `boolean` | Let the browser move it when it would overflow. Both default to true |
+| `modal` | `boolean` | Keeps focus inside. Unlike the dialog it leaves the page behind live |
+| `closeOnEscape`, `closeOnOutsidePointer` | `boolean` | Both default to true |
+| `title`, `description` | `string` | Rendered, and named to the screen reader by the primitive's own ids |
+| `label` | `string` | The panel's name for a screen reader when it has no title |
+| `variant` | `'primary' \| 'danger' \| 'ghost'` | The trigger's look |
+| `size` | `'sm' \| 'lg'` | The trigger's size |
+| `onOpenChange` | `(open: boolean) => void` | |
+
+Slots: `trigger` is what the button holds, the default one is the body, and
+`title` and `description` are drawn *inside* the elements those two props fill.
+That is where markup for a heading has to go: the primitive names the panel
+after the element carrying its own id, so a heading written beside that element
+would be a panel with a visible title and no name. Which makes the prop the
+thing that says there is a heading at all — without one the element is not
+rendered, and `label` names the panel rather than an empty line.
+
+Which is also the one sharp edge here: the element carries the slot, so
+**`:slot-title` and `:slot-description` are drawn only when the matching prop
+is set**, and markup put in either slot without it is never rendered. Set the
+prop to the words a reader should hear and put the rest in the slot.
+
+```html
+<v-popover title="Filters">
+  <template :slot-title>Filters <v-button size="sm" :onPress="clear">clear</v-button></template>
+</v-popover>
+```
+
+`defaultOpen`, `placement`, `offset`, `flip`, `shift`, `modal`, `label` and the
+two `closeOn` props are read once, when the primitive is built, so they are not
+signals and changing them later does nothing — which is also why they are
+written down here. `title` and `description` are the other kind: bind them and
+the panel's name and description follow, including while it is open.
+
+`open` is the one signal both sides hold, and markup cannot write a signal —
+`open` on its own, or `:open="true"`, is refused by name rather than taken. To
+have a popover start open, write `defaultOpen`.
+
+What you write on the tag reaches the **panel**, not the trigger. The panel is
+portalled to `<body>`, and it is the thing `<v-popover class="wide">` is about;
+the trigger is a button, and `variant` and `size` are how it is drawn. A
+popover renders its own trigger, so there is no button of yours to wrap it in.
+An `aria-label` of your own reaches it too, and names the panel where there is
+no `title` and no `label`.
+
+Two attributes are the component's rather than yours, and both are load
+bearing: the panel's `id`, which is what the trigger's `aria-controls` points
+at, and `role="dialog"`, which is what the trigger's `aria-haspopup` promises.
+Writing either on the tag does not take. Reach the panel with a class, or take
+the element itself with `:ref`.
+
+The arrow is drawn from the placement that was asked for, and no engine reports
+which fallback it took — so a panel the browser flips or shifts keeps an arrow
+pointing at nothing. `:flip="false"` and `:shift="false"` together hold the
+placement, at the price of a panel that can run off the edge of the viewport.
+
+Tab out of the panel lands either side of the trigger rather than beside the
+portal, and closes the popover on the way. There is no close button: the body
+is yours, and so is whatever closes it.
+
+For anything this does not offer — closing it from elsewhere, the primitive's
+own props on markup of your own — take the primitive:
+
+```html
+<v-popover :ref="filters" title="Filters"><p>…</p></v-popover>
+```
+
+```ts
+filters: VPopover | null = null;
+later(): void { this.filters?.popover.close(); }
+```
+
+## `<v-tooltip>`
+
+A short description of the control it is written around, shown on hover and on
+keyboard focus — `createTooltip`, with the markup written and the delay group
+already shared.
+
+<Demo name="tooltip" height="220" />
+
+```html
+<v-tooltip text="Delete permanently">
+  <v-button :slot-trigger variant="danger">Delete</v-button>
+</v-tooltip>
+```
+
+The control goes in the `trigger` slot and the description is the default slot,
+or `text` when it is a line of text. It opens on focus as well as on hover,
+which is the point: hover alone puts the text behind a pointer, and the user
+with no pointer is the one the description was written for. So the trigger has
+to be something that can take focus — a button, a link, an element you have
+made focusable. A tooltip on a bare `<span>` is unreachable by keyboard, and no
+attribute this writes fixes it.
+
+| Prop | Type | Means |
+|---|---|---|
+| `text` | `string` | The description, when it is a line of text |
+| `open` | `Signal.State<boolean>` | Your signal, when the state is yours |
+| `defaultOpen` | `boolean` | Where it starts, when the tooltip owns its state |
+| `openDelay`, `closeDelay` | `number` | ms before it opens and after the pointer leaves. Default 700 and 300 |
+| `skipDelay` | `number` | ms after the last tooltip closed that the next still opens at once. Default 300 |
+| `label` | `string` | An accessible name for the trigger, for when this text is the only name it has |
+| `placement` | `'top' \| 'bottom' \| 'left' \| 'right'`, each also `-start` or `-end` | Default `top`, the one side a pointer resting on the trigger cannot cover |
+| `offset` | `number \| string` | The gap between trigger and label. A number is pixels |
+| `flip` | `boolean` | Let the browser take the opposite side when this one would overflow |
+| `closeOnEscape` | `boolean` | Escape closes it. Turned off, the key reaches the layer beneath |
+| `onOpenChange` | `(open: boolean) => void` | |
+
+Slots: `trigger` is the control, and the default slot is the description —
+markup, when a line of text is not enough:
+
+```html
+<v-tooltip label="Delete">
+  <button :slot-trigger class="volt-button" data-variant="danger">✕</button>
+  <b>Delete</b> permanently
+</v-tooltip>
+```
+
+`label` is what names that button. A control described but not named is
+announced as "button", and some screen readers skip descriptions by default, so
+an icon trigger wants the same words twice.
+
+Everything but `text` and `open` is read once, when the primitive is built, so
+those props are not signals and changing them later does nothing — which is
+also why they are written down here.
+
+Turning one of the booleans off means binding it — `:flip="false"` and
+`:closeOnEscape="false"`, not `flip="false"`. A plain attribute is the string
+`"false"`, which is truthy, so the unbound spelling asks for the opposite of
+what it reads like. That is how attributes work rather than anything this
+component does, and `<v-dialog>` takes its booleans the same way.
+
+**The tooltip owns a `<span>` around your trigger.** The primitive is handed an
+element — it anchors to it, asks whether the pointer moved into it, and
+excludes it from dismissal — and slot content is your markup, which a template
+cannot `:ref`. A `<span>` is what makes that free: it is inline, takes no rule
+from the sheet, and its box is its content's box, so the label is anchored
+where the control is and the row lays out as it did. Two things the wrapper
+cannot stand in for, and the component does not leave either broken:
+`aria-describedby` and `aria-label` are written onto the control inside it,
+because a description on a `<span>` around a button is one no screen reader
+will read; and focus is heard through `focusin` and `focusout`, since `focus`
+and `blur` do not bubble past the control that took them.
+
+**The control is the first thing in the slot that can take focus**, so you may
+group it with an icon or a badge and the description still lands on the element
+a reader announces:
+
+```html
+<v-tooltip text="Remove" label="Remove">
+  <span :slot-trigger class="with-badge">
+    <button>✕</button>
+    <b class="badge">3</b>
+  </span>
+</v-tooltip>
+```
+
+**What you wrote on that control stays.** The label's id is added to your
+`aria-describedby` rather than written over it, and taken out again when the
+tooltip closes:
+
+```html
+<v-tooltip text="Deleted rows go to the bin for thirty days">
+  <button :slot-trigger aria-label="Delete row" aria-describedby="bin-help">✕</button>
+</v-tooltip>
+```
+
+Open, that button is `aria-describedby="bin-help tooltip-content-1"`; closed, it
+is `aria-describedby="bin-help"` again, and its `aria-label` is its own the
+whole time. `label` is the one exception, because it is you asking this tooltip
+to name the trigger: pass it and it wins over a name on the control.
+
+`:host` is on the floating label, not on the wrapper — so
+`<v-tooltip class="wide">` widens the label. The trigger is markup you wrote
+and can class yourself; the label is the one element of this you cannot
+otherwise reach. A caller who needs more than that takes the primitive:
+
+```html
+<v-tooltip :ref="tip" text="Delete permanently">
+  <button :slot-trigger class="volt-button">Delete</button>
+</v-tooltip>
+```
+
+```ts
+tip: VTooltip | null = null;
+later(): void { this.tip?.tooltip.open(); }
+```
+
+The delay group is shared by every tooltip on the page, not by the ones inside
+one component: once the first has opened, the next opens at once, and the
+window outlives it by `skipDelay` so that crossing a gap between two buttons
+does not drop you back to the full wait. That is global on purpose — a toolbar
+and the lone icon button beside it are one group to the person using them — and
+it is the one thing here you cannot scope.
+
+## Written by hand
+
+The same look without the tag: the primitive, the markup you want, and the
+sheet's class names on it. This is what a component here is made of, and what
+to reach for when a component's shape does not fit — or when the component does
+not exist yet.
+
+### Dialog
 
 The content is fixed to the centre of the viewport, at most 30rem wide, and
 never taller than the viewport less a margin — it scrolls instead, because a
@@ -76,7 +311,7 @@ centring with them and end exactly where the rule puts the content. The same
 fill beats a `translate` of your own on the content, so a dialog you want
 somewhere else wants new keyframes as well as a new rule.
 
-## Popover, menu and tooltip
+### Popover, menu and tooltip
 
 All three are positioned by the primitive through CSS anchor positioning, which
 writes the positioning scheme, `position-anchor` and `position-area` inline,
@@ -137,7 +372,7 @@ on it, so a long description can be read without it closing, as WCAG's Content
 on Hover or Focus criterion (1.4.13) asks, and the sheet leaves pointer events
 on for that to work.
 
-## Toast
+### Toast
 
 `data-type` is drawn as the colour of the toast's leading edge: `info`,
 `success`, `warning` or `error`. Under forced colours every severity would come
