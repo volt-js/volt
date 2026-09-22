@@ -451,12 +451,29 @@ describe('a name one edit from a directive, on a component', () => {
   });
 });
 
+describe('`:text` and `:html` on a component', () => {
+  it('are props, named by the word itself', () => {
+    // A component has no content of its own to write — its template does — so
+    // there is nothing else they could mean here.
+    expect(gen(`<v-tip :text="label.get()"></v-tip>`)).toContain(
+      'get "text"() { return _ctx.label.get(); }',
+    );
+    expect(gen(`<v-tip :html="body"></v-tip>`)).toContain('get "html"()');
+  });
+
+  it('are the same prop the static form has always passed', () => {
+    // The trap this closes: a component whose prop can be written but never
+    // bound, because one of the two spellings was an error.
+    expect(gen(`<v-tip text="fallback"></v-tip>`)).toContain('"text": "fallback"');
+  });
+
+  it('still write an element’s content, where the tag is an element', () => {
+    expect(gen(`<p :text="label.get()"></p>`)).toContain('bindText');
+  });
+});
+
 describe('a directive that means nothing on a component', () => {
   it('says so, rather than being dropped', () => {
-    expect(() => gen(`<v-card :text="label"></v-card>`)).toThrow(
-      /`:text` writes the content of an element/,
-    );
-    expect(() => gen(`<v-card :html="body"></v-card>`)).toThrow(/is a component/);
     expect(() => gen(`<v-card :host></v-card>`)).toThrow(/is the component, not its element/);
   });
 

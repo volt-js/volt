@@ -425,6 +425,7 @@ class BlockEmitter {
       this.directives(
         node.directives.filter((d) => d !== dir),
         ctx,
+        node.isComponent,
       );
       this.children(node.children, ctx);
     });
@@ -439,7 +440,17 @@ class BlockEmitter {
     this.children(node.children, ctx);
   }
 
-  private directives(directives: DirectiveNode[], ctx: PrintContext): void {
+  /**
+   * `onComponent` because two directives change meaning there: `:text` and
+   * `:html` write an element's content, and a component has none of its own,
+   * so on its tag they are props like any other — and a prop handed a signal
+   * is the ordinary controlled shape rather than the mistake this warns about.
+   */
+  private directives(
+    directives: DirectiveNode[],
+    ctx: PrintContext,
+    onComponent = false,
+  ): void {
     for (const dir of directives) {
       switch (dir.kind) {
         // Structure, handled by the walk itself, and `:slot` names a slot
@@ -463,7 +474,9 @@ class BlockEmitter {
         // the rule is about.
         case 'text':
         case 'html':
-          if (dir.exp) this.expression(dir.exp, dir.expLoc, ctx, 'display');
+          if (dir.exp) {
+            this.expression(dir.exp, dir.expLoc, ctx, onComponent ? 'expression' : 'display');
+          }
           continue;
 
         default:
@@ -527,7 +540,7 @@ class BlockEmitter {
         this.depth--;
         this.line('}');
       }
-      this.directives(node.directives, ctx);
+      this.directives(node.directives, ctx, node.isComponent);
       this.children(node.children, ctx);
     });
 

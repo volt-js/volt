@@ -96,6 +96,12 @@ compile error naming both options.
 Both replace the element's children. `:html` does not sanitise — never pass
 untrusted input.
 
+On a component's tag they are props named `text` and `html`, because a
+component has no content of its own to replace — its template has, and what
+goes in it is the component's business. `<v-tip :text="label.get()">` and
+`<v-tip text="Copied">` therefore mean the same thing, which is the point: a
+prop you can write but not bind would be a trap.
+
 ### `:ref`
 
 ```html

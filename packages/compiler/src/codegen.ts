@@ -2270,6 +2270,14 @@ class Generator {
           events.push(`${JSON.stringify(dir.name)}: ${handler}`);
           break;
         }
+        // `:text` and `:html` write the content of an element, and a component
+        // has no content of its own to write — its template does. So on a
+        // component tag they are what every other `:` is there: a prop, named
+        // by the word itself. Which is also the only answer that is
+        // consistent, since `text="hello"` has always been a prop and a
+        // component whose prop can be written but never bound is a trap.
+        case 'text':
+        case 'html':
         case 'prop':
         case 'class':
         case 'style':
@@ -2277,7 +2285,14 @@ class Generator {
           if (!dir.exp) break;
           if ((dir.kind === 'class' || dir.kind === 'style') && composed.has(dir.kind)) break;
           const parsed = this.parse(dir.exp, dir.loc);
-          const name = dir.kind === 'class' ? 'class' : dir.kind === 'style' ? 'style' : dir.name;
+          const name =
+            dir.kind === 'class'
+              ? 'class'
+              : dir.kind === 'style'
+                ? 'style'
+                : dir.kind === 'text' || dir.kind === 'html'
+                  ? dir.kind
+                  : dir.name;
 
           // A callback prop given a bare method reference would arrive
           // unbound, and `this` inside it would be the child. Wrap it so the
@@ -2315,18 +2330,10 @@ class Generator {
           break;
         }
 
-        // Written on a component, each of these used to be dropped without a
-        // word, which is the worst answer: the page renders, and what was
-        // asked for is simply absent.
-        case 'text':
-        case 'html': {
-          this.error(
-            `\`:${dir.kind}\` writes the content of an element, and <${node.tag}> is a component.\n` +
-              '  Pass what it should show as a prop, and let its own template write it.',
-            dir,
-          );
-          break;
-        }
+        // Written on a component, each of the two below used to be dropped
+        // without a word, which is the worst answer: the page renders, and
+        // what was asked for is simply absent. Neither can mean anything here,
+        // and both mean something elsewhere that is worth saying out loud.
         case 'host': {
           this.error(
             `\`:host\` marks the element a component's own attributes reach, inside that\n` +
