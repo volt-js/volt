@@ -550,6 +550,41 @@ const ATTRS = new WeakMap<object, { attrs: Record<string, unknown>; taken: boole
  * on the tag joins the template's own rather than replacing it, a style
  * merges, and a value that came from an expression stays live.
  */
+/**
+ * A component's props when the tag spreads a bag onto it.
+ *
+ * `:spread` used to be spread into the props object literal, which read the
+ * bag once: a child handed `{ ...part.props() }` kept whatever that bag held
+ * when the tag was first rendered, so a part given a primitive's props froze
+ * at its first `aria-expanded` and never opened again.
+ *
+ * The bag is read through instead, per property and per read, so the reads
+ * happen inside whichever binding asked and are tracked there. What the tag
+ * wrote itself wins over what the bag carries, as it did when both were spread
+ * into one literal, and it stays lazy: a prop nothing reads is never computed.
+ */
+export function withSpread(
+  own: Record<string, unknown>,
+  bag: () => Record<string, unknown>,
+): Record<string, unknown> {
+  return new Proxy(own, {
+    get: (target, key) => (key in target ? target[key as string] : bag()[key as string]),
+    has: (target, key) => key in target || key in bag(),
+    ownKeys: (target) => [
+      ...new Set([...Reflect.ownKeys(target), ...Reflect.ownKeys(bag())]),
+    ],
+    getOwnPropertyDescriptor: (target, key) => {
+      const here = Reflect.getOwnPropertyDescriptor(target, key);
+      if (here) return here;
+      // Reported as a getter, which is how the props layer knows a value is an
+      // expression and keeps it live.
+      return key in bag()
+        ? { enumerable: true, configurable: true, get: () => bag()[key as string] }
+        : undefined;
+    },
+  });
+}
+
 export function hostAttrsOf(ctx: unknown): Record<string, unknown> | null {
   const held = ATTRS.get(ctx as object);
   if (!held) return null;

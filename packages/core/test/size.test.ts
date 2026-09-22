@@ -134,7 +134,16 @@ const BUDGETS: Record<string, number> = {
   // they belong are pushed into an array nothing reads. A page that never
   // boots a streamed response drops the name with the rest of the hydration
   // entries, because nothing in a compiled template calls any of them.
-  'packages/core/dist/runtime.js': 925,
+  //
+  // Raised again from 925 by what a component library needs of a tag: a bag
+  // spread onto a component is read through rather than copied once, so a part
+  // handed a primitive's props follows them instead of freezing at the first
+  // set; a `ref` in a bag hands the element back, which is the only channel a
+  // replaced part has; and `:host` carries what a caller wrote on a tag to the
+  // element that stands for it. 927 B measured. Each is on the path a
+  // component library is made of, and none is reachable from a template that
+  // does not use it.
+  'packages/core/dist/runtime.js': 940,
   // Raised from 400 when ids moved here from @voltdev/primitives, which is
   // where they have to be minted: an id is now a component's position in the
   // tree rather than a number from a counter, and only the component runtime

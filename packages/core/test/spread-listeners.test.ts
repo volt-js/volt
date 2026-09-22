@@ -160,3 +160,34 @@ describe(':spread and the class and style in its bag', () => {
     expect(el.style.getPropertyValue('color')).toBe('');
   });
 });
+
+describe(':spread and a ref in its bag', () => {
+  it('hands the element to a function the bag carries, once', () => {
+    const seen: Element[] = [];
+
+    @Component({
+      selector: 'v-referred',
+      render: compileTemplate(`<div :spread="props()"></div>`),
+    })
+    class Referred {
+      tick = new Signal.State(0);
+      props(): Record<string, unknown> {
+        return { 'data-tick': this.tick.get(), ref: (el: Element) => seen.push(el) };
+      }
+    }
+
+    const host = document.createElement('div');
+    document.body.append(host);
+    const handle = mount(Referred, host);
+    unmount = handle.unmount;
+    const el = host.querySelector('div')!;
+
+    // Rebuilt bags must not hand it over again: a ref names where a node is,
+    // and the node has not moved.
+    (handle.instance as Referred).tick.set(1);
+    flushSync();
+
+    expect(seen).toEqual([el]);
+    expect(el.getAttribute('ref')).toBe(null);
+  });
+});

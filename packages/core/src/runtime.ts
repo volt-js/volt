@@ -7,4 +7,4 @@
  */
 
 export * from './dom.js';
-export { createComponent, slot, defineComponent, hostAttrs, lazy, preload } from './component.js';
+export { createComponent, slot, defineComponent, hostAttrs, withSpread, lazy, preload } from './component.js';

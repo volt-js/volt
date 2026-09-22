@@ -2209,6 +2209,7 @@ class Generator {
   private genComponent(node: ElementNode, ctx: PrintContext): string {
     const props: string[] = [];
     const events: string[] = [];
+    const spreads: string[] = [];
 
     // A tag can carry both `class="wide"` and `:class="{ busy }"`, and they
     // describe one attribute. An element composes the two; a component used to
@@ -2278,7 +2279,8 @@ class Generator {
           break;
         }
         case 'spread': {
-          props.push(`...${printExpression(this.parse(dir.exp!, dir.loc), ctx, 1)}`);
+          // Read through rather than spread in: see below.
+          spreads.push(printExpression(this.parse(dir.exp!, dir.loc), ctx, 1));
           break;
         }
         case 'ref': {
@@ -2326,7 +2328,19 @@ class Generator {
 
     const slots = this.genSlots(node, ctx);
 
-    const propsExpr = props.length ? `{ ${props.join(', ')} }` : 'null';
+    // A bag is read through rather than spread in, so the child sees what it
+    // holds now rather than what it held when the tag was first rendered, and
+    // what the tag wrote itself still wins and is still lazy.
+    const own = props.length ? `{ ${props.join(', ')} }` : '{}';
+    const bag =
+      spreads.length === 1
+        ? `() => (${spreads[0]})`
+        : `() => ({ ${spreads.map((one) => `...${one}`).join(', ')} })`;
+    const propsExpr = spreads.length
+      ? `${this.rt}.withSpread(${own}, ${bag})`
+      : props.length
+        ? own
+        : 'null';
     const eventsExpr = events.length ? `{ ${events.join(', ')} }` : 'null';
 
     const call =

@@ -1744,6 +1744,7 @@ export function spread(el: Element, accessor: MaybeAccessor<Record<string, unkno
   let writeClass: ((value: unknown) => void) | undefined;
   let writeStyle: ((value: unknown) => void) | undefined;
   let listeners: Map<string, EventListener> | undefined;
+  let referred = false;
   bind(accessor, (props) => {
     const next = props ?? {};
     if (listeners) {
@@ -1761,6 +1762,18 @@ export function spread(el: Element, accessor: MaybeAccessor<Record<string, unkno
     }
     applied = [];
     for (const [key, value] of Object.entries(next)) {
+      // A part that replaced a primitive's markup still has to hand the
+      // element back — the primitive needs it to position, to dismiss, or to
+      // move focus — and the only channel it has is the bag it was given.
+      // Called once per element, because a `ref` names where a node is, not
+      // what it looks like.
+      if (key === 'ref' && typeof value === 'function') {
+        if (!referred) {
+          referred = true;
+          (value as (node: Element) => void)(el);
+        }
+        continue;
+      }
       if (key.startsWith('on') && typeof value === 'function') {
         if (listeners?.get(key) !== value) {
           el.addEventListener(key.slice(2).toLowerCase(), value as EventListener);

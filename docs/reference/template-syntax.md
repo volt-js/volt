@@ -266,13 +266,15 @@ then not in the DOM, the accessibility tree, or the tab order at all.
 
 Applies every entry of an object, and applies it again whenever what the
 expression reads changes. It is how a [primitive](./primitives)'s part props
-reach an element.
+reach an element, and it works the same on a component's tag, where each entry
+is a prop rather than an attribute and the tag's own props win over the bag's.
 
 | Entry | Becomes |
 |---|---|
 | `class`, `style` | The same as `:class` and `:style` — a string, an object or an array |
 | a name the element has as a property — `value`, `checked`, `tabIndex` | That property |
 | `on` + an event name, holding a function — `onclick`, `onkeydown` | A listener for that event |
+| `ref`, holding a function | Called once with the element, so a part can hand it back to whatever needs it |
 | anything else | An attribute; `null`, `undefined` and `false` remove it |
 
 Each object is applied against what the last one wrote. An entry the next
