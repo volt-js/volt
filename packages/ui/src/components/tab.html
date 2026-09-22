@@ -1,0 +1,7 @@
+<button
+  :host
+  :ref="element"
+  type="button"
+  class="volt-tabs-tab"
+  :spread="tabs.tabs.tabProps(value.get(), { disabled: disabled.get() })"
+><slot name="tab">{ label.get() }</slot></button>

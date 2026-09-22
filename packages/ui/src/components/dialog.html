@@ -1,8 +1,8 @@
 <div :if="dialog.isPresent()" :portal class="volt-dialog-overlay"
      :attr-data-state="dialog.state()"></div>
 
-<div :if="dialog.isPresent()" :portal :host class="volt-dialog-content"
-     :ref="content" :spread="dialog.contentProps()">
+<div :if="dialog.isPresent()" :portal class="volt-dialog-content"
+     :ref="content" :spread="dialog.contentProps()" :host>
   <h2 :if="title.get()" class="volt-dialog-title" :spread="dialog.titleProps()">{ title.get() }</h2>
   <slot name="header"></slot>
 

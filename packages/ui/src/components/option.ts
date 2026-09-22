@@ -1,6 +1,9 @@
 import { Component, Prop, Signal, useContext } from '@voltdev/core';
 import { SelectContext, type VSelect } from './select.js';
 
+/** Replaced by the build; `true` where there is none, which is a test run. */
+declare const __VOLT_DEV__: boolean;
+
 /**
  * One option of a select.
  *
@@ -48,5 +51,18 @@ export class VOption {
 
   constructor() {
     this.select.options.add(this);
+    if (__VOLT_DEV__) {
+      const value = this.value.get();
+      const twin = this.select.options
+        .all.get()
+        .find((option) => option !== this && option.value.get() === value);
+      if (twin) {
+        throw new Error(
+          `[volt] Two <v-option> tags in one <v-select> carry the value "${value}".\n` +
+            '  A value identifies an option — the control holds values, the form submits ' +
+            'them, and both of these would be drawn as chosen at once.',
+        );
+      }
+    }
   }
 }

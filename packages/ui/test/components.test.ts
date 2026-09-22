@@ -432,3 +432,210 @@ describe('v-select', () => {
     expect(() => show(Page3)).toThrow(/inside <v-select>/);
   });
 });
+
+/**
+ * Two things a caller can change after a component is running, which it used
+ * to be deaf to.
+ */
+describe('what a component follows once it is running', () => {
+  it('draws a column where its heading ended up, not where it registered', async () => {
+    @Component({
+      selector: 'v-page',
+      imports: [VTable, VTableColumn],
+      render: compileTemplate(`
+        <v-table :data="rows.get()">
+          <v-table-column :for="field in order.get()" :key="field" :field="field" :label="field"></v-table-column>
+        </v-table>
+      `),
+    })
+    class Page {
+      rows = new Signal.State([{ id: 1, a: 'A', b: 'B' }]);
+      order = new Signal.State(['a', 'b']);
+    }
+
+    const { instance, host } = show(Page);
+    expect([...host.querySelectorAll('tbody td')].map((td) => td.textContent?.trim())).toEqual([
+      'A',
+      'B',
+    ]);
+
+    // The same columns in the other order: nothing joins or leaves, so only
+    // the DOM says anything happened, and what hears it is a mutation
+    // observer — which reports at the microtask checkpoint, before a browser
+    // paints and after a synchronous flush returns.
+    instance.order.set(['b', 'a']);
+    flushSync();
+    await Promise.resolve();
+    flushSync();
+
+    expect([...host.querySelectorAll('th')].map((th) => th.textContent?.trim())).toEqual([
+      'b',
+      'a',
+    ]);
+    expect([...host.querySelectorAll('tbody td')].map((td) => td.textContent?.trim())).toEqual([
+      'B',
+      'A',
+    ]);
+  });
+
+  it('shows the name an option carries now, not the one it had when chosen', () => {
+    @Component({
+      selector: 'v-page2',
+      imports: [VSelect, VOption],
+      render: compileTemplate(`
+        <v-select :value="chosen">
+          <v-option value="fr" :label="name.get()"></v-option>
+        </v-select>
+      `),
+    })
+    class Page2 {
+      chosen = new Signal.State<readonly string[]>(['fr']);
+      name = new Signal.State('France');
+    }
+
+    const { instance, host } = show(Page2);
+    const trigger = host.querySelector('button.volt-select-trigger')!;
+    expect(trigger.textContent?.trim()).toBe('France');
+
+    instance.name.set('République française');
+    flushSync();
+    expect(trigger.textContent?.trim()).toBe('République française');
+  });
+});
+
+/**
+ * A row a caller can press, and everything that is not that press.
+ */
+describe('v-table, pressed', () => {
+  const people = [
+    { id: 1, name: 'Ada' },
+    { id: 2, name: 'Grace' },
+  ];
+
+  function page(): { presses: string[]; edits: string[]; host: HTMLElement } {
+    const presses: string[] = [];
+    const edits: string[] = [];
+
+    @Component({
+      selector: 'v-page',
+      imports: [VTable, VTableColumn, VButton],
+      render: compileTemplate(`
+        <v-table :data="rows.get()" :onRowPress="open">
+          <v-table-column field="name" label="Name"></v-table-column>
+          <v-table-column label="">
+            <template :slot-cell="{ row }">
+              <v-button size="sm" :onPress="() => edit(row)">Edit</v-button>
+            </template>
+          </v-table-column>
+        </v-table>
+      `),
+    })
+    class Page {
+      rows = new Signal.State(people);
+      open = (row: Record<string, unknown>): void => void presses.push(row['name'] as string);
+      edit = (row: Record<string, unknown>): void => void edits.push(row['name'] as string);
+    }
+
+    return { presses, edits, host: show(Page).host };
+  }
+
+  it('calls back with the row a press landed on', () => {
+    const { presses, host } = page();
+    (host.querySelectorAll('tbody tr')[1] as HTMLElement).click();
+    expect(presses).toEqual(['Grace']);
+  });
+
+  it('leaves a press on a button in a cell to that button', () => {
+    const { presses, edits, host } = page();
+    (host.querySelector('tbody button') as HTMLButtonElement).click();
+
+    expect(edits).toEqual(['Ada']);
+    // One press, one action: the row's callback is not also run.
+    expect(presses).toEqual([]);
+  });
+
+  it('answers the keyboard, since a row a pointer can press is one a keyboard can', () => {
+    const { presses, host } = page();
+    const row = host.querySelectorAll('tbody tr')[0] as HTMLElement;
+    expect(row.getAttribute('tabindex')).toBe('0');
+
+    row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(presses).toEqual(['Ada']);
+  });
+
+  it('takes no tab stop where a press would do nothing', () => {
+    @Component({
+      selector: 'v-page2',
+      imports: [VTable, VTableColumn],
+      render: compileTemplate(`
+        <v-table :data="rows.get()"><v-table-column field="name" label="Name"></v-table-column></v-table>
+      `),
+    })
+    class Page2 {
+      rows = new Signal.State(people);
+    }
+
+    const { host } = show(Page2);
+    expect(host.querySelector('tbody tr')!.getAttribute('tabindex')).toBe(null);
+  });
+});
+
+describe('what a caller writes that a component must not overwrite', () => {
+  it('leaves the empty value to the option that claims it', () => {
+    @Component({
+      selector: 'v-page',
+      imports: [VSelect, VOption],
+      render: compileTemplate(`
+        <v-select :value="chosen">
+          <v-option value="" label="Anywhere"></v-option>
+          <v-option value="fr" label="France"></v-option>
+        </v-select>
+      `),
+    })
+    class Page {
+      chosen = new Signal.State<readonly string[]>(['']);
+    }
+
+    const { host } = show(Page);
+    const native = host.querySelector('select')!;
+    // One entry for the empty value, and it is the caller's — two would leave
+    // the control showing an unnamed one.
+    expect([...native.options].map((option) => option.value)).toEqual(['', 'fr']);
+    expect(host.querySelector('button.volt-select-trigger')!.textContent?.trim()).toBe('Anywhere');
+  });
+
+  it('refuses two options that carry one value', () => {
+    @Component({
+      selector: 'v-page2',
+      imports: [VSelect, VOption],
+      render: compileTemplate(`
+        <v-select>
+          <v-option value="fr" label="France"></v-option>
+          <v-option value="fr" label="La France"></v-option>
+        </v-select>
+      `),
+    })
+    class Page2 {}
+
+    expect(() => show(Page2)).toThrow(/carry the value "fr"/);
+  });
+
+  it('merges a class onto the dialog and leaves its id to the primitive', () => {
+    @Component({
+      selector: 'v-page3',
+      imports: [VDialog],
+      render: compileTemplate(`<v-dialog :open="open" class="mine" title="t"><p>b</p></v-dialog>`),
+    })
+    class Page3 {
+      open = new Signal.State(true);
+    }
+
+    show(Page3);
+    const content = document.querySelector('.volt-dialog-content')!;
+    expect(content.classList.contains('mine')).toBe(true);
+    // The id names the dialog to a screen reader and is what a trigger points
+    // at, so it stays the primitive's — which the class doc says out loud.
+    expect(content.id).toMatch(/^dialog-content/);
+  });
+});
+

@@ -19,7 +19,7 @@ export const TableContext = createContext<VTable | null>(null);
  * A table.
  *
  * ```html
- * <v-table :data="people.get()" row-key="id" striped>
+ * <v-table :data="people.get()" rowKey="id" :striped="true">
  *   <v-table-column field="name" label="Name"></v-table-column>
  *   <v-table-column label="Actions" align="end">
  *     <template :slot-cell="{ row }">
@@ -89,7 +89,33 @@ export class VTable {
     return keys === null ? false : keys.has(this.keyOf(row));
   }
 
-  pressRow(row: TableRow, index: number): void {
-    this.onRowPress?.(row, index);
+  /**
+   * A press on the row itself.
+   *
+   * Not one that landed on something inside a cell: a button in a row is the
+   * caller's, and a press on it is that button's alone — firing the row's
+   * callback as well would run two actions for one click, which is what the
+   * documented example with an Edit button in every row would have done.
+   */
+  pressRow(row: TableRow, index: number, event: Event): void {
+    if (!this.onRowPress) return;
+    const inside = (event.target as Element | null)?.closest(
+      'a, button, input, select, textarea, label, [role="button"]',
+    );
+    if (inside && (event.currentTarget as Element).contains(inside)) return;
+    this.onRowPress(row, index);
+  }
+
+  /**
+   * The keyboard half of it. A row a pointer can press has to be a row a
+   * keyboard can press, which is why it takes a tab stop when — and only
+   * when — there is something for a press to do.
+   */
+  pressKey(row: TableRow, index: number, event: KeyboardEvent): void {
+    if (!this.onRowPress) return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    if (event.target !== event.currentTarget) return;
+    event.preventDefault();
+    this.onRowPress(row, index);
   }
 }

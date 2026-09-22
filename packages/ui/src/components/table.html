@@ -15,7 +15,9 @@
       class="volt-table-row"
       :attr-data-selected="isSelected(row) ? 'true' : undefined"
       :attr-aria-selected="isSelected(row) ? 'true' : undefined"
-      :click="pressRow(row, index)"
+      :attr-tabindex="onRowPress ? '0' : undefined"
+      :click="pressRow(row, index, $event)"
+      :keydown="pressKey(row, index, $event)"
     >
       <td
         :for="column in columns.all.get()"

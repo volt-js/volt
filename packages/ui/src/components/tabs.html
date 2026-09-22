@@ -1,0 +1,14 @@
+<div :host>
+  <div class="volt-tabs-list" :ref="list" :spread="tabs.listProps()">
+    <slot></slot>
+  </div>
+
+  <div
+    :for="section in sections.all.get()"
+    :key="section"
+    class="volt-tabs-panel"
+    :spread="tabs.panelProps(section.value.get())"
+  >
+    <slot :from="section" name="default"></slot>
+  </div>
+</div>

@@ -1,0 +1,26 @@
+<button
+  :ref="trigger"
+  class="volt-button"
+  type="button"
+  :attr-data-variant="variant.get()"
+  :attr-data-size="size.get()"
+  :spread="popover.triggerProps()"
+>
+  <slot name="trigger"></slot>
+</button>
+
+<div :if="popover.isPresent()" :portal :host class="volt-popover-content"
+     :ref="content" :spread="popover.contentProps()">
+  <h2 :if="title.get()" class="volt-popover-title" :spread="popover.titleProps()">
+    <slot name="title">{ title.get() }</slot>
+  </h2>
+
+  <p :if="description.get()" class="volt-popover-description"
+     :spread="popover.descriptionProps()">
+    <slot name="description">{ description.get() }</slot>
+  </p>
+
+  <slot></slot>
+
+  <span class="volt-popover-arrow" :spread="popover.arrowProps()"></span>
+</div>

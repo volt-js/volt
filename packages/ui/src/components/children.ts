@@ -30,7 +30,24 @@ export class TagChildren<T> {
     private readonly parent: () => Element | null,
     private readonly elementOf: (child: T) => Element | null,
   ) {
-    measureEffect(() => this.reorder());
+    // Membership is a signal, so a child arriving or leaving brings the order
+    // back here on its own. Order is not: a `:for` that reorders the children
+    // moves their elements and changes nothing this could have read, so the
+    // DOM has to be watched for it. Which is the right way round — the DOM is
+    // what decides the order, and this only reads it back.
+    let watching: Element | null = null;
+    const observer = new MutationObserver(() => this.reorder());
+    onCleanup(() => observer.disconnect());
+
+    measureEffect(() => {
+      const parent = this.parent();
+      if (parent !== null && parent !== watching) {
+        observer.disconnect();
+        observer.observe(parent, { childList: true });
+        watching = parent;
+      }
+      this.reorder();
+    });
   }
 
   /** Called by a child while it initializes; it leaves when its scope does. */

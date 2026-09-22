@@ -1,0 +1,15 @@
+<span
+  :ref="trigger"
+  :spread="wrapperProps()"
+  :focusin="focusIn($event)"
+  :focusout="focusOut()"
+><slot name="trigger"></slot></span>
+
+<div
+  :if="tooltip.isPresent()"
+  :portal
+  :host
+  :ref="content"
+  class="volt-tooltip-content"
+  :spread="tooltip.contentProps()"
+><slot>{ text.get() }</slot></div>

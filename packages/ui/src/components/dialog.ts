@@ -12,6 +12,11 @@ import { createDialog, type Dialog } from '@voltdev/primitives';
  *
  * State is one signal both sides hold. Pass `open` and it is yours to read and
  * write; pass nothing and the dialog owns it, which is what most callers want.
+ *
+ * Everything written on the tag reaches the content element, with one
+ * exception worth knowing: its `id` is the primitive's, because that is what
+ * names the dialog to a screen reader and what a trigger would point at. Name
+ * it with a class, or take the element itself with `:ref`.
  */
 @Component({ selector: 'v-dialog', templateUrl: './dialog.html' })
 export class VDialog {

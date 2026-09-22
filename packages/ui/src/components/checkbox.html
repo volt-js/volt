@@ -1,0 +1,16 @@
+<label
+  :host
+  class="volt-checkbox-field"
+  :click="checkbox.toggle()"
+  :keydown="checkbox.onKeyDown($event)"
+>
+  <input :ref="input" :spread="checkbox.inputProps()">
+
+  <span class="volt-checkbox" :spread="checkbox.controlProps()">
+    <span class="volt-checkbox-indicator" aria-hidden="true"><slot
+      name="mark"
+      :state="checkbox.checked()"
+    >{ mark() }</slot></span>
+    <slot></slot>
+  </span>
+</label>

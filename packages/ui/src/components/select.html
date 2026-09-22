@@ -1,6 +1,6 @@
 <div :host class="volt-select">
   <select :ref="native" :spread="select.nativeProps()">
-    <option value=""></option>
+    <option :if="!claimsNothing()" value=""></option>
     <slot></slot>
   </select>
 

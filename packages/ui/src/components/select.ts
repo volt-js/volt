@@ -86,8 +86,39 @@ export class VSelect {
     provideContext(SelectContext, this);
   }
 
-  /** What the button shows: the chosen names, or the placeholder. */
+  /**
+   * Whether an option of the caller's is the empty value.
+   *
+   * The native control needs an entry for "nothing chosen", and renders one —
+   * unless a caller has written an option for it, in which case theirs is the
+   * one with the name, and two entries sharing a value would leave the control
+   * showing the wrong one.
+   */
+  claimsNothing(): boolean {
+    return this.options.all.get().some((option) => option.value.get() === '');
+  }
+
+  /**
+   * What the button shows: the chosen names, or the placeholder.
+   *
+   * The names come from the options rather than from the control, and that is
+   * not a shortcut. A name the primitive gives back was learned when an option
+   * rendered, out of the native control's DOM, which no binding can depend on
+   * — so the button would keep the name a value had when it was chosen,
+   * however the option is renamed afterwards, and would say nothing at all for
+   * a value whose option arrived late.
+   *
+   * More than one name is handed back to the primitive, which joins a list the
+   * way the locale does. That join is worth more than a rename being a beat
+   * behind in a multiple select.
+   */
   shown(): string {
-    return this.select.hasValue() ? this.select.displayValue() : this.placeholder.get();
+    const values = this.select.values();
+    if (values.length === 0) return this.placeholder.get();
+    if (values.length > 1) return this.select.displayValue();
+
+    const value = values[0]!;
+    const option = this.options.all.get().find((each) => each.value.get() === value);
+    return option ? option.label.get() : this.select.labelOf(value);
   }
 }
