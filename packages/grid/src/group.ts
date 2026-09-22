@@ -34,7 +34,8 @@
  * dropped rows inside a collapsed group would never see them at all. So
  * filtering happens *before* grouping and lives here, over the caller's own
  * rows, which is also the only order in which an aggregate can be over the rows
- * the reader can actually see.
+ * the reader can actually see — and the columns handed to the grid are all
+ * unfilterable, so the grid refuses a filter rather than run one.
  *
  * Sorting is the exception, and deliberately: the affordance for it — the
  * header cell, its `aria-sort`, the click that cycles it, the sentence it
@@ -75,6 +76,7 @@ import { announce, useLocale } from '@voltdev/primitives';
 import {
   GRID_CELL_ATTRIBUTE,
   describeFilterCount,
+  quickFilterValues,
   type GridColumn,
   type GridProps,
 } from './grid.js';
@@ -227,7 +229,7 @@ export interface GridGroupingOptions<T> {
 
   /** The per-column filters, by column id. These belong here, not to the grid. */
   filters?: Signal.State<ReadonlyMap<string, GridFilter>>;
-  /** One string searched across every column. */
+  /** One string searched across every column that can be filtered. */
   quickFilter?: Signal.State<string>;
   onFilterChange?: (filters: ReadonlyMap<string, GridFilter>, quickFilter: string) => void;
   /**
@@ -258,6 +260,8 @@ export interface GridGrouping<T> {
    * comes back with a comparator that returns zero, so the grid's own sort is a
    * stable copy and this module's is the one that orders anything — and with
    * no `sort` signal to share, every column comes back `sortable: false`.
+   * Every column comes back `filterable: false` too, so the grid refuses the
+   * filter that belongs here.
    */
   columns(): readonly GridColumn<GridGroupedRow<T>>[];
   /** Pass as the grid's `getRowKey`. */
@@ -392,7 +396,9 @@ export function createGrouping<T>(options: GridGroupingOptions<T>): GridGrouping
     if (map.size === 0) return compiled;
     for (const column of columnList()) {
       const filter = map.get(column.id);
-      if (filter === undefined) continue;
+      // A column the caller made unfilterable is as unfilterable here as it
+      // would be on an ungrouped grid.
+      if (filter === undefined || column.filterable === false) continue;
       const test = compileFilter(filter, fold);
       if (test === null) continue;
       compiled.push({ value: column.filterValue ?? column.value, test });
@@ -430,13 +436,13 @@ export function createGrouping<T>(options: GridGroupingOptions<T>): GridGrouping
     const source = options.rows();
     const filters = columnFilters.get();
     const terms = quickTerms.get();
+    // Resolved outside the loop: the quick filter searches every column that
+    // can be filtered, and looking the accessors up per row would be most of
+    // what it costs.
+    const quick = terms.length > 0 ? quickFilterValues(columnList()) : null;
 
     let rows = source;
-    if (filters.length > 0 || terms.length > 0) {
-      // Resolved outside the loop: the quick filter searches every column, and
-      // looking the accessors up per row would be most of what it costs.
-      const quick =
-        terms.length > 0 ? columnList().map((column) => column.filterValue ?? column.value) : null;
+    if (filters.length > 0 || quick !== null) {
       const texts: string[] = quick === null ? [] : new Array<string>(quick.length);
       rows = source.filter((row) => {
         for (const filter of filters) {
@@ -654,6 +660,11 @@ export function createGrouping<T>(options: GridGroupingOptions<T>): GridGrouping
       sortValue: undefined,
       filterValue: undefined,
       compare: () => 0,
+      // The grid's filter would run over the flattened list, testing each
+      // heading as though it were a row and stripping it from in front of the
+      // rows it describes. Filtering happens here, before grouping, and the
+      // grid refuses a filter on a column that says so.
+      filterable: false,
       // With no sort signal handed in there is no order this module could ever
       // be asked to apply, and a header that still cycled, marked itself and
       // announced would be describing rows that never move.
@@ -721,6 +732,13 @@ export function createGrouping<T>(options: GridGroupingOptions<T>): GridGrouping
   };
 
   const setFilter = (columnId: string, filter: GridFilter | null): void => {
+    if (filter !== null) {
+      const column = untrack(columnList).find((candidate) => candidate.id === columnId);
+      if (column?.filterable === false) {
+        refuseFilter(`column "${columnId}" is not filterable`, 'setFilter');
+        return;
+      }
+    }
     const current = untrack(() => filterState.get());
     if (filter === null ? !current.has(columnId) : current.get(columnId) === filter) return;
     const next = new Map(current);
@@ -741,6 +759,10 @@ export function createGrouping<T>(options: GridGroupingOptions<T>): GridGrouping
 
   const setQuickFilter = (text: string): void => {
     if (untrack(() => quickState.get()) === text) return;
+    if (text !== '' && quickFilterValues(untrack(columnList)) === null) {
+      refuseFilter('no column is filterable', 'setQuickFilter');
+      return;
+    }
     quickState.set(text);
     reportFilters();
   };
@@ -849,6 +871,17 @@ export function createGrouping<T>(options: GridGroupingOptions<T>): GridGrouping
       return false;
     },
   };
+}
+
+/**
+ * Says, in development, why the grouping did not filter: the caller marked
+ * the column unfilterable, and a refused call otherwise looks exactly like a
+ * filter that matched every row.
+ */
+function refuseFilter(reason: string, method: string): void {
+  if (__VOLT_DEV__ && typeof console !== 'undefined') {
+    console.warn(`[volt] createGrouping: ${reason}, so ${method} did nothing.`);
+  }
 }
 
 /**

@@ -26,7 +26,7 @@ Both decisions have consequences you will meet, and each section below says
 which.
 
 The package is `0.1.0-alpha.1`. [What is not built](#what-is-not-built) is listed
-at the end, along with the known problems in what is.
+at the end.
 
 ## Why a grid belongs here
 
@@ -239,10 +239,12 @@ grows at the end and wrong for nearly everything else on this page. A keyed
 `:for` reuses a row's elements by key; row selection is held by key; the cursor
 follows its row through a sort by key. On the default, all three mean a
 different row after every sort and filter — there is a test pinning exactly
-that degraded behaviour. Give `getRowKey` before turning on selection or
-sorting, and build the key from the row itself: the `index` it is handed is the
-row's place in the sorted, filtered view, not in your array, so a key made from
-it is the default again.
+that degraded behaviour — and an open editor, which has to be over the row it
+will write to, is abandoned rather than left over another. Give `getRowKey`
+before turning on selection or sorting, and to any grid that can be edited;
+build the key from the row itself:
+the `index` it is handed is the row's place in the sorted, filtered view, not in
+your array, so a key made from it is the default again.
 
 ## Columns
 
@@ -259,6 +261,7 @@ interface GridColumn<T> {
   sortValue?: (row: T) => unknown;
   compare?: (a: T, b: T) => number;
   filterValue?: (row: T) => unknown;
+  filterable?: boolean;   // default true
 }
 ```
 
@@ -274,6 +277,7 @@ interface GridColumn<T> {
 | `sortValue` | The key this column sorts by. Defaults to `value` |
 | `compare` | A comparator over whole rows, written ascending. Used instead of `sortValue` |
 | `filterValue` | What this column's filter and the quick filter test. Defaults to `value` |
+| `filterable` | `false` refuses a filter on the column and leaves it out of the quick filter. Every column of a [grouped grid](#what-a-layer-above-the-grid-means) says it |
 
 `value` is a function rather than a field name for two reasons: a field name
 reaches one level of a plain object, and this is where a cell's binding gets its
@@ -371,7 +375,7 @@ wiring of its own. A click that ends a resize drag is not taken as a sort.
 | `data-column` | cell, header cell | Always — the column's `id` |
 | `data-sort` | header cell | Sorted: `ascending` or `descending` |
 | `data-sort-index` | header cell | Its 1-based place in a sort of two or more columns |
-| `data-filtered` | header cell | The column has a finished filter — an unfinished one filters nothing, and marks nothing |
+| `data-filtered` | header cell | The column has a filter that runs — an unfinished one, or one held for a column that is not `filterable`, filters nothing and marks nothing |
 | `data-resizing` | resize handle | A drag is in progress |
 | `data-disabled` | resize handle | The column is not resizable |
 | `data-group`, `data-count` | row, from `grouping.rowProps` | It is a group header; how many rows it holds |
@@ -405,13 +409,17 @@ interface GridCell {
 | `focusCell(cell)` | Move the cursor, scroll the cell into view, focus it — once rendered, if it is not yet. Clamped into the grid |
 | `scrollToCell(cell)` | Scroll a cell into view without moving the cursor or focus |
 | `rowIndex(key)` | Where the row with this key sits in the view now, or `-1` where the view does not hold it |
+| `rowAt(index)` | The row at a position in the view, or `undefined` where the view does not reach — including rows the window is not rendering |
 | `columnIndex(id)` | Where the column with this id sits in the column list now, or `-1` where the list does not hold it |
 
 A position is two indices, not a row key and a column id, because the keyboard
 map is arithmetic over it; which row sits at an index changes with every sort
 and filter, and the grid moves the cursor to follow — see below. `rowIndex` is
-the way from a record to a position, and `columnIndex` from a column. `rowIndex`
-scans the view, so ask it once per change rather than once per cell.
+the way from a record to a position, `rowAt` the way back, and `columnIndex`
+from a column. `rowIndex` scans the view, so ask it once per change rather than
+once per cell; `rowAt` is a lookup. `rows()` answers `rowAt`'s question only for
+the rows the window holds, so reading the record under the cursor — a position,
+and one that can sit off screen — goes through `rowAt`.
 
 The keyboard map is the WAI-ARIA grid pattern, plus sorting, resizing and
 selection:
@@ -584,16 +592,23 @@ type GridFilter = GridTextFilter | GridNumberFilter | GridSetFilter;
 | Member | Description |
 |---|---|
 | `filters()` | The column filters, by column id |
-| `setFilter(columnId, filter)` | Set one column's filter, or remove it with `null` |
+| `setFilter(columnId, filter)` | Set one column's filter, or remove it with `null`. Refused for a column that is not `filterable` |
 | `clearFilters()` | Remove every column filter and the quick filter |
 | `quickFilter()` | The quick-filter text |
-| `setQuickFilter(text)` | Search every column |
+| `setQuickFilter(text)` | Search every column that can be filtered. Refused where none can |
 
 A filter is a plain value for the reason a sort is: it has to survive a trip
 through a URL or a saved view. It is compiled once into a predicate rather than
 interpreted per row — a text filter over a hundred thousand rows would
 otherwise fold the same needle a hundred thousand times, and a set filter would
 build its `Set` once per row.
+
+**A column can refuse to be filtered.** `filterable: false` leaves a column out
+of the quick filter and refuses a filter of its own — `setFilter` does nothing
+and says so while you are developing, and one handed in through the `filters`
+signal, from a saved view, filters nothing and marks no header. A grouped
+grid's columns all say it, which is what keeps a grid filter off a grouped grid;
+see [What a layer above the grid means](#what-a-layer-above-the-grid-means).
 
 **An unfinished filter is no filter.** An empty text box, a number filter whose
 `value` is not a number yet, a `between` missing its `to` — these compile to
@@ -959,7 +974,7 @@ column shows.
 | Member | Description |
 |---|---|
 | `rows()` | The flattened collection — headers and rows — for the grid's `rows` |
-| `columns()` | Your columns, lifted to `GridGroupedRow<T>`, for the grid's `columns` |
+| `columns()` | Your columns, lifted to `GridGroupedRow<T>`, for the grid's `columns`. Every one comes back `filterable: false` |
 | `rowKey(row)` | For the grid's `getRowKey` |
 | `label(row)` | A group header's text; `''` for a data row |
 | `tree()` | The groups themselves, nested |
@@ -1011,18 +1026,20 @@ it can see from where it sits; the rest is wiring the grid and the editing have
 to be given, the way the example above gives the grid `getRowKey`.
 
 **Filter the grouping, never the grid.** The grid's filter runs over whatever it
-is handed, and here that is the flattened list. A grid filter tests each group
-header as though it were a row — by that column's aggregate, which is usually
-nothing — and so usually drops it, leaving its rows orphaned under no heading
-(a `notContains` keeps it, which is no better); and it never sees the rows
-inside a collapsed group at all. The lifted columns carry no `filterValue`, so a
-grid filter also tests your rows by `value`, not by the `filterValue` you gave. So
-filtering happens in `createGrouping`, before grouping, which is also the only
-order in which an aggregate is over the rows the reader can see. Do not pass
-`filters` or `quickFilter` to the grid, and do not call its `setFilter`: nothing
-stops you, which is one of the [known problems](#what-is-not-built) on this page. The
+is handed, and here that is the flattened list. A grid filter would test each
+group header as though it were a row — by that column's aggregate, which is
+usually nothing — and so usually drop it, leaving its rows orphaned under no
+heading (a `notContains` keeps it, which is no better); and it would never see
+the rows inside a collapsed group at all. So filtering happens in
+`createGrouping`, before grouping, which is also the only order in which an
+aggregate is over the rows the reader can see. Every column `columns()` hands
+the grid comes back `filterable: false` to keep it there: the grid's
+`setFilter` and `setQuickFilter` refuse, saying so while you are developing, and
+`filters` or `quickFilter` passed to the grid anyway filter nothing. The
 header's `data-filtered` hook reads the grid's own filters, so on a grouped grid
-it is never set; style a filtered column from `grouping.filters()` instead.
+it is never set; style a filtered column from `grouping.filters()` instead. A
+column *you* mark `filterable: false` is left out of the grouping's filtering
+the same way it would be left out of an ungrouped grid's.
 
 **The grouping announces the count.** The grid says how many rows a filter left,
 but on a grouped grid nothing filters there. The grouping says it instead, from
@@ -1074,13 +1091,15 @@ the grid was given, and a select-all never reaches a row the reader cannot see.
 Route clicks through `onGroupClick` first, as above, so a click on a header
 toggles it.
 
-**Editing sees the wrappers too.** A `createCellEditing` over a grouped grid is
-typed over `GridGroupedRow<T>`, and opens whatever its editors allow — a
-header's cell included, on the aggregate, committing a change whose `item` is
-the header. Give every editor `editable: (row) => row.kind === 'data'`, and
-unwrap `change.item` in `onCommit`. Put the grouping's `onKeyDown` ahead of the
-editing one as well. With the guard, Enter on a header falls through editing to
-the grouping either way; without it, Enter on a header goes to whichever handler
+**Tell each editor which rows it may edit.** A `createCellEditing` over a
+grouped grid is typed over `GridGroupedRow<T>`, so give every editor
+`editable: (row) => row.kind === 'data'` — the boundary `selectable` draws, per
+editor because that is where `editable` lives, and drawn for the same reason: a
+session is opened on whatever its editor allows, and an unguarded one opens on a
+header's aggregate and commits a change whose `item` is the heading. Unwrap
+`change.item` in `onCommit`. Put the grouping's `onKeyDown` ahead of the editing
+one as well: with the guard, Enter on a header falls through editing to the
+grouping either way; without it, Enter on a header goes to whichever handler
 comes first — the grouping toggles the group, the editing opens an editor on the
 aggregate.
 
@@ -1310,11 +1329,13 @@ Unlike Escape, this puts focus nowhere, because the cell it would go back to is
 what went; focus is where a focused cell a filter hides leaves it in a grid with
 no editing.
 
-Like the cursor, following the row needs `getRowKey`. On the default key, which
-is the index, a sort leaves the editor at its position over whatever row moves
-there — and the commit still goes to the row the session was opened on, not to
-the row the reader sees the editor in. It is listed under
-[what is wrong](#what-is-not-built).
+Like the cursor, following the row needs `getRowKey`. The default key is the
+row's place, and a place names whichever row is there now: the first sort hands
+it to another row, so the session's own row is gone and the edit is abandoned —
+`onCancel` with `-1` for the row, as for a row a filter took away. The same
+happens on a keyed grid whose data replaced the row object the session opened
+on, because that object is what a commit names. Give `getRowKey` to an editable
+grid, and apply a change by `rowKey` or `item`.
 
 ### The keyboard
 
@@ -1421,16 +1442,3 @@ On the roadmap, and not started:
 
 Absent, and not on the roadmap by name: selecting a range with the pointer,
 ordering groups by their aggregates, and moving focus into an edit control.
-
-Built, and wrong in a way you will hit:
-
-- **Nothing stops a grid filter on a grouped grid.** The grid's `setFilter`,
-  `setQuickFilter`, `filters` and `quickFilter` still work on a grouped grid,
-  over the flattened list, and strip the group headers from it. Filter through
-  the grouping; see
-  [What a layer above the grid means](#what-a-layer-above-the-grid-means).
-- **Without `getRowKey`, a sort under an open editor writes to the wrong row.**
-  The default key is the row's index, and an index names whichever row is there:
-  a sort while a cell is open leaves the editor over another row, and the commit
-  goes to the row it was opened on. Give `getRowKey` to an editable grid; see
-  [Editing](#editing).

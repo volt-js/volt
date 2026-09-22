@@ -154,6 +154,11 @@ export interface GridEditChange<T> {
  * follows its cell through a sort, a filter, or a column list given in another
  * order. A session abandoned because its cell has gone is reported with -1 for
  * whichever of the two went.
+ *
+ * `item` is the row the commit names, so the key has to keep naming it. A grid
+ * given no `getRowKey` keys its rows by their place, which the first sort
+ * hands to another row: the session's own row is then gone, and it is
+ * abandoned rather than left over a row it would not write to.
  */
 export interface GridEditSession<T> {
   readonly row: number;
@@ -287,16 +292,21 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
    * opened on. Found again on every change to the view: a scan of it while a
    * session is open, and nothing at all while none is.
    *
-   * Which is only as good as the key. The default key is the row's index, and
-   * finds whatever row is at that index now — so without `getRowKey` a sort
-   * still leaves the editor over another row, the cost `createGrid` documents
-   * for the cursor, here with the commit going to the row it was opened on.
+   * The key is then checked against the row it came back with, because a
+   * commit names the row object the session opened on and nothing else. The
+   * default key is the row's index, which names whichever row is at that index
+   * now — so on a grid given no `getRowKey` the first sort finds a different
+   * row and the session's own is gone. The same holds for a keyed grid whose
+   * data replaced the row object: what the commit would write to is no longer
+   * in the view.
    */
   const openRow = new Signal.Computed<number>(() => {
     const session = state.get();
     if (session === null) return -1;
     const table = grid();
-    return table === null ? session.row : table.rowIndex(session.rowKey);
+    if (table === null) return session.row;
+    const row = table.rowIndex(session.rowKey);
+    return row >= 0 && table.rowAt(row) === session.item ? row : -1;
   });
 
   /**

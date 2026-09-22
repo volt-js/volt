@@ -1715,6 +1715,71 @@ describe('filtering', () => {
     flushSync();
     expect(columnText(0)).toEqual(['apple', 'pear', 'plum']);
   });
+
+  it('refuses a filter on a column that cannot be filtered, and says why', () => {
+    tableOf(FRUIT);
+    columns.set(
+      columns.get().map((column) => (column.id === 'c2' ? { ...column, filterable: false } : column)),
+    );
+    const reported: number[] = [];
+    gridOptions = { ...gridOptions, onFilterChange: (filters) => reported.push(filters.size) };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    restores.push(() => warn.mockRestore());
+    const harness = setup();
+
+    harness.g.setFilter('c2', { type: 'set', values: ['red'] });
+    flushSync();
+    // Not held, not reported, and nothing filtered.
+    expect(harness.g.filters().size).toBe(0);
+    expect(reported).toEqual([]);
+    expect(harness.g.rowCount()).toBe(4);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain('"c2" is not filterable');
+
+    // Nor does the quick filter search it: "red" is in that column and no other.
+    harness.g.setQuickFilter('red');
+    flushSync();
+    expect(harness.g.rowCount()).toBe(0);
+    harness.g.setQuickFilter('plum');
+    flushSync();
+    expect(columnText(0)).toEqual(['plum']);
+  });
+
+  it('filters nothing by a filter held for a column that cannot be filtered, and marks nothing', () => {
+    tableOf(FRUIT);
+    columns.set(
+      columns.get().map((column) => (column.id === 'c2' ? { ...column, filterable: false } : column)),
+    );
+    // Handed in from outside, where nothing refused it — a saved view, say.
+    gridOptions = {
+      ...gridOptions,
+      filters: new Signal.State<ReadonlyMap<string, GridFilter>>(
+        new Map([['c2', { type: 'set', values: ['red'] }]]),
+      ),
+    };
+    const harness = setup();
+
+    expect(harness.g.rowCount()).toBe(4);
+    expect(attrs('.th', 'data-filtered')).toEqual([null, null, null]);
+    // Kept in the signal all the same, as a sort term for a column that cannot
+    // be sorted is.
+    expect(harness.g.filters().size).toBe(1);
+  });
+
+  it('refuses a quick filter where no column can be filtered, and says why', () => {
+    tableOf(FRUIT);
+    columns.set(columns.get().map((column) => ({ ...column, filterable: false })));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    restores.push(() => warn.mockRestore());
+    const harness = setup();
+
+    harness.g.setQuickFilter('plum');
+    flushSync();
+    expect(harness.g.quickFilter()).toBe('');
+    expect(harness.g.rowCount()).toBe(4);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain('no column is filterable');
+  });
 });
 
 describe('selection', () => {

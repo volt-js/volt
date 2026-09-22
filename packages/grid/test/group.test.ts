@@ -22,6 +22,7 @@ import {
   type Grid,
   type GridAggregation,
   type GridColumn,
+  type GridFilter,
   type GridGroupSpec,
   type GridGroupedRow,
   type GridGrouping,
@@ -532,6 +533,81 @@ describe('what the grid is told about a grouped collection', () => {
     expect([...harness.g.selectedRows()]).toEqual([0, 1, 2, 3]);
     // A heading says nothing about selection, because it has none to report.
     expect(attrs('.row', 'aria-selected')).toEqual([null, 'true', 'true', null, 'true', 'true']);
+  });
+
+  it('refuses to filter the grid, which would strip the headings from their rows', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    restores.push(() => warn.mockRestore());
+    const harness = setup();
+    expect(harness.grouping.columns().map((column) => column.filterable)).toEqual([
+      false, false, false,
+    ]);
+
+    // Over the flattened list, a heading would be tested as though it were a
+    // row — by an aggregate it does not have — and dropped from in front of
+    // the rows it describes.
+    harness.g.setFilter('c1', { type: 'text', value: 'london' });
+    harness.g.setQuickFilter('london');
+    flushSync();
+
+    expect(harness.g.filters().size).toBe(0);
+    expect(harness.g.quickFilter()).toBe('');
+    expect(attrs('.row', 'data-group')).toEqual(['', null, null, '', null, null]);
+    // And both times the reader is sent to the grouping, where the filter belongs.
+    expect(warn).toHaveBeenCalledTimes(2);
+    for (const [message] of warn.mock.calls) expect(String(message)).toContain('grouping');
+  });
+
+  it('filters nothing by filters the grid was handed, and marks no header for them', () => {
+    gridOptions = {
+      filters: new Signal.State<ReadonlyMap<string, GridFilter>>(
+        new Map([['c1', { type: 'text', value: 'london' }]]),
+      ),
+      quickFilter: new Signal.State('london'),
+    };
+    setup();
+    expect(attrs('.row', 'data-group')).toEqual(['', null, null, '', null, null]);
+    expect(attrs('.th', 'data-filtered')).toEqual([null, null, null]);
+  });
+
+  it('leaves a column the caller made unfilterable out of its own filters too', () => {
+    columns.set(
+      columns.get().map((column) => (column.id === 'c1' ? { ...column, filterable: false } : column)),
+    );
+    // One handed in from a saved view filters nothing, and one set is refused.
+    groupingOptions = {
+      filters: new Signal.State<ReadonlyMap<string, GridFilter>>(
+        new Map([['c1', { type: 'text', value: 'london' }]]),
+      ),
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    restores.push(() => warn.mockRestore());
+    const harness = setup();
+    expect(harness.grouping.filteredRowCount()).toBe(4);
+
+    harness.grouping.setFilter('c1', { type: 'text', value: 'paris' });
+    flushSync();
+    expect(harness.grouping.filters().get('c1')).toEqual({ type: 'text', value: 'london' });
+    expect(harness.grouping.filteredRowCount()).toBe(4);
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    // "paris" is in that column and no other, so the quick filter finds nothing.
+    harness.grouping.setQuickFilter('paris');
+    flushSync();
+    expect(harness.grouping.filteredRowCount()).toBe(0);
+  });
+
+  it('refuses a quick filter where the caller made no column filterable', () => {
+    columns.set(columns.get().map((column) => ({ ...column, filterable: false })));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    restores.push(() => warn.mockRestore());
+    const harness = setup();
+
+    harness.grouping.setQuickFilter('paris');
+    flushSync();
+    expect(harness.grouping.quickFilter()).toBe('');
+    expect(harness.grouping.filteredRowCount()).toBe(4);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 
   it('offers no sort where the grouping was given no sort signal to apply one from', () => {

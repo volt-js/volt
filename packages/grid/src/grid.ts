@@ -301,6 +301,17 @@ export interface GridColumn<T> {
    * `sortValue` is.
    */
   filterValue?: (row: T) => unknown;
+  /**
+   * Default true. A column that is not filterable is left out of the quick
+   * filter, and a filter of its own is refused — or, handed in through a
+   * signal, filters nothing and marks no header.
+   *
+   * `createGrouping` sets it false on every column it lifts. A grouped grid is
+   * handed its group headers as rows, and a filter over those would strip the
+   * headings from in front of the rows they describe; the grouping filters
+   * instead, before it groups.
+   */
+  filterable?: boolean;
 }
 
 /** A sort entry paired with the column it names, for an announcement to read. */
@@ -370,6 +381,10 @@ export interface GridOptions<T> {
    * What identifies a row, so that a keyed `:for` reuses a row's elements
    * rather than rebuilding them when the window moves. Defaults to the index,
    * which is right for a list that only ever grows at the end.
+   *
+   * A grid that can be edited wants a key of its own, as one with row
+   * selection does: an edit session is over a row, and a key that is the row's
+   * place stops naming that row the moment a sort moves it.
    */
   getRowKey?: (row: T, index: number) => string | number;
 
@@ -424,7 +439,7 @@ export interface GridOptions<T> {
 
   /** The per-column filters, by column id. Supply a signal to drive them from outside. */
   filters?: Signal.State<ReadonlyMap<string, GridFilter>>;
-  /** One string searched across every column. */
+  /** One string searched across every column that can be filtered. */
   quickFilter?: Signal.State<string>;
   onFilterChange?: (filters: ReadonlyMap<string, GridFilter>, quickFilter: string) => void;
   /**
@@ -495,6 +510,18 @@ export interface Grid<T> {
    */
   rowIndex(key: GridRowKey): number;
   /**
+   * The row at a position in the view, or undefined where the view does not
+   * reach that far.
+   *
+   * The way back from a position to a record, as `rowIndex` is the way from a
+   * record to a position. `rows()` answers it only for the rows the window
+   * holds; this one reads the whole view, which is what a consumer holding a
+   * cursor — or `createCellEditing`, checking that the key it is following
+   * still names the row it opened on — has to ask about a row that is not on
+   * screen.
+   */
+  rowAt(index: number): T | undefined;
+  /**
    * Where the column with this id sits in the column list, or -1 if the list
    * does not hold it.
    *
@@ -543,10 +570,14 @@ export interface Grid<T> {
   // --- Filtering -----------------------------------------------------------
 
   filters(): ReadonlyMap<string, GridFilter>;
-  /** Set or, with null, remove one column's filter. */
+  /**
+   * Set or, with null, remove one column's filter. Refused for a column that
+   * is not `filterable`, which is every column of a grouped grid.
+   */
   setFilter(columnId: string, filter: GridFilter | null): void;
   clearFilters(): void;
   quickFilter(): string;
+  /** Search every column that can be filtered. Refused where none can. */
   setQuickFilter(text: string): void;
 
   // --- Selection -----------------------------------------------------------
@@ -690,7 +721,9 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     if (map.size === 0) return compiled;
     for (const column of columnList()) {
       const filter = map.get(column.id);
-      if (filter === undefined) continue;
+      // Left in the signal, as a sort term naming an unsortable column is, and
+      // left out of everything that filters or reports a filter.
+      if (filter === undefined || column.filterable === false) continue;
       const test = compileFilter(filter, fold);
       if (test === null) continue;
       compiled.push({ columnId: column.id, value: column.filterValue ?? column.value, test });
@@ -726,14 +759,15 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     const source = options.rows();
     const filters = columnFilters.get();
     const terms = quickTerms.get();
+    // Resolved outside the loop: the quick filter searches every column that
+    // can be filtered, and looking the accessors up per row would be most of
+    // what it costs. With no such column it has nowhere to look, and filters
+    // nothing.
+    const quick = terms.length > 0 ? quickFilterValues(columnList()) : null;
 
     let rows = source;
-    if (filters.length > 0 || terms.length > 0) {
-      // Resolved outside the loop: the quick filter searches every column, and
-      // looking the accessors up per row would be most of what it costs. The
-      // scratch array is reused across rows for the same reason.
-      const quick =
-        terms.length > 0 ? columnList().map((column) => column.filterValue ?? column.value) : null;
+    if (filters.length > 0 || quick !== null) {
+      // Reused across rows, for the same reason.
       const texts: string[] = quick === null ? [] : new Array<string>(quick.length);
 
       rows = source.filter((row) => {
@@ -1170,6 +1204,10 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
   };
 
   const setFilter = (columnId: string, filter: GridFilter | null): void => {
+    if (filter !== null && untrack(() => columnById(columnId))?.filterable === false) {
+      refuseFilter(`column "${columnId}" is not filterable`, 'setFilter');
+      return;
+    }
     const current = untrack(() => filterState.get());
     if (filter === null ? !current.has(columnId) : current.get(columnId) === filter) return;
     const next = new Map(current);
@@ -1195,6 +1233,10 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
 
   const setQuickFilter = (text: string): void => {
     if (untrack(() => quickState.get()) === text) return;
+    if (text !== '' && quickFilterValues(untrack(columnList)) === null) {
+      refuseFilter('no column is filterable', 'setQuickFilter');
+      return;
+    }
     quickState.set(text);
     options.onFilterChange?.(untrack(() => filterState.get()), text);
     announceFilterCount();
@@ -1704,6 +1746,7 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     sourceRowCount,
     columnCount,
     rowIndex: (key) => indexOfKey(rowList(), key),
+    rowAt: (index) => rowList()[index],
     columnIndex: (id) => columnList().findIndex((column) => column.id === id),
 
     activeCell: () => active.get(),
@@ -1920,6 +1963,43 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
 
 function clamp(value: number, low: number, high: number): number {
   return Math.min(Math.max(value, low), high);
+}
+
+/**
+ * What the quick filter reads from a row: the filter value of every column
+ * that can be filtered, or null where none can and there is nothing to search.
+ *
+ * Shared with `createGrouping`, which filters a grouped grid in the grid's
+ * place and searches the same columns.
+ */
+export function quickFilterValues<T>(
+  columns: readonly GridColumn<T>[],
+): ((row: T) => unknown)[] | null {
+  const values: ((row: T) => unknown)[] = [];
+  for (const column of columns) {
+    if (column.filterable !== false) values.push(column.filterValue ?? column.value);
+  }
+  return values.length === 0 ? null : values;
+}
+
+/**
+ * Says, in development, why the grid did not filter.
+ *
+ * A grid whose columns cannot be filtered is almost always a grouped one:
+ * `createGrouping` lifts every column unfilterable, because the grid is handed
+ * the group headers as rows and a filter over them would strip the headings
+ * from the rows they describe. The call that was refused did nothing at all,
+ * which is otherwise indistinguishable from a filter that matched every row.
+ */
+function refuseFilter(reason: string, method: string): void {
+  if (__VOLT_DEV__ && typeof console !== 'undefined') {
+    console.warn(
+      `[volt] createGrid: ${reason}, so ${method} did nothing. ` +
+        'Every column of a grouped grid says so, because the grid is handed the group headers ' +
+        'as rows and a filter over those would strip each heading from in front of the rows ' +
+        `it describes: filter through the grouping instead, with its own ${method}.`,
+    );
+  }
 }
 
 /**

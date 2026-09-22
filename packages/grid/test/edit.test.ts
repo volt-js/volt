@@ -205,7 +205,7 @@ interface Harness {
   scroller: HTMLElement;
 }
 
-function setup({ height = VIEWPORT_HEIGHT, width = VIEWPORT_WIDTH } = {}): Harness {
+function setup({ height = VIEWPORT_HEIGHT, width = VIEWPORT_WIDTH, keyed = true } = {}): Harness {
   @Component({ selector: `v-edit-${++selectors}`, render: compileTemplate(TEMPLATE) })
   class EditableGrid {
     grid = new Signal.State<Element | null>(null);
@@ -219,7 +219,9 @@ function setup({ height = VIEWPORT_HEIGHT, width = VIEWPORT_WIDTH } = {}): Harne
       container: () => this.container.get(),
       rows: () => people.get(),
       columns: () => columns.get(),
-      getRowKey: (row) => row.id,
+      // Left out for the grid the documentation warns about: one whose rows
+      // are identified by nothing but the place they are in.
+      getRowKey: keyed ? (row: Person) => row.id : undefined,
       rowHeight: ROW_HEIGHT,
       label: 'People',
     });
@@ -601,6 +603,45 @@ describe('the view moving under a session', () => {
     expect(host.querySelector('[data-editing]')).toBeNull();
     // Told where the cell is now: its row is nowhere, and its column is where
     // it always was.
+    expect(cancelled).toEqual([{ row: -1, column: 0 }]);
+  });
+
+  it('abandons the session on a grid with no row keys as soon as a sort moves the rows', () => {
+    const harness = setup({ keyed: false });
+    begin(harness, 1, 0);
+    type('beta!');
+    expect(harness.editing.session()!.row).toBe(1);
+
+    harness.g.setSort([{ columnId: 'c0', direction: 'descending' }]);
+    flushSync();
+
+    // The default key is the row's place, and a place names whichever row is
+    // there: beta is third now and nothing can find it again. So the session
+    // goes, rather than leave the editor over delta and write what the reader
+    // typed into beta.
+    expect(harness.editing.session()).toBeNull();
+    expect(editor()).toBeNull();
+    expect(changes).toEqual([]);
+    expect(cancelled).toEqual([{ row: -1, column: 0 }]);
+    expect(textAt(1, 0)).toBe('delta');
+    expect(textAt(2, 0)).toBe('beta');
+  });
+
+  it('abandons the session when the data replaces its row, rather than commit to the object that went', () => {
+    const harness = setup();
+    begin(harness, 1, 0);
+    type('beta!');
+
+    // The same record under the same key, in a new object — what a store that
+    // replaces rather than writes hands back. The row the session opened on is
+    // not in the view any more, and a commit would go to an object nothing
+    // holds.
+    people.set(people.get().map((person) => (person.id === 1 ? { ...person } : person)));
+    flushSync();
+
+    expect(harness.editing.session()).toBeNull();
+    expect(editor()).toBeNull();
+    expect(changes).toEqual([]);
     expect(cancelled).toEqual([{ row: -1, column: 0 }]);
   });
 
