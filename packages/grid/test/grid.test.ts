@@ -680,6 +680,36 @@ describe('columns', () => {
     expect(harness.sizer.style.width).toBe('1350px');
   });
 
+  it("answers a column's width by id whether or not the window renders it", () => {
+    const sized = makeColumns();
+    sized[9] = { ...sized[9]!, width: undefined };
+    sized[10] = { ...sized[10]!, width: 10, minWidth: 30 };
+    columns.set(sized);
+    const harness = setup();
+    harness.g.resizeColumn('c1', 180);
+    harness.g.resizeColumn('c11', 220);
+    flushSync();
+
+    // c11 was never drawn, and c1 has been scrolled away from since.
+    userScroll(harness.scroller, { left: 480 });
+    const drawn = harness.g.columns().map((view) => view.column.id);
+    expect(drawn).not.toContain('c1');
+    expect(drawn).not.toContain('c10');
+    expect(drawn).not.toContain('c11');
+
+    // What a resize left, what a clamp makes of a declared width, the grid's
+    // own default, and nothing for a column the grid does not hold.
+    expect(harness.g.columnWidth('c1')).toBe(180);
+    expect(harness.g.columnWidth('c11')).toBe(220);
+    expect(harness.g.columnWidth('c10')).toBe(30);
+    expect(harness.g.columnWidth('c9')).toBe(150);
+    expect(harness.g.columnWidth('c12')).toBe(undefined);
+    // And exactly what the window says of a column it does hold.
+    for (const view of harness.g.columns()) {
+      expect(harness.g.columnWidth(view.column.id)).toBe(view.width);
+    }
+  });
+
   it('rebuilds the column geometry once for a resize, and once for a new column list', () => {
     // A rebuild asks every column how wide it is, so the columns keep count.
     let asked = 0;
@@ -1004,6 +1034,38 @@ describe('a cell owns its own binding', () => {
     // loop moves the element it already has rather than building another.
     expect(harness.g.rows().map((row) => row.index)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
     expect(cellAt(6, 0)).toBe(kept);
+  });
+
+  it('re-reads only the cells of the columns a reorder moved', () => {
+    byId();
+    const harness = setup();
+    const before = cells();
+    const shown = harness.g.columns().map((view) => view.column.id);
+    expect(shown).toEqual(['c0', 'c1', 'c2', 'c3', 'c4']);
+    reads = [];
+
+    // Two columns trade places; the three around them stay where they were.
+    const list = columns.get();
+    columns.set([list[0]!, list[2]!, list[1]!, ...list.slice(3)]);
+    flushSync();
+
+    // The cells of the two that moved, and no other. The same elements hold
+    // them, moved rather than rebuilt.
+    const moved = [...new Set(reads.map((read) => read.split(':')[1]))].sort();
+    expect(moved).toEqual(['1', '2']);
+    expect(reads).toHaveLength(2 * harness.g.rows().length);
+    expect(cells()).toHaveLength(before.length);
+    expect(cells().every((cell) => before.includes(cell))).toBe(true);
+    expect(cellAt(0, 1)!.textContent).toBe('r0c2');
+    expect(cellAt(0, 2)!.textContent).toBe('r0c1');
+
+    // A column scrolled into the window is read, and the columns it joins are not.
+    reads = [];
+    userScroll(harness.scroller, { left: 100 });
+    expect(harness.g.columns().map((view) => view.column.id)).toEqual([
+      'c0', 'c2', 'c1', 'c3', 'c4', 'c5',
+    ]);
+    expect([...new Set(reads.map((read) => read.split(':')[1]))]).toEqual(['5']);
   });
 });
 
@@ -2019,11 +2081,35 @@ describe('selection', () => {
     press(harness.root, 'ArrowRight', { shiftKey: true });
     expect(harness.g.cellRange()).not.toBe(null);
 
-    // The rows between its corners are somewhere else now, and the reader
-    // never asked for whatever is between them today.
+    // Ascending is the order the rows were already in: nothing moved, and the
+    // rectangle still holds the cells the reader chose.
+    const range = harness.g.cellRange();
+    harness.g.toggleSort('c0');
+    flushSync();
+    expect(harness.g.cellRange()).toEqual(range);
+
+    // Descending, the rows between its corners are somewhere else now, and the
+    // reader never asked for whatever is between them today.
     harness.g.toggleSort('c0');
     flushSync();
     expect(harness.g.cellRange()).toBe(null);
+  });
+
+  it('keeps the rectangle when the same rows are handed over again, and reads no cell to tell', () => {
+    byId();
+    gridOptions = { ...gridOptions, cellSelection: 'range' };
+    const harness = setup();
+    press(harness.root, 'ArrowDown', { shiftKey: true });
+    press(harness.root, 'ArrowRight', { shiftKey: true });
+    const range = harness.g.cellRange();
+    reads = [];
+
+    // A new array of the same rows in the same order: a refetch that changed
+    // nothing. The rows between the corners are the rows that were there.
+    people.set([...people.get()]);
+    flushSync();
+    expect(harness.g.cellRange()).toEqual(range);
+    expect(reads).toEqual([]);
   });
 
   it('leaves Shift alone where there is no rectangle to make', () => {
@@ -2305,6 +2391,34 @@ describe('the cursor and the view', () => {
     // Row one is row one whatever the data does, and focus has not left it.
     expect(harness.g.activeCell()).toEqual({ row: HEADER_ROW, column: 0 });
     expect(document.activeElement).toBe(headerCells()[0]);
+  });
+
+  it('moves the cursor under a control in its cell without taking focus out of it', () => {
+    byId();
+    const harness = setup();
+    harness.g.focusCell({ row: 2, column: 1 });
+    flushSync();
+    // Something the consumer rendered in the cell and the reader went into:
+    // an editor they are typing in, a checkbox.
+    const control = document.createElement('input');
+    cellAt(2, 1)!.append(control);
+    control.focus();
+    flushSync();
+
+    // The column in front of it taken away. Its cell stays in the document,
+    // and so does the control.
+    columns.set(columns.get().slice(1));
+    flushSync();
+    expect(harness.g.activeCell()).toEqual({ row: 2, column: 0 });
+    expect(cellAt(2, 0)!.contains(control)).toBe(true);
+    expect(document.activeElement).toBe(control);
+
+    // A row in front of it filtered away, the same.
+    harness.g.setFilter('c1', { type: 'text', value: 'r0c1', operator: 'notEquals' });
+    flushSync();
+    expect(harness.g.activeCell()).toEqual({ row: 1, column: 0 });
+    expect(cellAt(1, 0)!.contains(control)).toBe(true);
+    expect(document.activeElement).toBe(control);
   });
 });
 

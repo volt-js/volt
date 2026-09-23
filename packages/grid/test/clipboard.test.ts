@@ -746,8 +746,9 @@ describe('copying', () => {
   it('copies the cell under the cursor when nothing of the range is left', async () => {
     const harness = setup();
     standOn(harness, 1, 0);
-    // Wholly past the last column: what a column list that shrank under a
-    // range leaves, and the grid does not clear.
+    // Wholly past the last column, which `setCellRange` takes unchecked: the
+    // grid drops a range whose columns leave its list, but never trims one it
+    // was handed.
     harness.g.setCellRange({ anchor: { row: 0, column: 5 }, focus: { row: 2, column: 7 } });
 
     const event = press(harness.root, 'c', { ctrlKey: true });
@@ -1412,6 +1413,29 @@ describe('refusing a paste', () => {
       { rowKey: FIRST_ID, columnId: 'c1', reason: 'read-only', message: null },
       { rowKey: FIRST_ID + 1, columnId: 'c0', reason: 'read-only', message: null },
     ]);
+  });
+
+  it('finds an editor only where `editors` gives one, whatever a column is called', async () => {
+    // Ids every object inherits a member under. Looked up as a property, each
+    // would find that member — a function — and paste through it as an editor.
+    columns.set(
+      makeColumns().map((column, index) =>
+        index === 1 ? { ...column, id: 'constructor' } : index === 2 ? { ...column, id: 'toString' } : column,
+      ),
+    );
+    editors.set({ c0: {} });
+    const harness = setup();
+    standOn(harness, 0, 1);
+    holds('ONE\t9');
+
+    const result = await harness.clipboard.paste();
+
+    expect(result!.status).toBe('refused');
+    expect(refused[0]!.map(({ columnId, reason }) => `${columnId}:${reason}`)).toEqual([
+      'constructor:read-only',
+      'toString:read-only',
+    ]);
+    expect(pastes).toEqual([]);
   });
 
   it('lets a read-only cell be pasted over with what it already shows', async () => {

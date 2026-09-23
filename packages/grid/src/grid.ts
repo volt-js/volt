@@ -149,11 +149,19 @@
  * is standing. Nothing about the cursor is kept in a second place to go stale;
  * `previous[cursor.row]` is the row they were on, by construction.
  *
+ * Its column is followed the same way. A column list handed over in another
+ * order or without a column — `createGridState` moving or hiding one — would
+ * leave an index-based cursor over another column, so the column is read out
+ * of the list being replaced and found again by id. Where it has gone, the
+ * cursor goes to the column that slid into its place, or the nearest one left.
+ *
  * **Two selections, because they answer different questions.** A row selection
  * is "these records" and is held by key, so it survives sorting, filtering and
  * scrolling and can be read by whatever acts on it. A cell range is "this
- * rectangle" and is held by position, so it is dropped the moment the
- * arrangement it described stops existing.
+ * rectangle" and is held by position, so it is dropped the moment the rows it
+ * covered move. A change to the columns alone carries it, when the columns it
+ * covered still sit side by side in the order they were — the same rectangle,
+ * somewhere else — and drops it when they do not.
  */
 
 import { Signal, effect, onCleanup } from '@voltdev/core';
@@ -181,6 +189,7 @@ import {
   type GridFilter,
 } from './filter.js';
 import {
+  rangeBounds,
   rangeContains,
   sameKeys,
   sameRange,
@@ -530,6 +539,29 @@ export interface Grid<T> {
    * moves the columns after the change to other indices.
    */
   columnIndex(id: string): number;
+  /**
+   * The column at a position in the column list, or undefined where the list
+   * does not reach that far.
+   *
+   * The way back from a position to a column, as `rowAt` is from a position
+   * to a record, and for the same reason: `columns()` answers only for the
+   * columns the window holds. Whatever has to remember the cursor's column
+   * across a change to the list — `createEditHistory`, deciding whether the
+   * reader is still where they pressed a key — remembers what it is, and a
+   * position is only where it was.
+   */
+  columnAt(index: number): GridColumn<T> | undefined;
+  /**
+   * The width, in px, the column with this id is laid out at — rendered or
+   * not — or undefined where the list does not hold it.
+   *
+   * `columns()` answers only for the columns the window holds, and a column
+   * scrolled out of it keeps the width a resize gave it. Whatever lays the
+   * grid out somewhere else — an export sizing a worksheet's columns — has to
+   * ask about every one, and this is the grid's own arithmetic: what a resize
+   * left, or the declared width, or the default, held to the column's bounds.
+   */
+  columnWidth(id: string): number | undefined;
 
   /** Where the cursor is. `HEADER_ROW` means the column header. */
   activeCell(): GridCell;
@@ -826,6 +858,10 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     return Math.round(clamp(width, low, Math.max(low, high)));
   };
 
+  /** One column's width, which `columnWidth` answers from as well as the geometry. */
+  const widthFor = (column: GridColumn<T>): number =>
+    clampWidth(column, widths.get().get(column.id) ?? column.width ?? DEFAULT_COLUMN_WIDTH);
+
   /**
    * The width the geometry should use for a column.
    *
@@ -838,8 +874,7 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
    */
   const sizeOf = (index: number): number => {
     const column = columnList()[index];
-    if (!column) return 0;
-    return clampWidth(column, widths.get().get(column.id) ?? column.width ?? DEFAULT_COLUMN_WIDTH);
+    return column ? widthFor(column) : 0;
   };
 
   /** The same width, read from a handler that must not subscribe to it. */
@@ -929,22 +964,49 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     return views;
   });
 
+  /**
+   * The last set of column views, by key, for the reason rows keep theirs.
+   *
+   * A cell's binding reads its column view as much as its row view, so a fresh
+   * object for every column would have every cell on screen read its value
+   * again whenever the columns are handed over — two of them trading places,
+   * one hidden past the window, one more scrolled into it. Handed back as the
+   * same object, a column whose definition, index, offset and width all held
+   * costs its cells nothing, and only the columns that genuinely moved are
+   * read again.
+   */
+  let columnViewCache = new Map<string | number, GridColumnView<T>>();
+
   const columnViews = new Signal.Computed<readonly GridColumnView<T>[]>(() => {
     const list = columnList();
+    const previous = columnViewCache;
+    const next = new Map<string | number, GridColumnView<T>>();
     const views: GridColumnView<T>[] = [];
     for (const item of columnAxis.items()) {
       const column = list[item.index];
       if (!column) continue;
-      views.push({
-        index: item.index,
-        key: item.key,
-        column,
-        start: item.start,
-        // From the geometry rather than from the definition, so that a cell's
-        // width and the offset of the column after it can never disagree.
-        width: item.size,
-      });
+      const cached = previous.get(item.key);
+      const view: GridColumnView<T> =
+        cached !== undefined &&
+        cached.column === column &&
+        cached.index === item.index &&
+        cached.start === item.start &&
+        cached.width === item.size
+          ? cached
+          : {
+              index: item.index,
+              key: item.key,
+              column,
+              start: item.start,
+              // From the geometry rather than from the definition, so that a
+              // cell's width and the offset of the column after it can never
+              // disagree.
+              width: item.size,
+            };
+      next.set(item.key, view);
+      views.push(view);
     }
+    columnViewCache = next;
     return views;
   });
 
@@ -1392,62 +1454,211 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
   };
 
   /**
-   * Put the cursor back on the row it was on, wherever that row has gone.
+   * Whether focus is on something inside one of this grid's cells rather than
+   * on the cell itself — an editor, a checkbox — and so is still where the
+   * reader put it.
+   *
+   * `onFocusIn` counts such a control as focus on the cursor, since it sits
+   * in the cursor's cell. Only the cell moving decides whether that focus has
+   * gone: moved in the document, it takes the control with it and focus
+   * lands nowhere, which `cursorHeldFocus` hears; left where it is, the
+   * control keeps focus and needs nothing brought to it.
+   */
+  const focusInsideCell = (): boolean => {
+    const root = options.grid();
+    const focused = root?.ownerDocument.activeElement ?? null;
+    if (!root || focused === null || !root.contains(focused)) return false;
+    if (focused.hasAttribute(GRID_CELL_ATTRIBUTE)) return false;
+    return focused.closest(`[${GRID_CELL_ATTRIBUTE}]`) !== null;
+  };
+
+  /**
+   * Where the row the cursor was on sits in the new view — or the position it
+   * had, where there is no row to follow.
    *
    * The row is worked out from the view being replaced rather than from a key
    * kept alongside the cursor, which is what makes it right no matter who
-   * moved the cursor last: `previous[cursor.row]` *is* the row the reader was
-   * standing on, by construction, and there is no second copy of that fact to
-   * go stale.
+   * moved the cursor last: `previous[row]` *is* the row the reader was standing
+   * on, by construction, and there is no second copy of that fact to go stale.
    */
-  const followRows = (rows: readonly T[], previous: readonly T[]): void => {
-    // A rectangle of cells is a region of the grid *as it was arranged*, and
-    // the arrangement has just changed: the rows between its corners are
-    // somewhere else now, and the reader never asked for whatever is between
-    // them today. Row selection is held by key and survives this; a range
-    // cannot, so it goes.
-    setRange(null);
-
-    const cursor = untrack(() => active.get());
+  const followRow = (row: number, rows: readonly T[], previous: readonly T[]): number => {
     // The column header is row one whatever the data does, so there is nothing
     // underneath the cursor to follow.
-    if (cursor.row < 0) return;
+    if (row < 0) return row;
+    const was = previous[row];
+    if (was === undefined) return row;
+    const index = indexOfKey(rows, rowKeyOf(was, row));
+    // The row was filtered away. The clamp keeps the cursor legal, and it stays
+    // at the position it had, which is where a reader watching rows disappear
+    // would expect to still be.
+    return index < 0 ? row : index;
+  };
 
-    const was = previous[cursor.row];
-    if (was === undefined) return;
-    const index = indexOfKey(rows, rowKeyOf(was, cursor.row));
+  /**
+   * Where the column the cursor was on sits in the new list — or, where it has
+   * gone, its nearest neighbour that stayed. Null where the position named no
+   * column, or nothing of the old list is left, and a clamp is all there is.
+   *
+   * Worked out from the list being replaced, as the row is from the view, and
+   * found again by id, as the row is by key. The neighbour after it goes first:
+   * it is the column a reader watching one disappear sees slide into its
+   * place, as the next row slides under a cursor whose row a filter took away.
+   * Then the one before, and on outwards, because the columns either side are
+   * the ones the reader was looking at.
+   */
+  const followColumn = (
+    column: number,
+    places: ReadonlyMap<string, number>,
+    previous: readonly GridColumn<T>[],
+  ): number | null => {
+    const placeOf = (index: number): number => {
+      const was = previous[index];
+      return was === undefined ? -1 : (places.get(was.id) ?? -1);
+    };
+    if (previous[column] === undefined) return null;
+    const same = placeOf(column);
+    if (same >= 0) return same;
+    for (let distance = 1; distance < previous.length; distance++) {
+      const after = placeOf(column + distance);
+      if (after >= 0) return after;
+      const before = placeOf(column - distance);
+      if (before >= 0) return before;
+    }
+    return null;
+  };
 
-    // The row was filtered away. The clamp below keeps the cursor legal, and it
-    // stays at the position it had, which is where a reader watching rows
-    // disappear would expect to still be.
-    if (index < 0 || index === cursor.row) return;
+  /**
+   * Carry the cell range across a change to the column list, or drop it.
+   *
+   * Carried only where every column it covered is still in the list, side by
+   * side and in the order they were: one shift then moves both corners, and
+   * the rectangle holds exactly the cells the reader chose. Anything else is
+   * dropped rather than redrawn. A range is two corners, and a column moved in
+   * between them, moved out from between them or hidden there leaves no pair of
+   * corners around what was chosen — the rectangle between the old ones would
+   * take in a column nobody chose or leave out one somebody did, and a range
+   * the reader can no longer trust is worse than none.
+   */
+  const followRange = (
+    places: ReadonlyMap<string, number>,
+    previous: readonly GridColumn<T>[],
+  ): void => {
+    const range = untrack(() => cellRange.get());
+    if (range === null) return;
+    const { fromColumn, toColumn } = rangeBounds(range);
+    const placeOf = (index: number): number | undefined => {
+      const was = previous[index];
+      return was === undefined ? undefined : places.get(was.id);
+    };
+    const start = placeOf(fromColumn);
+    if (start === undefined) {
+      setRange(null);
+      return;
+    }
+    for (let index = fromColumn + 1; index <= toColumn; index++) {
+      if (placeOf(index) !== start + (index - fromColumn)) {
+        setRange(null);
+        return;
+      }
+    }
+    const shift = start - fromColumn;
+    if (shift === 0) return;
+    setRange({
+      anchor: { row: range.anchor.row, column: range.anchor.column + shift },
+      focus: { row: range.focus.row, column: range.focus.column + shift },
+    });
+  };
+
+  /**
+   * Put the cursor back on the cell it was on, wherever its row and its column
+   * have gone, and carry the range with them or drop it.
+   *
+   * Each of the two lists is null where it did not change.
+   */
+  const follow = (
+    rows: readonly T[],
+    previousRows: readonly T[] | null,
+    columns: readonly GridColumn<T>[],
+    previousColumns: readonly GridColumn<T>[] | null,
+  ): void => {
+    const places = previousColumns === null ? null : placesOf(columns);
+
+    // A rectangle of cells is a region of the grid *as it was arranged*, and
+    // the rows have just been arranged again: the rows between its corners are
+    // somewhere else now, and the reader never asked for whatever is between
+    // them today. Row selection is held by key and survives this; a range
+    // cannot, so it goes. Columns are few and always named, so a change to
+    // them alone can say whether the range still stands.
+    if (previousRows !== null) setRange(null);
+    else if (places !== null && previousColumns !== null) followRange(places, previousColumns);
+
+    const cursor = untrack(() => active.get());
+    const row = previousRows === null ? cursor.row : followRow(cursor.row, rows, previousRows);
+    let column = cursor.column;
+    // Moved even where the column that took its place sits at the same index,
+    // when the one the cursor was on has gone: the reader is on another column
+    // now, and focus has to be brought to it from a cell no longer there. Not
+    // where no column is left to take its place, and no cell to bring it to.
+    let columnWent = false;
+    if (places !== null && previousColumns !== null) {
+      const followed = followColumn(cursor.column, places, previousColumns);
+      const was = previousColumns[cursor.column];
+      if (followed !== null) column = followed;
+      columnWent = followed !== null && was !== undefined && !places.has(was.id);
+    }
+    if (row === cursor.row && column === cursor.column && !columnWent) return;
 
     // Focus follows the cursor only if it was on the cursor to begin with. A
-    // sort is almost always driven from the column header, which is where the
-    // reader is standing when the data moves underneath them — pulling focus
-    // down into the body would take them off the control they just used.
-    const next = { row: index, column: cursor.column };
-    if (cursorHeldFocus()) focusCell(next);
+    // sort is almost always driven from the column header, and a column is
+    // moved or hidden from a chooser beside the grid, which is where the reader
+    // is standing when the cells move underneath them — pulling focus into the
+    // body would take them off the control they just used. Nor where it is on
+    // a control inside the cell, still in the document: that is an editor
+    // being typed in, and focus brought to the cell would leave the reader's
+    // next keystrokes nowhere.
+    const next = { row, column };
+    if (cursorHeldFocus() && !focusInsideCell()) focusCell(next);
     else setActive(next);
   };
 
   /**
-   * Keep the cursor on the row it was on, and inside the grid.
+   * Keep the cursor on the cell it was on, the range over the cells it covered
+   * or gone, and the cursor inside the grid.
    *
-   * One effect rather than two, because the two answers interfere: a clamp run
-   * first would re-anchor the cursor to whichever row had slid under it, and
-   * the lookup would then have nothing left to look up. Stating the order here
-   * is better than leaving it to the order the effects happen to be created in.
+   * One effect rather than several, because the answers interfere: a clamp run
+   * first would re-anchor the cursor to whichever row or column had slid under
+   * it, and the lookups would then have nothing left to look up. Stating the
+   * order here is better than leaving it to the order the effects happen to be
+   * created in.
+   *
+   * A list handed over again with the same rows, or the same column ids, in
+   * the same order is no change. A new column list re-sorts a sorted grid, and
+   * the rows come back in the order they were in: a range dropped for that
+   * would be dropped for a sort that moved nothing. The comparison is by
+   * identity, a walk the derivation that made the new list has already paid
+   * for many times over, and it reads no cell.
    */
   let renderedRows: readonly T[] | null = null;
+  let renderedColumns: readonly GridColumn<T>[] | null = null;
   effect(() => {
-    const rows = rowList();
     // Read tracked: the cursor has to be re-examined when either axis changes.
-    columnCount();
+    const rows = rowList();
+    const columns = columnList();
 
-    const previous = renderedRows;
+    const previousRows = renderedRows;
+    const previousColumns = renderedColumns;
     renderedRows = rows;
-    if (previous !== null && previous !== rows) followRows(rows, previous);
+    renderedColumns = columns;
+    const rowsMoved = previousRows !== null && !sameItems(previousRows, rows);
+    const columnsMoved = previousColumns !== null && !sameIds(previousColumns, columns);
+    if (rowsMoved || columnsMoved) {
+      follow(
+        rows,
+        rowsMoved ? previousRows : null,
+        columns,
+        columnsMoved ? previousColumns : null,
+      );
+    }
 
     setActive(untrack(() => active.get()));
   });
@@ -1748,6 +1959,11 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     rowIndex: (key) => indexOfKey(rowList(), key),
     rowAt: (index) => rowList()[index],
     columnIndex: (id) => columnList().findIndex((column) => column.id === id),
+    columnAt: (index) => columnList()[index],
+    columnWidth: (id) => {
+      const column = columnById(id);
+      return column === undefined ? undefined : widthFor(column);
+    },
 
     activeCell: () => active.get(),
     focusCell,
@@ -1963,6 +2179,36 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
 
 function clamp(value: number, low: number, high: number): number {
   return Math.min(Math.max(value, low), high);
+}
+
+/** Whether two lists hold the same items in the same order, by identity. */
+function sameItems<V>(a: readonly V[], b: readonly V[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/**
+ * Whether two column lists name the same columns in the same order.
+ *
+ * By id and not by identity: a list handed over again with fresh objects for
+ * the same columns — a re-fetch, a width restored into a copy — moves nothing.
+ */
+function sameIds<T>(a: readonly GridColumn<T>[], b: readonly GridColumn<T>[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i]!.id !== b[i]!.id) return false;
+  return true;
+}
+
+/** Where each column id sits in a list — the first place, as `columnIndex` finds it. */
+function placesOf<T>(columns: readonly GridColumn<T>[]): Map<string, number> {
+  const places = new Map<string, number>();
+  for (let i = 0; i < columns.length; i++) {
+    if (!places.has(columns[i]!.id)) places.set(columns[i]!.id, i);
+  }
+  return places;
 }
 
 /**

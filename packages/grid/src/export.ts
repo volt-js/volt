@@ -95,13 +95,6 @@ const { untrack } = Signal.subtle;
  */
 const DEFAULT_CELLS_PER_SLICE = 5_000;
 
-// The grid's own defaults for a column that declares no width. `createGrid`
-// does not export them, so they are repeated here. A test writes the same
-// columns inside the grid's window and outside it, so a change made in only
-// one place fails it.
-const DEFAULT_COLUMN_WIDTH = 150;
-const DEFAULT_MIN_COLUMN_WIDTH = 40;
-
 // What a worksheet can hold. A file past any of these is not refused by the
 // zip; it is refused by the spreadsheet, as a file it has to "repair".
 const XLSX_MAX_ROWS = 1_048_576;
@@ -268,12 +261,6 @@ export function createExport<T>(options: GridExportOptions<T>): GridExport {
       if (index >= 0 && placed[index] === undefined) placed[index] = column;
     }
 
-    // The grid's widths reach outside it only through the columns it renders:
-    // a column in the window is as wide as the reader left it, and one outside
-    // it has not been drawn since it was last declared.
-    const drawn = new Map<string, number>();
-    for (const view of table.columns()) drawn.set(view.column.id, view.width);
-
     const formatters = options.format?.() ?? {};
     const resolved: ExportColumn<T>[] = [];
     let missing = 0;
@@ -289,7 +276,11 @@ export function createExport<T>(options: GridExportOptions<T>): GridExport {
       resolved.push({
         id: column.id,
         header: column.header,
-        width: drawn.get(column.id) ?? declaredWidth(column),
+        // Asked of the grid by id rather than read off the window, which
+        // describes only the columns it holds: one the reader resized and then
+        // scrolled away from is still as wide as they left it. Placed by the
+        // grid's own index for its id, so the grid holds it.
+        width: table.columnWidth(column.id)!,
         // Called on the column, as the grid calls it, so an accessor written
         // as a method keeps its `this`.
         read:
@@ -473,19 +464,6 @@ function yieldToPage(): Promise<void> {
 }
 
 // --- Values --------------------------------------------------------------------
-
-/**
- * A column's width as the grid would lay it out without having drawn it.
- *
- * The grid's own clamp, repeated: the declared width or the default, held to
- * the column's bounds and rounded.
- */
-function declaredWidth<T>(column: GridColumn<T>): number {
-  const low = column.minWidth ?? DEFAULT_MIN_COLUMN_WIDTH;
-  const high = Math.max(low, column.maxWidth ?? Number.POSITIVE_INFINITY);
-  const width = column.width ?? DEFAULT_COLUMN_WIDTH;
-  return Math.round(Math.min(Math.max(width, low), high));
-}
 
 /**
  * The text of a value that is not a string, number, boolean or date — as the

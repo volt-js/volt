@@ -1482,6 +1482,49 @@ describe('the keyboard', () => {
     expect(harness.g.activeCell()).toEqual({ row: 2, column: 2 });
   });
 
+  it('knows the column the reader stood on by what it is, not where it was', async () => {
+    const harness = setup();
+    await paste(harness, [[0, 0, 'A']]);
+    await paste(harness, [[3, 2, 'D']]);
+    mode = 'defer';
+    const committed = paste(harness, [[1, 0, 'B']]);
+    harness.g.focusCell({ row: 2, column: 1 });
+    flushSync();
+
+    // Queued behind the save. Then the reader's column goes to the front, the
+    // cursor with it, and they step right — onto c0, which the move put in
+    // the place their column had.
+    pressHere('z', { ctrlKey: true });
+    const [c0, c1, c2] = columns.get();
+    columns.set([c1!, c0!, c2!]);
+    flushSync();
+    expect(harness.g.activeCell()).toEqual({ row: 2, column: 0 });
+    pressHere('ArrowRight');
+    expect(harness.g.activeCell()).toEqual({ row: 2, column: 1 });
+
+    pending[0]!.settle(true);
+    await committed;
+    await settled();
+    expect(steps[3]!.kind).toBe('undo');
+    // They moved on, whatever index the column they are on has.
+    expect(harness.g.activeCell()).toEqual({ row: 2, column: 1 });
+
+    // And one who stays on their column while a move takes it somewhere else
+    // has not moved: the step takes them to its cell.
+    pressHere('ArrowLeft');
+    pressHere('z', { ctrlKey: true });
+    columns.set([c0!, c2!, c1!]);
+    flushSync();
+    expect(harness.g.activeCell()).toEqual({ row: 2, column: 2 });
+    pending[1]!.settle(true);
+    await settled();
+    expect(steps[4]!.kind).toBe('undo');
+    expect(harness.g.activeCell()).toEqual({ row: 3, column: 1 });
+    pending[2]!.settle(true);
+    await settled();
+    expect(textAt(3, 1)).toBe('4');
+  });
+
   it('puts the cursor on the cell it changed', async () => {
     const harness = setup();
     edit(harness, 1, 0, 'beta!');
@@ -1835,6 +1878,178 @@ describe('while an editor is open, with a save still out', () => {
     await settled();
     expect(steps.map((step) => step.kind)).toEqual(['commit', 'commit', 'undo', 'commit']);
     expect([textAt(0, 0), textAt(1, 0), textAt(2, 0)]).toEqual(['A', 'beta', 'C']);
+  });
+});
+
+describe('a step landing on a cell the reader has opened', () => {
+  /** Opens the cell the way a reader does — Enter on it — with focus put in the editor. */
+  function open(harness: Harness, row: number, column: number): HTMLInputElement {
+    harness.g.focusCell({ row, column });
+    flushSync();
+    pressHere('Enter');
+    const input = host.querySelector<HTMLInputElement>(`[${GRID_EDITOR_ATTRIBUTE}]`)!;
+    input.focus();
+    return input;
+  }
+
+  function type(input: HTMLInputElement, text: string): void {
+    input.value = text;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+  }
+
+  it('shows the value an undo already on its way left there, where the reader has typed nothing', async () => {
+    const harness = setup();
+    await paste(harness, [[1, 0, 'B']]);
+
+    mode = 'defer';
+    const undone = undo(harness);
+    // Handed over before the cell was opened, so nothing refused it.
+    expect(steps).toHaveLength(2);
+    const input = open(harness, 1, 0);
+    expect(harness.editing.text()).toBe('B');
+
+    pending[0]!.settle(true);
+    await expect(undone).resolves.toBe(true);
+    await settled();
+    // The editor is over a cell that holds "beta" now, and says so.
+    expect(harness.editing.session()).toMatchObject({ columnId: 'c0', initial: 'beta' });
+    expect(harness.editing.text()).toBe('beta');
+    expect(input.value).toBe('beta');
+
+    // Closed as it stands, it is no change: the cell already holds it.
+    mode = 'accept';
+    press(input, 'Enter');
+    expect(steps).toHaveLength(2);
+    expect(textAt(1, 0)).toBe('beta');
+  });
+
+  it('keeps what the reader typed, and commits it as a change from what the undo left', async () => {
+    const harness = setup();
+    await paste(harness, [[1, 0, 'B']]);
+
+    mode = 'defer';
+    const undone = undo(harness);
+    const input = open(harness, 1, 0);
+    type(input, 'C');
+
+    pending[0]!.settle(true);
+    await undone;
+    await settled();
+    expect(harness.editing.text()).toBe('C');
+    expect(harness.editing.session()).toMatchObject({ initial: 'beta' });
+
+    mode = 'accept';
+    press(input, 'Enter');
+    await settled();
+    expect(steps[2]!.changes[0]).toMatchObject({ rowKey: 1, previous: 'beta', value: 'C' });
+    // So undoing it puts back what the cell held before it, and not the value
+    // the undo had already taken away.
+    await undo(harness);
+    expect(textAt(1, 0)).toBe('beta');
+    expect(harness.history.canUndo()).toBe(false);
+  });
+
+  it('records a commit made before the undo landed as a change from what the undo left', async () => {
+    const harness = setup();
+    await paste(harness, [[1, 0, 'B']]);
+
+    mode = 'defer';
+    const undone = undo(harness);
+    // Opened, typed and committed while the undo was out: the commit waits
+    // its turn, holding the "B" the editor opened with.
+    edit(harness, 1, 0, 'C');
+    expect(steps).toHaveLength(2);
+
+    mode = 'accept';
+    pending[0]!.settle(true);
+    await undone;
+    await settled();
+    expect(steps).toHaveLength(3);
+    expect(steps[2]!.changes[0]).toMatchObject({ rowKey: 1, previous: 'beta', value: 'C' });
+    expect(textAt(1, 0)).toBe('C');
+
+    await undo(harness);
+    expect(textAt(1, 0)).toBe('beta');
+    expect(harness.history.canUndo()).toBe(false);
+  });
+
+  it('leaves an editor open on another cell of the row or the column as it was', async () => {
+    const harness = setup();
+    await paste(harness, [[2, 0, 'G'], [1, 1, 'T']]);
+
+    mode = 'defer';
+    const undone = undo(harness);
+    // Row 1's first column: the undo writes the cell below it and the one
+    // beside it, and neither is this one.
+    const input = open(harness, 1, 0);
+    type(input, 'beta!');
+
+    pending[0]!.settle(true);
+    await undone;
+    await settled();
+    expect([textAt(2, 0), textAt(1, 1)]).toEqual(['gamma', 'two']);
+    expect(harness.editing.session()).toMatchObject({ row: 1, columnId: 'c0', initial: 'beta' });
+    expect(harness.editing.text()).toBe('beta!');
+
+    mode = 'accept';
+    press(input, 'Enter');
+    expect(steps[2]!.changes[0]).toMatchObject({ rowKey: 1, columnId: 'c0', previous: 'beta', value: 'beta!' });
+  });
+
+  it('moves an editor and a waiting commit onto what a commit still saving wrote', async () => {
+    const harness = setup();
+    mode = 'defer';
+    // A commit out, and the cell it is writing opened before it lands.
+    const saving = paste(harness, [[1, 0, 'B']]);
+    const input = open(harness, 1, 0);
+    expect(harness.editing.text()).toBe('beta');
+
+    pending[0]!.settle(true);
+    await saving;
+    await settled();
+    expect(harness.editing.session()).toMatchObject({ initial: 'B' });
+    expect(input.value).toBe('B');
+
+    // Committed while a second save is out on the same cell: it waits, and
+    // is recorded as a change from what that save leaves.
+    type(input, 'C');
+    const second = paste(harness, [[1, 0, 'D']]);
+    press(input, 'Enter');
+    mode = 'accept';
+    pending[1]!.settle(true);
+    await second;
+    await settled();
+    expect(steps[2]!.changes[0]).toMatchObject({ rowKey: 1, previous: 'D', value: 'C' });
+    expect(textAt(1, 0)).toBe('C');
+
+    await undo(harness);
+    expect(textAt(1, 0)).toBe('D');
+  });
+
+  it('hands apply nothing for a waiting commit the undo has made no change', async () => {
+    const harness = setup();
+    await paste(harness, [[1, 0, 'B']]);
+
+    mode = 'defer';
+    const undone = undo(harness);
+    // The reader typed back the value the undo is about to put there.
+    edit(harness, 1, 0, 'beta');
+    const committed = harness.history.commit({
+      item: people.get()[1]!,
+      columnId: 'c0',
+      previous: 'B',
+      value: 'beta',
+    });
+
+    mode = 'accept';
+    pending[0]!.settle(true);
+    await undone;
+    await expect(committed).resolves.toBe(false);
+    await settled();
+    expect(steps).toHaveLength(2);
+    expect(harness.history.canUndo()).toBe(false);
+    expect(harness.history.canRedo()).toBe(true);
   });
 });
 

@@ -166,6 +166,10 @@ export interface GridEditSession<T> {
   readonly columnId: string;
   readonly item: T;
   readonly rowKey: GridRowKey;
+  /**
+   * What the cell held when the session opened — or what `rebase` said it was
+   * given since, which is what a commit reports as `previous`.
+   */
   readonly initial: unknown;
 }
 
@@ -180,7 +184,9 @@ export interface GridCellEditingOptions<T> {
   /** What each column can do when edited, by column id. */
   editors: () => Readonly<Record<string, GridEditor<T>>>;
   /**
-   * The columns, in order — the same list the grid is given.
+   * Every column the grid may show: the list it is given, or the whole list a
+   * `createGridState` arranges and hides columns from. Each is placed where the
+   * grid has its id, so the order here does not matter.
    *
    * Only Tab needs it, and only to step over the columns that have no editor:
    * the grid renders a window, so the column at an index outside it has no
@@ -236,6 +242,18 @@ export interface GridCellEditing<T> {
   commit(): boolean;
   /** Abandons the edit and puts focus back on the cell. */
   cancel(): void;
+  /**
+   * Tell the open session its cell was given a value from outside it, while
+   * it was open — `createEditHistory` calls it when a step it had already
+   * handed to a slow `apply` lands on the cell being edited.
+   *
+   * The session then commits from that value: the change it reports names it
+   * as `previous`, and a draft equal to it is no change. The control follows
+   * too, where the reader has not changed what it opened with; what they typed
+   * is theirs, and stays. Nothing where no session is open on that row and
+   * column.
+   */
+  rebase(change: Pick<GridEditChange<T>, 'item' | 'columnId' | 'value'>): void;
 
   /** Spread onto the editing control. */
   editorProps(): GridProps;
@@ -270,8 +288,13 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
   // control has to name an element that will exist by the time it is read.
   const errorId = createId('volt-grid-error');
 
-  const editorFor = (columnId: string): GridEditor<T> | null =>
-    options.editors()[columnId] ?? null;
+  const editorFor = (columnId: string): GridEditor<T> | null => {
+    const editors = options.editors();
+    // Own entries only. A column id is the caller's text, and `constructor` or
+    // `toString` would otherwise find the member every object inherits under
+    // that name — a function, taken for an editor with nothing to refuse.
+    return Object.hasOwn(editors, columnId) ? (editors[columnId] ?? null) : null;
+  };
 
   const isEditable = (row: GridRow<T>, column: GridColumnView<T>): boolean => {
     const editor = editorFor(column.column.id);
@@ -456,6 +479,20 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
     return true;
   }
 
+  const rebase = (change: Pick<GridEditChange<T>, 'item' | 'columnId' | 'value'>): void => {
+    const session = untrack(() => state.get());
+    if (session === null || session.item !== change.item || session.columnId !== change.columnId) {
+      return;
+    }
+    if (Object.is(session.initial, change.value)) return;
+    // Judged against what it opened with, before that moves: a draft still
+    // equal to it is one the reader has not changed, and there is nothing of
+    // theirs in the control to keep.
+    const untouched = Object.is(untrack(() => draft.get()), session.initial);
+    state.set({ ...session, initial: change.value });
+    if (untouched) write(change.value, asText(change.value));
+  };
+
   const cancel = (): void => {
     const session = untrack(() => live.get());
     if (session === null) return;
@@ -488,6 +525,28 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
     if (row < 0 || row >= rows) return null;
     return { row, column };
   };
+
+  /**
+   * The id of the column at each place in the grid, as far as `columns` names
+   * them — or null where there is no `columns` to name them from.
+   *
+   * Placed by the index the grid gives each id, as the clipboard and the export
+   * place them, rather than read off `columns` by position. The grid is the
+   * authority on which columns it holds and in what order, and one behind
+   * `createGridState` holds fewer than exist, in the reader's order: the column
+   * at a place in the caller's list is not the one at that place in the grid.
+   */
+  const idsByPlace = (table: Grid<T>, count: number): (string | undefined)[] | null =>
+    untrack(() => {
+      const list = options.columns?.();
+      if (list === undefined) return null;
+      const ids = new Array<string | undefined>(count);
+      for (const column of list) {
+        const index = table.columnIndex(column.id);
+        if (index >= 0 && ids[index] === undefined) ids[index] = column.id;
+      }
+      return ids;
+    });
 
   /**
    * Commit, move to the next cell that can be edited, and open it.
@@ -525,7 +584,7 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
       const row = session.row + rowDelta;
       target = row < 0 || row >= rows ? null : { row, column: session.column };
     } else {
-      const ids = options.columns?.();
+      const ids = idsByPlace(table, columns);
       let cursor: GridCell = session;
       // Bounded by the whole collection, so a grid with no editable column at
       // all stops rather than walking to the end of a million rows.
@@ -533,7 +592,8 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
         const next = step(cursor, columnDelta, columns, rows);
         if (next === null) break;
         cursor = next;
-        if (ids === undefined || editorFor(ids[next.column]?.id ?? '') !== null) {
+        const id = ids?.[next.column];
+        if (ids === null || (id !== undefined && editorFor(id) !== null)) {
           target = next;
           break;
         }
@@ -572,6 +632,7 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
 
     commit,
     cancel,
+    rebase,
 
     editorProps: () => {
       const message = error.get();

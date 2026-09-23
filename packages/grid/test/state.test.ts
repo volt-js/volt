@@ -17,7 +17,9 @@ import { resetAnnouncer } from '@voltdev/primitives';
 import { compileTemplate } from '@voltdev/core/jit';
 import { Component, Signal, effect, flushSync, mount } from '@voltdev/core';
 import {
+  GRID_CELL_ATTRIBUTE,
   GRID_STATE_VERSION,
+  HEADER_ROW,
   createGrid,
   createGridState,
   createGrouping,
@@ -396,6 +398,20 @@ function columnText(index: number): string[] {
   return rows().map((row) => row.querySelectorAll('.cell')[index]?.textContent ?? '');
 }
 
+/** The cell at a position — a header cell for `HEADER_ROW` — found the way the grid finds it. */
+function cellAt(row: number, column: number): HTMLElement | null {
+  return host.querySelector<HTMLElement>(`[${GRID_CELL_ATTRIBUTE}="${row},${column}"]`);
+}
+
+/** The column each cell in the range sits under, left to right along its first row. */
+function rangeColumns(): string[] {
+  const first = host.querySelector<HTMLElement>('.row [data-selected]')?.closest('.row');
+  if (!first) return [];
+  return [...first.querySelectorAll<HTMLElement>('[data-selected]')].map(
+    (cell) => cell.getAttribute('data-column') ?? '',
+  );
+}
+
 /** A saved state as it comes back from storage: through JSON and out again. */
 function stored(state: GridState): unknown {
   return JSON.parse(JSON.stringify(state));
@@ -556,6 +572,151 @@ describe('the columns it hands the grid', () => {
     stateOptions = { hidden: new Signal.State<ReadonlySet<string>>(new Set(['gone'])) };
     const harness = setupFlat();
     expect(harness.view.columns()).toBe(definitions.get());
+  });
+});
+
+describe('the cursor and a cell range, as the columns are arranged', () => {
+  it('keeps the cursor, and focus, on its column wherever a move takes it', () => {
+    const harness = setupFlat();
+    harness.g.focusCell({ row: 2, column: 1 });
+    flushSync();
+    expect(document.activeElement).toBe(cellAt(2, 1));
+
+    harness.view.moveColumn('team', 3);
+    flushSync();
+    expect(headers()).toEqual(['Name', 'Salary', 'Notes', 'Team']);
+    expect(harness.g.activeCell()).toEqual({ row: 2, column: 3 });
+    expect(cellAt(2, 3)!.getAttribute('data-column')).toBe('team');
+    expect(document.activeElement).toBe(cellAt(2, 3));
+
+    // Another column moved past it moves it too.
+    harness.view.moveColumn('salary', 3);
+    flushSync();
+    expect(headers()).toEqual(['Name', 'Notes', 'Team', 'Salary']);
+    expect(harness.g.activeCell()).toEqual({ row: 2, column: 2 });
+    expect(document.activeElement).toBe(cellAt(2, 2));
+
+    // The header is a row like any other: the column under it is followed too.
+    harness.g.focusCell({ row: HEADER_ROW, column: 0 });
+    flushSync();
+    harness.view.moveColumn('name', 2);
+    flushSync();
+    expect(harness.g.activeCell()).toEqual({ row: HEADER_ROW, column: 2 });
+    expect(cellAt(HEADER_ROW, 2)!.getAttribute('data-column')).toBe('name');
+  });
+
+  it('moves the cursor to the column that takes the place of one hidden under it', () => {
+    const harness = setupFlat();
+    harness.g.focusCell({ row: 2, column: 1 });
+    flushSync();
+
+    harness.view.setColumnHidden('team', true);
+    flushSync();
+    // Salary slid into its place, as the next row slides under a cursor whose
+    // row a filter took away — and focus went with the cursor, rather than
+    // being left on a cell that is no longer in the document.
+    expect(harness.g.activeCell()).toEqual({ row: 2, column: 1 });
+    expect(cellAt(2, 1)!.getAttribute('data-column')).toBe('salary');
+    expect(document.activeElement).toBe(cellAt(2, 1));
+
+    // A column hidden in front of it moves it back one, on the column it was on.
+    harness.view.setColumnHidden('name', true);
+    flushSync();
+    expect(headers()).toEqual(['Salary', 'Notes']);
+    expect(harness.g.activeCell()).toEqual({ row: 2, column: 0 });
+    expect(document.activeElement).toBe(cellAt(2, 0));
+
+    // And shown again, too: the cursor stays on salary, wherever that now is.
+    harness.view.setColumnHidden('name', false);
+    flushSync();
+    expect(harness.g.activeCell()).toEqual({ row: 2, column: 1 });
+    expect(cellAt(2, 1)!.getAttribute('data-column')).toBe('salary');
+
+    // The last column hidden has nothing after it, so the one before it takes the cursor.
+    harness.g.focusCell({ row: 2, column: 2 });
+    flushSync();
+    harness.view.setColumnHidden('notes', true);
+    flushSync();
+    expect(harness.g.activeCell()).toEqual({ row: 2, column: 1 });
+    expect(cellAt(2, 1)!.getAttribute('data-column')).toBe('salary');
+  });
+
+  it('takes no focus back into the grid for a column hidden with none left to take its place', () => {
+    const harness = setupFlat();
+    for (const id of ['team', 'salary', 'notes']) harness.view.setColumnHidden(id, true);
+    flushSync();
+    harness.g.focusCell({ row: 2, column: 0 });
+    flushSync();
+
+    // The last column goes with focus on it, and there is no cell to bring
+    // focus to. The reader goes elsewhere; the column coming back later is
+    // not a reason to take them out of it.
+    harness.view.setColumnHidden('name', true);
+    flushSync();
+    const elsewhere = document.createElement('button');
+    document.body.append(elsewhere);
+    elsewhere.focus();
+    harness.view.setColumnHidden('name', false);
+    flushSync();
+    expect(document.activeElement).toBe(elsewhere);
+  });
+
+  it('carries a cell range across a move that keeps its columns together, and drops one that parts them', () => {
+    const harness = setupFlat();
+    harness.g.setCellRange({ anchor: { row: 1, column: 0 }, focus: { row: 2, column: 1 } });
+    flushSync();
+    expect(rangeColumns()).toEqual(['name', 'team']);
+
+    // Salary moved in front of both: they shift together, and so does the range.
+    harness.view.moveColumn('salary', 0);
+    flushSync();
+    expect(harness.g.cellRange()).toEqual({
+      anchor: { row: 1, column: 1 },
+      focus: { row: 2, column: 2 },
+    });
+    expect(rangeColumns()).toEqual(['name', 'team']);
+
+    // A column hidden outside it moves it, too.
+    harness.view.setColumnHidden('salary', true);
+    flushSync();
+    expect(harness.g.cellRange()).toEqual({
+      anchor: { row: 1, column: 0 },
+      focus: { row: 2, column: 1 },
+    });
+
+    // Notes moved in between its columns: a rectangle between the same corners
+    // would take in a column nobody chose, so there is no range at all.
+    harness.view.moveColumn('notes', 2);
+    flushSync();
+    expect(headers()).toEqual(['Name', 'Notes', 'Team']);
+    expect(harness.g.cellRange()).toBe(null);
+    expect(rangeColumns()).toEqual([]);
+
+    // Nor does one survive a column of its own being hidden, or moved out.
+    harness.view.moveColumn('notes', 3);
+    harness.g.setCellRange({ anchor: { row: 0, column: 0 }, focus: { row: 0, column: 1 } });
+    flushSync();
+    harness.view.setColumnHidden('team', true);
+    flushSync();
+    expect(harness.g.cellRange()).toBe(null);
+  });
+
+  it('carries a range across a move on a sorted grid, whose rows the move left where they were', () => {
+    const harness = setupFlat();
+    harness.g.toggleSort('salary');
+    flushSync();
+    harness.g.setCellRange({ anchor: { row: 0, column: 0 }, focus: { row: 1, column: 0 } });
+    flushSync();
+
+    // A new column list re-sorts, and the rows come back in the order they
+    // were in: nothing about them moved, so nothing about them drops the range.
+    harness.view.moveColumn('notes', 0);
+    flushSync();
+    expect(harness.g.cellRange()).toEqual({
+      anchor: { row: 0, column: 1 },
+      focus: { row: 1, column: 1 },
+    });
+    expect(rangeColumns()).toEqual(['name']);
   });
 });
 
@@ -1491,6 +1652,44 @@ describe('what it costs', () => {
     expect(counts.filter).toBe(PEOPLE.length);
     expect(counts.sort).toBe(once);
     expect(columnText(0)).toEqual(['500', '300', '200']);
+  });
+
+  it('re-reads only the cells of the columns a move moved, grouped or not', () => {
+    /** Every accessor run, by the column it belongs to. */
+    const byColumn = new Map<string, number>();
+    const counted = (id: string, read: (row: Person) => unknown, width?: number): GridColumn<Person> => ({
+      id,
+      header: id,
+      width,
+      value: (row) => {
+        byColumn.set(id, (byColumn.get(id) ?? 0) + 1);
+        return read(row);
+      },
+    });
+    const own = (): GridColumn<Person>[] => [
+      counted('name', (row) => row.name.get(), 100),
+      counted('team', (row) => row.team, 100),
+      counted('salary', (row) => row.salary, 100),
+      counted('notes', () => ''),
+    ];
+
+    for (const grouped of [false, true]) {
+      teardown();
+      fresh();
+      definitions.set(own());
+      if (grouped) groupByState.set(['team']);
+      const { view } = grouped ? setupGrouped() : setupFlat();
+      byColumn.clear();
+
+      // Notes and Salary trade places. Name and Team stay where they were, and
+      // not one of their cells is asked again what it holds.
+      view.moveColumn('notes', 2);
+      flushSync();
+      expect(headers()).toEqual(['name', 'team', 'notes', 'salary']);
+      expect(byColumn.get('name') ?? 0).toBe(0);
+      expect(byColumn.get('salary')).toBe(PEOPLE.length);
+      expect(byColumn.get('notes')).toBe(PEOPLE.length);
+    }
   });
 
   it('records a resize without re-sorting or re-filtering a row', () => {

@@ -205,7 +205,25 @@ interface Harness {
   scroller: HTMLElement;
 }
 
-function setup({ height = VIEWPORT_HEIGHT, width = VIEWPORT_WIDTH, keyed = true } = {}): Harness {
+interface SetupOptions {
+  height?: number;
+  width?: number;
+  /** Whether the grid is given a `getRowKey`, or keys its rows by their place. */
+  keyed?: boolean;
+  /**
+   * The columns the editing layer is given, where they are not the grid's own
+   * list — every column, in the order they were declared, while the grid shows
+   * them in another, as a grid behind `createGridState` does.
+   */
+  listed?: () => readonly GridColumn<Person>[];
+}
+
+function setup({
+  height = VIEWPORT_HEIGHT,
+  width = VIEWPORT_WIDTH,
+  keyed = true,
+  listed = () => columns.get(),
+}: SetupOptions = {}): Harness {
   @Component({ selector: `v-edit-${++selectors}`, render: compileTemplate(TEMPLATE) })
   class EditableGrid {
     grid = new Signal.State<Element | null>(null);
@@ -229,7 +247,7 @@ function setup({ height = VIEWPORT_HEIGHT, width = VIEWPORT_WIDTH, keyed = true 
     editing = createCellEditing<Person>({
       grid: () => this.g,
       editors: () => editors.get(),
-      columns: () => columns.get(),
+      columns: listed,
       onCommit: (change) => {
         changes.push(change);
         // What a caller does with it: write it into the store the rows came
@@ -383,6 +401,29 @@ describe('opening a session', () => {
     // `false` on every editable cell is noise for the few that are not.
     const row = cells().slice(3, 6);
     expect(row.map((cell) => cell.getAttribute('aria-readonly'))).toEqual([null, 'true', null]);
+  });
+
+  it('finds an editor only where `editors` gives one, whatever a column is called', () => {
+    // Ids every object inherits a member under. Looked up as a property, each
+    // would find that member — a function — and take it for an editor.
+    columns.set(
+      makeColumns().map((column, index) =>
+        index === 1 ? { ...column, id: 'constructor' } : index === 2 ? { ...column, id: 'toString' } : column,
+      ),
+    );
+    editors.set({ c0: {} });
+    const harness = setup();
+
+    expect(begin(harness, 1, 1)).toBe(false);
+    expect(begin(harness, 1, 2)).toBe(false);
+    expect(harness.editing.session()).toBeNull();
+    expect(cellAt(1, 1)!.getAttribute('aria-readonly')).toBe('true');
+    expect(cellAt(1, 2)!.getAttribute('aria-readonly')).toBe('true');
+
+    // Nor is either landed on by a Tab looking for the next cell with an editor.
+    begin(harness, 1, 0);
+    press(editor()!, 'Tab');
+    expect(harness.editing.session()).toMatchObject({ row: 2, column: 0, columnId: 'c0' });
   });
 
   it('refuses a row the column says cannot be edited', () => {
@@ -667,6 +708,30 @@ describe('the view moving under a session', () => {
     expect(changes[0]).toMatchObject({ rowKey: 1, columnId: 'c0', value: 'beta!' });
   });
 
+  it('leaves focus in the editor while its row moves under it', () => {
+    const harness = setup();
+    harness.g.focusCell({ row: 2, column: 0 });
+    flushSync();
+    press(cellAt(2, 0)!, 'Enter');
+    const input = editor()!;
+    input.focus();
+    type('gamma!');
+
+    // A row in front of it filtered away: the row being edited is one place
+    // up, and the reader is still typing into it.
+    harness.g.setFilter('c1', { type: 'text', value: 'one', operator: 'notEquals' });
+    flushSync();
+    expect(harness.editing.session()).toMatchObject({ row: 1, column: 0 });
+    expect(harness.g.activeCell()).toEqual({ row: 1, column: 0 });
+    expect(editor()).toBe(input);
+    expect(document.activeElement).toBe(input);
+
+    // So the next key is still theirs, and Enter still commits what they typed.
+    press(input, 'Enter');
+    expect(changes).toHaveLength(1);
+    expect(changes[0]).toMatchObject({ rowKey: 2, value: 'gamma!' });
+  });
+
   it('abandons the session when its column is taken out of the list', () => {
     const harness = setup();
     begin(harness, 1, 2);
@@ -906,6 +971,28 @@ describe('the keyboard', () => {
       expect(document.activeElement).toBe(cellAt(-1, 0));
     },
   );
+
+  it("steps over the columns with no editor in the grid's order, not the order they were listed in", () => {
+    // Every column, as declared: c0 and c2 have editors, c1 has none. The grid
+    // shows c2 in front of c1, as a reader who moved it would have it.
+    const declared = columns.get();
+    const harness = setup({ listed: () => declared });
+    columns.set([declared[0]!, declared[2]!, declared[1]!]);
+    flushSync();
+
+    begin(harness, 1, 0);
+    press(editor()!, 'Tab');
+    expect(harness.editing.session()).toMatchObject({ row: 1, column: 1, columnId: 'c2' });
+    expect(harness.g.activeCell()).toEqual({ row: 1, column: 1 });
+
+    // Over c1, which is last now and has no editor, into the next row.
+    press(editor()!, 'Tab');
+    expect(harness.editing.session()).toMatchObject({ row: 2, column: 0, columnId: 'c0' });
+
+    // And back again, the same way round.
+    press(editor()!, 'Tab', { shiftKey: true });
+    expect(harness.editing.session()).toMatchObject({ row: 1, column: 1, columnId: 'c2' });
+  });
 
   it('runs off the end of a row into the next one', () => {
     const harness = setup();

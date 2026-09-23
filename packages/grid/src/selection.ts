@@ -11,7 +11,9 @@
  * still names the same record after a re-sort has moved it four hundred places;
  * a range's corners name positions, and the rows that used to be between them
  * are now somewhere else entirely. So the grid follows a row selection through
- * a re-sort and drops a range at it.
+ * a re-sort and drops a range at it. Columns are another matter: every one is
+ * named by an id, so a range whose columns still sit together in the order they
+ * had is carried to wherever a change to the column list put them.
  */
 
 import type { GridCell } from './grid.js';

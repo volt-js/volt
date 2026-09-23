@@ -202,9 +202,10 @@ export interface GridEditHistoryOptions<T> {
    * leave the session holding a value the cell no longer had, and its commit
    * would report a change from something that was not there.
    *
-   * That refuses a step asked for while the cell is open, and nothing more. A
-   * step already handed to a slow `apply` when the cell was opened still lands
-   * under it, and the edit then commits from the value the cell opened with.
+   * A step already handed to a slow `apply` cannot be refused — the server may
+   * have it — and the reader can open its cell while it is out. When it lands
+   * there, the session is rebased onto what it wrote, so the edit commits from
+   * the value the cell holds and not the one it opened with.
    */
   editing?: () => GridCellEditing<T> | null | undefined;
   /**
@@ -284,13 +285,24 @@ interface Origin {
   /** What held focus as the key was pressed, which a scroll can take out of the document. */
   readonly focused: Element;
   readonly rowKey: GridRowKey | undefined;
-  readonly column: number;
+  /**
+   * By id, as the row is by key. The grid carries its cursor with its column
+   * when the column list changes, so a place would take a reader who stayed
+   * put for one who moved — and one who stepped onto whatever column slid
+   * into their old place for one who never left it.
+   */
+  readonly columnId: string | undefined;
 }
 
 interface Job {
   readonly run: () => boolean | Promise<boolean>;
   readonly resolve: (applied: boolean) => void;
   readonly reject: (error: unknown) => void;
+  /**
+   * A commit's records, for as long as it waits its turn: a step landing on
+   * one of its cells first rewrites the record's `previous`.
+   */
+  readonly records?: GridHistoryRecord[];
 }
 
 interface Resolved<T> {
@@ -495,11 +507,52 @@ export function createEditHistory<T>(options: GridEditHistoryOptions<T>): GridEd
     }
   };
 
-  const enqueue = (run: () => boolean | Promise<boolean>): Promise<boolean> =>
+  const enqueue = (
+    run: () => boolean | Promise<boolean>,
+    records?: GridHistoryRecord[],
+  ): Promise<boolean> =>
     new Promise<boolean>((resolve, reject) => {
-      queue.push({ run, resolve, reject });
+      queue.push({ run, resolve, reject, records });
       drain();
     });
+
+  /**
+   * Move whatever was begun from a cell's old value onto the one a step has
+   * just written there: the editor open on it, and every commit still waiting
+   * its turn.
+   *
+   * Only a step already out can land under either — one asked for while a
+   * cell is open is refused — but a slow save gives the reader time to open
+   * the cell it is changing, and to commit it, from the value it is taking
+   * away. Left there, the editor would show a value the cell no longer holds,
+   * and the commit would record it as `previous`: undoing the edit would put
+   * back what the step had just taken away. Run whether or not the step is
+   * recorded, since a step a `clear` has forgotten still wrote its cells.
+   */
+  const landed = (changes: readonly GridEditChange<T>[]): void => {
+    // In the order they were written, so a cell a step wrote twice ends at
+    // the second.
+    const editing = options.editing?.();
+    if (editing) for (const change of changes) editing.rebase(change);
+
+    if (!queue.some((job) => job.records !== undefined)) return;
+    const written = new Map<GridRowKey, Map<string, unknown>>();
+    for (const change of changes) {
+      let cells = written.get(change.rowKey);
+      if (cells === undefined) written.set(change.rowKey, (cells = new Map()));
+      cells.set(change.columnId, change.value);
+    }
+    for (const job of queue) {
+      const records = job.records;
+      if (records === undefined) continue;
+      for (let i = 0; i < records.length; i++) {
+        const record = records[i]!;
+        const cells = written.get(record.rowKey);
+        if (cells === undefined || !cells.has(record.columnId)) continue;
+        records[i] = { ...record, previous: cells.get(record.columnId) };
+      }
+    }
+  };
 
   const commit = (
     change: GridHistoryChange<T> | readonly GridHistoryChange<T>[],
@@ -523,15 +576,20 @@ export function createEditHistory<T>(options: GridEditHistoryOptions<T>): GridEd
     // run after it names rows of the data the clear was for.
     const asked = era;
     return enqueue(() => {
-      const { changes, applied, skipped } = resolve(entry, 'commit');
+      // Read at its turn, after whatever landed while it waited has moved its
+      // `previous` on — which can leave a change that is no change any more.
+      const now = entry.filter((record) => !Object.is(record.previous, record.value));
+      if (now.length === 0) return false;
+      const { changes, applied, skipped } = resolve(now, 'commit');
       if (skipped.length > 0) options.onSkip?.(skipped, 'commit');
       if (changes.length === 0) return false;
       return settle(options.apply({ kind: 'commit', changes }), () => {
+        landed(changes);
         if (asked !== era) return;
         redoStack.set(EMPTY);
-        push(undoStack, applied.length === entry.length ? entry : applied);
+        push(undoStack, applied);
       });
-    });
+    }, entry);
   };
 
   /**
@@ -570,7 +628,8 @@ export function createEditHistory<T>(options: GridEditHistoryOptions<T>): GridEd
       !origin.focused.isConnected;
     if (!origin.element.contains(focused) && !scrolledAway) return;
     const cursor = table.activeCell();
-    if (cursor.column !== origin.column || keyAt(table, cursor.row) !== origin.rowKey) return;
+    if (table.columnAt(cursor.column)?.id !== origin.columnId) return;
+    if (keyAt(table, cursor.row) !== origin.rowKey) return;
 
     let target: GridCell | null = null;
     for (const change of changes) {
@@ -618,6 +677,7 @@ export function createEditHistory<T>(options: GridEditHistoryOptions<T>): GridEd
       }
       follow(origin, changes);
       return settle(options.apply({ kind, changes }), () => {
+        landed(changes);
         if (!pop(from, entry)) return;
         // Only what was written goes across. A cell whose row had gone was not
         // undone, and redoing it — should a row under that key come back —
@@ -658,7 +718,7 @@ export function createEditHistory<T>(options: GridEditHistoryOptions<T>): GridEd
           element,
           focused: event.target instanceof Element ? event.target : element,
           rowKey: untrack(() => keyAt(table, cursor.row)),
-          column: cursor.column,
+          columnId: untrack(() => table.columnAt(cursor.column)?.id),
         };
       }
       // Claimed with nothing to undo too. The key means this grid's undo while

@@ -415,10 +415,11 @@ export function createGridClipboard<T>(options: GridClipboardOptions<T>): GridCl
    * The range, cut to the grid as it is now, or null where there is none or
    * nothing of it is left.
    *
-   * Cut rather than trusted, because `setCellRange` takes a range unchecked and
-   * a column list can shrink under one — neither of which the grid clears. A
-   * range cut to nothing is no range: the cursor is still somewhere, and a key
-   * that did nothing because of cells nobody can see any more reads as broken.
+   * Cut rather than trusted, because `setCellRange` takes a range unchecked:
+   * the grid carries a range across a change to its rows or columns, or drops
+   * it, but never trims one it was handed. A range cut to nothing is no range:
+   * the cursor is still somewhere, and a key that did nothing because of cells
+   * nobody can see reads as broken.
    */
   const rangeNow = (table: Grid<T>): GridCellRangeBounds | null => {
     const range = table.cellRange();
@@ -578,8 +579,16 @@ export function createGridClipboard<T>(options: GridClipboardOptions<T>): GridCl
         if (column === undefined) continue;
         // Undefined where there is no editing at all, and null where there is
         // and this column has no editor — which makes it read-only, exactly
-        // as it is to a double click.
-        const editor = editors === undefined ? undefined : (editors[column.id] ?? null);
+        // as it is to a double click. Own entries only: a column id is the
+        // caller's text, and `constructor` or `toString` would otherwise find
+        // the member every object inherits under that name, and paste through
+        // a function that refuses nothing.
+        const editor =
+          editors === undefined
+            ? undefined
+            : Object.hasOwn(editors, column.id)
+              ? (editors[column.id] ?? null)
+              : null;
         const verdict = judge({ item, rowKey, rowIndex: row, column }, editor, texts[dx]!);
         if (verdict === null) continue;
         if ('reason' in verdict) refusals.push(verdict);

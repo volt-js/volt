@@ -411,15 +411,20 @@ interface GridCell {
 | `rowIndex(key)` | Where the row with this key sits in the view now, or `-1` where the view does not hold it |
 | `rowAt(index)` | The row at a position in the view, or `undefined` where the view does not reach — including rows the window is not rendering |
 | `columnIndex(id)` | Where the column with this id sits in the column list now, or `-1` where the list does not hold it |
+| `columnAt(index)` | The column at a position in the column list, or `undefined` where the list does not reach — including columns the window is not rendering |
 
 A position is two indices, not a row key and a column id, because the keyboard
 map is arithmetic over it; which row sits at an index changes with every sort
-and filter, and the grid moves the cursor to follow — see below. `rowIndex` is
-the way from a record to a position, `rowAt` the way back, and `columnIndex`
-from a column. `rowIndex` scans the view, so ask it once per change rather than
-once per cell; `rowAt` is a lookup. `rows()` answers `rowAt`'s question only for
-the rows the window holds, so reading the record under the cursor — a position,
-and one that can sit off screen — goes through `rowAt`.
+and filter, which column with every column list handed over in another order,
+and the grid moves the cursor to follow — see below. `rowIndex` is the way from
+a record to a position and `rowAt` the way back; `columnIndex` and `columnAt`
+are the same pair for a column. `rowIndex` scans the view, so ask it once per
+change rather than once per cell; `rowAt` and `columnAt` are lookups. `rows()`
+and `columns()` answer only for what the window holds, so reading the record or
+the column under the cursor — a position, and one that can sit off screen — goes
+through `rowAt` and `columnAt`. Anything that has to recognise the cursor's cell
+after the view or the column list changes should hold its row's key and its
+column's id, and find them again with `rowIndex` and `columnIndex`.
 
 The keyboard map is the WAI-ARIA grid pattern, plus sorting, resizing and
 selection:
@@ -473,11 +478,36 @@ was on the cursor to begin with, since a sort is usually driven from the header
 where the reader is standing. When the row is filtered away, the cursor stays at
 the position it had, clamped into the grid.
 
+**And a column, not an index.** When the column list is handed over in another
+order — `createGridState` moving a column, or your own list rearranged — the
+cursor goes with the column it was on, found again by id, on the header as on a
+data row. When that column is taken out of the list — hidden, say — the cursor
+goes to the column that slid into its place, or where nothing is after it, the
+one before; and since the reader is on another column now, focus that was on
+the cell that went is brought to the one that took its place. Focus follows
+here as it does for a row: only if it was on the cursor, since a column is
+usually moved or hidden from a chooser beside the grid. A list handed over
+again with the same ids in the same order moves nothing.
+
 Focus that leaves the grid is the reader's, wherever it goes — to another
 control, or nowhere, by a click on the page background. The grid hears it leave,
 and the next re-sort moves the cursor without pulling focus back. A focused cell
 removed by the re-render itself is not focus leaving, and focus still follows
 the row.
+
+Nor is focus taken off a control inside the cell — an editor the reader is
+typing in, a checkbox — while that control is still in the document. A filter
+that removes a row above it, or a column hidden in front of it, moves the cursor
+along with the cell the control sits in, and focus stays in the control: brought
+to the cell, it would leave the reader's next keystrokes going nowhere. A cell
+whose control has left the document — moved, or rebuilt — has nothing to keep,
+and focus comes to the cell as it would from the cell itself.
+
+Moving a column re-reads the cells of the columns that moved, and no others:
+the window hands back a column whose definition, place, offset and width all
+held as the same object, as it does a row, so the cells under it read nothing.
+That holds on a grouped grid too, whose lifted columns are the same objects for
+as long as the columns they were lifted from are.
 
 ## Sorting
 
@@ -784,10 +814,22 @@ function rangeEdges(row: GridRow<Person>, col: GridColumnView<Person>): string {
 A range the keyboard makes never includes the column header: extending from a
 data row stops at the first data row, and Shift on the header is left to the
 page. `setCellRange` takes what it is given without checking it. Any key that
-moves the cursor without extending the range ends it, as does any change to the
-view; a click, or `focusCell` from code, moves the cursor and leaves the range
-where it was. There is no pointer drag selection and no copy of a range to the
-clipboard; the range is a model you can read, and acting on it is yours.
+moves the cursor without extending the range ends it; a click, or `focusCell`
+from code, moves the cursor and leaves the range where it was. There is no
+pointer drag selection and no copy of a range to the clipboard; the range is a
+model you can read, and acting on it is yours.
+
+A range is a rectangle of the grid as it is arranged, so a change to the view
+that moves or removes rows — a sort, a filter, new data — drops it: the rows
+between its corners are somewhere else now. A view derived again with every row
+where it was, such as a sort that moved nothing, leaves it be. A change to the
+columns alone carries it, where the columns it covered still sit side by side
+in the order they were: the same cells, at new positions, and both corners
+shifted to match. Anything else drops it — a column moved in between its
+columns, moved out from between them, or hidden from among them. A range is its
+two corners, and the rectangle between them would then take in a column nobody
+chose or leave out one somebody did; no range is better than one the reader
+cannot trust. Each change says so through `onCellRangeChange`.
 
 `rowSelection: 'multiple'` and `cellSelection: 'range'` each put
 `aria-multiselectable` on the grid — a range is more than one cell by
@@ -800,6 +842,7 @@ construction. `'single'` does not. In `'range'` mode every cell carries
 | Member | Description |
 |---|---|
 | `resizeColumn(id, width)` | Resize from code, clamped to the column's bounds |
+| `columnWidth(id)` | The width, in px, the column with this id is laid out at — rendered or not — or `undefined` where the list does not hold it |
 | `onResizePointerDown(event)` | Starts a drag. Primary button only, one drag at a time |
 
 The reader resizes by dragging the handle or with Alt+Arrow on a header. Every
@@ -825,6 +868,13 @@ created. That is also the limit of it: once a column has been resized, the width
 held for its id wins over any `width` a later column list gives it, for as long
 as the grid lives, and nothing clears the held widths short of `resizeColumn`
 for each one.
+
+`columns()` gives the width of each column the window holds. `columnWidth(id)`
+answers for any column the grid has, in or out of the window, with the same
+arithmetic the geometry uses — the width a resize left, else the declared
+`width`, else 150, held to the column's bounds — so a column the reader resized
+and then scrolled away from still reports the width they left it at. It is what
+the export sizes a worksheet's columns by.
 
 ## Grouping
 
@@ -1253,7 +1303,9 @@ export class PeopleEditor {
 
 A column with no entry in `editors` cannot be edited at all. There is no
 read-only flag to forget: an editable grid's read-only columns say so with
-`aria-readonly`, rather than silently swallowing a double-click.
+`aria-readonly`, rather than silently swallowing a double-click. Only the
+record's own entries count, so a column whose id is `constructor` or `toString`
+is not handed the function every object inherits under that name as its editor.
 
 Call `createCellEditing` where a component's fields are initialised, as
 `createGrid` is: it creates an effect — the one that abandons a session whose
@@ -1275,7 +1327,7 @@ cell has gone, below — which is disposed with the component that owns it.
 | `grid` | required | `() => Grid<T> \| null \| undefined` — a function, because the grid is usually a field declared first |
 | `editors` | required | `() => Record<columnId, GridEditor<T>>` — what each column can do when edited |
 | `onCommit` | required | `(change: GridEditChange<T>) => void` — where a change goes, and the only way a value ever changes |
-| `columns` | — | The same column list the grid has. Only Tab uses it, to step over columns with no editor |
+| `columns` | — | Every column the grid may show: its own list, or the whole list `createGridState` arranges. Each is placed where the grid has its id, so the order does not matter. Only Tab uses it, to step over columns with no editor |
 | `onCancel` | — | `(session: GridEditSession<T>) => void` — told when a session is abandoned, with `-1` for its `row` or `column` where that is what went |
 | `onInvalid` | — | `(message, session) => void` — told when validation refuses, before the message shows |
 
@@ -1293,6 +1345,7 @@ cell has gone, below — which is disposed with the component that owns it.
 | `error()` | The message validation refused with, or `null` |
 | `commit()` | Commit unless validation refuses. Returns whether the session closed. Moves no focus |
 | `cancel()` | Abandon the edit and put focus back on the cell |
+| `rebase(change)` | Tell the open session its cell was given `change.value` from outside while it was open. From then on it commits from that value; the control shows it too where the reader has not changed the draft. Nothing where no session is open on that `item` and `columnId`. `createEditHistory` calls it — see [Undo and redo](#undo-and-redo) |
 | `editorProps()` | Spread onto the control: `GRID_EDITOR_ATTRIBUTE`, and while refused `aria-invalid`, `aria-errormessage`, `data-invalid` |
 | `errorProps()` | Spread onto the message: its id, and `role="alert"` |
 | `cellProps(row, col)` | Spread onto the cell after the grid's: `aria-readonly`, `aria-invalid`, `data-editing` |
@@ -1314,8 +1367,9 @@ change itself may move the row from. A value the reader left as it was is
 not a change: the session closes and `onCommit` is not called, because a write
 through a request, an undo entry or a dirty flag for a reader who opened a cell
 and pressed Enter is a write for nothing. The comparison is `Object.is` against
-what the editor opened with, so an editor with no `parse` over a numeric column
-reports a change whenever the reader retypes the same number — as a string.
+what the editor opened with — or what `rebase` has said the cell holds since —
+so an editor with no `parse` over a numeric column reports a change whenever the
+reader retypes the same number, as a string.
 
 **A session follows its cell, not its position.** It is held by the row's key
 and the column's id, so a sort or a filter while a cell is open — a click on a
@@ -1356,13 +1410,14 @@ the column header, which is where a grid with no rows keeps them.
 Tab is the key that has to be taken from the browser: left alone, it would move
 focus out of a grid whose only tab stop is the cell being edited, and the reader
 would land after the table with their edit half made. Given `columns`, it steps
-over columns with no editor — without it, Tab lands on the very next cell and
-opens it only if that cell can be edited. It runs off the end of a row into the
-next, and opens the cell it lands on only if the window already holds it;
-otherwise the cursor moves and the reader presses Enter. A row whose `editable`
-refuses is landed on, not stepped over: which columns have editors is known
-without a row, but whether a row refuses is not until it is rendered, so the
-cursor stops there and nothing opens.
+over columns with no editor, in the grid's order — a column the reader moved is
+stepped to where it is now, not where your list declares it — and without it,
+Tab lands on the very next cell and opens it only if that cell can be edited. It
+runs off the end of a row into the next, and opens the cell it lands on only if
+the window already holds it; otherwise the cursor moves and the reader presses
+Enter. A row whose `editable` refuses is landed on, not stepped over: which
+columns have editors is known without a row, but whether a row refuses is not
+until it is rendered, so the cursor stops there and nothing opens.
 
 Every other key is claimed while a cell is open, and deliberately not handled.
 The grid's own navigation is suspended: an arrow in a text field moves the
@@ -1577,7 +1632,7 @@ props to spread.
 | `onPaste` | required | `(changes, truncated) => void` — where a paste goes, and the only way a pasted value reaches a row. Not called for a paste that changed nothing, nor for one that was refused |
 | `getRowKey` | the index | `(row, index) => GridRowKey` — the same key the grid has, so each change names its row the way the grid does |
 | `editing` | — | `() => GridCellEditing<T> \| null \| undefined` — while its session is open, copy and paste do nothing. It says only that; what each column takes is `editors`, so give both, and in development the console says so when `editors` is missing |
-| `editors` | — | The same `Record<columnId, GridEditor<T>>` editing has. With it, a paste is parsed and validated, and a column with no editor refuses one. Without it, every cell takes the text as it came |
+| `editors` | — | The same `Record<columnId, GridEditor<T>>` editing has. With it, a paste is parsed and validated, and a column with no entry of its own in it refuses one — as for editing, `constructor` finds no editor there. Without it, every cell takes the text as it came |
 | `onRefuse` | — | `(refusals: GridPasteRefusal<T>[]) => void` — told when a paste was refused, with every cell that refused it |
 | `onCopy` | — | `(copied: GridCopied) => void` — told once a copy is on the clipboard |
 | `onError` | — | `(failure: GridClipboardFailure) => void` — told when a copy or a paste could not use the clipboard |
@@ -1949,7 +2004,7 @@ is: it reads the nearest locale, for what it says aloud. It creates no effect.
 | `rows` | required | `() => readonly T[]` — the same rows the grid has. Every row, not the view: a row a filter hides still exists |
 | `getRowKey` | required | `(row) => GridRowKey` — the same key the grid has. Required here where the grid defaults it to the index |
 | `apply` | required | `(step: GridHistoryStep<T>) => boolean \| Promise<boolean>` — write the step and say whether it took. The only way history changes a value |
-| `editing` | — | `() => GridCellEditing<T> \| null \| undefined` — while its session is open the keys are the editor's, and undo and redo are refused |
+| `editing` | — | `() => GridCellEditing<T> \| null \| undefined` — while its session is open the keys are the editor's, and undo and redo are refused. A step that lands on the open cell rebases the session onto what it wrote |
 | `depth` | `100` | Steps kept. The oldest goes when a new one would pass it. `0` keeps nothing and still hands every commit to `apply` |
 | `onSkip` | — | `(skipped: GridHistoryRecord[], kind) => void` — told which changes were left out because their row has gone |
 | `announcement` | the locale's `gridUndone` / `gridRedone`, then English | `(kind, count) => string` — said when an undo or redo has been applied. `''` says nothing |
@@ -2012,6 +2067,20 @@ from anywhere, even with a save still out ahead of them. Queued, they would run
 once the editor had closed, and whether they ran at all would turn on how slow
 that save was.
 
+**A step already out lands on an open cell by updating it.** A step handed to a
+slow `apply` cannot be refused — the server may already have it — and the
+reader can open its cell while it is out. Closing the editor when the step lands
+would throw away what they typed. Leaving it alone would leave it holding a
+value the cell no longer has, and its commit would record that value as
+`previous`, so undoing the edit would put back what the step had just taken
+away. So history calls the editing layer's `rebase` with each change it wrote:
+the session commits from the value the cell holds now, the control shows that
+value where the reader had not changed what it opened with, and what they did
+type stays as they typed it. The same goes for a commit the reader made while
+the step was out, which waits its turn behind it: its `previous` becomes the
+value the step wrote, and a change that leaves the cell holding what the step
+put there is dropped, as any change of nothing is.
+
 ### Recorded once it is true
 
 `apply` returns — or resolves — `true` once the step is written and `false`
@@ -2069,15 +2138,17 @@ that row. It also puts a reader waiting on a slow save on the cell whose value
 is about to change — including one whose change is then refused.
 
 It moves only if the reader is still where they pressed the key: focus in the
-grid, the cursor on the same row and column. A step that waited its turn behind
-a save does not drag back a reader who has moved on, or pull focus back from
-wherever they went. Scrolling is not moving on: scrolling the body takes the
-focused cell out of the window, and focus with it, but the cursor has not moved
-and the step still takes the reader to its cell — as the grid itself still
-counts focus as on a cursor whose cell was scrolled away. A step whose rows a
-filter hides leaves the cursor alone, and so does an undo from a button — the
-reader is on the button, and taking focus from it would move them off the
-control they are using.
+grid, the cursor on the same row and the same column — told by the row's key and
+the column's id, since the grid carries the cursor with both, so a column moved
+while the step waited is still the one the reader is on, and the column that
+slid into its old place is not. A step that waited its turn behind a save does
+not drag back a reader who has moved on, or pull focus back from wherever they
+went. Scrolling is not moving on: scrolling the body takes the focused cell out
+of the window, and focus with it, but the cursor has not moved and the step
+still takes the reader to its cell — as the grid itself still counts focus as on
+a cursor whose cell was scrolled away. A step whose rows a filter hides leaves
+the cursor alone, and so does an undo from a button — the reader is on the
+button, and taking focus from it would move them off the control they are using.
 
 An undo or redo that was applied is announced — "Change undone", "3 changes
 undone", "Change redone" — from the locale's `gridUndone` and `gridRedone`, with
@@ -2119,9 +2190,8 @@ runs an accessor.
   history leaves it alone.
 - **Hold a cell shut while a step is saving.** Undo and redo are refused while
   an editor is open, but a step already handed to a slow `apply` still lands
-  if the reader opens its cell meanwhile. The editor keeps the value it opened
-  with, and its commit records that value as `previous`, so undoing the edit
-  puts back what the earlier step had taken away.
+  if the reader opens its cell meanwhile. The editor is rebased onto what the
+  step wrote, as above, rather than kept from opening.
 - **Reselect a paste's range.** The cursor goes to its corner; the cell range
   does not come back.
 - **Survive a reload.** The stacks live in memory, and hold values as they were
@@ -2418,11 +2488,10 @@ dependency.
   digits of its default font, and the stylesheet declares Calibri 11, whose
   digit is 7px wide, so a column the grid draws at 180px is 180px wide in Excel
   at 100%. LibreOffice measures the font its own way and draws every column
-  about a fifth wider, in proportion. A column in the grid's horizontal window is as wide as the reader
-  left it after resizing. The grid does not report the width of a column outside
-  that window, so such a column is written at its declared `width`, clamped to
-  its bounds as the grid clamps it. A column resized and then scrolled out of
-  view exports at its declared width.
+  about a fifth wider, in proportion. Every column is as wide as the reader left
+  it after resizing, whether or not it is in the grid's horizontal window: the
+  width comes from the grid's `columnWidth`, which answers for a column the
+  window does not hold as well as for one it does.
 - **The worksheet's name** is the file's name, as a worksheet will take it:
   without `\ / ? * [ ] :`, without an apostrophe at either end, at most 31
   characters, and `Sheet1` where that leaves nothing or leaves `History`, which
@@ -2568,8 +2637,6 @@ first to export every row.
 - **Run in a worker, or stream to disk.** The slices keep the page responsive,
   but the work is on the main thread, and the finished file is held in memory as
   the blob's parts.
-- **Know a resized column's width once it scrolls out of the window.** The grid
-  does not report it, so the declared width is written.
 
 ## Saving and restoring a view
 
@@ -2951,10 +3018,12 @@ the new order and a cell range is dropped, exactly as for any other sort or
 filter — and says so through `onActiveCellChange` and `onCellRangeChange`, as
 then.
 
-The grid holds its cursor and a cell range by column position, and does not yet
-follow them when its column list changes. A restore that reorders or hides
-columns — like `moveColumn` and `setColumnHidden` — leaves them at the same
-positions, over whichever columns are there now.
+A restore that reorders or hides columns, like `moveColumn` and
+`setColumnHidden`, hands the grid a new column list, and the grid follows it as
+it follows any: the cursor stays on its column, or goes to the one that took its
+place, and a cell range is carried where its columns still sit together and
+dropped where they do not — see [Moving around](#moving-around) and
+[Cell ranges](#cell-ranges).
 
 **It writes nothing that has not changed.** A restore compares each piece with
 what is there and leaves an equal one alone, so handing `apply` the state it

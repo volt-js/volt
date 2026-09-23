@@ -643,6 +643,16 @@ export function createGrouping<T>(options: GridGroupingOptions<T>): GridGrouping
    */
   let liftedFrom: readonly GridColumn<T>[] | null = null;
   let lifted: readonly GridColumn<GridGroupedRow<T>>[] = [];
+  /**
+   * Each column's lifted copy, by the column it was lifted from.
+   *
+   * A list in a new order, or without one of its columns, is mostly the same
+   * columns, and the grid hands the cells under a column it already has back
+   * their column view unchanged only while the column itself is the same
+   * object. A fresh copy of every column per list would have every cell on
+   * screen read its value again for two columns trading places.
+   */
+  const liftedCopies = new WeakMap<GridColumn<T>, GridColumn<GridGroupedRow<T>>>();
   const columns = (): readonly GridColumn<GridGroupedRow<T>>[] => {
     const list = columnList();
     // Held by identity, because the grid reads this list once per column every
@@ -651,27 +661,33 @@ export function createGrouping<T>(options: GridGroupingOptions<T>): GridGrouping
     // list allocated per column, per rebuild.
     if (liftedFrom === list) return lifted;
     liftedFrom = list;
-    lifted = list.map((column) => ({
-      ...column,
-      value: (row: GridGroupedRow<T>) =>
-        row.kind === 'group' ? row.node.aggregates.get(column.id) : column.value(row.item),
-      // Both belong to this module now, and a grid holding them as well would
-      // filter and order the flattened list a second time.
-      sortValue: undefined,
-      filterValue: undefined,
-      compare: () => 0,
-      // The grid's filter would run over the flattened list, testing each
-      // heading as though it were a row and stripping it from in front of the
-      // rows it describes. Filtering happens here, before grouping, and the
-      // grid refuses a filter on a column that says so.
-      filterable: false,
-      // With no sort signal handed in there is no order this module could ever
-      // be asked to apply, and a header that still cycled, marked itself and
-      // announced would be describing rows that never move.
-      sortable: options.sort === undefined ? false : column.sortable,
-    }));
+    lifted = list.map((column) => {
+      const copy = liftedCopies.get(column) ?? lift(column);
+      liftedCopies.set(column, copy);
+      return copy;
+    });
     return lifted;
   };
+
+  const lift = (column: GridColumn<T>): GridColumn<GridGroupedRow<T>> => ({
+    ...column,
+    value: (row: GridGroupedRow<T>) =>
+      row.kind === 'group' ? row.node.aggregates.get(column.id) : column.value(row.item),
+    // Both belong to this module now, and a grid holding them as well would
+    // filter and order the flattened list a second time.
+    sortValue: undefined,
+    filterValue: undefined,
+    compare: () => 0,
+    // The grid's filter would run over the flattened list, testing each
+    // heading as though it were a row and stripping it from in front of the
+    // rows it describes. Filtering happens here, before grouping, and the
+    // grid refuses a filter on a column that says so.
+    filterable: false,
+    // With no sort signal handed in there is no order this module could ever
+    // be asked to apply, and a header that still cycled, marked itself and
+    // announced would be describing rows that never move.
+    sortable: options.sort === undefined ? false : column.sortable,
+  });
 
   const setCollapsed = (next: ReadonlySet<string>): void => {
     collapsedState.set(next);

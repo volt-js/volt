@@ -285,10 +285,11 @@ export interface GridStateLayer<T> {
    *
    * Silent — nothing is announced, and neither `onSortChange`,
    * `onFilterChange` nor `onCollapsedChange` fires, as with any signal written
-   * from outside. What the grid does after any sort or filter it still does:
-   * the cursor follows its row, and a cell range is dropped, each saying so
-   * through its own callback. Every piece the state leaves out goes back to
-   * what its signal held when this layer was created, so
+   * from outside. What the grid does after any sort, filter or new column list
+   * it still does: the cursor follows its row and its column, and a cell range
+   * is dropped — or, where only the columns moved, carried with them — each
+   * saying so through its own callback. Every piece the state leaves out goes
+   * back to what its signal held when this layer was created, so
    * `apply({ version: GRID_STATE_VERSION })` resets to the page's own
    * arrangement.
    */

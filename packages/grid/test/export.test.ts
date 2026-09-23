@@ -1354,10 +1354,39 @@ describe('Excel workbook', () => {
     ]);
   });
 
+  it('sizes a resized column the window no longer holds as the reader left it', async () => {
+    const columns = makeColumns(8);
+    gridColumns.set(columns);
+    exportColumns.set(columns);
+    people.set(tableOf([[0, 1, 2, 3, 4, 5, 6, 7]]));
+    const { g, exporter } = setup();
+    const widthsOf = async (): Promise<number[]> => {
+      const book = await openWorkbook(await exporter.xlsx());
+      return [...book.sheet.matchAll(/<col [^>]*width="([\d.]+)"/g)].map((match) => Number(match[1]));
+    };
+    const drawn = (): string[] => g.columns().map((column) => column.column.id);
+    const inDigits = (px: number): number => Math.floor((px / 7) * 256) / 256;
+
+    // Resized from code without ever being drawn.
+    g.resizeColumn('c7', 210);
+    flushSync();
+    expect(drawn()).not.toContain('c7');
+    expect((await widthsOf())[7]).toBe(inDigits(210));
+
+    // Resized while the window held it, and then scrolled out of it.
+    g.resizeColumn('c1', 180);
+    const scroller = host.querySelector<HTMLElement>('.body')!;
+    scroller.scrollLeft = 500;
+    scroller.dispatchEvent(new Event('scroll'));
+    flushSync();
+    expect(drawn()).not.toContain('c1');
+    expect((await widthsOf())[1]).toBe(inDigits(180));
+  });
+
   it('sizes a column outside the window exactly as the grid would draw it inside', async () => {
-    // The export repeats the grid's default and bounds for the columns the
-    // grid has not drawn. The same definitions, drawn and not, must agree —
-    // or the two copies have drifted apart.
+    // The grid answers the width of a column it has not drawn from the same
+    // default and bounds it draws with. The same definitions, drawn and not,
+    // must agree.
     const [c0, c1, c2] = makeColumns();
     const sized: GridColumn<Person>[] = [
       { ...c0!, width: undefined },
