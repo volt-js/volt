@@ -1,0 +1,35 @@
+<div
+  :host
+  :ref="region"
+  class="volt-alert"
+  :spread="alert.rootProps()"
+  :attr-data-severity="severity.get()"
+>
+  <div :if="alert.isPresent()" class="volt-alert-message" :spread="alert.messageProps()">
+    <span class="volt-alert-icon" aria-hidden="true"><slot name="icon">{ glyph() }</slot></span>
+
+    <div class="volt-alert-content">
+      <p :if="title.get()" class="volt-alert-title">{ title.get() }</p>
+      <div class="volt-alert-description"><slot></slot></div>
+
+      <div :if="action() !== undefined" class="volt-alert-actions">
+        <button
+          class="volt-button"
+          type="button"
+          data-variant="ghost"
+          data-size="sm"
+          :click="press()"
+        >{ action() }</button>
+      </div>
+    </div>
+
+    <button
+      :if="dismissible.get()"
+      class="volt-button"
+      type="button"
+      data-variant="ghost"
+      data-size="sm"
+      :spread="dismissProps()"
+    ><span aria-hidden="true">×</span></button>
+  </div>
+</div>

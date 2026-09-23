@@ -92,6 +92,12 @@ export const primitiveTokens: TokenTable = {
 
   '--volt-duration-fast': '120ms',
   '--volt-duration-medium': '200ms',
+  // What repeats rather than what transitions. A spinner's turn, a skeleton's
+  // pulse and an indeterminate bar's sweep are all measured against how long a
+  // reader will watch them, not against how long a control takes to answer a
+  // press — timed at 200ms a turn is five revolutions a second, which reads as
+  // a strobing blur rather than as work being done.
+  '--volt-duration-slow': '800ms',
   '--volt-easing-standard': 'cubic-bezier(0.2, 0, 0, 1)',
 };
 
@@ -150,6 +156,7 @@ export const semanticTokens: TokenTable = {
 export const reducedMotionTokens: TokenTable = {
   '--volt-duration-fast': '0ms',
   '--volt-duration-medium': '0ms',
+  '--volt-duration-slow': '0ms',
 };
 
 /**

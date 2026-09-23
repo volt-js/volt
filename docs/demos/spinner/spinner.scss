@@ -1,0 +1,29 @@
+// Rows of a button, its spinner and a sentence about what happened, wide
+// enough that the sentence does not reflow when the ring appears beside it.
+.rows {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-4);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--volt-space-3);
+  row-gap: var(--volt-space-2);
+}
+
+.note {
+  max-inline-size: 24rem;
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}
+
+// The one line that changes, kept its own height so the rows above it do not
+// move when it does.
+.said {
+  margin-block: 0;
+  min-block-size: var(--volt-space-5);
+  font-size: var(--volt-font-size-1);
+}

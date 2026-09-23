@@ -27,13 +27,17 @@ import { Component, Signal, flushSync, mount } from '@voltdev/core';
 import {
   COLLAPSIBLE_HEIGHT_PROPERTY,
   createAccordion,
+  createAlert,
   createCheckbox,
   createDialog,
   createMenu,
   createFormField,
   createPopover,
+  createProgress,
   createRadioGroup,
   createSelect,
+  createSkeleton,
+  createSpinner,
   createSwitch,
   createTabs,
   createToaster,
@@ -470,6 +474,156 @@ class StyledSelect {
   });
 }
 
+@Component({
+  selector: 'v-styled-spinner',
+  render: compileTemplate(`
+    <div>
+      <div :for="row in rows" :key="row.name" class="volt-spinner"
+           :spread="row.spinner.rootProps()">
+        <span class="volt-spinner-indicator" :attr-data-size="row.size"
+              :spread="row.spinner.indicatorProps()"></span>
+        <span class="volt-spinner-label" :spread="row.spinner.labelProps()">{ row.spinner.label() }</span>
+      </div>
+    </div>
+  `),
+})
+class StyledSpinner {
+  // The three states the sheet distinguishes, and the two sizes. `delayed` is
+  // a wait inside a delay no test will outlast, and `visible` is the same wait
+  // with the delay turned off — reached through the option rather than a timer,
+  // since nothing here fakes one.
+  rows = [
+    { name: 'idle', size: undefined, spinner: createSpinner() },
+    {
+      name: 'delayed',
+      size: 'sm' as const,
+      spinner: createSpinner({ defaultLoading: true, delay: 60_000 }),
+    },
+    {
+      name: 'visible',
+      size: 'lg' as const,
+      spinner: createSpinner({ defaultLoading: true, delay: 0 }),
+    },
+  ];
+}
+
+@Component({
+  selector: 'v-styled-progress',
+  render: compileTemplate(`
+    <div>
+      <div :for="row in rows" :key="row.name" class="volt-progress"
+           :spread="row.progress.rootProps()">
+        <div class="volt-progress-track">
+          <div class="volt-progress-indicator" :spread="row.progress.indicatorProps()"></div>
+        </div>
+        <span class="volt-progress-label">{ row.progress.value() }</span>
+      </div>
+    </div>
+  `),
+})
+class StyledProgress {
+  // The three states the sheet distinguishes: on its way, finished — which is
+  // a second colour, because a full track and a nearly full one are the same
+  // picture — and no value at all, which is the one drawn as movement.
+  rows = [
+    { name: 'loading', progress: createProgress({ defaultValue: 40 }) },
+    { name: 'complete', progress: createProgress({ defaultValue: 100 }) },
+    { name: 'indeterminate', progress: createProgress() },
+  ];
+}
+
+@Component({
+  selector: 'v-styled-skeleton',
+  render: compileTemplate(`
+    <div>
+      <div :for="row in rows" :key="row.name" class="volt-skeleton"
+           :spread="row.skeleton.contentProps()">
+        <div class="volt-skeleton-placeholder" :spread="row.skeleton.placeholderProps()">
+          <div class="volt-skeleton-shape" data-shape="circle"></div>
+          <div class="volt-skeleton-shape" data-shape="block"></div>
+          <div class="volt-skeleton-shape" data-shape="text"></div>
+          <div class="volt-skeleton-shape" data-shape="text" data-trailing=""></div>
+        </div>
+      </div>
+
+      <p class="volt-skeleton-status" :spread="rows[0].skeleton.statusProps()">
+        <span :spread="rows[0].skeleton.messageProps()">{ rows[0].skeleton.message() }</span>
+      </p>
+    </div>
+  `),
+})
+class StyledSkeleton {
+  // The three states the sheet distinguishes, reached the way the spinner's
+  // are: `delayed` is a wait inside a delay no test will outlast, `visible`
+  // the same wait with the delay turned off, and `idle` a skeleton that was
+  // never loading. The four shapes are on each of them, because the shape and
+  // the state are drawn by rules that do not know about each other.
+  rows = [
+    { name: 'idle', skeleton: createSkeleton() },
+    { name: 'delayed', skeleton: createSkeleton({ defaultLoading: true, delay: 60_000 }) },
+    { name: 'visible', skeleton: createSkeleton({ defaultLoading: true, delay: 0 }) },
+  ];
+}
+
+@Component({
+  selector: 'v-styled-alert',
+  render: compileTemplate(`
+    <div>
+      <div :ref="quiet" class="volt-alert" :spread="settled.rootProps()"
+           :attr-data-severity="'info'">
+        <div class="volt-alert-message" :spread="settled.messageProps()">
+          <span class="volt-alert-icon">i</span>
+          <div class="volt-alert-content">
+            <p class="volt-alert-title">Scheduled maintenance</p>
+            <div class="volt-alert-description">Read-only on Sunday.</div>
+            <div class="volt-alert-actions"><button class="volt-button">Details</button></div>
+          </div>
+        </div>
+      </div>
+
+      <div :ref="good" class="volt-alert" :spread="success.rootProps()"
+           :attr-data-severity="'success'">
+        <div class="volt-alert-message" :spread="success.messageProps()">
+          <span class="volt-alert-icon">✓</span>
+          <div class="volt-alert-content"><div class="volt-alert-description">Upgraded.</div></div>
+        </div>
+      </div>
+
+      <div :ref="nearly" class="volt-alert" :spread="warning.rootProps()"
+           :attr-data-severity="'warning'">
+        <div class="volt-alert-message" :spread="warning.messageProps()">
+          <span class="volt-alert-icon">!</span>
+          <div class="volt-alert-content"><div class="volt-alert-description">92% full.</div></div>
+        </div>
+      </div>
+
+      <div :ref="broken" class="volt-alert" :spread="danger.rootProps()"
+           :attr-data-severity="'danger'">
+        <div class="volt-alert-message" :spread="danger.messageProps()">
+          <span class="volt-alert-icon">✕</span>
+          <div class="volt-alert-content"><div class="volt-alert-description">Could not save.</div></div>
+        </div>
+      </div>
+    </div>
+  `),
+})
+class StyledAlert {
+  quiet = new Signal.State<Element | null>(null);
+  good = new Signal.State<Element | null>(null);
+  nearly = new Signal.State<Element | null>(null);
+  broken = new Signal.State<Element | null>(null);
+
+  // The first has settled, so its message is drawn; the other three are still
+  // inside the announce delay, which no test here outlasts, so theirs carry
+  // the `hidden` the sheet has to answer with `display: none`. Both sides of
+  // that rule are reached without a fake timer, the way the spinner reaches
+  // its own delay.
+  settled = createAlert({ region: () => this.quiet.get(), defaultOpen: true, announceDelay: 0 });
+  success = createAlert({ region: () => this.good.get(), defaultOpen: true });
+  warning = createAlert({ region: () => this.nearly.get(), defaultOpen: true });
+  danger = createAlert({ region: () => this.broken.get(), defaultOpen: true });
+}
+
 const PLACEMENTS: readonly AnchorPlacement[] = [
   'top',
   'top-start',
@@ -494,6 +648,11 @@ const scenes: Record<string, (look: () => void) => void> = {
     const { accordion } = show(StyledAccordion);
     look();
     step(() => accordion.open('shipping'));
+    look();
+  },
+
+  alert(look) {
+    show(StyledAlert);
     look();
   },
 
@@ -552,6 +711,11 @@ const scenes: Record<string, (look: () => void) => void> = {
     }
   },
 
+  progress(look) {
+    show(StyledProgress);
+    look();
+  },
+
   'radio-group'(look) {
     for (const each of ['vertical', 'horizontal'] as const) {
       radioOrientation = each;
@@ -586,6 +750,16 @@ const scenes: Record<string, (look: () => void) => void> = {
       for (const handle of mounted.splice(0)) handle.unmount();
       flushSync();
     }
+  },
+
+  skeleton(look) {
+    show(StyledSkeleton);
+    look();
+  },
+
+  spinner(look) {
+    show(StyledSpinner);
+    look();
   },
 
   switch(look) {

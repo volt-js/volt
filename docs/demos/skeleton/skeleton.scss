@@ -1,0 +1,59 @@
+// Two cards down the page, so that the second one moving is what a reader
+// would notice if the placeholder were not the size of its content.
+.stack {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-4);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--volt-space-3);
+  row-gap: var(--volt-space-2);
+}
+
+.card {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-3);
+  inline-size: min(100%, 24rem);
+  padding: var(--volt-space-4);
+  border: 1px solid var(--volt-color-border);
+  border-radius: var(--volt-radius-2);
+  background-color: var(--volt-color-surface);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  column-gap: var(--volt-space-3);
+}
+
+.lines {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-1);
+}
+
+.avatar {
+  display: grid;
+  place-items: center;
+  inline-size: 2.5rem;
+  block-size: 2.5rem;
+  border-radius: var(--volt-radius-full);
+  background-color: var(--volt-color-accent-muted);
+  font-size: var(--volt-font-size-1);
+  font-weight: var(--volt-font-weight-semibold);
+}
+
+.body {
+  margin: 0;
+}
+
+.note {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}

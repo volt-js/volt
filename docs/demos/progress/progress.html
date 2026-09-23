@@ -1,0 +1,15 @@
+<div class="rows">
+  <v-progress :value="sent" label="Uploading photos"></v-progress>
+
+  <div class="row">
+    <v-button variant="primary" :onPress="start">Upload</v-button>
+    <v-button :onPress="forget">Stop counting</v-button>
+    <span class="note">Stopping leaves the bar indeterminate: it moves, and it
+      says nothing about how far along it is.</span>
+  </div>
+
+  <v-progress :value="copied" :max="8" :format="files" label="Copying files"></v-progress>
+
+  <span class="note">The second bar counts files rather than percentages, so it
+    says so — in the label and in what a screen reader reads out.</span>
+</div>

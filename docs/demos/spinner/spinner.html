@@ -1,0 +1,34 @@
+<div class="rows">
+  <div class="row">
+    <v-button variant="primary" :onPress="quickly">Save (200ms)</v-button>
+    <v-spinner :loading="quick" label="Saving your draft"></v-spinner>
+    <span class="note">The response beats the delay, so this one never draws
+      anything and never says anything.</span>
+  </div>
+
+  <div class="row">
+    <v-button variant="primary" :onPress="slowly">Save (two seconds)</v-button>
+    <v-spinner :loading="slow" label="Saving your draft"></v-spinner>
+    <span class="note">This one waits out the half second, then turns — and a
+      screen reader hears “Saving your draft” at the same moment.</span>
+  </div>
+
+  <p class="said">{ said.get() }</p>
+
+  <div class="row">
+    <span class="volt-spinner-indicator" data-size="sm" aria-hidden="true"></span>
+    <span class="volt-spinner-indicator" aria-hidden="true"></span>
+    <span class="volt-spinner-indicator" data-size="lg" aria-hidden="true"></span>
+
+    <v-button variant="primary">
+      <span class="volt-spinner-indicator" data-size="sm" aria-hidden="true"></span>
+      Saving
+    </v-button>
+
+    <span class="note">The three sizes, and the ring on its own by hand. It
+      takes the colour of the text around it, so the one in the button needs
+      nothing said about where it is — and written this way it is decoration,
+      because the words that name a wait belong in a region rather than inside
+      a control, where they would join the button's name.</span>
+  </div>
+</div>

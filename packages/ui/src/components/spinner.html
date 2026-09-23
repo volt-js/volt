@@ -1,0 +1,13 @@
+<div :host :ref="region" class="volt-spinner" :spread="spinner.rootProps()">
+  <span
+    class="volt-spinner-indicator"
+    :attr-data-size="size.get()"
+    :spread="spinner.indicatorProps()"
+  ></span>
+
+  <span
+    :if="spinner.isMessageVisible()"
+    class="volt-spinner-label"
+    :attr-aria-labelledby="ariaLabelledBy.get()"
+  >{ words() }</span>
+</div>

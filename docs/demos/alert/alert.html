@@ -1,0 +1,30 @@
+<div class="alerts">
+  <div class="row">
+    <v-button variant="primary" :onPress="save">Save the project</v-button>
+    <span class="note">{ attempts.get() } retries so far.</span>
+  </div>
+
+  <v-alert
+    :ref="failure"
+    severity="danger"
+    title="Could not save the project"
+    :open="failed"
+    dismissible
+    actionLabel="Retry"
+    :onAction="retry"
+  >
+    The connection dropped at 40%. Everything saved before that is still there.
+  </v-alert>
+
+  <v-alert severity="info" title="Scheduled maintenance">
+    The dashboard is read-only on Sunday between 02:00 and 04:00 UTC.
+  </v-alert>
+
+  <v-alert severity="success" title="Plan upgraded" dismissible>
+    Your team can add another twenty seats.
+  </v-alert>
+
+  <v-alert severity="warning" title="Storage is almost full">
+    You are using 92% of 10 GB. Older exports are removed after ninety days.
+  </v-alert>
+</div>

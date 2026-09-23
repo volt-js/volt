@@ -82,6 +82,7 @@ and that test would fail.
 | [Forms](./ui-forms) | `<v-button>`, `<v-checkbox>`, `<v-input>`, `<v-textarea>`, `<v-radio-group>`, `<v-switch>`, `<v-select>` |
 | [Overlays](./ui-overlays) | `<v-dialog>`, `<v-popover>`, `<v-tooltip>`, `<v-menu>`, `<v-toaster>` |
 | [Navigation](./ui-navigation) | `<v-tabs>`, `<v-accordion>` |
+| [Feedback](./ui-feedback) | `<v-alert>`, `<v-progress>`, `<v-spinner>`, `<v-skeleton>` |
 | [Data](./ui-data) | `<v-table>` and `<v-table-column>` |
 
 Every styled component is a tag now. The markup for writing one by hand is
@@ -607,13 +608,13 @@ const css = wrap(`@layer ${LAYER_COMPONENTS}`, componentCss(dialogStyles, '  '))
 
 ## What is not here yet
 
-- **Most of the inventory.** Fifteen components over fourteen sheet entries,
+- **Most of the inventory.** Nineteen components over eighteen sheet entries,
   out of the roughly fifty the roadmap names. The application shell, the layout
   primitives, the date and time controls and the data components beyond the
   table are not built.
 - **A `.css` file in the package.** Generate one with `stylesheet()`.
 - **A release.** The package is not on npm.
 - **A second palette**, and a `color-scheme` to go with one.
-- **Most of the primitives.** Fourteen are styled. Switch, radio group, combobox and
+- **Most of the primitives.** Eighteen are styled. Switch, radio group, combobox and
   the rest of the collections, form, display and data primitives have no styles
   here; the package covers a subset on purpose.

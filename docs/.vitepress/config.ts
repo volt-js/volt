@@ -83,6 +83,7 @@ export default defineConfig({
           { text: 'Form components', link: '/reference/ui-forms' },
           { text: 'Overlay components', link: '/reference/ui-overlays' },
           { text: 'Navigation components', link: '/reference/ui-navigation' },
+          { text: 'Feedback components', link: '/reference/ui-feedback' },
           { text: 'Data components', link: '/reference/ui-data' },
           { text: 'Data grid', link: '/reference/grid' },
           { text: 'Rich-text editor', link: '/reference/editor' },

@@ -1,0 +1,41 @@
+<div class="stack">
+  <div class="row">
+    <v-button variant="primary" :disabled="loading.get()" :onPress="() => reload()">
+      Reload
+    </v-button>
+    <span class="note">Both cards keep the shape their content is coming into, so
+      nothing below them moves when it lands.</span>
+  </div>
+
+  <!-- Named, because a page with more than one wait has more than one thing
+       to say about it — and this is the one speaking for both cards. -->
+  <v-skeleton class="card" :loading="loading" label="Loading the feed" loadedLabel="Feed loaded">
+    <template :slot-placeholder>
+      <div class="head">
+        <v-skeleton-shape shape="circle" width="2.5rem"></v-skeleton-shape>
+        <div class="lines">
+          <v-skeleton-shape shape="text" width="8rem"></v-skeleton-shape>
+          <v-skeleton-shape shape="text" width="5rem"></v-skeleton-shape>
+        </div>
+      </div>
+      <v-skeleton-shape shape="block" height="4rem"></v-skeleton-shape>
+    </template>
+
+    <div class="head">
+      <span class="avatar" aria-hidden="true">AM</span>
+      <div class="lines">
+        <b>Ama Mensah</b>
+        <span class="note">Posted this morning</span>
+      </div>
+    </div>
+    <p class="body">Three boxes stood here a moment ago, in the places these
+      words are in now.</p>
+  </v-skeleton>
+
+  <!-- Silent: one wait, two skeletons, and a second region saying the same
+       sentence is a second interruption for the same news. -->
+  <v-skeleton class="card" :loading="loading" shape="text" :count="3" label="" loadedLabel="">
+    <p class="body">The same component without a placeholder written for it:
+      three lines, the last of them short, and the words in their place.</p>
+  </v-skeleton>
+</div>

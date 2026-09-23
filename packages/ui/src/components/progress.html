@@ -1,0 +1,17 @@
+<div :host class="volt-progress" :spread="rootProps()">
+  <div class="volt-progress-track">
+    <div
+      class="volt-progress-indicator"
+      :spread="progress.indicatorProps()"
+      :style="fill()"
+    ></div>
+  </div>
+
+  <span :if="showValue.get()" class="volt-progress-label">
+    <slot
+      :value="progress.value()"
+      :percent="progress.percent()"
+      :valueText="text()"
+    >{ text() }</slot>
+  </span>
+</div>

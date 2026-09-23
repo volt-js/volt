@@ -239,9 +239,11 @@ describe('every component', () => {
           if (value === undefined) continue;
           // Literal durations are how a component ends up ignoring
           // `prefers-reduced-motion`: the preference is honoured once, by
-          // repointing these two tokens at zero.
+          // repointing these tokens at zero. `slow` is the one a repeating
+          // animation is timed with — a turn, a pulse, a sweep — and the other
+          // two are what a control takes to answer a press.
           expect(value, `${component.name}: ${rule.selector}`).toMatch(
-            /^var\(--volt-duration-(fast|medium)\)$/,
+            /^var\(--volt-duration-(fast|medium|slow)\)$/,
           );
         }
       }
@@ -330,17 +332,21 @@ describe('the registry', () => {
     for (const name of keyframes) expect(name.startsWith('volt-')).toBe(true);
   });
 
-  it('holds the fourteen components styled so far', () => {
+  it('holds the eighteen components styled so far', () => {
     expect(componentStyles.map((component) => component.name)).toEqual([
       'accordion',
+      'alert',
       'button',
       'checkbox',
       'dialog',
       'field',
       'menu',
       'popover',
+      'progress',
       'radio-group',
       'select',
+      'skeleton',
+      'spinner',
       'switch',
       'table',
       'tabs',

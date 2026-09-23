@@ -1,0 +1,24 @@
+<div :host :ref="content" class="volt-skeleton" :spread="skeleton.contentProps()">
+  <div
+    :if="!arrived()"
+    class="volt-skeleton-placeholder"
+    :spread="skeleton.placeholderProps()"
+  >
+    <slot name="placeholder">
+      <div
+        :for="index in shapes()"
+        :key="index"
+        class="volt-skeleton-shape"
+        :attr-data-shape="shape.get()"
+        :attr-data-trailing="trailing(index) ? '' : undefined"
+        :style="{ inlineSize: width.get(), blockSize: height.get() }"
+      ></div>
+    </slot>
+  </div>
+
+  <template :if="arrived()"><slot></slot></template>
+</div>
+
+<p class="volt-skeleton-status" :ref="region" :spread="skeleton.statusProps()"><span
+  :if="skeleton.isMessageVisible()"
+>{ skeleton.message() }</span></p>

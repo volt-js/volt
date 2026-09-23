@@ -8,14 +8,18 @@
 
 import type { ComponentStyles } from '../css.js';
 import { accordionClasses, accordionStyles } from './accordion.js';
+import { alertClasses, alertStyles } from './alert.js';
 import { buttonClasses, buttonStyles } from './button.js';
 import { checkboxClasses, checkboxStyles } from './checkbox.js';
 import { dialogClasses, dialogStyles } from './dialog.js';
 import { fieldClasses, fieldStyles } from './field.js';
 import { menuClasses, menuStyles } from './menu.js';
 import { popoverClasses, popoverStyles } from './popover.js';
+import { progressClasses, progressStyles } from './progress.js';
 import { radioGroupClasses, radioGroupStyles } from './radio-group.js';
 import { selectClasses, selectStyles } from './select.js';
+import { skeletonClasses, skeletonStyles } from './skeleton.js';
+import { spinnerClasses, spinnerStyles } from './spinner.js';
 import { switchClasses, switchStyles } from './switch.js';
 import { tableClasses, tableStyles } from './table.js';
 import { tabsClasses, tabsStyles } from './tabs.js';
@@ -24,14 +28,18 @@ import { toastClasses, toastStyles } from './toast.js';
 
 export {
   accordionStyles,
+  alertStyles,
   buttonStyles,
   checkboxStyles,
   dialogStyles,
   fieldStyles,
   menuStyles,
   popoverStyles,
+  progressStyles,
   radioGroupStyles,
   selectStyles,
+  skeletonStyles,
+  spinnerStyles,
   switchStyles,
   tableStyles,
   tabsStyles,
@@ -42,14 +50,18 @@ export {
 /** In the order they are emitted, which is alphabetical and means nothing. */
 export const componentStyles: readonly ComponentStyles[] = [
   accordionStyles,
+  alertStyles,
   buttonStyles,
   checkboxStyles,
   dialogStyles,
   fieldStyles,
   menuStyles,
   popoverStyles,
+  progressStyles,
   radioGroupStyles,
   selectStyles,
+  skeletonStyles,
+  spinnerStyles,
   switchStyles,
   tableStyles,
   tabsStyles,
@@ -69,14 +81,18 @@ export const componentStyles: readonly ComponentStyles[] = [
  */
 export const classes = {
   accordion: accordionClasses,
+  alert: alertClasses,
   button: buttonClasses,
   checkbox: checkboxClasses,
   dialog: dialogClasses,
   field: fieldClasses,
   menu: menuClasses,
   popover: popoverClasses,
+  progress: progressClasses,
   'radio-group': radioGroupClasses,
   select: selectClasses,
+  skeleton: skeletonClasses,
+  spinner: spinnerClasses,
   switch: switchClasses,
   table: tableClasses,
   tabs: tabsClasses,
