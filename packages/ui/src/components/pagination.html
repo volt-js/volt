@@ -1,0 +1,54 @@
+<nav :host class="volt-pagination" :spread="navProps()">
+  <ul :ref="list" class="volt-pagination-list" :spread="listProps()">
+    <li :if="showFirstLast.get()" class="volt-pagination-item">
+      <a :if="linked()" class="volt-pagination-control" :spread="controlProps('first')"
+        ><slot name="first">«</slot></a>
+      <button :else type="button" class="volt-pagination-control" :spread="controlProps('first')"
+        ><slot name="first">«</slot></button>
+    </li>
+
+    <li class="volt-pagination-item">
+      <a :if="linked()" class="volt-pagination-control" :spread="controlProps('previous')"
+        ><slot name="previous">‹</slot></a>
+      <button :else type="button" class="volt-pagination-control" :spread="controlProps('previous')"
+        ><slot name="previous">‹</slot></button>
+    </li>
+
+    <li :for="entry in pagination.pages()" :key="entry.key" class="volt-pagination-item">
+      <span
+        :if="entry.type === 'ellipsis'"
+        class="volt-pagination-ellipsis"
+        :spread="pagination.ellipsisProps()"
+      >…</span>
+      <a
+        :else-if="linked()"
+        class="volt-pagination-page"
+        :spread="pageProps(entry.page)"
+      >{ number(entry.page) }</a>
+      <button
+        :else
+        type="button"
+        class="volt-pagination-page"
+        :spread="pageProps(entry.page)"
+      >{ number(entry.page) }</button>
+    </li>
+
+    <li class="volt-pagination-item">
+      <a :if="linked()" class="volt-pagination-control" :spread="controlProps('next')"
+        ><slot name="next">›</slot></a>
+      <button :else type="button" class="volt-pagination-control" :spread="controlProps('next')"
+        ><slot name="next">›</slot></button>
+    </li>
+
+    <li :if="showFirstLast.get()" class="volt-pagination-item">
+      <a :if="linked()" class="volt-pagination-control" :spread="controlProps('last')"
+        ><slot name="last">»</slot></a>
+      <button :else type="button" class="volt-pagination-control" :spread="controlProps('last')"
+        ><slot name="last">»</slot></button>
+    </li>
+  </ul>
+
+  <p class="volt-pagination-status" :spread="pagination.statusProps()">{
+    pagination.announcement()
+  }</p>
+</nav>

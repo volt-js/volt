@@ -1,0 +1,28 @@
+<li :if="leads()" class="volt-breadcrumb-item" :spread="breadcrumb.crumbs.overflowProps()">
+  <button
+    :ref="overflowTrigger"
+    type="button"
+    class="volt-breadcrumb-trigger"
+    :spread="breadcrumb.triggerProps()"
+  ><slot :from="breadcrumb" name="overflow">…</slot></button>
+  <span
+    :if="breadcrumb.followed()"
+    class="volt-breadcrumb-separator"
+    :spread="breadcrumb.crumbs.separatorProps()"
+  ><slot :from="breadcrumb" name="separator">/</slot></span>
+</li>
+
+<li :ref="element" class="volt-breadcrumb-item" :spread="breadcrumb.crumbs.itemProps(index())">
+  <a
+    :host
+    class="volt-breadcrumb-link"
+    :attr-href="link()"
+    :attr-rel="rel.get()"
+    :spread="linkProps()"
+  ><slot></slot></a>
+  <span
+    :if="!current()"
+    class="volt-breadcrumb-separator"
+    :spread="breadcrumb.crumbs.separatorProps()"
+  ><slot :from="breadcrumb" name="separator">/</slot></span>
+</li>

@@ -1,0 +1,22 @@
+.flow {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-4);
+}
+
+.flow p {
+  margin-block: 0 var(--volt-space-3);
+}
+
+// Back and Continue belong to each panel, since they are the flow's own; the
+// sheet draws the stepper and leaves the buttons in a panel to the page.
+.actions {
+  display: flex;
+  column-gap: var(--volt-space-2);
+  margin-block-start: var(--volt-space-3);
+}
+
+.note {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}

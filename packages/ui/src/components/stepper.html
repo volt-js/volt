@@ -1,0 +1,14 @@
+<nav :host class="volt-stepper" :spread="navProps()">
+  <ol class="volt-stepper-list" :ref="list" :spread="stepper.listProps()">
+    <slot></slot>
+  </ol>
+</nav>
+
+<div
+  :for="(step, index) in steps.all.get()"
+  :key="step"
+  class="volt-stepper-panel"
+  :spread="panelProps(step, index)"
+>
+  <slot :from="step" name="default"></slot>
+</div>

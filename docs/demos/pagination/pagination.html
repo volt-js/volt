@@ -1,0 +1,17 @@
+<div class="rows">
+  <ol class="results" :attr-start="range().start">
+    <li :for="element in shown()" :key="element">{ element }</li>
+  </ol>
+
+  <v-pagination
+    :ref="pager"
+    :page="at"
+    :total="elements.length"
+    pageSize="4"
+    label="Elements"
+  ></v-pagination>
+
+  <span class="note">Showing { range().start }–{ range().end } of { elements.length }, on
+    page { at.get() }. The row is one tab stop: the arrow keys move along it, and Enter
+    or Space goes to the page.</span>
+</div>

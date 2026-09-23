@@ -39,7 +39,7 @@
  * of state and the keyboard the pattern asks for between the headers.
  */
 
-import { Signal, createRoot, measureEffect, onCleanup } from '@voltdev/core';
+import { Signal, createRoot, effect, measureEffect, onCleanup } from '@voltdev/core';
 import { createCollection } from './collection.js';
 import { createId } from './id.js';
 import { createPresence, type PresenceState } from './presence.js';
@@ -136,6 +136,27 @@ function createPanel(options: PanelOptions): Panel {
     observeSize(el, () => measure(el));
   });
 
+  // A press on the trigger has already put focus on the trigger. Every other
+  // way a panel closes — the caller's own signal, `close()`, another panel
+  // opening in a single accordion — takes whatever inside it holds focus out
+  // of the page, and focus falls to `<body>`: a keyboard user is dropped at
+  // the top of the document.
+  //
+  // A user effect is early enough, where for the alert it is not: the panel
+  // leaves the page when presence lets it go, and presence decides that in a
+  // user effect of its own, so the render pass that removes the panel runs
+  // after this one. That is also why this moves focus as the panel closes
+  // rather than as it goes — a panel collapsing to nothing is no place to be
+  // typing.
+  effect(() => {
+    if (options.isOpen()) return;
+    untrack(() => {
+      const el = options.content();
+      if (!el?.contains(el.ownerDocument.activeElement)) return;
+      triggerOf(el, contentId, triggerId)?.focus();
+    });
+  });
+
   const heightStyle = (): Readonly<Record<string, string>> => {
     const measured = height.get();
     // The last measurement is kept once the panel goes, so the exit animation
@@ -187,6 +208,30 @@ function createPanel(options: PanelOptions): Panel {
       return props;
     },
   };
+}
+
+/**
+ * The trigger of a panel that is still in the page, found by the
+ * `aria-controls` it carries for as long as that is true.
+ *
+ * Not by the id the trigger was given here alone: a caller may put an id of
+ * its own on the trigger — `<v-collapsible>` does, for a link or a `for` to
+ * find it by — and then the minted one names nothing. Nor by `aria-controls`
+ * alone, which the page may also write, on a link that jumps to the panel,
+ * say, earlier in the document than the trigger. So of the elements that
+ * control the panel, the one still wearing the minted id, and failing that the
+ * one that also says whether the panel is expanded, as a trigger does and a
+ * link does not. Compared a token at a time rather than put in a selector, so
+ * a generated id never has to be escaped.
+ */
+function triggerOf(content: Element, contentId: string, triggerId: string): HTMLElement | undefined {
+  const controlling = [
+    ...content.ownerDocument.querySelectorAll<HTMLElement>('[aria-controls]'),
+  ].filter((el) => (el.getAttribute('aria-controls') ?? '').split(/\s+/).includes(contentId));
+  return (
+    controlling.find((el) => el.id === triggerId) ??
+    controlling.find((el) => el.hasAttribute('aria-expanded'))
+  );
 }
 
 /**

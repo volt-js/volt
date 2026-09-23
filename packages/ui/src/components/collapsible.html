@@ -1,0 +1,18 @@
+<div class="volt-collapsible" :attr-lang="lang.get()" :attr-dir="dir.get()">
+  <button
+    :host
+    class="volt-collapsible-trigger"
+    :spread="triggerProps()"
+    :click="collapsible.toggle()"
+  ><slot name="trigger">{ label.get() }</slot><span
+    class="volt-collapsible-indicator"
+    aria-hidden="true"
+  ></span></button>
+
+  <div
+    :if="collapsible.isPresent()"
+    :ref="content"
+    class="volt-collapsible-panel"
+    :spread="contentProps()"
+  ><slot></slot></div>
+</div>

@@ -49,9 +49,9 @@ import {
 } from '@voltdev/primitives';
 import { componentStyles, contractProperties, primitiveTokens } from '../src/index.ts';
 import { unlayeredCss } from './harness.ts';
+import { mounted, show, step, type Scene } from './scene.ts';
 
 let host: HTMLElement;
-let mounted: { unmount(): void }[] = [];
 
 beforeAll(() => {
   const style = document.createElement('style');
@@ -66,23 +66,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  for (const handle of mounted) handle.unmount();
-  mounted = [];
+  for (const handle of mounted.splice(0)) handle.unmount();
   flushSync();
   vi.unstubAllGlobals();
 });
-
-function show<T>(component: new () => T): T {
-  const handle = mount(component, host);
-  mounted.push(handle);
-  flushSync();
-  return handle.instance as T;
-}
-
-function step(action: () => void): void {
-  action();
-  flushSync();
-}
 
 /** An engine without CSS anchor positioning, as the primitives ask about it. */
 function withoutAnchorPositioning(): void {
@@ -643,7 +630,7 @@ const PLACEMENTS: readonly AnchorPlacement[] = [
  * Every state each component's rules distinguish, reached through the
  * primitive's own API. `look` is called in each of them.
  */
-const scenes: Record<string, (look: () => void) => void> = {
+const scenes: Record<string, Scene> = {
   accordion(look) {
     const { accordion } = show(StyledAccordion);
     look();
@@ -797,6 +784,16 @@ const scenes: Record<string, (look: () => void) => void> = {
     look();
   },
 };
+
+/**
+ * The scenes that have a file of their own, which is where a new component's
+ * goes: `scenes/<name>.ts`, exporting `scene`. The ones above predate that and
+ * have not moved, because moving them would be churn for its own sake.
+ */
+const FILES = import.meta.glob<{ scene: Scene }>('./scenes/*.ts', { eager: true });
+for (const [path, module] of Object.entries(FILES)) {
+  scenes[path.slice(path.lastIndexOf('/') + 1, -'.ts'.length)] = module.scene;
+}
 
 /** A selector list, split at the commas that separate its selectors. */
 function selectorsIn(list: string): string[] {

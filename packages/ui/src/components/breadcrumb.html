@@ -1,0 +1,21 @@
+<nav :host class="volt-breadcrumb" :spread="navProps()">
+  <ol :ref="list" class="volt-breadcrumb-list" :spread="crumbs.listProps()"><slot></slot></ol>
+</nav>
+
+<div
+  :if="crumbs.menu.isPresent()"
+  :portal
+  :ref="content"
+  class="volt-menu-content"
+  :spread="crumbs.overflowContentProps()"
+  :keydown="settle($event)"
+>
+  <a
+    :for="crumb in collapsed()"
+    :key="crumb"
+    class="volt-menu-item volt-breadcrumb-menu-link"
+    :attr-href="crumb.link()"
+    :attr-rel="crumb.rel.get()"
+    :spread="crumb.menuLinkProps()"
+  ><slot :from="crumb" name="default"></slot></a>
+</div>

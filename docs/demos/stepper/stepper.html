@@ -1,0 +1,36 @@
+<div class="flow">
+  <v-stepper :ref="checkout" :value="step" label="Checkout">
+    <v-step label="Basket" description="Two items">
+      <p>A lamp and a rug, £84 together.</p>
+      <div class="actions">
+        <v-button variant="primary" :onPress="next">Continue</v-button>
+      </div>
+    </v-step>
+
+    <v-step label="Delivery" description="Where to" :errored="missing.get()">
+      <v-input :value="postcode" label="Postcode" autoComplete="postal-code"></v-input>
+      <div class="actions">
+        <v-button :onPress="back">Back</v-button>
+        <v-button variant="primary" :onPress="deliver">Continue</v-button>
+      </div>
+    </v-step>
+
+    <v-step label="Payment" description="Card or invoice">
+      <p>Paid by invoice, due a fortnight after it arrives.</p>
+      <div class="actions">
+        <v-button :onPress="back">Back</v-button>
+        <v-button variant="primary" :onPress="next">Continue</v-button>
+      </div>
+    </v-step>
+
+    <v-step label="Review">
+      <p>Two items, to { postcode.get() }, by invoice.</p>
+      <div class="actions">
+        <v-button :onPress="back">Back</v-button>
+        <v-button variant="primary" :onPress="place">Place the order</v-button>
+      </div>
+    </v-step>
+  </v-stepper>
+
+  <span class="note">{ said() }</span>
+</div>

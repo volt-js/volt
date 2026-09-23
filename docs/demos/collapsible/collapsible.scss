@@ -1,0 +1,39 @@
+.rows {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-4);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--volt-space-3);
+  row-gap: var(--volt-space-2);
+}
+
+.note {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}
+
+// The panel is clipped to nothing as it collapses, so padding written on it
+// would be padding left behind at zero height. The spacing belongs to the
+// content, which is the page's to write.
+.body {
+  padding-block-end: var(--volt-space-3);
+  padding-inline: var(--volt-space-2);
+}
+
+.body p,
+.body ul {
+  margin-block: 0 var(--volt-space-2);
+}
+
+// Whatever the slot holds stays together at the start of the row, and only
+// the marker is pushed to the end, so a count sits beside the words.
+.count {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+  font-weight: var(--volt-font-weight-regular);
+}

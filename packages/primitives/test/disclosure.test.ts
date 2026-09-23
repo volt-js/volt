@@ -103,7 +103,9 @@ const COLLAPSIBLE_TEMPLATE = `
     <button :spread="c.triggerProps()" :click="c.toggle()">details</button>
     <div :if="c.isPresent()" class="panel" :ref="content" :spread="c.contentProps()">
       <p>body</p>
+      <input class="field">
     </div>
+    <button class="elsewhere">elsewhere</button>
   </div>
 `;
 
@@ -121,6 +123,8 @@ function mountCollapsible(options: Omit<CollapsibleOptions, 'content'> = {}) {
     collapsible: (handle.instance as Details).c,
     trigger: () => host.querySelector('button')!,
     panel: () => host.querySelector('.panel'),
+    field: () => host.querySelector<HTMLInputElement>('.field'),
+    elsewhere: () => host.querySelector<HTMLButtonElement>('.elsewhere')!,
   };
 }
 
@@ -243,6 +247,148 @@ describe('collapsible', () => {
       open.set(true);
       flushSync();
       expect(panel()).not.toBeNull();
+    });
+  });
+
+  describe('focus inside a panel that closes', () => {
+    // A press on the trigger has already put focus on the trigger. Every other
+    // way of closing — the caller's signal, `close()` — takes the focused
+    // element out of the page under the user, and focus falls to `<body>`: a
+    // keyboard user is dropped at the top of the document.
+    it('moves to the trigger when the caller’s signal closes it', () => {
+      const open = new Signal.State(true);
+      const { trigger, panel, field } = mountCollapsible({ open });
+      field()!.focus();
+      expect(document.activeElement).toBe(field());
+
+      open.set(false);
+      flushSync();
+      expect(panel()).toBeNull();
+      expect(document.activeElement).toBe(trigger());
+    });
+
+    it('moves to the trigger when `close()` closes it', () => {
+      const { collapsible, trigger, field } = mountCollapsible({ defaultOpen: true });
+      field()!.focus();
+
+      collapsible.close();
+      flushSync();
+      expect(document.activeElement).toBe(trigger());
+    });
+
+    it('moves as the panel closes, not once its collapse has run', async () => {
+      const open = new Signal.State(true);
+      const { trigger, panel, field } = mountCollapsible({ open });
+      const exit = pretendAnimating(panel()!);
+      field()!.focus();
+
+      open.set(false);
+      flushSync();
+      // Still in the page, shrinking to nothing: no place to be typing.
+      expect(panel()).not.toBeNull();
+      expect(document.activeElement).toBe(trigger());
+
+      await exit.finish();
+      expect(document.activeElement).toBe(trigger());
+    });
+
+    it('leaves focus alone when it is somewhere else', () => {
+      const open = new Signal.State(true);
+      const { elsewhere } = mountCollapsible({ open });
+      elsewhere().focus();
+
+      open.set(false);
+      flushSync();
+      expect(document.activeElement).toBe(elsewhere());
+    });
+
+    it('finds the trigger under an id of the caller’s', () => {
+      // A trigger wearing an id the page chose is not found by the one the
+      // primitive minted; `aria-controls`, which only the primitive writes,
+      // is what still pairs the two.
+      @Component({
+        selector: 'v-details-own-id',
+        render: compileTemplate(`
+          <div>
+            <button :spread="triggerProps()">details</button>
+            <div :if="c.isPresent()" :ref="content" :spread="c.contentProps()">
+              <input class="field">
+            </div>
+          </div>
+        `),
+      })
+      class OwnId {
+        content = new Signal.State<Element | null>(null);
+        open = new Signal.State(true);
+        c = createCollapsible({ open: this.open, content: () => this.content.get() });
+
+        triggerProps() {
+          return { ...this.c.triggerProps(), id: 'mine' };
+        }
+      }
+
+      const handle = track(mount(OwnId, host));
+      flushSync();
+      host.querySelector<HTMLInputElement>('.field')!.focus();
+
+      (handle.instance as OwnId).open.set(false);
+      flushSync();
+      expect(document.activeElement).toBe(document.getElementById('mine'));
+    });
+
+    it('finds its own trigger when the page points other controls at the panel', () => {
+      // Earlier in the document than the trigger, so the first element that
+      // controls the panel is not the one focus belongs on: a link that jumps
+      // to it, and a second button that toggles it and says so.
+      @Component({
+        selector: 'v-details-pointed-at',
+        render: compileTemplate(`
+          <div>
+            <a class="jump" href="#" :attr-aria-controls="c.contentProps().id">details</a>
+            <button :if="also.get()" class="also" :attr-aria-controls="c.contentProps().id"
+                    :attr-aria-expanded="String(open.get())">also</button>
+            <button class="trigger" :spread="triggerProps()">details</button>
+            <div :if="c.isPresent()" :ref="content" :spread="c.contentProps()">
+              <input class="field">
+            </div>
+          </div>
+        `),
+      })
+      class PointedAt {
+        content = new Signal.State<Element | null>(null);
+        open = new Signal.State(true);
+        own = new Signal.State<string | undefined>(undefined);
+        also = new Signal.State(true);
+        c = createCollapsible({ open: this.open, content: () => this.content.get() });
+
+        triggerProps() {
+          const props = this.c.triggerProps();
+          return { ...props, id: this.own.get() ?? props['id'] };
+        }
+      }
+
+      const handle = track(mount(PointedAt, host));
+      const page = handle.instance as PointedAt;
+      flushSync();
+      const closeFromField = () => {
+        host.querySelector<HTMLInputElement>('.field')!.focus();
+        page.open.set(false);
+        flushSync();
+      };
+
+      // The minted id picks it out from both.
+      closeFromField();
+      expect(document.activeElement).toBe(host.querySelector('.trigger'));
+
+      // Under an id of the caller's, with the link alone beside it, the link is
+      // still passed over: it says nothing about whether the panel is
+      // expanded, and a trigger does.
+      page.own.set('mine');
+      page.also.set(false);
+      page.open.set(true);
+      flushSync();
+      closeFromField();
+      expect(document.activeElement).toBe(host.querySelector('.trigger'));
     });
   });
 
@@ -464,6 +610,24 @@ describe('accordion state', () => {
 
     await exit.finish();
     expect(panel('one')).toBeNull();
+  });
+
+  it('hands focus in a panel it closes to that panel’s header', () => {
+    // The same panel as a lone collapsible, so the same rescue: whatever
+    // closed it — the caller's signal here, `close()` below — the focused
+    // field goes with the panel, and focus with it unless it moves first.
+    const value = new Signal.State<string[]>(['one', 'two']);
+    const { accordion, trigger, field } = mountAccordion({ type: 'multiple', value });
+
+    field('one')!.focus();
+    value.set(['two']);
+    flushSync();
+    expect(document.activeElement).toBe(trigger('one'));
+
+    field('two')!.focus();
+    accordion.close('two');
+    flushSync();
+    expect(document.activeElement).toBe(trigger('two'));
   });
 });
 

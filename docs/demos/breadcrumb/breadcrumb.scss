@@ -1,0 +1,32 @@
+.rows {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-5);
+}
+
+// A box the reader can drag narrower, which is how the trail is shown to
+// measure itself: the list inside takes the box's width, never its own
+// words', so what fits is decided by the box.
+//
+// No narrower than the trail at its shortest — the root, the button and the
+// page — because below that there is nothing left to fold, and the trail
+// overflows. `auto` rather than `hidden` (either lets the box be resized), so
+// that a face wider than this one shows that overflow as a scrollbar instead
+// of cutting the page off and passing the result off as the component's.
+.frame {
+  box-sizing: border-box;
+  inline-size: 22rem;
+  min-inline-size: 16rem;
+  max-inline-size: 100%;
+  padding: var(--volt-space-3);
+  overflow: auto;
+  resize: horizontal;
+  border: var(--volt-border-width-1) dashed var(--volt-color-border-strong);
+  border-radius: var(--volt-radius-2);
+  background-color: var(--volt-color-surface);
+}
+
+.note {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}

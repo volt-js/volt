@@ -1,0 +1,31 @@
+<div class="rows">
+  <v-collapsible :open="details" label="Delivery details">
+    <div class="body">
+      <p>Everything ordered before four leaves the same day, and arrives within a week.</p>
+      <p>Tracking comes by email once the parcel is on its way.</p>
+    </div>
+  </v-collapsible>
+
+  <div class="row">
+    <v-button size="sm" :onPress="toggle">{ details.get() ? 'Hide' : 'Show' } them from here</v-button>
+    <span class="note">The details are { details.get() ? 'open' : 'closed' }. The page holds
+      the signal, so the trigger and this button move one section.</span>
+  </div>
+
+  <v-collapsible region defaultOpen panelLabel="Everything in the parcel">
+    <template :slot-trigger>In the parcel<span class="count">{ items.length } items</span></template>
+    <div class="body">
+      <ul>
+        <li :for="item in items" :key="item">{ item }</li>
+      </ul>
+    </div>
+  </v-collapsible>
+
+  <v-collapsible label="Gift message" :disabled="true">
+    <div class="body"><p>Not for this order.</p></div>
+  </v-collapsible>
+
+  <span class="note">The second is a landmark named by what it holds, and its trigger is a slot
+    rather than a line of text. The last is off: it can still be reached and read, and what it
+    refuses is the press.</span>
+</div>

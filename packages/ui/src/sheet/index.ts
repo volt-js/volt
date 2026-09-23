@@ -9,37 +9,45 @@
 import type { ComponentStyles } from '../css.js';
 import { accordionClasses, accordionStyles } from './accordion.js';
 import { alertClasses, alertStyles } from './alert.js';
+import { breadcrumbClasses, breadcrumbStyles } from './breadcrumb.js';
 import { buttonClasses, buttonStyles } from './button.js';
 import { checkboxClasses, checkboxStyles } from './checkbox.js';
+import { collapsibleClasses, collapsibleStyles } from './collapsible.js';
 import { dialogClasses, dialogStyles } from './dialog.js';
 import { fieldClasses, fieldStyles } from './field.js';
 import { menuClasses, menuStyles } from './menu.js';
+import { paginationClasses, paginationStyles } from './pagination.js';
 import { popoverClasses, popoverStyles } from './popover.js';
 import { progressClasses, progressStyles } from './progress.js';
 import { radioGroupClasses, radioGroupStyles } from './radio-group.js';
 import { selectClasses, selectStyles } from './select.js';
 import { skeletonClasses, skeletonStyles } from './skeleton.js';
 import { spinnerClasses, spinnerStyles } from './spinner.js';
+import { stepperClasses, stepperStyles } from './stepper.js';
 import { switchClasses, switchStyles } from './switch.js';
 import { tableClasses, tableStyles } from './table.js';
 import { tabsClasses, tabsStyles } from './tabs.js';
-import { tooltipClasses, tooltipStyles } from './tooltip.js';
 import { toastClasses, toastStyles } from './toast.js';
+import { tooltipClasses, tooltipStyles } from './tooltip.js';
 
 export {
   accordionStyles,
   alertStyles,
+  breadcrumbStyles,
   buttonStyles,
   checkboxStyles,
+  collapsibleStyles,
   dialogStyles,
   fieldStyles,
   menuStyles,
+  paginationStyles,
   popoverStyles,
   progressStyles,
   radioGroupStyles,
   selectStyles,
   skeletonStyles,
   spinnerStyles,
+  stepperStyles,
   switchStyles,
   tableStyles,
   tabsStyles,
@@ -51,17 +59,21 @@ export {
 export const componentStyles: readonly ComponentStyles[] = [
   accordionStyles,
   alertStyles,
+  breadcrumbStyles,
   buttonStyles,
   checkboxStyles,
+  collapsibleStyles,
   dialogStyles,
   fieldStyles,
   menuStyles,
+  paginationStyles,
   popoverStyles,
   progressStyles,
   radioGroupStyles,
   selectStyles,
   skeletonStyles,
   spinnerStyles,
+  stepperStyles,
   switchStyles,
   tableStyles,
   tabsStyles,
@@ -82,17 +94,21 @@ export const componentStyles: readonly ComponentStyles[] = [
 export const classes = {
   accordion: accordionClasses,
   alert: alertClasses,
+  breadcrumb: breadcrumbClasses,
   button: buttonClasses,
   checkbox: checkboxClasses,
+  collapsible: collapsibleClasses,
   dialog: dialogClasses,
   field: fieldClasses,
   menu: menuClasses,
+  pagination: paginationClasses,
   popover: popoverClasses,
   progress: progressClasses,
   'radio-group': radioGroupClasses,
   select: selectClasses,
   skeleton: skeletonClasses,
   spinner: spinnerClasses,
+  stepper: stepperClasses,
   switch: switchClasses,
   table: tableClasses,
   tabs: tabsClasses,

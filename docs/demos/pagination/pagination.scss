@@ -1,0 +1,18 @@
+.rows {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-4);
+}
+
+// Four rows whatever the page holds, so the pager does not jump up the frame
+// on a last page that is short.
+.results {
+  margin-block: 0;
+  min-block-size: calc(4 * 1.5em);
+  line-height: 1.5;
+}
+
+.note {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}

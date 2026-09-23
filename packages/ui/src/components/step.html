@@ -1,0 +1,25 @@
+<li class="volt-stepper-item" :ref="element">
+  <button
+    :host
+    :ref="button"
+    type="button"
+    class="volt-stepper-step"
+    :spread="stepProps()"
+  >
+    <span class="volt-stepper-marker" aria-hidden="true">
+      <span class="volt-stepper-number">{ mark() }</span>
+      <span class="volt-stepper-check"></span>
+    </span>
+    <span class="volt-stepper-text">
+      <span class="volt-stepper-label"><slot name="label">{ label.get() }</slot></span>
+      <span :if="description.get()" class="volt-stepper-description">{ description.get() }</span>
+    </span>
+    <span class="volt-stepper-status">{ stepper.stepper.statusLabel(index()) }</span>
+  </button>
+
+  <span
+    :if="!last()"
+    class="volt-stepper-separator"
+    :spread="stepper.stepper.separatorProps()"
+  ></span>
+</li>

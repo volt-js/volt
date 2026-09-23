@@ -1,0 +1,19 @@
+<div class="rows">
+  <v-breadcrumb>
+    <v-breadcrumb-item href="#home">Home</v-breadcrumb-item>
+    <v-breadcrumb-item href="#docs">Docs</v-breadcrumb-item>
+    <v-breadcrumb-item>Reference</v-breadcrumb-item>
+  </v-breadcrumb>
+
+  <div class="frame">
+    <v-breadcrumb :onCollapseChange="heard">
+      <v-breadcrumb-item
+        :for="crumb in trail"
+        :key="crumb.href"
+        :href="crumb.href"
+      >{ crumb.name }</v-breadcrumb-item>
+    </v-breadcrumb>
+  </div>
+
+  <span class="note">{ summary() } The root and the page you are on always stay.</span>
+</div>
