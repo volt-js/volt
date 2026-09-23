@@ -289,7 +289,7 @@ const TEMPLATE = `
           <div class="row" :for="row in g.rows()" :key="row.key" :spread="g.rowProps(row)">
             <div class="cell" :for="col in g.columns()" :key="col.key"
                  :spread="cellProps(row, col)">
-              <input :if="editing.isEditing(row.index, col.index)" class="editor"
+              <input :if="editing.isEditing(row, col)" class="editor"
                      :spread="editing.editorProps()" :value="editing.text()"
                      :input="editing.onInput($event)">
               <span :else class="text">{ g.cellValue(row, col) }</span>

@@ -1292,7 +1292,7 @@ export class PeopleEditor {
 <div :for="col in table.columns()" :key="col.key"
      :spread="cellProps(row, col)"
      :dblclick="editing.begin(row, col)">
-  <input :if="editing.isEditing(row.index, col.index)"
+  <input :if="editing.isEditing(row, col)"
          :spread="editing.editorProps()" :value="editing.text()"
          :input="editing.onInput($event)">
   <span :else>{ table.cellValue(row, col) }</span>
@@ -1338,7 +1338,7 @@ cell has gone, below — which is disposed with the component that owns it.
 | `begin(row, col)` | Open a session on a rendered cell. `false` where it cannot be edited. Moves neither the cursor nor focus |
 | `beginAt(cell)` | Open by position, if that cell is rendered and editable |
 | `session()` | The open `GridEditSession<T>` — `row`, `column`, `columnId`, `item`, `rowKey`, `initial` — or `null`. `row` and `column` are where its cell sits now |
-| `isEditing(row, column)` | Whether this position is the one open |
+| `isEditing(row, column)` | Whether this cell is the one open. Given the row and column views, and answered by row key and column id, so a cell whose column moves keeps its editor |
 | `isEditable(row, col)` | Whether this cell could be opened at all |
 | `draft()`, `text()` | What has been typed, parsed; and the text itself, as typed, for the control |
 | `setDraft(value)` | Replace the draft, and the control's text with its text, from code — a `<select>`, a picker, a stepper. Clears `error()` |

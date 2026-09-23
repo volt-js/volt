@@ -178,7 +178,7 @@ const TEMPLATE = `
           <div class="row" :for="row in g.rows()" :key="row.key" :spread="g.rowProps(row)">
             <div class="cell" :for="col in g.columns()" :key="col.key"
                  :spread="cellProps(row, col)" :dblclick="onBegin(row, col)">
-              <input :if="editing.isEditing(row.index, col.index)" class="editor"
+              <input :if="editing.isEditing(row, col)" class="editor"
                      :spread="editing.editorProps()" :value="editing.text()"
                      :input="editing.onInput($event)">
               <span :else class="text">{ g.cellValue(row, col) }</span>
@@ -362,6 +362,13 @@ function begin(harness: Harness, row: number, column: number): boolean {
   const opened = harness.editing.begin(view, col);
   flushSync();
   return opened;
+}
+
+/** Whether the cell rendered at a position is the one open. */
+function editingAt(harness: Harness, row: number, column: number): boolean {
+  const view = harness.g.rows().find((candidate) => candidate.index === row)!;
+  const col = harness.g.columns().find((candidate) => candidate.index === column)!;
+  return harness.editing.isEditing(view, col);
 }
 
 // ---------------------------------------------------------------------------
@@ -611,7 +618,7 @@ describe('the view moving under a session', () => {
     expect(harness.editing.session()!.row).toBe(2);
     expect(editor()!.closest('.cell')).toBe(cellAt(2, 0));
     expect(editor()!.value).toBe('beta!');
-    expect(harness.editing.isEditing(1, 0)).toBe(false);
+    expect(editingAt(harness, 1, 0)).toBe(false);
     expect(textAt(1, 0)).toBe('delta');
 
     harness.editing.commit();
@@ -700,7 +707,7 @@ describe('the view moving under a session', () => {
     expect(editor()!.closest('.cell')).toBe(cellAt(1, 2));
     expect(cellAt(1, 2)!.getAttribute('data-column')).toBe('c0');
     expect(editor()!.value).toBe('beta!');
-    expect(harness.editing.isEditing(1, 0)).toBe(false);
+    expect(editingAt(harness, 1, 0)).toBe(false);
 
     harness.editing.commit();
     flushSync();
@@ -730,6 +737,30 @@ describe('the view moving under a session', () => {
     press(input, 'Enter');
     expect(changes).toHaveLength(1);
     expect(changes[0]).toMatchObject({ rowKey: 2, value: 'gamma!' });
+  });
+
+  it('keeps the very editor, and the caret in it, while its column moves', () => {
+    // The session follows the column list at once; the cells follow the
+    // rendered window a pass later. A cell asked by position in between says
+    // "not editing", its editor is torn down and built again, and the reader's
+    // next key goes nowhere.
+    const harness = setup();
+    begin(harness, 1, 2);
+    const input = editor()!;
+    input.focus();
+    type('7');
+
+    columns.set(columns.get().filter((column) => column.id !== 'c1'));
+    flushSync();
+    expect(harness.editing.session()).toMatchObject({ row: 1, column: 1, columnId: 'c2' });
+    expect(editor()).toBe(input);
+    expect(document.activeElement).toBe(input);
+
+    columns.set([...columns.get()].reverse());
+    flushSync();
+    expect(harness.editing.session()).toMatchObject({ row: 1, column: 0, columnId: 'c2' });
+    expect(editor()).toBe(input);
+    expect(document.activeElement).toBe(input);
   });
 
   it('abandons the session when its column is taken out of the list', () => {

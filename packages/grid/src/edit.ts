@@ -30,7 +30,7 @@
  *        :spread="table.cellProps(row, col)"
  *        :spread="editing.cellProps(row, col)"
  *        :dblclick="editing.begin(row, col)">
- *     <input :if="editing.isEditing(row.index, col.index)"
+ *     <input :if="editing.isEditing(row, col)"
  *            :spread="editing.editorProps()" :value="editing.text()"
  *            :input="editing.onInput($event)" :keydown="editing.onKeyDown($event)">
  *     <span :else>{ table.cellValue(row, col) }</span>
@@ -211,7 +211,14 @@ export interface GridCellEditingOptions<T> {
 export interface GridCellEditing<T> {
   /** The open session, or null. */
   session(): GridEditSession<T> | null;
-  isEditing(row: number, column: number): boolean;
+  /**
+   * Whether this cell is the one open. Asked of the row and column views the
+   * template holds, and answered by row key and column id, never by position:
+   * the session follows the column list the moment it changes, and a cell is
+   * handed its new view a pass later, so a cell asked by index in between
+   * would say no and have its editor torn down under the reader's caret.
+   */
+  isEditing(row: GridRow<T>, column: GridColumnView<T>): boolean;
   /** Whether this cell could be opened at all. */
   isEditable(row: GridRow<T>, column: GridColumnView<T>): boolean;
 
@@ -369,7 +376,7 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
     // is how an edit disappears without anyone noticing.
     const current = untrack(() => live.get());
     if (current !== null) {
-      if (current.row === row.index && current.column === column.index) return true;
+      if (current.rowKey === row.key && current.columnId === column.column.id) return true;
       if (!commit()) return false;
     }
 
@@ -613,9 +620,9 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
     return true;
   };
 
-  const isEditing = (row: number, column: number): boolean => {
+  const isEditing = (row: GridRow<T>, column: GridColumnView<T>): boolean => {
     const session = live.get();
-    return session !== null && session.row === row && session.column === column;
+    return session !== null && session.rowKey === row.key && session.columnId === column.column.id;
   };
 
   return {
@@ -654,7 +661,7 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
     }),
 
     cellProps: (row, column) => {
-      const editing = isEditing(row.index, column.index);
+      const editing = isEditing(row, column);
       return {
         // Only on the cells that cannot be edited: in a grid where editing is
         // the point, silence means editable, and `false` on every editable cell
