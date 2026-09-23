@@ -322,9 +322,12 @@ ordinary grid subscribing to no cell value at all. Multi-column sort cycles
 ascending, descending, none; Shift adds a term; collation and case folding come
 from the locale. `rowCount()` is the *filtered* count, so a virtualized grid
 does not tell a screen reader there are ten thousand rows when a filter left
-nine. Row selection is held by key so it survives a re-sort; a cell range is
-held by position and dropped when the view changes, because the rows between
-its corners are somewhere else now.
+nine. Row selection is held by key so it survives a re-sort. A cell range
+follows its columns by id while they stay side by side and in order, and is
+dropped when its rows move or a column move parts it, because a rectangle then
+holds a cell nobody chose or misses one somebody did. The cursor, Tab between
+editors, the clipboard, export and the open editor all find a column by id too,
+so moving, hiding or resizing one keeps what the reader had on it.
 
 The cursor survives a re-sort with no stored anchor: the row the reader was
 standing on *is* `previous[cursor.row]`, so there is no second copy of that
@@ -334,10 +337,11 @@ and notifies no one. That is asserted by counting accessor calls, and holds
 under mutation: defeating the reuse fails exactly those three tests.
 
 Built since, as layers over the grid rather than options of it: grouping with
-aggregates (`createGrouping`) and cell editing (`createCellEditing`), each with
+aggregates (`createGrouping`), cell editing (`createCellEditing`), export,
+the clipboard, undo and redo, and a saved view (`createGridState`), each with
 its own suite. Still untouched: pivoting, tree data, master/detail, typed
 editors and full-row editing, pinning, variable row height, RTL, drag and drop,
-export, state save/restore, and any data source but the client-side one. Known
+and any data source but the client-side one. Known
 footguns rather than guards: `getRowKey` defaults to the index, and a selection
 held by an index cannot survive a sort — documented, with a test pinning the
 degraded behaviour. `aria-sort` is set on every sorted column, which ARIA says
