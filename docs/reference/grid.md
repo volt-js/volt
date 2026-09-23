@@ -1414,6 +1414,1616 @@ is the trap `Number('')` sets — hence the guard for a blank. What the reader
 typed stays in the field either way, minus sign, ".5" and all, and the caret
 stays where they left it.
 
+## Copy and paste
+
+```ts
+createGridClipboard<T>(options: GridClipboardOptions<T>): GridClipboard<T>
+```
+
+Copy puts the cell range — or, with none, the cell under the cursor — on the
+system clipboard twice: as tab-separated text, which a spreadsheet reads back
+into cells, and as an HTML table, which a document reads back into a table.
+Either alone would lose one of the two places a grid gets pasted into.
+
+Paste goes the other way and stops short of your rows, as editing does. What the
+clipboard holds is laid over the grid from the cursor, run through each target
+column's editor exactly as a typed value is — `parse`, then `validate` — and
+handed to you as the same list of `GridEditChange`s a commit is. You apply them
+to your store. The rows are yours, a paste usually has to reach a server before
+it is true, and a grid that had already written forty cells would have no way to
+put them back when the server said no.
+
+```ts
+import { Component, Signal } from '@voltdev/core';
+import {
+  createCellEditing,
+  createGridClipboard,
+  createGrid,
+  type GridColumnView,
+  type GridEditChange,
+  type GridEditor,
+  type GridColumn,
+  type GridPasteRefusal,
+  type GridRow,
+} from '@voltdev/grid';
+
+interface Person {
+  id: number;
+  name: string;
+  department: string;
+  salary: number;
+}
+
+const COLUMNS: GridColumn<Person>[] = [
+  { id: 'id', header: 'ID', value: (p) => p.id },
+  { id: 'name', header: 'Name', value: (p) => p.name },
+  { id: 'department', header: 'Department', value: (p) => p.department },
+  { id: 'salary', header: 'Salary', value: (p) => p.salary, width: 120 },
+];
+
+// One record for both layers: a paste is parsed and validated as typing is, and
+// `id`, which has no editor, refuses a paste as it refuses a double-click.
+const EDITORS: Record<string, GridEditor<Person>> = {
+  name: { validate: (value) => (String(value).trim() === '' ? 'A name is required' : null) },
+  salary: {
+    parse: (raw) => (raw.trim() === '' ? null : Number(raw)),
+    validate: (value) =>
+      typeof value !== 'number' || Number.isNaN(value) ? 'Enter a number'
+      : value < 0 ? 'Cannot be negative'
+      : null,
+  },
+};
+
+/** Your rows with the changes in them — each changed row a new object, the rest as they were. */
+function withChanges(people: readonly Person[], changes: readonly GridEditChange<Person>[]): Person[] {
+  const byId = new Map(people.map((person) => [person.id, person]));
+  for (const change of changes) {
+    const person = byId.get(change.item.id)!;
+    byId.set(person.id, { ...person, [change.columnId]: change.value });
+  }
+  return people.map((person) => byId.get(person.id)!);
+}
+
+@Component({ selector: 'v-people-sheet', templateUrl: './people-sheet.html' })
+export class PeopleSheet {
+  grid = new Signal.State<Element | null>(null);
+  scroller = new Signal.State<Element | null>(null);
+  container = new Signal.State<Element | null>(null);
+  people = new Signal.State<Person[]>([]);
+  refusals = new Signal.State<readonly GridPasteRefusal<Person>[]>([]);
+
+  table = createGrid<Person>({
+    grid: () => this.grid.get(),
+    scroller: () => this.scroller.get(),
+    container: () => this.container.get(),
+    rows: () => this.people.get(),
+    columns: () => COLUMNS,
+    getRowKey: (person) => person.id,
+    // So Shift+Arrow can mark out a rectangle to copy.
+    cellSelection: 'range',
+  });
+
+  editing = createCellEditing<Person>({
+    grid: () => this.table,
+    columns: () => COLUMNS,
+    editors: () => EDITORS,
+    onCommit: (change) => this.people.set(withChanges(this.people.get(), [change])),
+  });
+
+  clipboard = createGridClipboard<Person>({
+    grid: () => this.table,
+    columns: () => COLUMNS,
+    getRowKey: (person) => person.id,
+    editing: () => this.editing,
+    editors: () => EDITORS,
+    onPaste: (changes) => {
+      this.refusals.set([]);
+      this.people.set(withChanges(this.people.get(), changes));
+    },
+    onRefuse: (refusals) => this.refusals.set(refusals),
+  });
+
+  cellProps(row: GridRow<Person>, col: GridColumnView<Person>) {
+    return { ...this.table.cellProps(row, col), ...this.editing.cellProps(row, col) };
+  }
+
+  refusalText(refusal: GridPasteRefusal<Person>): string {
+    const column = COLUMNS.find((candidate) => candidate.id === refusal.columnId)!.header;
+    return `${refusal.item.name}, ${column}: ${refusal.message ?? 'cannot be edited'}`;
+  }
+
+  // Editing first, the clipboard second, the grid last: each claims only the keys it owns.
+  onKey(event: KeyboardEvent): void {
+    if (!this.editing.onKeyDown(event) && !this.clipboard.onKeyDown(event)) this.table.onKeyDown(event);
+  }
+}
+```
+
+```html
+<!-- people-sheet.html: the grid as in Editing, with its :keydown onKey($event);
+     this is the toolbar above it, and the refusals below it -->
+<div role="toolbar" aria-label="Clipboard">
+  <button :click="clipboard.copy()">Copy</button>
+  <button :click="clipboard.paste()">Paste</button>
+</div>
+
+<ul :if="refusals.get().length > 0" role="alert">
+  <li :for="refusal in refusals.get()" :key="refusal.rowKey + ':' + refusal.columnId">{ refusalText(refusal) }</li>
+</ul>
+```
+
+The buttons are there because not every reader knows the shortcuts, and because
+a context menu item of your own does the same thing: `copy()` and `paste()` act
+on the grid's range or cursor wherever focus happens to be. Call them straight
+from the click, not after an `await` of your own — see
+[When the clipboard says no](#when-the-clipboard-says-no).
+
+With [history](#undo-and-redo), hand a paste to it instead of to your store —
+`onPaste: (changes) => void this.edits.commit(changes)` — and the whole paste is
+one undo step.
+
+Call `createGridClipboard` where a component's fields are initialised, as the grid
+is: it reads the nearest locale then, for what it says aloud, because a paste
+finishes after the clipboard answers, where no component's scope is current. It
+creates no effect and no signal, and writes nothing onto the DOM: there are no
+props to spread.
+
+### `GridClipboardOptions`
+
+| Option | Default | Description |
+|---|---|---|
+| `grid` | required | `() => Grid<T> \| null \| undefined` — a function, because the grid is usually a field declared first |
+| `columns` | required | Every column the grid may show: the list it is given, or the whole list a [`createGridState`](#saving-and-restoring-a-view) arranges and hides columns from. A copy reads cells outside the rendered window, whose columns have no other way of being named. Each is placed where the grid has its id, so the order does not matter and a column the grid is not showing is never copied or pasted into |
+| `onPaste` | required | `(changes, truncated) => void` — where a paste goes, and the only way a pasted value reaches a row. Not called for a paste that changed nothing, nor for one that was refused |
+| `getRowKey` | the index | `(row, index) => GridRowKey` — the same key the grid has, so each change names its row the way the grid does |
+| `editing` | — | `() => GridCellEditing<T> \| null \| undefined` — while its session is open, copy and paste do nothing. It says only that; what each column takes is `editors`, so give both, and in development the console says so when `editors` is missing |
+| `editors` | — | The same `Record<columnId, GridEditor<T>>` editing has. With it, a paste is parsed and validated, and a column with no editor refuses one. Without it, every cell takes the text as it came |
+| `onRefuse` | — | `(refusals: GridPasteRefusal<T>[]) => void` — told when a paste was refused, with every cell that refused it |
+| `onCopy` | — | `(copied: GridCopied) => void` — told once a copy is on the clipboard |
+| `onError` | — | `(failure: GridClipboardFailure) => void` — told when a copy or a paste could not use the clipboard |
+| `copyAnnouncement` | the locale's `gridCellsCopied` / `copyFailed`, then English | `(result: GridCopyResult) => string` — said when a copy ends. `''` says nothing |
+| `pasteAnnouncement` | the locale's `gridCellsPasted`, `gridPasteTruncated`, `gridPasteRefused`, `gridNothingToPaste` / `pasteFailed`, then English | `(result: GridPasteResult<T>) => string` — said when a paste ends |
+
+### `GridClipboard`
+
+| Member | Description |
+|---|---|
+| `copy()` | Copy the range, or the cell under the cursor. Resolves to a `GridCopyResult`, or `null` where there was nothing to copy — the cursor on the column header, a grid with no rows, an editor open |
+| `paste()` | Read the clipboard and lay it over the grid. Resolves to a `GridPasteResult<T>`, or `null` where there was nowhere to paste, for the same reasons |
+| `onKeyDown(event)` | Ctrl or Cmd with C, and with V. After the editing layer's `onKeyDown`, before the grid's |
+
+Both methods resolve rather than reject: every way a copy or a paste can end is
+a result you can branch on.
+
+```ts
+type GridCopyResult =
+  | { status: 'copied'; bounds: GridCellRangeBounds; text: string; html: string }
+  | GridClipboardFailure;
+
+type GridPasteResult<T> =
+  | { status: 'pasted'; changes: GridEditChange<T>[]; cells: number; bounds: GridCellRangeBounds; truncated: GridPasteTruncation | null }
+  | { status: 'refused'; refusals: GridPasteRefusal<T>[]; cells: number; bounds: GridCellRangeBounds; truncated: GridPasteTruncation | null }
+  | GridClipboardFailure;
+
+interface GridClipboardFailure {
+  status: 'failed';
+  operation: 'copy' | 'paste';
+  reason: 'unavailable' | 'refused' | 'empty' | 'gone';
+  error?: unknown;   // what the Clipboard API rejected with, for 'refused'
+}
+
+interface GridPasteTruncation {
+  rows: number;      // rows of the pasted block below the last row
+  columns: number;   // columns of the rows that landed, past the last column
+  cells: number;     // every cell dropped, from both
+}
+```
+
+`cells` is how many cells the paste covered, changed or not; `bounds` is the
+rectangle it covered, by position in the view when the clipboard was read.
+
+### What a copy puts on the clipboard
+
+Each cell is its column's `value`, as text — what the reader sees in it, not
+what it sorts or filters by. `null` and `undefined` are empty cells, and so is a
+column the grid holds that `columns` does not define, which keeps the cells
+after it under the columns they came from; in development the console says so.
+
+The range is cut to the grid as it is now, because a column list can shrink
+under one and the grid does not clear it. A range with nothing left of it is no
+range: the cell under the cursor is copied, and a paste starts there.
+
+The text is one line per row and a tab between cells, quoted only where a
+spreadsheet would quote it: a cell with a tab or a line break in it, or one that
+starts with a quote, is wrapped in quotes with its own quotes doubled. Every
+other cell is written as it is, because every spreadsheet reads an unquoted cell
+as exactly what it says. There is no line break after the last row, so a single
+cell pasted into a text field does not bring one with it.
+
+The HTML is a bare `<table>` of `<td>`s, escaped, with a cell's line breaks as
+`<br>`s that Excel keeps inside the cell rather than reading as the end of a
+row. No styles and no header row: the headers are not cells the reader
+selected, and a header row in the HTML would come back as a row of data the next
+time it was pasted.
+
+### What a paste reads
+
+Both formats, when the clipboard has both, and the text wins wherever the two
+agree on how many rows and columns there are. A spreadsheet's text is exact — it
+quotes a cell with a line break in it — while HTML has had its whitespace
+collapsed, as HTML always does, so `"  two  spaces "` survives the text and not
+the table. Where they disagree, it is the text that lost the shape: a document or
+a web page writes a cell's line break into its plain text unquoted, and the
+table is the only thing still saying where the cells are. What the grid itself
+copies always agrees with itself, so it pastes back exactly what it copied.
+
+The text is read as it was written: quoted cells may hold tabs, line breaks and
+doubled quotes, either kind of line break ends a row, and one at the very end
+closes the last row rather than opening another. A quote that is never closed was
+never a quote, and is kept. Empty text is nothing to paste; a lone line break is
+one empty cell, which is what a spreadsheet puts on the clipboard for one.
+
+A table is read the way it was shown: runs of whitespace are one space, a `<br>`
+or a new paragraph is a line break, a non-breaking space is kept — a French
+number is written with one — and a script or style inside a cell is not text. A
+cell that spans rows or columns fills the rest of what it spans with empty
+cells, which is how a spreadsheet copies a merged cell. The HTML is parsed into a
+document of its own with `DOMParser`, never into the page, so nothing in it runs
+or loads.
+
+A row shorter than the others writes the cells it has and leaves the rest of its
+width alone. Writing empties into cells the clipboard said nothing about would
+be erasing them.
+
+### Where a paste lands, and what it hands you
+
+A paste starts at the top-left corner of the range when there is one, and at the
+cursor otherwise. The corner rather than the cursor, because the cursor sits at
+whichever corner the range was dragged to, and a paste that landed somewhere
+different depending on which way the reader had selected would be one nobody
+could aim. Rows are the view's, in its order: under a sort the block runs down
+the rows as they are sorted, and under a filter it lands on the rows the filter
+left, never on one the reader cannot see.
+
+Each cell is then decided as a commit is:
+
+- The value is the column editor's `parse` of the text, or the text itself
+  where there is no `parse`.
+- A value the cell already holds is no change and is left out. With a `parse`
+  the comparison is `Object.is` against what the editor would open with — its
+  `read`, or the column's `value` — exactly as a commit compares. Without one
+  the text *is* the value, so it is compared with what the cell reads as: `"2"`
+  pasted over the number `2` changes nothing.
+- A column with no editor, or a row its editor's `editable` refuses, is
+  read-only, and refuses any change.
+- `validate` refuses the rest or lets them through.
+
+Changes come to `onPaste` as `GridEditChange`s — your `item`, its `rowKey`, the
+`rowIndex` it had in the view, the `columnId`, `previous` and `value` — to apply
+by `rowKey` or `item`, never by `rowIndex`, just as for a commit. Without
+`editors` there is no editing to borrow rules from: every cell takes the text as
+it came, uncompared by type, and what to make of it is yours.
+
+**A paste is refused whole.** If any cell refuses, nothing reaches `onPaste`:
+`onRefuse` gets every refusal, not the first one, so the reader fixes the
+clipboard once rather than once per complaint. A paste is one gesture, and half
+of one is a rectangle with holes in it that the reader has to find cell by cell.
+A `GridPasteRefusal<T>` carries the cell — `item`, `rowKey`, `rowIndex`,
+`columnId`, `previous` — what the paste would have written there as `value` and
+`text`, and a `reason`: `'read-only'` with a `null` message, or `'invalid'` with
+the message `validate` gave.
+
+A read-only cell pasted with what it already shows is not a change, so it is not
+a refusal either. That is what lets a whole copied row, its identifier column
+with it, go back over the row it came from — and what still refuses the same row
+pasted over a different one.
+
+**A paste too big for the grid is cut, and says so.** Rows past the last row and
+columns past the last column are dropped rather than written, counted in
+`truncated`, and handed to `onPaste` beside the changes; the announcement says
+how many of how many cells went in. They are never read: a paste of ten
+thousand lines onto the last row costs one row's worth of work. The grid does not
+grow, because the rows are yours, and a row to append is not something a grid
+can make up.
+
+**A paste follows its cell across the wait.** Reading the clipboard can wait on
+a permission prompt for as long as the reader takes to answer it, and a sort or
+a refresh can move the rows meanwhile. The cell the paste was aimed at is held by
+its row's key and its column's id, as an edit session is, and found again when
+the clipboard answers; a paste whose row or column has gone ends as `gone`
+rather than landing on whatever slid into its place. That needs the same
+`getRowKey` the grid has. Given a different one — or none, on a keyed grid —
+a paste cannot find its row again and ends as `gone`, and in development the
+console says why.
+
+### The keyboard
+
+| Keys | Does |
+|---|---|
+| Ctrl + C, Cmd + C | Copy the range, or the cell under the cursor |
+| Ctrl + V, Cmd + V | Paste from the corner of the range, or from the cursor |
+
+Taken from the browser when they act, so it does not also copy or paste whatever
+else it thinks is selected on the page. Left to the page when they do not: on
+the column header, which is not data; in an empty grid; while an editor is open,
+because then the text field owns the clipboard; and from any field someone types
+into, such as a search box you put in a header. With Shift or Alt, neither
+key is the shortcut — Ctrl+Shift+V is "paste as plain text" to the browser, and
+is left to it.
+
+On a layout that types another script, Ctrl with the key a Latin layout calls C
+still copies: Cyrillic "с" reports its own letter, so the physical key decides
+wherever the letter is not a Latin one. A Latin letter always decides for itself,
+accented or not, so on Dvorak it is the key labelled C that copies, wherever it
+sits, and Neo's "ä" on that key is not copy. A key that types no letter is no
+shortcut at all — the rule [history](#undo-and-redo) keeps for Z and Y.
+
+### When the clipboard says no
+
+The keyboard goes through the asynchronous Clipboard API, not the `copy` and
+`paste` events. Those fire where the browser thinks there is something to copy
+or somewhere to paste — a text selection, an editable field — and a focused grid
+cell is neither, so an engine is free to send them nowhere. The price is the
+API's own, and each part of it ends as a result rather than an exception:
+
+| `reason` | When |
+|---|---|
+| `unavailable` | There is no `navigator.clipboard` — outside a secure context it is absent, not failing — or, for a copy, no `ClipboardItem` to write two formats with |
+| `refused` | The browser or the reader said no: a denied permission, a document without focus. `error` is what the API rejected with |
+| `empty` | A paste found nothing that reads as cells — no text, no table |
+| `gone` | The cell a paste was aimed at left the view while the clipboard was read |
+
+Each is said aloud, assertively, as a refused paste is — "Could not copy",
+"Could not paste", "Nothing to paste", "Nothing pasted: 2 cells refused" — and a
+copy or paste that worked is said politely: "Copied 4 cells", "Pasted 6 cells".
+A copy changes nothing on screen, so without a sentence a screen-reader user
+cannot tell a Ctrl+C that worked from one that did not.
+
+Both methods start their clipboard call before anything is awaited, because a
+browser that ties clipboard access to a gesture checks for one when the call
+starts. Reading can raise a permission prompt or a Paste button of the
+browser's own, and the grid waits on it. The same holds for your own buttons:
+call `copy()` or `paste()` from the click handler itself, not after an `await`.
+
+There is no fallback outside a secure context. The older `execCommand` route
+cannot read the clipboard at all, so paste would be missing anyway, and a grid
+that copied out but could not paste back in would be half of the feature looking
+like all of it. The primitives' [copy button](./primitives-forms.md#copying-createclipboard) does fall
+back, for a single string, which is all it needs.
+
+### Keeping one text node per change
+
+A copy reads each cell it copies — its column's `value`, once, without
+subscribing — and no other. A paste reads each cell it lands on, for the value
+it would replace, and no other. Neither writes anything the cells render from,
+so nothing re-renders when you copy or paste, and nothing changes on screen
+until you apply the changes. Then it is one text node per changed cell, if your
+columns read signals, exactly as for a commit. Nor does either subscribe whatever
+called it: a copy or a paste started inside an effect leaves it depending on
+nothing — not a cell, not the `grid` option, and not the locale a failure is
+announced in.
+
+### What it deliberately does not do
+
+- **Fill.** One value pasted over a range goes into the range's corner, not into
+  every cell of it, and a block is not repeated to fill a bigger range. A paste
+  is always the clipboard's size, from one corner.
+- **Grow the grid.** What runs past the last row or column is dropped and
+  reported, never appended.
+- **Paste part of a paste.** One refusal refuses it all, and says where every
+  refusal is.
+- **Cut.** Ctrl+X is left to the page. A cut is a copy and a list of changes
+  that empty the cells, and emptying is a paste of empty text you can make
+  yourself.
+- **Copy headers, formats or styles.** The copy is values as text; the HTML is a
+  bare table. A spreadsheet will make of "007" what it makes of it anywhere.
+- **Listen to the browser's own menus.** The Edit menu and the context menu fire
+  `copy` and `paste` events, which this does not handle. A menu item of your own
+  calls `copy()` and `paste()`.
+- **Mark what was copied.** There are no props: the range the grid already marks
+  is what was copied, and a dashed "copied" border that outlived it would be one
+  more thing to clear.
+
+## Undo and redo
+
+```ts
+createEditHistory<T>(options: GridEditHistoryOptions<T>): GridEditHistory<T>
+```
+
+Editing hands you a change and never writes a row, so history cannot undo by
+writing one either. Instead it is the road a change takes to your store: a
+commit, an undo and a redo are each handed to one function of yours, `apply`,
+and only what `apply` says it took is recorded. A write the server refused never
+reaches the undo stack, and an undo the server refused leaves its step where it
+was, to be tried again. A history that recorded first and hoped would offer a
+Ctrl+Z that "undoes" a value no store ever held.
+
+So the wiring changes in one place: `onCommit` hands the change to history
+instead of to your store, and `apply` is where every write happens.
+
+```ts
+import { Component, Signal } from '@voltdev/core';
+import {
+  createCellEditing,
+  createEditHistory,
+  createGrid,
+  type GridColumnView,
+  type GridEditChange,
+  type GridRow,
+} from '@voltdev/grid';
+
+/** Your rows with the changes in them — each changed row a new object, the rest as they were. */
+function withChanges(people: readonly Person[], changes: readonly GridEditChange<Person>[]): Person[] {
+  const byId = new Map(people.map((person) => [person.id, person]));
+  for (const change of changes) {
+    const person = byId.get(change.item.id)!;
+    byId.set(person.id, { ...person, [change.columnId]: change.value });
+  }
+  return people.map((person) => byId.get(person.id)!);
+}
+
+@Component({ selector: 'v-people-editor', templateUrl: './people-editor.html' })
+export class PeopleEditor {
+  grid = new Signal.State<Element | null>(null);
+  scroller = new Signal.State<Element | null>(null);
+  container = new Signal.State<Element | null>(null);
+  people = new Signal.State<Person[]>([]);
+
+  table = createGrid<Person>({
+    grid: () => this.grid.get(),
+    scroller: () => this.scroller.get(),
+    container: () => this.container.get(),
+    rows: () => this.people.get(),
+    columns: () => COLUMNS,
+    getRowKey: (person) => person.id,
+  });
+
+  editing = createCellEditing<Person>({
+    grid: () => this.table,
+    columns: () => COLUMNS,
+    editors: () => ({ name: {}, department: {} }),
+    // Not to the store: through history, which records it once apply has written it.
+    onCommit: (change) => void this.edits.commit(change),
+  });
+
+  // `edits` and not `history`: a template reads `history` as the browser's own.
+  edits = createEditHistory<Person>({
+    grid: () => this.table,
+    rows: () => this.people.get(),
+    getRowKey: (person) => person.id,
+    editing: () => this.editing,
+    apply: (step) => {
+      this.people.set(withChanges(this.people.get(), step.changes));
+      return true;
+    },
+  });
+
+  cellProps(row: GridRow<Person>, col: GridColumnView<Person>) {
+    return { ...this.table.cellProps(row, col), ...this.editing.cellProps(row, col) };
+  }
+
+  // Editing first, history second, the grid last: each claims only the keys it owns.
+  onKey(event: KeyboardEvent): void {
+    if (!this.editing.onKeyDown(event) && !this.edits.onKeyDown(event)) this.table.onKeyDown(event);
+  }
+}
+```
+
+```html
+<!-- people-editor.html: the grid as in Editing, with its :keydown onKey($event);
+     this is the toolbar above it -->
+<div role="toolbar" aria-label="Edits">
+  <button :disabled="!edits.canUndo()" :click="edits.undo()">Undo</button>
+  <button :disabled="!edits.canRedo()" :click="edits.redo()">Redo</button>
+</div>
+```
+
+With a server, `apply` is where the request goes, and its answer is the answer:
+
+```ts
+apply: async (step) => {
+  const response = await fetch('/api/people', {
+    method: 'PATCH',
+    body: JSON.stringify(
+      step.changes.map(({ rowKey, columnId, previous, value }) => ({ id: rowKey, columnId, previous, value })),
+    ),
+  });
+  if (!response.ok) return false;
+  this.people.set(withChanges(this.people.get(), step.changes));
+  return true;
+},
+```
+
+`previous` travels with each change so the server can refuse one whose cell
+someone else has changed since — an undo hands back as `previous` the value it
+expects to find there.
+
+Call `createEditHistory` where a component's fields are initialised, as the grid
+is: it reads the nearest locale, for what it says aloud. It creates no effect.
+
+### `GridEditHistoryOptions`
+
+| Option | Default | Description |
+|---|---|---|
+| `grid` | required | `() => Grid<T> \| null \| undefined` — where a row sits in the view, and where the cursor goes after a keyboard undo |
+| `rows` | required | `() => readonly T[]` — the same rows the grid has. Every row, not the view: a row a filter hides still exists |
+| `getRowKey` | required | `(row) => GridRowKey` — the same key the grid has. Required here where the grid defaults it to the index |
+| `apply` | required | `(step: GridHistoryStep<T>) => boolean \| Promise<boolean>` — write the step and say whether it took. The only way history changes a value |
+| `editing` | — | `() => GridCellEditing<T> \| null \| undefined` — while its session is open the keys are the editor's, and undo and redo are refused |
+| `depth` | `100` | Steps kept. The oldest goes when a new one would pass it. `0` keeps nothing and still hands every commit to `apply` |
+| `onSkip` | — | `(skipped: GridHistoryRecord[], kind) => void` — told which changes were left out because their row has gone |
+| `announcement` | the locale's `gridUndone` / `gridRedone`, then English | `(kind, count) => string` — said when an undo or redo has been applied. `''` says nothing |
+
+### `GridEditHistory`
+
+| Member | Description |
+|---|---|
+| `commit(change)` | Hand a change — or an array of them, which is one step — to `apply`, and record it once `apply` says it took. Clears redo when it is recorded. Resolves whether it was applied |
+| `undo()` | Hand the last step's inverse to `apply`, and move the step to redo once it took. Resolves whether it did |
+| `redo()` | Hand the last undone step to `apply` again, and move it back once it took |
+| `canUndo()`, `canRedo()` | Whether there is a step to take back or make again — `false` for both while an editor is open. Signals: a toolbar bound to them follows |
+| `clear()` | Forget every step. For data replaced wholesale — a reload, another record — whose rows the kept steps no longer describe |
+| `onKeyDown(event)` | The history keyboard. After the editing layer's `onKeyDown`, before the grid's |
+
+`commit` takes anything with `item`, `columnId`, `previous` and `value` — a
+`GridEditChange` as editing hands it over, or the cells of a paste. The key is
+worked out again from `item` with history's own `getRowKey`, and whatever
+`rowKey` and `rowIndex` the change carried are not kept: a place in the view
+stops being true at the next sort.
+
+A step reaches `apply` as a `GridHistoryStep<T>`: its `kind` — `'commit'`,
+`'undo'` or `'redo'` — and its `changes`, each a `GridEditChange<T>`, so the
+function that writes an edit writes an undo without knowing the difference. Each
+change is resolved against your rows as they are when `apply` is called: `item`
+is the row that holds the key now — which, for a store that replaces rows as the
+one above does, is not the object the edit was made to — and `rowIndex` is
+where that row sits in the view now, or `-1` where a filter hides it. For an
+undo, `previous` and `value` are the recorded ones swapped, and the changes come
+last first, so a cell a step wrote twice ends as it was before either.
+
+### The keyboard
+
+| Keys | Does |
+|---|---|
+| Ctrl + Z, Cmd + Z | Undo |
+| Ctrl + Shift + Z, Cmd + Shift + Z | Redo |
+| Ctrl + Y | Redo |
+
+While the grid has focus and no editor is open. Ctrl+Y and not Cmd+Y, because on
+a Mac Cmd+Y is the browser's history. Alt is never part of it: Ctrl+Alt is AltGr
+on many keyboards, and types characters. A key that types a Latin letter is
+matched on that letter, so a layout that puts Z elsewhere — German, French —
+undoes with the key marked Z. A key that types a letter of another script is
+matched on where it sits, so the key a Russian or Greek keyboard types я or ζ
+with, which is where a Latin layout has Z, undoes too, as it does in the page's
+own text fields. A key that types no letter is never the shortcut: Dvorak types
+a semicolon where QWERTY has Z, and Ctrl+; is not an undo.
+
+A key pressed in a text control inside the grid — an editor, a search box in the
+header — is left to it, because Ctrl+Z there is the text's own undo. So is every
+key while an editing session is open, even with focus still on the cell rather
+than in the control: given `editing`, history asks it, and does not rely on your
+having wired the editor's handler first. The shortcut is claimed, and its
+default prevented, even with nothing to undo — it means this grid's undo while
+the grid has focus.
+
+While an editor is open, `undo()` and `redo()` resolve `false` at once, called
+from anywhere, even with a save still out ahead of them. Queued, they would run
+once the editor had closed, and whether they ran at all would turn on how slow
+that save was.
+
+### Recorded once it is true
+
+`apply` returns — or resolves — `true` once the step is written and `false`
+where it was refused, and only `true` records anything. A refused commit is not
+on the undo stack. A refused undo stays on it, and redo is untouched, so the
+reader can try again. Refuse by returning `false`, not by throwing: a throw is
+an error rather than an answer, and is handed back through the promise that
+asked for the step — which, for a key, nothing awaits, so it surfaces as any
+unhandled rejection does. Either way nothing is recorded, and the next step
+still runs.
+
+A change that leaves its value as it was is dropped before it reaches `apply`,
+and `commit` resolves `false` — as editing reports nothing for a cell the reader
+opened and closed, and for the same reason: a step of nothing would spend a
+Ctrl+Z on a value nobody would see move.
+
+**One step at a time.** Steps are handed to `apply` in the order they were asked
+for, each once the one before has settled. Two undos pressed while a save is out
+take back two steps rather than one step twice, a commit made during an undo
+lands after it, and two writes to one cell cannot reach the server in the wrong
+order. The step to undo is the top of the stack *when its turn comes*, so a
+Ctrl+Z pressed while an edit is still saving takes back that edit once it has
+landed. An `apply` that answers at once, like the one above, is never kept
+waiting: every step runs inside the call that asked for it.
+
+**One step per gesture.** A paste of forty cells is one step, undone and redone
+whole: forty Ctrl+Zs to take back one paste is a paste nobody dares make.
+
+### Held by key
+
+A step names each cell by its row's key and its column's id, and is resolved
+when it is applied. A sort between an edit and its undo moves the row, and the
+undo follows it. That holds on a grid given no `getRowKey`, too: the grid's key
+is then the row's place, which editing reports as the change's `rowKey`, but
+history keys by its own `getRowKey` over the change's `item` and is not fooled
+when the sort hands the place to another row.
+
+A row a filter hides still exists, and its change is still undone, with
+`rowIndex` `-1`. A row gone from your data is skipped: `onSkip` is told which
+changes were left out, and `apply` is handed the rest. What moves to the other
+stack is what was written — a row that comes back later is not written over by
+a redo of a change its undo never made. A step with nothing left is dropped,
+`apply` is not called, and the promise resolves `false`; the next Ctrl+Z reaches
+the step below. Keeping it would spend a Ctrl+Z doing nothing every time it came
+round.
+
+### Where the cursor goes
+
+A keyboard undo or redo puts the cursor, and focus, on the first cell the step
+changes — the one nearest the top of the view, then the left, which for a paste
+is its corner. The cursor moves as the step is handed to `apply`, not when
+`apply` answers: the grid carries a cursor with its row when the view changes,
+so a cursor put there before the write goes wherever the write's re-sort takes
+that row. It also puts a reader waiting on a slow save on the cell whose value
+is about to change — including one whose change is then refused.
+
+It moves only if the reader is still where they pressed the key: focus in the
+grid, the cursor on the same row and column. A step that waited its turn behind
+a save does not drag back a reader who has moved on, or pull focus back from
+wherever they went. Scrolling is not moving on: scrolling the body takes the
+focused cell out of the window, and focus with it, but the cursor has not moved
+and the step still takes the reader to its cell — as the grid itself still
+counts focus as on a cursor whose cell was scrolled away. A step whose rows a
+filter hides leaves the cursor alone, and so does an undo from a button — the
+reader is on the button, and taking focus from it would move them off the
+control they are using.
+
+An undo or redo that was applied is announced — "Change undone", "3 changes
+undone", "Change redone" — from the locale's `gridUndone` and `gridRedone`, with
+`{n}` the count, or in English where the catalogue has neither. A commit is not:
+the reader has just watched it happen.
+
+### What it costs
+
+History reads no cell. A step holds the values it was given, and an undo hands
+back `previous` rather than asking the cell what it holds, so undoing a change
+costs what committing it did: your `apply` writes, and if the column's `value`
+reads a signal, one accessor runs and one text node changes. The buttons bound
+to `canUndo` and `canRedo` re-read nothing in the grid.
+
+Finding a row by key is a lookup, not a scan: `rows` is read into an index once
+per change to it, and a store that writes a cell's signal rather than replacing
+the array pays for that once however many steps go by. One that replaces the
+array on every write, as `withChanges` above does, rebuilds it once per step.
+Where a row sits in the view, which each change carries as `rowIndex`, is found
+the same way: the view is read into an index the first time a step asks after
+the view changed. That is once however many steps go by for an unsorted grid
+over a store that writes signals, and once per step where every write moves the
+view — a replaced array, or a sort on the column being written. Neither index
+runs an accessor.
+
+### What it does not do
+
+- **Check the cell before undoing it.** An undo hands back the value history
+  recorded, not the value the cell holds now; if someone else changed the cell
+  since, the undo writes over them. `previous` is there for your server to
+  refuse it.
+- **Record changes it did not apply.** There is no way to push a change you
+  wrote yourself onto the stack. Everything goes through `commit`, so that one
+  function writes and history never records an undo of its own as a new change.
+- **Undo sorting, filtering, resizing or grouping.** Only cell values. Those are
+  views over your rows, not changes to them, and each is already a value you can
+  hold and hand back.
+- **Undo the text in an open editor.** That is the control's own undo, and
+  history leaves it alone.
+- **Hold a cell shut while a step is saving.** Undo and redo are refused while
+  an editor is open, but a step already handed to a slow `apply` still lands
+  if the reader opens its cell meanwhile. The editor keeps the value it opened
+  with, and its commit records that value as `previous`, so undoing the edit
+  puts back what the earlier step had taken away.
+- **Reselect a paste's range.** The cursor goes to its corner; the cell range
+  does not come back.
+- **Survive a reload.** The stacks live in memory, and hold values as they were
+  handed over.
+- **Undo a grouped grid's hidden rows.** Over `createGrouping`, the rows history
+  is given are the grouping's collection, which leaves out the rows of a
+  collapsed group and the rows the grouping's filter hides. So a change to one
+  of those is skipped as gone, where an ungrouped grid's filter hides a row
+  without history losing it. Expanded, or with the filter cleared, before an
+  undo comes round to it, the row is found again; an undo that comes round while
+  it is hidden skips it for good.
+
+## Exporting
+
+```ts
+createExport<T>(options: GridExportOptions<T>): GridExport
+```
+
+An export is a file of what the grid is showing — the view, not your array. The
+rows are in the order the sort put them, without the ones a filter took out,
+with a grouping's headers where the reader sees them, under the columns the grid
+holds in the order it holds them. A reader who presses Export is asking for the
+table in front of them. A file of your source array would give them rows they
+had filtered away, in an order they never asked for.
+
+It comes in two formats: CSV that follows RFC 4180 exactly, and a real Excel
+workbook, written without a dependency. Either way the result is a `Blob` and a
+suggested filename, and nothing is saved. A download is an anchor in a browser,
+a write to disk in a desktop shell and a buffer to inspect in a test, so saving
+is yours. Grouping and editing hand you a view or a change rather than acting on
+it, and export hands you a file on the same terms.
+
+```ts
+import { Component, Signal } from '@voltdev/core';
+import { useLocale } from '@voltdev/primitives';
+import { createExport, createGrid, type GridColumn, type GridExportFile } from '@voltdev/grid';
+
+interface Person {
+  id: number;
+  name: string;
+  department: string;
+  salary: number;
+  started: Date;
+}
+
+@Component({ selector: 'v-people-export', templateUrl: './people-export.html' })
+export class PeopleExport {
+  grid = new Signal.State<Element | null>(null);
+  scroller = new Signal.State<Element | null>(null);
+  container = new Signal.State<Element | null>(null);
+  people = new Signal.State<Person[]>([]);
+  exporting = new Signal.State(false);
+  // The application's locale, not the runtime's: "$120,000.00" in English,
+  // "120.000,00 $" in German.
+  locale = useLocale();
+
+  columns: GridColumn<Person>[] = [
+    { id: 'name', header: 'Name', value: (p) => p.name },
+    { id: 'department', header: 'Department', value: (p) => p.department },
+    // The cell shows formatted text, and sorts by the value underneath it.
+    {
+      id: 'salary',
+      header: 'Salary',
+      value: (p) => this.locale.format.currency(p.salary, 'USD'),
+      sortValue: (p) => p.salary,
+      width: 120,
+    },
+    {
+      id: 'started',
+      header: 'Started',
+      value: (p) => this.locale.format.date(p.started),
+      sortValue: (p) => p.started,
+    },
+  ];
+
+  table = createGrid<Person>({
+    grid: () => this.grid.get(),
+    scroller: () => this.scroller.get(),
+    container: () => this.container.get(),
+    rows: () => this.people.get(),
+    columns: () => this.columns,
+    getRowKey: (person) => person.id,
+    label: 'People',
+  });
+
+  exporter = createExport<Person>({
+    grid: () => this.table,
+    columns: () => this.columns,
+    // The grid shows text; the file keeps the number and the date underneath it,
+    // so the salary column still sums and the dates still sort.
+    format: () => ({
+      salary: (_, person) => person.salary,
+      started: (_, person) => person.started,
+    }),
+  });
+
+  async download(kind: 'csv' | 'xlsx'): Promise<void> {
+    this.exporting.set(true);
+    try {
+      save(kind === 'csv' ? await this.exporter.csv({ bom: true }) : await this.exporter.xlsx());
+    } finally {
+      this.exporting.set(false);
+    }
+  }
+}
+
+// Saving is yours. In a browser it is an anchor with a `download` attribute.
+function save({ blob, filename }: GridExportFile): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  // Revoked after the click has been handled, not during it.
+  setTimeout(() => URL.revokeObjectURL(url));
+}
+```
+
+```html
+<!-- people-export.html: a toolbar above the grid, which is as in "Setting one up" -->
+<div class="people-toolbar">
+  <button type="button" :click="download('csv')" :disabled="exporting.get()">Export CSV</button>
+  <button type="button" :click="download('xlsx')" :disabled="exporting.get()">Export Excel</button>
+</div>
+<div class="people" :ref="grid" :spread="table.gridProps()"
+     :keydown="table.onKeyDown($event)"
+     :focusin="table.onFocusIn($event)">
+  <!-- …the header and body, unchanged -->
+</div>
+```
+
+The files are `People.csv` and `People.xlsx`, named after the grid's `label`.
+The buttons are disabled while an export runs. The page itself stays live,
+because an export yields as it goes ([Large exports](#large-exports) says how),
+and a second press would start a second export alongside the first.
+
+`createExport` creates no effect and reads nothing until it is asked for a file,
+so it can be called anywhere, not only where a component's fields are
+initialised.
+
+### `GridExportOptions`
+
+| Option | Default | Description |
+|---|---|---|
+| `grid` | required | `() => Grid<T> \| null \| undefined`. A function, because the grid is usually a field declared first. A call with no grid rejects |
+| `columns` | required | Column definitions: the list the grid is given, or one holding every column it could hold. [Which are written](#which-rows-which-columns-which-values) is the grid's answer |
+| `format` | — | `() => Record<columnId, (value, row) => unknown>`: what a column's cells become in the file |
+| `outlineLevel` | — | `(row) => number`: a row's outline level in a workbook, `0` to `7`. For a grouped grid, `(row) => row.depth`. A CSV ignores it |
+| `name` | the grid's `label`, else `'export'` | `() => string`: the file's name without its extension, and the worksheet's |
+| `cellsPerSlice` | `5000` | How many cells are read between one yield and the next, in whole rows |
+
+### `GridExport`
+
+| Member | Description |
+|---|---|
+| `csv(options?)` | The view as RFC 4180 CSV, header row first. `Promise<GridExportFile>` |
+| `xlsx(options?)` | The view as an Excel workbook of one worksheet. `Promise<GridExportFile>` |
+
+| Call option | On | Default | Description |
+|---|---|---|---|
+| `bom` | `csv` | `false` | Begin the file with a UTF-8 byte order mark |
+| `signal` | both | — | An `AbortSignal`. The export stops at the next yield and rejects with the signal's reason, an `AbortError` unless you gave another |
+
+A `GridExportFile` is `{ blob, filename }`. The blob's type is
+`text/csv;charset=utf-8;header=present` or
+`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, and the
+filename has its extension. The name is made safe to save under: the characters
+Windows refuses anywhere in a name become spaces, the spaces and dots it drops
+from the ends are dropped, and a name left empty becomes `export`.
+
+### Which rows, which columns, which values
+
+**The rows are fixed when you ask; the values are read as the file is
+written.** The call takes the view in one synchronous pass, every row in order,
+and reads no cell to do it: with nothing sorted or filtered the view is your
+array, and its objects are handed back as they are. So a sort, a filter or new
+data arriving while a long export runs cannot duplicate a row or drop one. The
+cells are read slice by slice after that, because reading them is the work
+being spread out. A value you write during an export is in the file only if its
+row had not been reached yet.
+
+**The columns are the grid's.** The grid renders only the window of its
+columns, and names the rest by id, so `columns` is where the export finds each
+column's accessor and header. It asks the grid where each id sits and writes the
+columns in that order, leaving out any the grid does not hold. You can hand it
+the same list the grid has, or every column you define: either way the file
+holds the columns the reader sees, in the reader's order. A column the grid
+holds that `columns` gives no definition for is left out, and a development
+build says so.
+
+**A value is written by its type.** A column's own value is written as the grid
+displays it. A `format` entry replaces it with whatever the function returns,
+given the column's value and the row. The formatter is the place to hand the
+file the number under a cell that shows "$1,000", the date under one that shows
+"3 Feb", or a group's label. Whatever it returns is written by the same rules:
+
+| Value | CSV | Workbook |
+|---|---|---|
+| `null`, `undefined`, `NaN`, `''` | an empty field | no cell |
+| a string | the text, quoted and escaped as below | a shared string |
+| a finite number | as JavaScript writes it: `-5`, `0.5`, `1e+21` | a number |
+| `Infinity`, `-Infinity` | the text, escaped as below | a string |
+| a bigint | its digits | a number where a double holds it exactly; otherwise its digits, as a string |
+| a boolean | `true`, `false` | a boolean |
+| a `Date` | `2024-01-05`, or `2024-01-05 14:30:00` with a time of day, and `.007` with milliseconds | a date: its serial number, shown as the reader's short date, or date and time |
+| an invalid `Date` | an empty field | no cell |
+| a `Date` before 1900 or after 9999 | as above | its text, as a string |
+| anything else | its JSON | its JSON, as a string |
+
+Dates are written in the reader's wall clock, the local fields rather than the
+timestamp, because a worksheet's dates have no zone, and 9am in the grid has to
+be 9am in the cell. A CSV of the same export says the same thing. A space
+separates the date from the time rather than ISO 8601's `T`, because
+spreadsheets read the space form back as a date and not all of them read the
+`T` form. A value exactly at midnight is written as a date alone, in both
+formats.
+
+An object is written as its JSON because that is what the grid's cell shows:
+a template's text binding renders an object as JSON. It is never written as
+`String(value)`, which gives `[object Object]`, a value nobody saw. A value JSON
+cannot write (a cycle, a bigint inside an object, a function) is left empty,
+and a development build names the column once per export. Give that column a
+formatter.
+
+Every cell is read once, and untracked: one call of its accessor, and one of its
+formatter where there is one. Nothing reads a value a second time to find out
+its type. Starting an export inside an effect does not make that effect depend
+on the grid's data.
+
+### CSV
+
+The file follows RFC 4180. It starts with a header record of the columns'
+`header`s, the fields are separated by commas, every record ends with CRLF, and
+a field is quoted only where it holds a comma, a quote or a line break, with its
+quotes doubled. Spaces are part of a field and are left alone. The text is
+UTF-8.
+
+The one empty field quoted anyway is a record's only field. A grid of one
+column writes an empty cell as `""` rather than as a blank line. RFC 4180 reads
+a blank line as a record of one empty field, but readers that skip blank lines
+(pandas does by default) would drop the row, and every row after it would be
+read one row higher than it is.
+
+There is no byte order mark unless you ask with `bom: true`. RFC 4180 has none,
+and most readers do not want one. Excel does: without it, a CSV opened by
+double-clicking is read in the system's legacy code page, and every accented
+name in it comes out as two wrong characters. Ask for one when the file is for
+Excel.
+
+**Text that a spreadsheet would run as a formula is escaped.** An exported file
+gets opened in a spreadsheet by someone who did not write the data in it. A
+field beginning with `=`, `+`, `-`, `@`, a tab or a carriage return is a formula
+to a spreadsheet, and a formula runs on the machine of whoever opens it:
+`=HYPERLINK` can send the sheet's contents somewhere, and `=cmd|…` can run a
+program in a spreadsheet that still honours DDE. Such a field is escaped the
+way OWASP describes: an apostrophe in front, which a spreadsheet reads as
+"this is text", and the whole field in quotes with its own quotes doubled, so
+nothing inside it can close the field and start a new cell with the formula
+after all. `=1+2";=1+2` is written `"'=1+2"";=1+2"`. Headers are escaped the same
+way, since a header can come from data too.
+
+Numbers and bigints are exempt. Their text is written by the export from a
+number, never copied from the data's own characters, so it cannot carry a
+formula. `-5` the number is written `-5`, while `-5` the string is written
+`"'-5"`. The apostrophe shows when a spreadsheet opens the file, which is the
+cost of OWASP's escape. If a column's `-` values are numbers, return numbers
+from its formatter rather than text.
+
+Numbers are written with a point, as JavaScript writes them, never in the
+locale's format. In a comma-separated file, a decimal comma would split one
+field into two.
+
+### The workbook
+
+`xlsx()` writes an Office Open XML package, which is what a `.xlsx` is: a zip
+of a workbook, one worksheet, a stylesheet and a table of shared strings. It is
+built here, deflated through the platform's `CompressionStream`, and needs no
+dependency.
+
+- **Typed cells.** Numbers are numbers, booleans are booleans, dates are date
+  serials in a date format, and text is a shared string: each distinct text is
+  stored once and every cell holding it refers to it. A text cell is a string
+  and never a formula, so nothing in a workbook needs the CSV escape, and
+  `=SUM(A1:A9)` arrives as the text it was.
+- **Dates in the reader's own order.** The formats are the workbook's built-in
+  short date and date-and-time, which a spreadsheet shows in the reader's locale,
+  so a German reader sees `05.01.2024` and an American `1/5/2024`. Before 1 March
+  1900 a serial is one lower than the arithmetic says, because every
+  spreadsheet counts a 29 February 1900 that never was. That is a bug kept since
+  Lotus 1-2-3, and the export keeps it too so that the dates come out right.
+- **A bold header row.** The columns' `header`s, in bold. Nothing else is
+  styled.
+- **Columns as wide as the grid draws them.** A worksheet measures width in
+  digits of its default font, and the stylesheet declares Calibri 11, whose
+  digit is 7px wide, so a column the grid draws at 180px is 180px wide in Excel
+  at 100%. LibreOffice measures the font its own way and draws every column
+  about a fifth wider, in proportion. A column in the grid's horizontal window is as wide as the reader
+  left it after resizing. The grid does not report the width of a column outside
+  that window, so such a column is written at its declared `width`, clamped to
+  its bounds as the grid clamps it. A column resized and then scrolled out of
+  view exports at its declared width.
+- **The worksheet's name** is the file's name, as a worksheet will take it:
+  without `\ / ? * [ ] :`, without an apostrophe at either end, at most 31
+  characters, and `Sheet1` where that leaves nothing or leaves `History`, which
+  a spreadsheet reserves.
+- **The same view gives the same bytes.** The zip's timestamps are fixed rather
+  than taken from the clock.
+
+A worksheet has limits, and the export refuses before it reads a single cell
+rather than write a file the spreadsheet can open only by throwing part of it
+away. More than 1,048,575 rows (a worksheet holds 1,048,576, the header
+included) or more than 16,384 columns rejects with a `RangeError`. Filter the
+grid first, or export CSV, which has no limit. A text longer than the 32,767
+characters a cell holds is cut to fit, never between the two halves of a
+surrogate pair, and a development build names the column. A sheet whose text
+passes 4 GiB is refused too, with a `RangeError`, but only when the text gets
+there: see Zip64 under [What it does not do](#what-it-does-not-do).
+
+Text XML cannot carry is escaped the way a spreadsheet escapes it: a control
+character, including a carriage return, is written `_xHHHH_`. A literal
+`_x0041_` in your data has its underscore escaped the same way, so it is not
+decoded into an `A`. A text with a space at either end is marked to keep it.
+
+### Large exports
+
+An export of a hundred thousand rows is too much work for one task: the page
+would freeze until it finished. So an export is written in slices, and yields
+between them:
+
+1. **The view is taken first,** in one synchronous pass over the rows (not the
+   cells). For a million rows this is a few milliseconds, and it is what fixes
+   the rows the file will hold. A workbook asks `outlineLevel` of every row in
+   the same pass, because a sheet declares its outline before its first row,
+   so keep that function to a field read like `row.depth`. Placing the columns
+   asks the grid where each one sits, which is a scan of its column list per
+   column: nothing at a few hundred columns, and half a second at a
+   worksheet's limit of 16,384.
+2. **Each slice reads at most `cellsPerSlice` cells,** as whole rows: 5,000 by
+   default, which is 500 rows of a ten-column grid. The slice is turned into
+   text, and for a workbook it is encoded, checksummed and handed to the
+   compressor.
+3. **Between slices the export gives the thread back,** with `scheduler.yield()`
+   where the browser has it and a `MessageChannel` task where it does not. Not
+   `setTimeout`, which browsers clamp to 4ms once calls nest, and an export of
+   two hundred slices nests two hundred calls. Input, rendering and anything
+   else waiting run in between.
+4. **Each slice becomes a `Blob` as it is written, and the file is those
+   `Blob`s joined.** For a CSV, the slice's text goes into a `Blob` of its own.
+   For a workbook, each chunk of compressed bytes goes into one as the
+   compressor hands it over. Joining `Blob`s copies nothing, so finishing the
+   file is quick however large it is. A file handed all its text at the end
+   would have to encode every character in that one task: about half a second
+   for 100 MB, which is the freeze the slices exist to avoid. Nothing joins the
+   sheet into one string or one buffer.
+
+An export small enough to fit in one slice never yields. Lower `cellsPerSlice`
+if your accessors or formatters are expensive. The count is of cells rather
+than rows, so a wide grid gets fewer rows per slice.
+
+To stop an export, pass a `signal` and abort it. The export stops at the next
+yield and rejects with the signal's reason. A signal already aborted rejects
+before anything is read.
+
+```ts
+private running: AbortController | null = null;
+
+async downloadWorkbook(): Promise<void> {
+  this.running?.abort();
+  const running = (this.running = new AbortController());
+  try {
+    save(await this.exporter.xlsx({ signal: running.signal }));
+  } catch (error) {
+    if (!running.signal.aborted) throw error;
+  }
+}
+```
+
+### A grouped grid
+
+A grouped grid's rows are the grouping's wrappers, so the export is typed over
+`GridGroupedRow<T>` and given the grouping's columns. Two options finish it:
+`outlineLevel` tells a workbook where each row sits, and a formatter puts each
+group's label where your template renders it.
+
+```ts
+exporter = createExport<GridGroupedRow<Person>>({
+  grid: () => this.table,
+  columns: () => this.grouping.columns(),
+  // A header sits at its group's depth, and the rows under it one deeper:
+  // exactly the outline a spreadsheet folds.
+  outlineLevel: (row) => row.depth,
+  // The label is in no column's value, so it goes where the template puts it.
+  format: () => ({
+    name: (value, row) => (row.kind === 'group' ? this.grouping.label(row) : value),
+  }),
+});
+```
+
+A group header's other columns hold their aggregates, typed like any other
+value, so a sum under a header is a number in the workbook. The worksheet
+declares its outline with each group's summary *above* its rows, because that
+is where a grid's group header sits, and a spreadsheet draws its fold buttons
+from that. The outline is at most seven levels deep, the most a worksheet has;
+deeper levels are written as seven. A CSV has no outline, and its rows come out
+in the same order without one.
+
+A collapsed group exports as its header alone. Its rows are not in the view, so
+the reader does not see them and they are not in the file. Call `expandAll()`
+first to export every row.
+
+### What it does not do
+
+- **Save the file.** No download is started and nothing is written to disk.
+  `save` above is one way, and a test reads the blob instead.
+- **Export anything the reader cannot see.** That means rows a filter removed,
+  rows inside a collapsed group, columns the grid does not hold, and your source
+  array. Exporting only the selected rows, or only a cell range, is not built
+  either.
+- **Style beyond the bold header.** There are no number formats (a currency, a
+  count of decimals), no colours, no borders, no frozen header row, no
+  autofilter and no auto-sized columns. Group headers are not styled apart from
+  the rows under them.
+- **Write more than one worksheet, a formula, or a merged cell.**
+- **Write a CSV for a comma-decimal locale.** RFC 4180 separates fields with a
+  comma, and so does this. Excel set to a locale whose list separator is `;`
+  (German and French among them) splits a double-clicked CSV at each `;`
+  instead, and leaves the commas inside the cells. A value with a `;` before
+  `=`, `+`, `-` or `@` then starts a cell of its own with a formula in it. The
+  escape above does not reach that cell, because it looks only at the start of
+  a field. For a file opened in such a locale, or holding data you do not
+  trust, export the workbook: its text cells are never formulas.
+- **Snapshot the values.** The rows are fixed when you ask, but each value is
+  read when its slice is written.
+- **Report progress or announce anything.** A download is visible in the
+  browser's own interface. A long export has no progress callback; disable the
+  control that started it, as above.
+- **Write Zip64.** A zip without it cannot record a part of more than 4 GiB.
+  At the worksheet's limit of a million rows, a sheet's text reaches that at
+  roughly a hundred columns. The export refuses with a `RangeError` when a part
+  passes it, rather than write a file whose headers wrap round to a size that
+  is wrong. It cannot know sooner, because the size is only known once the text
+  is written, so the refusal comes partway through. Filter the grid first, or
+  export CSV.
+- **Run in a worker, or stream to disk.** The slices keep the page responsive,
+  but the work is on the main thread, and the finished file is held in memory as
+  the blob's parts.
+- **Know a resized column's width once it scrolls out of the window.** The grid
+  does not report it, so the declared width is written.
+
+## Saving and restoring a view
+
+```ts
+createGridState<T>(options: GridStateOptions<T>): GridStateLayer<T>
+```
+
+A reader who puts the salary column first, hides the notes, widens the names,
+sorts, filters and groups by team has made something, and a reload that throws
+it away has thrown away their work. `createGridState` turns all of it into one
+plain object — `JSON.stringify` writes it and `JSON.parse` gives it back
+unchanged — and turns that object back into the arrangement it describes.
+
+It is also where column order and visibility live. Nothing else holds them: the
+grid renders the list of columns it is handed, so reordering and hiding are a
+matter of which list that is, and `columns()` here is that list, arranged.
+
+Every piece of the arrangement is a signal you already hand the grid, or the
+grouping, handed to this layer as well — the same arrangement `createGrouping`
+asks for with its sort. Restoring writes those signals directly, so it is
+silent: `setFilter` and `toggleSort` are gestures, they announce, and a grid that
+announced a saved view on load would talk over the page.
+
+```ts
+import { Component, Signal, effect, onCleanup } from '@voltdev/core';
+import {
+  GRID_STATE_VERSION,
+  createGrid,
+  createGridState,
+  type GridFilter,
+  type GridSort,
+  type GridStateLayer,
+} from '@voltdev/grid';
+
+const STORAGE_KEY = 'people-view';
+
+/** Whatever was saved, or nothing — storage can be missing, full, or hold anything. */
+function savedView(): unknown {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null');
+  } catch {
+    return null;
+  }
+}
+
+@Component({ selector: 'v-people', templateUrl: './people.html' })
+export class People {
+  grid = new Signal.State<Element | null>(null);
+  scroller = new Signal.State<Element | null>(null);
+  container = new Signal.State<Element | null>(null);
+  people = new Signal.State<Person[]>([]);
+
+  // One of each, handed to the grid and to the view alike.
+  sort = new Signal.State<readonly GridSort[]>([]);
+  filters = new Signal.State<ReadonlyMap<string, GridFilter>>(new Map());
+  quickFilter = new Signal.State('');
+
+  // Typed, because the view and the grid each read the other.
+  view: GridStateLayer<Person> = createGridState<Person>({
+    grid: () => this.table,
+    columns: () => COLUMNS,
+    sort: this.sort,
+    filters: this.filters,
+    quickFilter: this.quickFilter,
+  });
+
+  table = createGrid<Person>({
+    grid: () => this.grid.get(),
+    scroller: () => this.scroller.get(),
+    container: () => this.container.get(),
+    rows: () => this.people.get(),
+    columns: () => this.view.columns(),
+    getRowKey: (person) => person.id,
+    sort: this.sort,
+    filters: this.filters,
+    quickFilter: this.quickFilter,
+    onColumnResize: this.view.onColumnResize,
+    label: 'People',
+  });
+
+  // Before the first flush, so the save below never writes the default grid
+  // over the view it is about to restore. Kept, in case the page wants to say
+  // a saved view was too new to read.
+  restored = this.view.apply(savedView());
+
+  // A moment after the last change, not on every move of a drag.
+  saving = effect(() => {
+    const json = JSON.stringify(this.view.state());
+    const timer = setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEY, json);
+      } catch {
+        // Full, or refused: the view is still arranged, just not kept.
+      }
+    }, 300);
+    onCleanup(() => clearTimeout(timer));
+  });
+
+  toggleColumn(id: string): void {
+    this.view.setColumnHidden(id, !this.view.isColumnHidden(id));
+  }
+
+  resetView(): void {
+    this.view.apply({ version: GRID_STATE_VERSION });
+  }
+}
+```
+
+```html
+<!-- people.html: the grid is any grid; the chooser lists every column, hidden or not -->
+<fieldset class="chooser">
+  <legend>Columns</legend>
+  <label :for="col in view.allColumns()" :key="col.id">
+    <input type="checkbox" :checked="!view.isColumnHidden(col.id)" :change="toggleColumn(col.id)">
+    { col.header }
+  </label>
+  <button type="button" :click="resetView()">Reset view</button>
+</fieldset>
+
+<div class="people" :ref="grid" :spread="table.gridProps()"
+     :keydown="table.onKeyDown($event)"
+     :focusin="table.onFocusIn($event)">
+  <div :spread="table.headerProps()">
+    <div :spread="table.headerRowProps()">
+      <div :for="col in table.columns()" :key="col.key"
+           :spread="table.headerCellProps(col)"
+           :click="table.onHeaderClick($event)">{ col.column.header }
+        <span :spread="table.resizerProps(col)"
+              :pointerdown="table.onResizePointerDown($event)"></span>
+      </div>
+    </div>
+  </div>
+  <div class="people-body" :ref="scroller" :spread="table.bodyProps()">
+    <div :spread="table.sizerProps()">
+      <div :ref="container" :spread="table.containerProps()">
+        <div :for="row in table.rows()" :key="row.key" :spread="table.rowProps(row)">
+          <div :for="col in table.columns()" :key="col.key"
+               :spread="table.cellProps(row, col)">{ table.cellValue(row, col) }</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+```
+
+**The type on `view` is not optional.** The view reads the grid, for widths,
+and the grid reads the view, for its columns. TypeScript cannot infer a pair of
+class fields that refer to each other, and says so — "implicitly has type
+`any`" — unless one of them is declared. Declaring the view's is the smaller
+change.
+
+**Restore before the first flush.** An effect's first run is deferred to the
+next flush, so a `restored` field initialised after the grid runs before the
+save does. Restore later — once a request for the saved view comes back — and
+the save's first run writes the default arrangement over it; start saving only
+once the restore has happened. The same goes for columns that arrive late:
+restore against the columns you will render, because anything naming a column
+that is not in the list yet is dropped.
+
+Call `createGridState` where a component's fields are initialised, as
+`createGrid` is: it creates an effect, which is disposed with the component that
+owns it.
+
+On a grouped grid, hand the grouping the view's columns and the signals it
+filters and groups by; the grid is handed the grouping's columns, as ever:
+
+```ts
+groupBy = new Signal.State<readonly string[]>([]);
+collapsed = new Signal.State<ReadonlySet<string>>(new Set());
+
+view: GridStateLayer<Person> = createGridState<Person>({
+  grid: () => this.table,
+  columns: () => COLUMNS,
+  sort: this.sort,
+  filters: this.filters,
+  quickFilter: this.quickFilter,
+  groupBy: this.groupBy,
+  collapsed: this.collapsed,
+});
+
+grouping = createGrouping<Person>({
+  rows: () => this.people.get(),
+  columns: () => this.view.columns(),
+  groupBy: () => this.groupBy.get(),
+  getRowKey: (person) => person.id,
+  sort: this.sort,
+  filters: this.filters,
+  quickFilter: this.quickFilter,
+  collapsed: this.collapsed,
+});
+
+table = createGrid<GridGroupedRow<Person>>({
+  // ...the elements
+  rows: () => this.grouping.rows(),
+  columns: () => this.grouping.columns(),
+  getRowKey: this.grouping.rowKey,
+  sort: this.sort,
+  onColumnResize: this.view.onColumnResize,
+});
+```
+
+### `GridStateOptions`
+
+| Option | Default | Description |
+|---|---|---|
+| `grid` | required | `() => grid \| null \| undefined` — the grid being arranged. All it is asked for is `resizeColumn`, so a grouped grid does as well as a flat one |
+| `columns` | required | Every column, in its default order, hidden or not — the list a grid would be given if nothing were arranged |
+| `order` | owned | A `Signal.State<readonly string[]>` of column ids in the reader's order |
+| `hidden` | owned | A `Signal.State<ReadonlySet<string>>` of the hidden columns' ids |
+| `sort` | not saved | The sort signal the grid is handed |
+| `filters` | not saved | The filters signal — the grid's, or on a grouped grid the grouping's |
+| `quickFilter` | not saved | The quick-filter signal, from the same place |
+| `groupBy` | not saved | A `Signal.State<readonly string[]>` of column ids, read by the grouping's `groupBy` |
+| `collapsed` | not saved | The collapsed signal the grouping is handed |
+
+A piece you do not hand over is neither saved nor restored: `state()` carries
+its empty value and `apply` leaves it alone. `order` and `hidden` are different,
+because this layer is the only thing that holds them — supply them to drive the
+order or the visibility from outside, as the grid lets you supply its sort, or
+to start with a column hidden.
+
+What the signals hold when `createGridState` is called is your page's own
+arrangement, the one a first visit shows, and `apply` puts it back for whatever
+a state leaves out. Give them their starting values before creating the view.
+
+`groupBy` holds ids rather than `GridGroupSpec`s, because a spec carries
+functions and a saved state cannot. Where a level needs a spec, map the id to
+it where the grouping reads it:
+`groupBy: () => this.groupBy.get().map((id) => SPECS[id] ?? id)`. A level is
+read against your columns like everything else, so an id that names no column
+is not saved. To group one column two ways — a date by year, then by month —
+list its id at both levels and pick each level's spec by its position.
+
+### `GridStateLayer`
+
+| Member | Description |
+|---|---|
+| `columns()` | The columns to render: the reader's order, no hidden ones, restored widths in place. For the grid's `columns`, or the grouping's |
+| `allColumns()` | Every column in the reader's order, hidden ones included — what a column chooser lists |
+| `isColumnHidden(id)` | Whether a column is hidden |
+| `setColumnHidden(id, hidden)` | Hide or show one. An id not in `columns` is ignored |
+| `moveColumn(id, index)` | Move one to a place in `allColumns()`, clamped to the ends |
+| `onColumnResize` | For the grid's `onColumnResize`. How a width the reader chose reaches the state |
+| `state()` | The arrangement now, as a `GridState`. A signal: read it in an effect to persist it |
+| `apply(state)` | Restore one. Returns a `GridStateApplyResult` |
+
+`columns()` is the same array for as long as the arrangement is: a sort, a
+filter, a resize, or your own column list handed over again as a new array
+hands the grid no new list — which matters, because a new column list makes a
+sorted grid re-sort every row. With nothing arranged it is your own array.
+
+`moveColumn` counts among every column, not the visible ones, so a hidden column
+keeps its place: hide Team, move Notes to the front, show Team, and Team is back
+where it was. A drag across the visible headers has to turn its drop position
+into a place in `allColumns()`.
+
+`state()` is a new object only when the arrangement changed. A signal written
+with an equal value, a column list handed over again, a row selected, a cell
+edited: none of them makes a new state, so none of them wakes the effect that
+saves it. A resize drag makes one per move — debounce, as above.
+
+### The saved state
+
+```ts
+interface GridState {
+  readonly version: number;                            // GRID_STATE_VERSION when written
+  readonly columns: readonly GridColumnState[];        // every column, in the reader's order
+  readonly sort: readonly GridSort[];
+  readonly filters: Readonly<Record<string, GridFilter>>;
+  readonly quickFilter: string;
+  readonly groupBy: readonly string[];
+  readonly collapsed: readonly string[];               // the paths of the shut groups
+}
+
+interface GridColumnState {
+  readonly id: string;
+  readonly width?: number;                             // only where the reader resized it
+  readonly hidden?: true;                              // only where the reader hid it
+}
+```
+
+```json
+{
+  "version": 1,
+  "columns": [
+    { "id": "salary" },
+    { "id": "name", "width": 180 },
+    { "id": "department", "hidden": true },
+    { "id": "notes" }
+  ],
+  "sort": [{ "columnId": "salary", "direction": "descending" }],
+  "filters": { "salary": { "type": "number", "operator": "greaterThan", "value": 40000 } },
+  "quickFilter": "",
+  "groupBy": [],
+  "collapsed": []
+}
+```
+
+`GRID_STATE_VERSION` is exported: the version this code writes, and the newest
+it reads.
+
+Every column is listed, hidden ones too, so a hidden column keeps its place for
+when it is shown again. A width is saved only for a column the reader resized:
+a column whose declared `width` changes in a later release shows the new one to
+everyone who never touched it. Filters are listed in column order and shut
+groups sorted, so the order the reader did things in never changes the text —
+compare two saved strings to tell whether a view has changed. A filter is saved
+as the value it is, though, so two filters that mean the same thing — a set
+filter listing the same values in another order — save as different text.
+
+**What is not in it.** No row, no row key, and nothing read from a row —
+nothing in this layer reads a row at all. What it holds that came from your
+data is only what the reader typed or chose: a filter's text, a set filter's
+members, and the keys of the groups they shut, which is what a group's path is
+made of. Nothing held by position either: the cursor, a cell range
+and the scroll offset each name a place in the view as it was arranged, and the
+view a restore produces is another one. Row selection is left out too, though it
+is held by key: it is a choice of records rather than a way of looking at them,
+and a saved view that brought back last week's ticked rows would hand a bulk
+action rows the reader never chose today.
+
+**What JSON cannot carry, it leaves out.** A set filter over values that are not
+strings, finite numbers, booleans or `null` — a `Date`, a `bigint`, `undefined`
+— and a number filter over `NaN` or an infinity, or a range open at the top,
+would not come back as they went: a `Date` returns as a string that no longer
+equals it, and `NaN` and the infinities return as `null`. Such a filter is left out of the saved state, and a development
+build says so once. Filter on something JSON holds — a timestamp rather than a
+`Date` — and it is saved like any other. A number filter with no number in it
+yet filters nothing, loses nothing by being left out, and is left out without a
+word, since a filter box is in that state on every keystroke.
+
+### Restoring
+
+`apply` takes `unknown`, because what it is usually handed is whatever came back
+from storage, and it returns what it did:
+
+```ts
+type GridStateApplyResult =
+  | { readonly applied: true }
+  | { readonly applied: false; readonly reason: 'not-a-state' }
+  | { readonly applied: false; readonly reason: 'newer-version'; readonly version: number };
+```
+
+**It forgives the past.** A saved state outlives the code that wrote it, and a
+stored value that cannot be read is a reason to show the default grid, never a
+broken page. So nothing it is handed throws:
+
+- An entry naming a column that no longer exists — in the column list, the sort,
+  the filters, the grouping — is dropped.
+- A column added since the save takes its defaults: shown — or hidden, if your
+  `hidden` signal starts with it hidden — at its own width, and placed directly
+  after the column it follows in your list. The first column of your list, if
+  new, goes first.
+- A malformed entry is dropped: a direction that is not one, a width that is not
+  a positive number, a filter of an unknown type or with an unknown operator. A
+  width is rounded to a whole pixel.
+- A saved width for a column marked `resizable: false` is ignored. The reader
+  could not have made it.
+- A piece the state leaves out goes back to what its signal held when
+  `createGridState` was called — the arrangement a first visit shows. So
+  `apply({ version: GRID_STATE_VERSION })` resets to it: a page that starts
+  sorted by date, with its notes column hidden, resets to that and not to an
+  unsorted grid showing everything.
+
+**It refuses the future.** A state written by a newer version than this one
+reads — `GRID_STATE_VERSION` — is refused whole, and nothing is written. This
+code cannot know what the fields it does not recognise meant, and restoring the
+ones it does would leave the grid in an arrangement nobody made. A value that is
+not a saved state at all — not an object, or no whole-number `version` — is
+refused the same way. Both say why in a development build, except for `null` and
+`undefined`: nothing saved yet is the first visit, not a mistake. The reason is
+a code rather than a sentence, so whatever tells the reader their saved view
+could not be restored says it in their language.
+
+**It is silent.** Nothing is announced, and neither `onSortChange`,
+`onFilterChange` nor `onCollapsedChange` fires, as with any signal you write
+yourself. When the restore moves rows, the grid's cursor follows its row through
+the new order and a cell range is dropped, exactly as for any other sort or
+filter — and says so through `onActiveCellChange` and `onCellRangeChange`, as
+then.
+
+The grid holds its cursor and a cell range by column position, and does not yet
+follow them when its column list changes. A restore that reorders or hides
+columns — like `moveColumn` and `setColumnHidden` — leaves them at the same
+positions, over whichever columns are there now.
+
+**It writes nothing that has not changed.** A restore compares each piece with
+what is there and leaves an equal one alone, so handing `apply` the state it
+already has wakes nothing and costs no row.
+
+### Widths
+
+Widths are the one piece the grid holds rather than a signal: a resize writes a
+width into the grid, keyed by column id, and that width wins over any column's
+`width` for as long as the grid lives. So a width reaches the saved state from
+the grid's `onColumnResize` — wire it, or no resize is ever saved — and a
+restore puts widths back two ways. A column the grid holds no width for is
+handed its restored width as its `width` in `columns()`, which is how a grid
+built from scratch gets every one. A column the grid does hold a width for is
+put right through `resizeColumn`: to the restored width, or where the state
+gives none, back to the column's own. A column hidden at the time is put right
+when it is shown.
+
+A column handed out with a restored width is a copy of yours carrying that
+`width` — the same accessors, the same everything else. Know a column by its
+`id`, as the grid does, rather than by comparing it with your own object.
+
+The grid clamps a restored width to the column's bounds, as it clamps every
+width. The state keeps the number it was given until the reader resizes the
+column again, so a width saved before a column's `minWidth` was raised reads as
+the old number while the grid shows the new bound.
+
+### Hidden columns
+
+A hidden column is out of the list the grid is given, and the grid sorts,
+filters and searches only the columns in its list. So a sort or a filter on a
+hidden column stays in the state and comes back into force with the column —
+exactly as the grid treats a column that has gone, and for the same reason. A
+grouping handed `columns()` treats it the same way: a level naming a hidden
+column is dropped until it is shown. To group by a column the reader has hidden,
+give that level a `GridGroupSpec` with its own `value`, which the grouping keeps
+whether or not the column is in its list.
+
+### What it costs
+
+Nothing here reads a row. Saving reads the signals and the column list and
+nothing else, so a cell changing recomputes nothing here, and reading the state
+runs no accessor. Recording a width changes no column the grid is handed, so a
+resize on a sorted, filtered grid re-sorts and re-filters nothing. A restore
+writes every piece before the grid reads any of them, so a state that both
+sorts and filters derives the view once, not once per piece. Each of those is
+asserted by counting accessor runs.
+
+### What it does not do
+
+- **No pinning.** The grid has no pinned columns yet. When it does, they join
+  the saved state under a new version, which is what the version is for: this
+  version refuses a state that pins, rather than restoring it unpinned.
+- **No gestures for arranging.** There is no header drag to reorder and no
+  column menu: `moveColumn` and `setColumnHidden` are the model, and the
+  chooser, the drag and the menu are yours.
+- **No storage.** It hands you a value and takes one back; where it goes —
+  `localStorage`, a URL, a server keyed by user — and when is yours. The same
+  goes for the debounce.
+- **No row selection, cursor, cell range or scroll position**, for the reasons
+  under [The saved state](#the-saved-state).
+- **No migration of older versions.** There is one version so far. When there
+  is a second, a version-1 state is read as version 1; a state newer than the
+  code is refused, never guessed at.
+- **No partial restore.** `apply` restores the whole arrangement, putting back
+  to default whatever the state leaves out. To restore some pieces and keep the
+  rest as they are, fill the rest in from `state()`:
+  `view.apply({ ...view.state(), columns: saved.columns })`.
+
 ## What is not built
 
 On the roadmap, and not started:
@@ -1424,15 +3034,11 @@ On the roadmap, and not started:
 - **Columns** — reorder, hide, auto-size, column groups, multi-row headers.
 - **Data** — a date filter type, an external filter, pivoting, tree data,
   master/detail.
-- **Editing** — typed editors, full-row editing, undo and redo, fill handle,
-  copy and paste against the clipboard.
+- **Editing** — typed editors, full-row editing, fill handle.
 - **Selection** — header-driven selection.
 - **Data sources** — anything but rows held in memory: no infinite scroll, and
   nothing pushed to a server.
-- **The rest** — drag and drop of rows and columns, CSV and Excel export, and
-  saving and restoring the grid's state as one thing. Today sort, filters,
-  selection and collapsed groups are each a plain value you can hold and hand
-  back; column widths come back only through each column's `width`.
+- **The rest** — drag and drop of rows and columns.
 - **Chrome, listed as planned but not yet specified** — a filter row under the
   header, a filters panel, a toolbar with the quick search in it, column menus
   and a column chooser, loading, empty and error states, sticky group rows,

@@ -60,6 +60,53 @@ export {
   type GridEditor,
 } from './edit.js';
 
+export {
+  createEditHistory,
+  type GridEditHistory,
+  type GridEditHistoryOptions,
+  type GridHistoryChange,
+  type GridHistoryKind,
+  type GridHistoryRecord,
+  type GridHistoryStep,
+} from './history.js';
+
+export {
+  createGridState,
+  GRID_STATE_VERSION,
+  type GridColumnState,
+  type GridState,
+  type GridStateApplyResult,
+  type GridStateLayer,
+  type GridStateOptions,
+  type GridStateRefusal,
+} from './state.js';
+
+export {
+  createGridClipboard,
+  type GridClipboard,
+  type GridClipboardFailure,
+  type GridClipboardFailureReason,
+  type GridClipboardOptions,
+  type GridCopied,
+  type GridCopyResult,
+  type GridPasted,
+  type GridPasteRefusal,
+  type GridPasteRefusalCell,
+  type GridPasteRefused,
+  type GridPasteResult,
+  type GridPasteTruncation,
+} from './clipboard.js';
+
+export {
+  createExport,
+  type GridCsvOptions,
+  type GridExport,
+  type GridExportFile,
+  type GridExportFormatter,
+  type GridExportOptions,
+  type GridXlsxOptions,
+} from './export.js';
+
 export type {
   GridFilter,
   GridNumberFilter,
