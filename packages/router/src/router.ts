@@ -443,6 +443,19 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
   });
 
   /**
+   * Publish where the application is. A commit does, and so does a first
+   * resolve that failed, which has nowhere else to be; neither batches here,
+   * because each writes more beside it.
+   */
+  const publish = (to: RouteLocation, matches: readonly RouteMatch[]): void => {
+    pathnameSignal.set(to.pathname);
+    searchSignal.set(to.search);
+    hashSignal.set(to.hash);
+    paramsSignal.set(matches.at(-1)?.params ?? {});
+    matchesSignal.set(matches);
+  };
+
+  /**
    * Where the application is, from what has been published rather than from
    * the address bar.
    *
@@ -816,6 +829,14 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
     const revalidated = new Map<number, unknown>();
 
     try {
+      // Every loader of the branch is called before this first yields: nothing
+      // above awaits on the initial path, `loadSegment` and `runLoader` call
+      // the loader before their own first `await`, and `map` starts them all
+      // in one pass. A server relies on it — it lends the request to
+      // `resolve()` synchronously, so that a loader calling a server function
+      // gets past its guard — and an `await` anywhere ahead of a loader would
+      // refuse every such call without a word from here. `server.test.ts`
+      // holds this to it.
       await Promise.all([
         ...next.slice(reusable).map(async (match, offset) => {
           loaded.set(reusable + offset, await loadSegment(match, url, controller.signal));
@@ -836,12 +857,22 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
       ]);
     } catch (error) {
       if (id !== generation) return { status: 'aborted' };
-      statusSignal.set('idle');
-      errorSignal.set(error);
       // Nothing has been mutated yet, so the application stays exactly where
       // it was — except for a pop, where the address bar has already moved and
       // only the user can put it back. Undoing it here would mean a second
       // history hop for every failed Back, which is worse than a stale URL.
+      //
+      // A first resolve has nowhere it was. What is on the screen is at this
+      // URL: the page a server wrote for it, which the outlets hold while
+      // their depths stay empty, or nothing at all. So the location is
+      // published and the branch is not — a root claiming that page reads the
+      // URL the page was written for rather than rewriting its own markup to
+      // say it is nowhere, and the next navigation builds the branch whole.
+      batch(() => {
+        statusSignal.set('idle');
+        errorSignal.set(error);
+        if (mode === 'initial') publish(to, next);
+      });
       return { status: 'failed', error };
     } finally {
       // Every loader of this navigation has answered, so there is nothing of
@@ -911,12 +942,8 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
       }
 
       batch(() => {
-        pathnameSignal.set(to.pathname);
-        searchSignal.set(to.search);
-        hashSignal.set(to.hash);
+        publish(to, next);
         stateSignal.set(entry.state);
-        paramsSignal.set(next.at(-1)?.params ?? {});
-        matchesSignal.set(next);
         errorSignal.set(undefined);
         for (const [index, data] of revalidated) segments[index]!.data.set(data);
         // Only the depths that changed. A depth that survived holds the very
@@ -1159,9 +1186,12 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
       if (startOptions.resolve === false) {
         // The page was resolved before it was hydrated, so the entry still has
         // to be stamped — it carries the key a scroll position is filed under
-        // — but the branch on screen is already the branch for this URL.
+        // — but the branch on screen is already the branch for this URL. What
+        // the entry carries is the browser's, not the page's: `resolve()` had
+        // no entry to read it from, and a reload keeps it.
         currentKey = entry.key;
         currentIndex = entry.index;
+        stateSignal.set(entry.state);
         const { pathname, search, hash } = window.location;
         window.history.replaceState(entry, '', `${pathname}${search}${hash}`);
         return;

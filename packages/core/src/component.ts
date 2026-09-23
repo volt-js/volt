@@ -1284,11 +1284,13 @@ export function mount(
  * entries let an application that never server-renders reference the one it
  * uses and ship neither the walk nor the claim.
  *
- * Which one an application calls is decided by the same thing that decides
- * whether its templates *claim* nodes or *create* them: how it was compiled.
- * `hydrate` on the Vite plugin, which `start` turns on. A host that happens to
- * have children is not evidence either way — a `csr` route's mount point is
- * empty on a server-rendered site, and a shell with a spinner in it is not.
+ * Which one an application calls is decided by what the server did, never by
+ * looking for children. A host that happens to have children is not evidence
+ * either way — a `csr` route's mount point is empty on a server-rendered site,
+ * and a shell with a spinner in it is not. `serverRender` asks the page: the
+ * mount point of one a server rendered carries `BUILD_ATTRIBUTE`, the identity
+ * of the build that rendered it. Its templates are compiled to claim by
+ * `hydrate` on the Vite plugin, which `serverRender` turns on.
  */
 export function hydrate(
   component: ComponentType<unknown>,

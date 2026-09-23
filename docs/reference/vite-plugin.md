@@ -121,8 +121,8 @@ interface VoltPluginOptions {
   lowerSignals?: boolean;        // default: true
   runtimeModule?: string;        // default: '@voltdev/core/runtime'
   debug?: boolean;               // default: false
-  start?: ServerRenderOptions | boolean;// default: false, see `serverRender`
-  hydrate?: boolean;             // default: whether `start` is on
+  serverRender?: ServerRenderOptions | boolean; // default: false
+  hydrate?: boolean;             // default: whether `serverRender` is on
   serverModule?: string;         // default: '@voltdev/server'
   groupRowBindings?: boolean;    // default: false
   diagnostics?: boolean;         // default: true
@@ -138,12 +138,10 @@ interface VoltPluginOptions {
 }
 ```
 
-`start` wires the router, the query cache, server rendering and server
-functions together, and is the subject of [its own page](./server-render). It is off
-until a project writes it.
-
-`start` wires the router, the query cache, server rendering and server functions
-together, and is off until a project writes it. It has [a page of its
+`serverRender` wires the router, the query cache, server rendering and server
+functions together, and is off until a project writes it. With it on, `vite`
+answers pages and server-function calls through the project's server entry and
+`vite build` builds the client and then that entry. It has [a page of its
 own](./server-render), which also covers per-route rendering modes, static generation,
 partial hydration, and the `renderPath` build check that keeps a render off
 `node:` builtins.
@@ -152,9 +150,10 @@ partial hydration, and the `renderPath` build check that keeps a render off
 clones a template into fresh nodes, `true` claims the ones a server already
 printed. It is not inferable — a project may render on a server for a crawler
 and ship a client build that never hydrates — so it is asked for rather than
-guessed at. Turning `start` on turns it on too, because a server that writes
-the markup and a client that builds its own on top of it are two halves of one
-decision; pass `hydrate: false` beside `start: true` to take it back.
+guessed at. Turning `serverRender` on turns it on too, because a server that
+writes the markup and a client that builds its own on top of it are two halves
+of one decision; pass `hydrate: false` beside `serverRender: true` to take it
+back.
 
 `diagnostics` keeps the structure around an error in a production build: its
 code, the identity of what failed, and a link to the sentence the build is not

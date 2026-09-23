@@ -43,6 +43,63 @@ a client build emits render functions that clone markup rather than write it,
 so calling this under `__VOLT_SERVER__ === false` throws rather than producing
 something subtly wrong.
 
+### Render options
+
+All three renderers take these. `renderToString` adds the state script's
+`nonce`, and `renderToStream` adds that and `fallback`.
+
+| Option | Description |
+|---|---|
+| `props` | Props for the root component, as a parent would pass them |
+| `setup` | Runs inside the render's own scope, before the root is built |
+| `around` | Wraps every synchronous span of the render: the build, and each flush |
+
+**`setup`** is where a per-request provider goes. The scope a render runs in
+is created inside the call, so a context provided outside it is provided to
+nothing — and on a server, "outside it" is shared by every request in flight.
+It runs inside the request scope as well, so a `hydratable` registered there
+reaches this page's payload. [`mount`](./component#mount-component-target) and
+[`hydrate`](#hydration) take the same `setup`, for the same reason in a browser.
+
+```ts
+import { provideOutlet } from '@voltdev/core';
+import { renderToString } from '@voltdev/core/server';
+import { createRouter, provideRouter } from '@voltdev/router';
+
+const router = createRouter({ routes });
+await router.resolve(request.url);
+
+const page = await renderToString(App, {
+  setup: () => {
+    provideRouter(router);
+    provideOutlet(router.outletAt(0));
+  },
+});
+```
+
+**`around`** is for an ambient that must not outlive a span. The request a
+[server function's `guard`](./server-functions#guard) reads is one: held across
+an `await` it would be read by whichever request's work ran next, so a server
+lends it one span at a time, with `withRequest` from `@voltdev/server`:
+
+```ts
+import { withRequest } from '@voltdev/server';
+
+const around = <T>(run: () => T): T => withRequest(request, run);
+
+await around(() => router.resolve(request.url));
+const page = await renderToString(App, { around });
+```
+
+A span is where the tree does its work: a constructor, a data effect in any
+settle round, a resource's fetcher, and — in `renderToStream` — the shell and
+each late chunk. The continuation of a promise the render is waiting on runs
+between spans and is not covered, so a server function called from the `.then`
+of another is refused, and its error says where the call belongs: in a resource
+whose source is the first answer, which runs in the next round's span.
+Wrapping `resolve` covers a route's loaders because `resolve` calls every one of
+them before it first awaits.
+
 ### What it does not write
 
 A `<select>` bound with `:model` emits no selection. The selected state lives
@@ -244,10 +301,17 @@ where no bundler can drop it, and that measured at about 2 kB of a 24 kB example
 for every application that never server-renders. Two entries let an application
 reference only the one it uses.
 
-Which one to call is decided by how the build was compiled, not by looking at
-the page. A host that happens to have children is not evidence either way — a
+Which one to call is decided by what the server did, never by looking for
+children. A host that happens to have children is not evidence either way — a
 `csr` route's mount point is empty on a server-rendered site, and a shell with a
-spinner in it is not empty on any.
+spinner in it is not empty on any. An application whose every page is
+server-rendered knows the answer when it is compiled; [`serverRender`](./server-render#the-client-entry)
+asks the page, whose mount point carries `data-volt-build` — the identity of
+the build that rendered it — and `data-volt-path`, the path it rendered for,
+only when a server rendered into it.
+
+Both take `setup`, which runs inside the root's scope before the component is
+built, as it does for [the renderers](#render-options).
 
 There is also a lower-level `hydrate(host, build)` in `@voltdev/core/runtime`,
 taking a container and a render thunk. That is the entry generated code uses and
@@ -284,6 +348,12 @@ environment consumes on the server, `false` for the client, on a dev server as
 much as on a build. Without the plugin, define it yourself — a bundler that
 leaves the identifier undefined crashes on the first read.
 
+Volt's own packages read it from their built `dist`, which is why the plugin
+has every server environment compile them rather than leave them external, as
+Vite does with a dependency there by default. A package left external is
+loaded by Node with nothing substituted, and a server render under `vite` — or
+a server bundle built for Node — would throw at the first gate it reached.
+
 ## One request
 
 ```ts
@@ -301,7 +371,7 @@ await settleRequest(scope, () => {
 | Function | Description |
 |---|---|
 | `createRequestScope()` | A `RequestScope`: its own effect queues, state and pending data |
-| `settleRequest(scope, build)` | Build and flush inside `scope` until no data is outstanding |
+| `settleRequest(scope, build, around?)` | Build and flush inside `scope` until no data is outstanding, each span inside `around` |
 | `runInRequest(scope, fn)` | Run `fn` with `scope` current, and return what it returns |
 | `currentRequest()` | The scope a call is running under, or `null` |
 | `requestState(key, create)` | A symbol-keyed slot belonging to the current request |

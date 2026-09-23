@@ -590,6 +590,17 @@ export interface RenderOptions {
    * flight, which is the other half of why this exists.
    */
   setup?: () => void;
+  /**
+   * Wraps every synchronous span of the render: the build, and each flush.
+   *
+   * For an ambient that must not outlive a span — the request a server
+   * function's `guard` reads, which a server passes as
+   * `around: (run) => withRequest(request, run)`. A span is where the tree
+   * starts its work: a constructor, a data effect in any round, a late chunk
+   * being written. The continuation of a promise the render is waiting on runs
+   * between spans, interleaved with other requests', and is not covered.
+   */
+  around?: <T>(run: () => T) => T;
 }
 
 /**
@@ -629,7 +640,7 @@ export async function renderToStaticMarkup(
       options.setup?.();
       renderComponent(component, writer, options.props ?? null);
     });
-  });
+  }, options.around);
 
   const styles = runInRequest(scope, () => new Map(requestStyles()));
   runInRequest(scope, dispose);
@@ -927,7 +938,7 @@ export async function renderToString(
         options.setup?.();
         renderComponent(component, writer, options.props ?? null);
       });
-    });
+    }, options.around);
 
     // Thrown rather than returned from here, so that the one `catch` below is
     // the only place a failed render is turned into an answer.

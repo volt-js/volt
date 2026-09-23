@@ -44,12 +44,23 @@ import type { A11ySeverity, CodegenTarget, MessageCatalog } from '@voltdev/compi
 import {
   CLIENT_ID,
   SERVER_ID,
+  SHELL_ID,
   clientModule as serverRenderClientModule,
+  missingMountPoint,
   resolveServerRender,
   serverModule as serverRenderServerModule,
+  type ResolvedServerRender,
   type ServerRenderOptions,
 } from './server-render.js';
-import type { Plugin } from 'vite';
+import { previewMiddleware, serverRenderMiddleware } from './dev-server.js';
+import {
+  buildConfig,
+  pendingIdentity,
+  sessionIdentity,
+  settleIdentity,
+  takePage,
+} from './server-build.js';
+import type { Plugin, ViteDevServer } from 'vite';
 import { DecoratorError, planLowering } from './decorators.js';
 import { planServerFunctions, ServerFunctionError } from './server-functions.js';
 import { planSignalLowering } from './signals.js';
@@ -99,8 +110,11 @@ export interface VoltPluginOptions {
    * server-renders and a client that builds fresh nodes on top of the result
    * are the two halves of one decision.
    *
-   * See `ServerRenderOptions` for what an application supplies: a route table
-   * and a root component, both by path.
+   * See `ServerRenderOptions` for what an application supplies: a route table,
+   * a root component and a server entry, all by path. With it on, `vite`
+   * answers pages and server-function calls through that entry, and
+   * `vite build` builds the client into `<outDir>/client` and then the entry
+   * into `<outDir>/server`.
    */
   serverRender?: ServerRenderOptions | boolean;
   /**
@@ -221,6 +235,8 @@ const DEFAULT_MESSAGES_ID = 'virtual:volt-messages';
 const DEFAULT_INCLUDE = /\.m?ts$/;
 const DEFAULT_EXCLUDE = /[\\/]node_modules[\\/]/;
 const RUNTIME_NAMESPACE = '__volt_rt';
+/** Volt's own packages, by specifier; see `configEnvironment` for why a server compiles them. */
+const VOLT_PACKAGES = /^@voltdev\//;
 
 
 
@@ -677,12 +693,24 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
      * The answer decides behaviour, not just diagnostics: a client bundle
      * drops the request scoping and the server's flushing, and a server
      * bundle never queues `onMount`.
+     *
+     * A server environment also compiles Volt's own packages rather than
+     * leaving them external, which is Vite's default for a dependency there.
+     * Their `dist` still reads these flags, because which side a module is on
+     * is this build's answer and not the package's — and a module Vite leaves
+     * external is loaded by Node with nothing substituted, so the first gate
+     * it reaches throws. Linked from a workspace they are compiled as source
+     * anyway, which is why only an installed copy ever showed it.
      */
     configEnvironment(name, config) {
       // Vite's own default for an environment that does not say: everything
       // that is not the client consumes on a server.
       const consumer = config.consumer ?? (name === 'client' ? 'client' : 'server');
-      return { define: { __VOLT_SERVER__: JSON.stringify(consumer === 'server') } };
+      const server = consumer === 'server';
+      return {
+        define: { __VOLT_SERVER__: JSON.stringify(server) },
+        ...(server ? { resolve: { noExternal: [VOLT_PACKAGES] } } : {}),
+      };
     },
   };
 
@@ -725,7 +753,6 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
     },
 
     resolveId(id) {
-      if (serverRender && (id === SERVER_ID || id === CLIENT_ID)) return `\0${id}`;
       if (!messages) return null;
       if (id === messagesId) return resolvedMessagesId;
       // The parts, which only the module above imports — by the name a project
@@ -735,11 +762,6 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
     },
 
     async load(id) {
-      // The identity of this build, from the same options the templates are
-      // compiled with: what the server writes onto the mount point is what the
-      // client compares before it claims a node.
-      if (serverRender && id === `\0${SERVER_ID}`) return serverRenderServerModule(serverRender, identity);
-      if (serverRender && id === `\0${CLIENT_ID}`) return serverRenderClientModule(serverRender, identity);
       if (!messages || !id.startsWith(resolvedMessagesId)) return null;
       const loaded = await loadCatalog();
       if (!loaded) return null;
@@ -846,7 +868,140 @@ export function volt(options: VoltPluginOptions = {}): Plugin[] {
     },
   };
 
-  return [envPlugin, messagePlugin, templatePlugin, signalPlugin, serverPlugin, decoratorPlugin];
+  const plugins = [envPlugin, messagePlugin, templatePlugin, signalPlugin, serverPlugin, decoratorPlugin];
+  // Created only when asked for, rather than present and inert: a project that
+  // never server-renders gets no dev middleware, no second build and no
+  // generated modules, because nothing that could provide them exists.
+  if (serverRender) plugins.push(serverRenderPlugin(serverRender, identity, () => root, () => isBuild));
+  return plugins;
+}
+
+/**
+ * `serverRender`'s dev server and build: the generated modules, the middleware
+ * that answers through them, and the two builds that produce them.
+ *
+ * Shared by every environment of a build, rather than created again for each
+ * as a plugin is by default, because the two builds hand each other things:
+ * the client build's page and identity are what the server build is compiled
+ * with, and they cross from one to the other in this closure — no file is
+ * read back from disk, so a build that writes nothing works the same.
+ */
+function serverRenderPlugin(
+  options: ResolvedServerRender,
+  compiler: string,
+  root: () => string,
+  isBuild: () => boolean,
+): Plugin {
+  const session = sessionIdentity(compiler);
+  /** Settled by the client build, from its own code; see `settleIdentity`. */
+  let clientIdentity: string | null = null;
+  /** The client build's emitted page, taken out of its bundle; see `generateBundle`. */
+  let clientShell: string | null = null;
+  /** The dev server, whose HTML transform the shell goes through once; see `load`. */
+  let devServer: ViteDevServer | null = null;
+
+  const builtClient = (what: string): string => {
+    if (clientIdentity !== null) return clientIdentity;
+    throw new Error(
+      `[volt] ${what} comes from the client build, so the server has to be built after the ` +
+        'client. `vite build` builds both in that order; building the `ssr` environment on its ' +
+        'own cannot.',
+    );
+  };
+
+  return {
+    name: 'volt:server-render',
+    sharedDuringBuild: true,
+
+    config(user, env) {
+      return {
+        // Vite's own HTML answer would reach `/` before the handler could.
+        appType: 'custom',
+        ...buildConfig(user, options.entry, env.command === 'build'),
+      };
+    },
+
+    configureServer(server) {
+      devServer = server;
+      // Returned rather than installed now, which puts it after Vite's own
+      // middlewares: its client, the modules it compiles and `public/` are
+      // answered first, and only pages and server calls fall through.
+      return () => {
+        server.middlewares.use(serverRenderMiddleware(server, options.entry));
+      };
+    },
+
+    configurePreviewServer(server) {
+      // After the preview's own, like the dev server's: the client's files are
+      // answered as files, and only what is not one reaches the server build.
+      const { config } = server;
+      const directory = resolvePath(config.root, config.environments['ssr']!.build.outDir);
+      return () => {
+        server.middlewares.use(previewMiddleware(directory, options.entry));
+      };
+    },
+
+    async buildApp(builder) {
+      await builder.build(builder.environments['client']!);
+      await builder.build(builder.environments['ssr']!);
+    },
+
+    resolveId(id) {
+      return id === SERVER_ID || id === CLIENT_ID || id === SHELL_ID ? `\0${id}` : null;
+    },
+
+    async load(id) {
+      if (id === `\0${SERVER_ID}`) {
+        const identity = isBuild() ? builtClient('The identity a page is marked with') : session;
+        return serverRenderServerModule(options, identity, { dev: !isBuild() });
+      }
+      if (id === `\0${CLIENT_ID}`) {
+        return serverRenderClientModule(options, isBuild() ? pendingIdentity(compiler) : session);
+      }
+      if (id !== `\0${SHELL_ID}`) return null;
+      if (isBuild()) {
+        builtClient('The page the server renders into');
+        if (clientShell === null) {
+          throw new Error(
+            '[volt] The client build emitted no index.html, and that page is what the server ' +
+              'renders into. serverRender needs one at the project root.',
+          );
+        }
+        const missing = missingMountPoint(clientShell, 'The index.html the client build emitted');
+        if (missing !== null) throw new Error(missing);
+        return `export default ${JSON.stringify(clientShell)};`;
+      }
+      const file = join(root(), 'index.html');
+      // Watched, so an edit to the page is the page the next request gets.
+      this.addWatchFile(file);
+      const page = await readFile(file, 'utf8');
+      // Through Vite's HTML transform here, once, as the file it is — which is
+      // what puts the dev server's client in every page — and never over a
+      // render, for the reasons in `dev-server.ts`. The build does the same:
+      // its shell is the page Vite emitted, and the handler writes into it.
+      // With no dev server there is nothing to update a page or report to.
+      // Checked after, because what the handler writes into is what came out.
+      const shell = devServer ? await devServer.transformIndexHtml('/index.html', page) : page;
+      const missing = missingMountPoint(shell, file);
+      // Thrown when the module runs rather than from here: a load that fails
+      // leaves the file unwatched, and the edit that fixes it would not be
+      // seen until the dev server restarted.
+      if (missing !== null) return `throw new Error(${JSON.stringify(missing)});`;
+      return `export default ${JSON.stringify(shell)};`;
+    },
+
+    generateBundle: {
+      // After Vite's own HTML pass, which is what emits the page.
+      order: 'post',
+      handler(_output, bundle) {
+        if (!isBuild() || this.environment.config.consumer !== 'client') return;
+        // The client's own code decides the identity, so it is settled once
+        // that code exists, and written into it before it is.
+        clientIdentity = settleIdentity(compiler, bundle);
+        clientShell = takePage(bundle);
+      },
+    },
+  };
 }
 
 interface LoadedCatalog {
@@ -1037,7 +1192,7 @@ async function compileTemplates(
   code: string,
   id: string,
   build: TemplateBuild,
-): Promise<{ code: string; map: null } | null> {
+): Promise<{ code: string; map: ReturnType<MagicString['generateMap']> } | null> {
   const { target, runtimeModule, debug, groupRowBindings, a11y, catalog, catalogFile } = build;
   const { translate, watch, warn, use } = build;
   const templates = findTemplateSites(code);
@@ -1168,24 +1323,27 @@ async function compileTemplates(
     });
   }
 
-  edits.sort((a, b) => a.start - b.start);
-
-  let output = '';
-  let cursor = 0;
-  for (const edit of edits) {
-    output += code.slice(cursor, edit.start) + edit.text;
-    cursor = edit.end;
+  // Edited in place and mapped, like every other pass here. The preamble moves
+  // every line of the module down, and a transform that said it moved nothing
+  // would put a stack trace, a breakpoint and the dev server's overlay that
+  // many lines below the code that ran.
+  const s = new MagicString(code);
+  for (const edit of edits) s.overwrite(edit.start, edit.end, edit.text);
+  if (preamble.length > 0) {
+    const header =
+      `import * as ${RUNTIME_NAMESPACE} from ${JSON.stringify(runtimeModule ?? defaultRuntime(target))};\n` +
+      preamble.join('\n') +
+      '\n';
+    // Written over the module's first character rather than prepended, which
+    // is what gives it a place in the map: text that replaced part of the
+    // source is mapped to it, and an insertion is not. Code with no place is
+    // counted by whatever reads the map as part of whatever precedes it — in a
+    // bundle, another module. The render functions have no line of their own
+    // in this file, and the top of it is the honest answer.
+    s.overwrite(0, 1, header + code[0]!);
   }
-  output += code.slice(cursor);
 
-  const header =
-    preamble.length > 0
-      ? `import * as ${RUNTIME_NAMESPACE} from ${JSON.stringify(runtimeModule ?? defaultRuntime(target))};\n` +
-        preamble.join('\n') +
-        '\n'
-      : '';
-
-  return { code: header + output, map: null };
+  return { code: s.toString(), map: s.generateMap({ hires: true, source: id }) };
 }
 
 /**
@@ -1373,11 +1531,16 @@ export { compile, CompilerError };
 export { renderPath, isNodeBuiltin, type RenderPathOptions } from './render-path.js';
 
 /**
- * The two virtual modules `serverRender` serves, by the names an application
+ * The virtual modules `serverRender` serves, by the names an application
  * imports.
  *
  * Exported so a project can name them in its own entry — the server half in a
  * deployment adapter, the client half in the shell's `<script>` — without
  * hard-coding a string this file could change.
  */
-export { SERVER_ID as SERVER_MODULE_ID, CLIENT_ID as CLIENT_MODULE_ID, type ServerRenderOptions } from './server-render.js';
+export {
+  SERVER_ID as SERVER_MODULE_ID,
+  CLIENT_ID as CLIENT_MODULE_ID,
+  SHELL_ID as SHELL_MODULE_ID,
+  type ServerRenderOptions,
+} from './server-render.js';

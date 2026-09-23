@@ -1,5 +1,5 @@
 import { defineConfig } from 'vite';
-import { volt } from '@voltdev/vite-plugin';
+import { renderPath, volt } from '@voltdev/vite-plugin';
 
 export default defineConfig({
   // `serverRender: true` is the whole of the wiring. It gives this project a request
@@ -9,9 +9,14 @@ export default defineConfig({
   //
   // It also turns the plugin's `hydrate` on, because a server that writes the
   // markup and a client that builds its own on top of it are the two halves of
-  // one decision. Deleting `serverRender` puts both back: the project becomes
-  // an ordinary client-rendered application and nothing else has to change.
-  plugins: [volt({ serverRender: true })],
+  // one decision. Turning it off takes a little more than deleting it: the
+  // README says what.
+  //
+  // `renderPath()` is what keeps `server.ts` deployable to an edge runtime as
+  // the application grows: it fails the build when anything a page renders
+  // reaches a `node:` builtin, which such a runtime does not have. A
+  // `@Server()` method is the other side of the network and may import one.
+  plugins: [renderPath(), volt({ serverRender: true })],
   build: {
     target: 'esnext',
   },

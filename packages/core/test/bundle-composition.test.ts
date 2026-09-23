@@ -253,11 +253,12 @@ function share(bytes: Map<string, number>, prefixes: string[]): number {
 /**
  * The code the compiler writes into the application's own modules.
  *
- * Not taken from the map: the template transform returns no source map of its
- * own, so Vite treats it as identity and the generated header is attributed to
- * whichever original lines it happens to overlap. Compiling the same templates
- * and minifying the result the same way measures the same bytes without
- * asking the map a question it cannot answer.
+ * Not taken from the map: the template transform maps everything it hoists to
+ * the first line of the component's module, because none of it has a line of
+ * its own there, so the map can say which file those bytes are in and not
+ * which of them the compiler wrote. Compiling the same templates and minifying
+ * the result the same way measures the same bytes without asking the map a
+ * question it cannot answer.
  */
 const generated = (): number => {
   let total = 0;

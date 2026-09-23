@@ -885,11 +885,11 @@ nothing is being added to a project that was not there.
       application. `bundle-composition.test.ts` caught that when it was tried,
       which is what that file is for.
 - [x] `create-volt` generates a project that uses it, so the wiring is
-      demonstrated rather than described. The `start` template is one line of
-      configuration — `volt({ serverRender: true })` — and three routes that between
-      them use all three modes: a home page built once, a pricing page rendered
-      per request with the value the server settled on carried across in the
-      payload rather than fetched again, and a dashboard the server does not
+      demonstrated rather than described. The `server-render` template is one
+      line of configuration — `volt({ serverRender: true })` — and three routes
+      that between them use all three modes: a home page that depends on
+      nothing in the request, a pricing page rendered per request with its
+      loader's answer in the markup, and a dashboard the server does not
       render at all. A template that demonstrated only server rendering would
       demonstrate half of it; the point is that the choice survives per route,
       and that deleting `start: true` leaves an ordinary client-rendered
@@ -899,36 +899,56 @@ nothing is being added to a project that was not there.
       import, which is the shape a host expects and the constraint the edge
       check enforces. It type-checks as generated, which is what caught the
       three things wrong with it when it was written.
-- [ ] It runs end to end. Everything above was built and tested piece by
+- [x] It runs end to end. Everything above was built and tested piece by
       piece — the handler against the router's real matching, the template
       through the server-function pass — and nothing built the template and
-      asked it for a page. Doing that finds four things missing, so the pricing
-      page above is the intent rather than what happens:
+      asked it for a page. Doing that found five things missing, and
+      `create-volt/test/server-render-e2e.test.ts` is now what asks: it builds
+      the template through its own config, asks the server bundle for every
+      route, hydrates the pricing page in a DOM and navigates from it, and asks
+      the dev server for a page.
 
-      - Routes are not part of the server render. The router mounts each
-        matched route into its parent's outlet in the browser, so rendering the
-        root on a server produces the shell with an empty outlet; and the
-        template never calls `router.start`, so its pages do not appear in the
-        browser either. Rendering a route on a server means rendering the
-        matched branch outlet by outlet inside one request, and the client
-        router attaching to those segments on its first navigation instead of
-        mounting over them.
-      - The dev server does not route through the handler. Under `vite` the
-        handler is never called, and a server-function call is answered 404.
-      - `vite build` builds the client alone; the server entry is built only
-        by hand, with `vite build --ssr server.ts`.
-      - `createRouter` reads `window.location` when it is created, so the
-        template's module-scope router throws as the server bundle loads. A
-        router at module scope on a server would be shared by every request in
-        flight anyway, so the fix is a router made per request, not a guard
-        around `window`.
-      - Data a page fetches while rendering does not reach the page. `guard`
-        sees a request only when a function arrives as a call, so the pricing
-        page's call during a server render is refused; and the render waits
-        only for data it was told about, which a promise started from a
-        constructor is not.
+      Routes are part of the server render because an outlet is a place in a
+      template: `:outlet` compiles to a hole the router fills per depth, so a
+      server writes the whole branch in one walk and a hydrating client claims
+      the leaf inside the layout the way it claims a `:if`. `createRouter`
+      reads no `window`; `resolve()` says where it is, the handler makes one
+      router per request, and a component finds it with `useRouter()`. `vite`
+      answers through the server entry, after Vite's own middlewares. `vite
+      build` builds the client and then the server, which is built with the
+      client's page and its identity — the compiler's hash beside a hash of the
+      client's code, because the compiler's alone is the same for two deploys
+      of different templates. And data reaches the page through a loader, which
+      has answered before the first byte, with the request lent to `resolve()`
+      and to every synchronous span of the render through `around`, so a
+      server function called from either gets past its guard.
 
-      A fifth was found on the way and fixed: `@voltdev/core/server` did not
+      Asking with Volt's packages installed as a registry installs them found
+      two more. A server environment left them for Node to load with their
+      build flags unsubstituted, so `vite` threw on the first server render;
+      every server environment now compiles them. And the client build
+      published the shell as `dist/client/index.html`, which a host that serves
+      files first sends for `/` unrendered; it is in the server bundle only.
+      Two things are not done: loader data is not carried to the browser, which
+      runs the pricing page's loader again when it boots, and `vite build` does
+      not write the `ssg` page to a file.
+
+      Asking whether the client really claims what it is sent found five
+      more, each now a test that failed first. The handler spliced the render
+      into the shell with `String.replace`, which reads `$$` and `$'` in a
+      replacement as patterns, so a page mentioning a price lost its dollars
+      and one quoting `$'` pasted the shell's script into itself. A shell
+      whose mount point was spelled other than `<div id="app"></div>` had the
+      render appended after `</html>`, where the client never looked, and the
+      reader got two copies; the build and the dev server now refuse it. A
+      page from another build was built afresh but its state payload was
+      still adopted, and a page a host rendered for another path (a rewrite)
+      was claimed by the route at the address — the mount point now names its
+      path too, and the client claims only its own build's page for the path
+      it is at. And a reloaded page that was claimed said `state()` was
+      undefined where a page built in the browser read its history entry.
+
+      One more was found earlier and fixed: `@voltdev/core/server` did not
       export the `defineComponent` every lowered component imports in a server
       build, so no server build of a decorated component could succeed.
       `component-server-bundle.test.ts` builds one through the plugin now.

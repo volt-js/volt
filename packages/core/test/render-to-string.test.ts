@@ -585,3 +585,73 @@ describe('a render that did not finish has no page', () => {
     expect(cleaned).toEqual(['leaky']);
   });
 });
+
+describe('what a render wraps around its passes', () => {
+  /**
+   * An ambient in the shape `withRequest` gives a server function: visible
+   * while `run` runs and put back afterwards.
+   */
+  function ambient(): { around: <T>(run: () => T) => T; read: () => boolean } {
+    let visible = false;
+    return {
+      around: (run) => {
+        const previous = visible;
+        visible = true;
+        try {
+          return run();
+        } finally {
+          visible = previous;
+        }
+      },
+      read: () => visible,
+    };
+  }
+
+  for (const [name, render] of [
+    ['renderToString', renderToString],
+    ['renderToStaticMarkup', renderToStaticMarkup],
+  ] as const) {
+    it(`is entered by ${name} for the build and for every flush, and between none of them`, async () => {
+      const { around, read } = ambient();
+      const seen: string[] = [];
+
+      @Component({ selector: `v-spans-${name.toLowerCase()}`, render: compileTemplate(`<p>{ n.get() }</p>`) })
+      class Spans {
+        n = new Signal.State(0);
+        constructor() {
+          seen.push(`build ${read()}`);
+          // What a server function called from a resource's fetcher meets: a
+          // data effect that runs in the flush, and runs again in a later
+          // round once the answer it depends on has landed.
+          dataEffect(() => {
+            const n = this.n.get();
+            seen.push(`flush ${n} ${read()}`);
+            if (n === 2) return;
+            trackRequestData(
+              Promise.resolve().then(() => {
+                seen.push(`answer ${n} ${read()}`);
+                this.n.set(n + 1);
+              }),
+            );
+          });
+        }
+      }
+
+      await render(Spans, {
+        setup: () => seen.push(`setup ${read()}`),
+        around,
+      });
+
+      expect(seen).toEqual([
+        'setup true',
+        'build true',
+        'flush 0 true',
+        'answer 0 false',
+        'flush 1 true',
+        'answer 1 false',
+        'flush 2 true',
+      ]);
+      expect(read()).toBe(false);
+    });
+  }
+});

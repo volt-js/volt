@@ -15,7 +15,15 @@ import { describe, expect, it } from 'vitest';
 import { build as esbuildBuild, transformSync } from 'esbuild';
 import { resolve } from 'node:path';
 import { volt } from '../src/index.js';
-import { CLIENT_ID, SERVER_ID, clientModule, resolveServerRender, serverModule } from '../src/server-render.js';
+import {
+  CLIENT_ID,
+  SERVER_ID,
+  SHELL_ID,
+  clientModule,
+  resolveServerRender,
+  serverModule,
+} from '../src/server-render.js';
+import { guard, withRequest } from '../../server/src/guard.js';
 
 /** What a build calls itself; the plugin hands the real hash over. */
 const BUILD = 'test-build-hash';
@@ -46,6 +54,8 @@ describe('staying a choice', () => {
     const plugins = volt();
     expect(await loadVirtual(plugins, SERVER_ID)).toBeNull();
     expect(await loadVirtual(plugins, CLIENT_ID)).toBeNull();
+    expect(await loadVirtual(plugins, SHELL_ID)).toBeNull();
+    expect(plugins.map((plugin) => plugin.name)).not.toContain('volt:server-render');
   });
 
   // The other half of the same promise — that a project which never asked for
@@ -104,6 +114,16 @@ describe('what `serverRender` generates', () => {
     expect(code).toContain('return functions(request)');
   });
 
+  it('takes its shell from the client build rather than from its caller', () => {
+    // A shell handed over at runtime was the source `index.html`, whose only
+    // script is `/src/main.ts` — a file a build does not produce. The page the
+    // handler writes into is a module now, which the plugin serves from what
+    // the client build emitted.
+    const code = serverModule(wiring, BUILD);
+    expect(code).toContain(`import shell from ${JSON.stringify(SHELL_ID)}`);
+    expect(code).not.toContain('setShell');
+  });
+
   it('sends a csr route its shell without rendering it', () => {
     const code = serverModule(wiring, BUILD);
     expect(code).toContain("if (mode === 'csr') return page('', '', '', 200)");
@@ -124,6 +144,7 @@ describe('what a project supplies', () => {
       root: '/src/app.js',
       defaultMode: 'ssr',
       base: '/_volt/',
+      entry: '/server.ts',
     });
     expect(resolveServerRender({ routes: '/app/table.js', defaultMode: 'csr' })).toMatchObject({
       routes: '/app/table.js',
@@ -188,12 +209,19 @@ const TABLE = `
         { path: 'about', component: component(1) },
         { path: 'pricing', component: component(1), mode: 'ssr' },
         { path: 'dashboard', component: component(1), mode: 'csr' },
+        { path: 'account', component: component(1), loader: () => globalThis.__loader?.() },
       ],
     },
     { path: '/bare' },
     { path: '/_voltage', component: component(1) },
+    { path: '/q&a', component: component(1) },
   ];
 `;
+
+/** The page the plugin would serve as `virtual:volt/shell` in a build. */
+const SHELL =
+  '<!doctype html><html><head></head><body><div id="app"></div>' +
+  '<script type="module" src="/src/main.ts"></script></body></html>';
 
 async function handlerFor(
   overrides: {
@@ -201,18 +229,20 @@ async function handlerFor(
     interactive?: readonly boolean[];
     /** Whether the root component is. Default true, as an unasked component was. */
     root?: boolean;
-    render?: () => unknown;
+    render?: (options: RenderOptions) => unknown;
+    /** The dev server's variant, which throws a failure for the overlay. */
+    dev?: boolean;
   } = {},
 ): Promise<{
   handler: (request: Request) => Promise<Response>;
-  setShell: (html: string) => void;
   calls: string[];
 }> {
   const calls: string[] = [];
   const wiring = resolveServerRender(true);
 
   const stubs: Record<string, string> = {
-    '@voltdev/core/server': 'export const renderToString = async () => (globalThis.__render());',
+    '@voltdev/core/server':
+      'export const renderToString = async (component, options) => (globalThis.__render(options));',
     // `needsHydration` is the one answer this suite drives, so it is the one
     // thing wrapped; everything else a router asks of the component runtime is
     // the real thing, because a stub that disagreed with it is exactly the
@@ -226,7 +256,12 @@ async function handlerFor(
     '@voltdev/server': `
       export { isServerCall } from ${JSON.stringify(SERVER_HANDLER)};
       export const createHandler = () => (request) => globalThis.__functions(request);
+      // Handed through rather than bundled, so the guard this suite imports and
+      // the one the handler makes the request visible to are one module.
+      export const withRequest = (request, run) => globalThis.__withRequest(request, run);
     `,
+    // What the plugin serves from the client build's emitted page.
+    [SHELL_ID]: `export default ${JSON.stringify(SHELL)};`,
     [wiring.routes]: TABLE,
     // Marked, because the root is asked alongside the route's components and
     // the answers are positional: without this it would share the layout's.
@@ -234,7 +269,11 @@ async function handlerFor(
   };
 
   const built = await esbuildBuild({
-    stdin: { contents: serverModule(wiring, BUILD), resolveDir: '/', loader: 'js' },
+    stdin: {
+      contents: serverModule(wiring, BUILD, { dev: overrides.dev }),
+      resolveDir: '/',
+      loader: 'js',
+    },
     bundle: true,
     write: false,
     format: 'esm',
@@ -264,10 +303,11 @@ async function handlerFor(
   });
 
   const globals = globalThis as Record<string, unknown>;
-  globals['__render'] = () => {
+  globals['__withRequest'] = withRequest;
+  globals['__render'] = (options: RenderOptions) => {
     calls.push('render');
     return (
-      overrides.render?.() ?? {
+      overrides.render?.(options) ?? {
         status: 200,
         html: '<p>rendered</p>',
         state: '<script>state</script>',
@@ -284,16 +324,15 @@ async function handlerFor(
   };
 
   const url = `data:text/javascript;base64,${Buffer.from(built.outputFiles[0]!.text).toString('base64')}`;
-  const module = (await import(url)) as {
-    handler: (request: Request) => Promise<Response>;
-    setShell: (html: string) => void;
-  };
-  return { handler: module.handler, setShell: module.setShell, calls };
+  const module = (await import(url)) as { handler: (request: Request) => Promise<Response> };
+  return { handler: module.handler, calls };
 }
 
-const SHELL =
-  '<!doctype html><html><head></head><body><div id="app"></div>' +
-  '<script type="module" src="/src/main.ts"></script></body></html>';
+/** What the generated handler hands the renderer, as far as this suite reads it. */
+interface RenderOptions {
+  around: <T>(run: () => T) => T;
+  setup: () => void;
+}
 
 describe('the handler, running', () => {
   it('answers a server-function call before the route table can 404 it', async () => {
@@ -312,8 +351,7 @@ describe('the handler, running', () => {
   it('routes a page whose path merely starts like the function base as a page', async () => {
     // A prefix test on '/_volt' would hand this to the function handler, which
     // answers 405 to a GET — so a route the application declared would not load.
-    const { handler, setShell, calls } = await handlerFor();
-    setShell(SHELL);
+    const { handler, calls } = await handlerFor();
     const response = await handler(new Request('http://x/_voltage'));
 
     expect(response.status).toBe(200);
@@ -324,8 +362,7 @@ describe('the handler, running', () => {
   it('does not treat a GET to the function base as a function call', async () => {
     // A reader who types a function URL into the address bar is navigating, not
     // calling — there is no such page, so the answer is the not-found one.
-    const { handler, setShell, calls } = await handlerFor();
-    setShell(SHELL);
+    const { handler, calls } = await handlerFor();
     const response = await handler(new Request('http://x/_volt/save'));
 
     expect(response.status).toBe(404);
@@ -333,31 +370,30 @@ describe('the handler, running', () => {
   });
 
   it('renders a route into the shell', async () => {
-    const { handler, setShell } = await handlerFor();
-    setShell(SHELL);
+    const { handler } = await handlerFor();
     const response = await handler(new Request('http://x/about'));
     const html = await response.text();
 
     expect(response.status).toBe(200);
     // The mount point says which build filled it, which is the only evidence
     // a client has that there is anything here to attach to.
-    expect(html).toContain(`<div id="app" data-volt-build="${BUILD}"><p>rendered</p>`);
+    expect(html).toContain(
+      `<div id="app" data-volt-build="${BUILD}" data-volt-path="/about"><p>rendered</p>`,
+    );
     expect(html).toContain('<script>state</script>');
   });
 
   it('renders the index route', async () => {
     // The route at the parent's own URL — matched through the real router's
     // index handling, which is exactly what the stub used to pretend.
-    const { handler, setShell, calls } = await handlerFor();
-    setShell(SHELL);
+    const { handler, calls } = await handlerFor();
     const response = await handler(new Request('http://x/'));
     expect(response.status).toBe(200);
     expect(calls).toContain('render');
   });
 
   it('sends a csr route its shell and never calls the renderer', async () => {
-    const { handler, setShell, calls } = await handlerFor();
-    setShell(SHELL);
+    const { handler, calls } = await handlerFor();
     const response = await handler(new Request('http://x/dashboard'));
 
     expect(response.status).toBe(200);
@@ -368,8 +404,7 @@ describe('the handler, running', () => {
   it('answers a url the table does not match with the shell and a 404', async () => {
     // What the real `matchRoutes` answers for nothing is an empty array, and an
     // empty array is truthy. A handler testing `!matches` renders this URL.
-    const { handler, setShell, calls } = await handlerFor();
-    setShell(SHELL);
+    const { handler, calls } = await handlerFor();
     const response = await handler(new Request('http://x/nowhere'));
 
     expect(response.status).toBe(404);
@@ -384,6 +419,83 @@ describe('the handler, running', () => {
     const response = await handler(new Request('http://x/about'));
     expect(response.status).toBe(500);
   });
+
+  it('turns a loader that threw into a 500 that says nothing about it', async () => {
+    // What a loader's error says — a driver's message, a stack — is not for
+    // whoever asked for the page.
+    const globals = globalThis as Record<string, unknown>;
+    globals['__loader'] = () => {
+      throw new Error('connection refused at 10.0.0.7');
+    };
+    try {
+      const { handler, calls } = await handlerFor();
+      const response = await handler(new Request('http://x/account'));
+      expect(response.status).toBe(500);
+      expect(await response.text()).not.toContain('10.0.0.7');
+      expect(calls).not.toContain('render');
+    } finally {
+      delete globals['__loader'];
+    }
+  });
+
+  it('throws either failure under a dev server, where the overlay shows it', async () => {
+    // The person who asked wrote the code, and a bare 500 sends them to the
+    // terminal to find out which line it was.
+    const broken = new Error('render failed');
+    const rendering = await handlerFor({
+      dev: true,
+      render: () => ({ status: 500, error: broken, html: null, state: null, styles: new Map() }),
+    });
+    await expect(rendering.handler(new Request('http://x/about'))).rejects.toBe(broken);
+
+    const globals = globalThis as Record<string, unknown>;
+    const refused = new Error('loader failed');
+    globals['__loader'] = () => {
+      throw refused;
+    };
+    try {
+      const loading = await handlerFor({ dev: true });
+      await expect(loading.handler(new Request('http://x/account'))).rejects.toBe(refused);
+    } finally {
+      delete globals['__loader'];
+    }
+  });
+});
+
+describe('the request a page is rendered for', () => {
+  it('is the one a loader and the render show a guard, and only while they run', async () => {
+    // A server function called during a render is a direct call on the server,
+    // so nothing but the handler can say which request it belongs to. A
+    // loader runs before the render and inside `resolve()`, so that has to be
+    // wrapped as well as the render itself.
+    const seen: string[] = [];
+    const ask = (step: string) =>
+      guard((request) => {
+        seen.push(`${step} ${request.headers.get('x-user')}`);
+        return true;
+      });
+    const globals = globalThis as Record<string, unknown>;
+    globals['__loader'] = () => ask('loader');
+
+    try {
+      const { handler } = await handlerFor({
+        render: (options) => {
+          void options.around(() => ask('render'));
+          return undefined;
+        },
+      });
+      const response = await handler(
+        new Request('http://x/account', { headers: { 'x-user': 'ada' } }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(seen).toEqual(['loader ada', 'render ada']);
+      // Nothing of the request outlives the spans it was lent to.
+      expect(() => guard(() => true)).toThrow(/outside the first statement/);
+    } finally {
+      delete globals['__loader'];
+    }
+  });
 });
 
 describe('declining to ship the JavaScript', () => {
@@ -391,8 +503,7 @@ describe('declining to ship the JavaScript', () => {
     // Partial hydration, once the boundary is known. A page of prose and links
     // has no binding, no listener, no block and no child component, so it does
     // not ask for the bundle that would attach them.
-    const { handler, setShell } = await handlerFor({ interactive: [false, false], root: false });
-    setShell(SHELL);
+    const { handler } = await handlerFor({ interactive: [false, false], root: false });
     const html = await (await handler(new Request('http://x/about'))).text();
 
     expect(html).not.toContain('<script type="module"');
@@ -404,8 +515,7 @@ describe('declining to ship the JavaScript', () => {
   });
 
   it('keeps it for a route that has', async () => {
-    const { handler, setShell } = await handlerFor({ interactive: [true, true] });
-    setShell(SHELL);
+    const { handler } = await handlerFor({ interactive: [true, true] });
     const html = await (await handler(new Request('http://x/pricing'))).text();
     expect(html).toContain('<script type="module" src="/src/main.ts"></script>');
   });
@@ -413,8 +523,7 @@ describe('declining to ship the JavaScript', () => {
   it('keeps it for a csr route, which is nothing but JavaScript', async () => {
     // The shell is all a `csr` route gets, and removing the script from it would
     // leave a blank page for ever.
-    const { handler, setShell } = await handlerFor({ interactive: [false, false], root: false });
-    setShell(SHELL);
+    const { handler } = await handlerFor({ interactive: [false, false], root: false });
     const html = await (await handler(new Request('http://x/dashboard'))).text();
     expect(html).toContain('<script type="module"');
   });
@@ -422,8 +531,7 @@ describe('declining to ship the JavaScript', () => {
   it('keeps it for a url the table did not match', async () => {
     // Nothing was matched, so nothing said the page is static — and the
     // application's own not-found route still has to render.
-    const { handler, setShell } = await handlerFor({ interactive: [false, false], root: false });
-    setShell(SHELL);
+    const { handler } = await handlerFor({ interactive: [false, false], root: false });
     const html = await (await handler(new Request('http://x/nowhere'))).text();
     expect(html).toContain('<script type="module"');
   });
@@ -434,15 +542,13 @@ describe('what counts as having nothing to attach', () => {
     // A static layout around a dynamic page. The outlet renders the leaf's
     // markup inside the layout's, so one binding anywhere on the way down is a
     // page that has to wake up.
-    const { handler, setShell } = await handlerFor({ interactive: [false, true] });
-    setShell(SHELL);
+    const { handler } = await handlerFor({ interactive: [false, true] });
     const html = await (await handler(new Request('http://x/pricing'))).text();
     expect(html).toContain('<script type="module"');
   });
 
   it('is still something when the dynamic one is the layout', async () => {
-    const { handler, setShell } = await handlerFor({ interactive: [true, false] });
-    setShell(SHELL);
+    const { handler } = await handlerFor({ interactive: [true, false] });
     const html = await (await handler(new Request('http://x/pricing'))).text();
     expect(html).toContain('<script type="module"');
   });
@@ -451,7 +557,6 @@ describe('what counts as having nothing to attach', () => {
     // An application whose only binding is in its own navigation was being
     // sent a page that could never attach it: the root was never asked.
     const dynamic = await handlerFor({ interactive: [false, false], root: true });
-    dynamic.setShell(SHELL);
     expect(await (await dynamic.handler(new Request('http://x/bare'))).text()).toContain(
       '<script type="module"',
     );
@@ -461,7 +566,6 @@ describe('what counts as having nothing to attach', () => {
     // "No component to ask" used to mean unknown, and unknown meant ship the
     // JavaScript. There is always something to ask now.
     const still = await handlerFor({ interactive: [false, false], root: false });
-    still.setShell(SHELL);
     expect(await (await still.handler(new Request('http://x/bare'))).text()).not.toContain(
       '<script type="module"',
     );
@@ -513,11 +617,14 @@ describe('claiming a page, or building it', () => {
     expect(code).toContain('provideOutlet(router.outletAt(0))');
   });
 
-  it('imports no hydration walk at all where nothing is ever server-rendered', () => {
+  it('can still claim under a `csr` default, where a route may ask the server', () => {
+    // The default is the fallback, and a route declaring `ssr` is rendered by
+    // the server all the same. `claim.test.ts` runs the page this shortcut
+    // used to throw away.
     const code = clientModule(resolveServerRender({ defaultMode: 'csr' }), 'build-one');
 
-    expect(code).not.toContain('hydrate');
-    expect(code).toContain('mount(App, host, { setup })');
+    expect(code).toContain('getAttribute(BUILD_ATTRIBUTE) === "build-one"');
+    expect(code).toContain('hydrate(App, host, { setup })');
   });
 
   it('marks the mount point with the same identity the client compares', () => {
@@ -526,6 +633,42 @@ describe('claiming a page, or building it', () => {
 
     expect(server).toContain('const BUILD = "build-one"');
     expect(client).toContain('"build-one"');
+  });
+});
+
+describe('the page a client claims', () => {
+  it('is the render byte for byte, whatever the render wrote', async () => {
+    // `$$`, `$&`, `` $` `` and `$'` mean something to `String.replace` even
+    // when the pattern is a string. A page about prices, a formula in `$$`,
+    // a stylesheet with a `content: "$'"` — spliced in as a replacement, each
+    // is rewritten on the way out: `$$` loses a dollar, `$'` pastes in the
+    // rest of the shell. The client claims the static text as the server
+    // wrote it and never writes it again, and adopts the payload's values as
+    // they arrived.
+    const text = "$$ E = mc^2 $$, $& and $' and $`";
+    const state = `<script type="application/json" data-volt-state>{"note":"${text}"}</script>`;
+    const css = `p::after { content: "${text}"; }`;
+    const { handler } = await handlerFor({
+      render: () => ({ status: 200, html: `<p>${text}</p>`, state, styles: new Map([['p', css]]) }),
+    });
+    const html = await (await handler(new Request('http://x/about'))).text();
+
+    expect(html).toContain(
+      `<div id="app" data-volt-build="${BUILD}" data-volt-path="/about"><p>${text}</p></div>${state}`,
+    );
+    expect(html).toContain(`<style>${css}</style></head>`);
+    // Once: `$'` would have written the shell's own script into the page again.
+    expect(html.match(/<script type="module"/g)).toHaveLength(1);
+  });
+
+  it('names the path it was rendered for, as the parser will hand it back', async () => {
+    // The client compares this with `location.pathname` before it claims a
+    // node. A path keeps its `&`, and an attribute would read `&a…` as the
+    // start of a character reference.
+    const { handler } = await handlerFor();
+    const html = await (await handler(new Request('http://x/q&a'))).text();
+
+    expect(html).toContain(`<div id="app" data-volt-build="${BUILD}" data-volt-path="/q&amp;a">`);
   });
 });
 

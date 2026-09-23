@@ -189,11 +189,13 @@ async function invoke(
   options: HandlerOptions,
 ): Promise<Response> {
   try {
-    // Constructed per call rather than once, so nothing a method assigns to
-    // `this` outlives the request that assigned it. A server function's class
-    // is a namespace; it is not a place to keep a session.
-    const instance = new (fn.target as new () => Record<string, unknown>)();
-    const method = instance[fn.method] as (...rest: unknown[]) => Promise<unknown>;
+    // Called with no instance: registering the method made every call to it
+    // construct one of its own, so nothing a method assigns to `this` outlives
+    // the request that assigned it — a POST here and a direct call during a
+    // server render alike. See `runPerCall` in `registry.ts`.
+    const method = (fn.target.prototype as Record<string, unknown>)[fn.method] as (
+      ...rest: unknown[]
+    ) => Promise<unknown>;
 
     // The wire format carries values, not a signature, and nothing upstream
     // has checked that the caller sent the arguments this method takes. A
@@ -220,7 +222,7 @@ async function invoke(
 
     // `withRequest` covers the synchronous prologue only, which is the entire
     // window in which `guard` may read the request. See `guard.ts`.
-    const result = await withRequest(request, () => method.apply(instance, args));
+    const result = await withRequest(request, () => method(...args));
 
     return new Response(JSON.stringify({ value: toWire(result, 'the return value') }), {
       status: 200,

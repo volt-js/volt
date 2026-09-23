@@ -532,6 +532,14 @@ export function renderToStream(
   /** Assigned once the controller exists; see `start`. */
   let failStream: (error: unknown) => void = () => {};
 
+  const around = options.around;
+  /**
+   * A synchronous span of the render: the shell's walk and flush, a late chunk
+   * being written, a flush after one. The waits between them are not spans,
+   * and nothing is entered for them.
+   */
+  const span = <T>(run: () => T): T => runInRequest(scope, around ? () => around(run) : run);
+
   const send = (html: string): void => {
     if (html === '' || sink === null) return;
     sink.enqueue(encoder.encode(html));
@@ -682,7 +690,7 @@ export function renderToStream(
       // stream open long enough for its state to be sent.
       for (const work of scope.pending) hold(work);
       scope.pending = [];
-      runInRequest(scope, () => {
+      span(() => {
         while (collector.ready.length > 0) html += chunkFor(collector.ready.shift()!);
       });
       send(html);
@@ -692,7 +700,7 @@ export function renderToStream(
       // that has to happen before the emptiness test below: otherwise the inner
       // boundary is registered, never run, and then waited on for ever, and the
       // response never closes.
-      runInRequest(scope, flushSync);
+      span(flushSync);
       for (const work of scope.pending) hold(work);
       scope.pending = [];
       if (live.size === 0 && collector.outstanding === 0) break;
@@ -700,7 +708,7 @@ export function renderToStream(
       // nothing else runs — so this cannot miss a wake it was told about.
       await collector.idle();
       if (stopped) return;
-      runInRequest(scope, flushSync);
+      span(flushSync);
     }
     send(epilogue());
     finish();
@@ -729,7 +737,7 @@ export function renderToStream(
         // controller and in the same shape as a boundary's answer.
         collector.emit = (id, out, op) => send(replacement(id, out, op));
 
-        runInRequest(scope, () => {
+        span(() => {
           requestState(COLLECTOR, () => collector);
           createRoot((disposeRoot) => {
             dispose = disposeRoot;
@@ -740,6 +748,7 @@ export function renderToStream(
               if (shellFlushed) failStream(error);
               else if (shellError === null) shellError = { error };
             });
+            options.setup?.();
             renderComponent(component, writer, options.props ?? null);
           });
           flushSync();

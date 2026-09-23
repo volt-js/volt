@@ -74,22 +74,33 @@ data behind them in [the query cache](./query). Uses
 
 [`serverRender`](./server-render): server rendering, per-route rendering modes and server
 functions, wired by one line of configuration — `volt({ serverRender: true })`.
+Beside it the config runs [`renderPath()`](./server-render#the-edge-check), so a
+build fails when anything a page renders reaches a `node:` builtin, which an
+edge runtime does not have.
 
-Its three routes use all three modes: a home page built once, a pricing page
-rendered per request with the value the server settled on carried to the client
-in the page, and a dashboard the server does not render at all. A template that
+Its three routes use all three modes: a home page that depends on nothing in
+the request, a pricing page rendered per request with its loader's answer in
+the markup, and a dashboard the server does not render at all. A template that
 demonstrated only server rendering would demonstrate half of the promise; the
 point is that the choice survives route by route.
 
 `server.ts` is the deployable entry — a `(Request) => Promise<Response>` with no
-`node:` import, which is the shape an edge host expects. `src/volt-server-render.d.ts`
-declares the two virtual modules the plugin generates, so the project
-type-checks without the plugin running. Delete `serverRender: true` and it becomes an
-ordinary client-rendered project with nothing else to change.
+`node:` import, which is the shape an edge host expects. `pnpm dev` answers
+every page and every server-function call with it, and `pnpm build` builds the
+client into `dist/client` and then the entry into `dist/server/server.js`.
+`src/volt-server-render.d.ts` declares the three virtual modules the plugin
+generates, so the project type-checks without the plugin running. Delete
+`serverRender: true` and it becomes an ordinary client-rendered project with
+nothing else to change.
 
-**It does not run as a server yet.** Its dev server renders every page in the
-browser, its build produces the client alone, and its server entry cannot load
-its router on a server — see [the status of `serverRender`](./server-render).
+It runs end to end: a test in this repository generates it, installs Volt's
+built packages into it, builds it, serves every page, hydrates one and
+navigates from it, and asks its dev server for a page — see
+[the example](./server-render#the-example). Two things are not done yet. The
+pricing page's loader data is not carried to the browser, so the browser asks
+for the plan again when the page boots; and the build does not write the `ssg`
+home page to a file — the server renders it per request, complete, as it does
+the pricing page.
 
 ## Availability
 

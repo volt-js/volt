@@ -1,4 +1,5 @@
 import { defineRoutes } from '@voltdev/router';
+import { currentPlan } from './api.js';
 import { Shell } from './shell.js';
 import { Home } from './home.js';
 import { Pricing } from './pricing.js';
@@ -24,7 +25,10 @@ export const routes = defineRoutes([
     mode: 'ssg',
     children: [
       { index: true, component: Home },
-      { path: 'pricing', component: Pricing, mode: 'ssr' },
+      // One call on both sides of the network: a direct method call on the
+      // server, where the page's request is what its guard reads, and a POST
+      // from the browser.
+      { path: 'pricing', component: Pricing, mode: 'ssr', loader: () => currentPlan() },
       { path: 'dashboard', component: Dashboard, mode: 'csr' },
     ],
   },

@@ -119,6 +119,14 @@ synchronously: once a body has awaited anything, another call may be the one in
 flight, and a guard that read the request then would authorise against someone
 else's cookies. Called anywhere else, it throws and says so.
 
+**During a server render a server function is a direct call**, and no request
+arrives with it. `withRequest(request, run)` lends the page's request to `run`,
+synchronously, and a server that renders passes it as the render's
+[`around`](./server#render-options) so each span of the render reaches its
+guards with the request behind it. [`serverRender`](./server-render#data-during-a-render)
+does this for you. A call made from a promise's continuation runs outside every
+span and is refused.
+
 ## Errors
 
 ```ts

@@ -34,9 +34,12 @@ import {
   Component,
   STATE_ATTRIBUTE,
   Signal,
+  createContext,
   dataEffect,
   hydratable,
+  provideContext,
   trackRequestData,
+  useContext,
 } from '@voltdev/core';
 import {
   MarkupWriter,
@@ -625,5 +628,117 @@ describe('a boundary inside a boundary', () => {
     // evidence — asserting the fallback is absent would be asserting the
     // opposite of how the protocol works.
     expect(text).toContain('inner pending');
+  });
+});
+
+describe('what a stream runs its passes inside', () => {
+  it('runs `setup` inside the render, before the root is built', async () => {
+    // Otherwise a per-request provider — the router, its outlet — has nowhere
+    // to be installed, and a streamed page renders every route's default.
+    const Theme = createContext('none');
+
+    @Component({ selector: 'v-themed', render: compileTemplate(`<p>{ theme }</p>`) })
+    class Themed {
+      theme = useContext(Theme);
+    }
+
+    const html = await whole(renderToStream(Themed, { setup: () => provideContext(Theme, 'dark') }));
+
+    expect(html).toContain('<p>dark</p>');
+  });
+
+  it('enters `around` for the shell, for every flush after it and for every late chunk', async () => {
+    let visible = false;
+    const around = <T,>(run: () => T): T => {
+      const previous = visible;
+      visible = true;
+      try {
+        return run();
+      } finally {
+        visible = previous;
+      }
+    };
+    const seen: string[] = [];
+    const note = (what: string): void => {
+      seen.push(`${what} ${visible}`);
+    };
+
+    @Component({
+      selector: 'v-streamed-spans',
+      render: compileTemplate(`<main><h1>spans</h1>{ body }</main>`),
+    })
+    class Streamed {
+      n = new Signal.State(0);
+
+      inner = boundary(
+        () => {
+          note('inner work');
+          return Promise.resolve('inner');
+        },
+        {
+          content: (value: string, out: MarkupWriter) => {
+            note('inner content');
+            out.raw(`<i>${value}</i>`);
+          },
+        },
+      );
+
+      // Each of the three places a streamed page can start a call: the walk
+      // and the flush that goes out with the shell, a chunk being written (a
+      // component constructed in it is built there), and the flush after one
+      // that starts the boundary a chunk claimed.
+      body = boundary(
+        () => {
+          note('outer work');
+          return Promise.resolve('outer');
+        },
+        {
+          content: (value: string, out: MarkupWriter) => {
+            note('outer content');
+            out.raw(`<o>${value}</o>`);
+            out.child(this.inner);
+          },
+        },
+      );
+
+      constructor() {
+        note('build');
+        // And the flush after a wake: data nobody declared a boundary for
+        // still holds the stream open, and an effect reading it runs again
+        // once it lands.
+        dataEffect(() => {
+          const n = this.n.get();
+          note(`effect ${n}`);
+          if (n === 0) {
+            trackRequestData(
+              Promise.resolve().then(() => {
+                note('answer');
+                this.n.set(1);
+              }),
+            );
+          }
+        });
+      }
+    }
+
+    const html = await whole(
+      renderToStream(Streamed, { setup: () => note('setup'), around }),
+    );
+
+    expect(html).toContain('<i>inner</i>');
+    expect([...seen].sort()).toEqual(
+      [
+        'setup true',
+        'build true',
+        'effect 0 true',
+        'outer work true',
+        'answer false',
+        'effect 1 true',
+        'outer content true',
+        'inner work true',
+        'inner content true',
+      ].sort(),
+    );
+    expect(visible).toBe(false);
   });
 });

@@ -107,6 +107,29 @@ describe('the server-render template', () => {
     // claim `renderPath` enforces as the project grows.
     expect(server).not.toMatch(/from\s+['"]node:/);
     expect(server).not.toMatch(/import\s*\(\s*['"]node:/);
+    // Nothing to hand it: the page it renders into is the client build's own,
+    // which the plugin serves. A shell imported here was the source page, and
+    // its script is a file the build does not produce.
+    expect(server).not.toContain('setShell');
+    expect(server).not.toContain('?raw');
+  });
+
+  it('finds its router in scope rather than making one at module scope', async () => {
+    // A module-scope router on a server is one page's location shown to every
+    // request in flight.
+    const app = files_(await render('server-render'), 'src/app.ts');
+    expect(app).toContain('useRouter()');
+    expect(app).not.toContain('createRouter');
+  });
+
+  it('gets the pricing page its data from a loader, which is in place before the render', async () => {
+    // A fetch started while rendering answers after the bytes it would have
+    // filled are written; a loader answers before the first one.
+    const files = await render('server-render');
+    expect(files_(files, 'src/routes.ts')).toContain('loader: () => currentPlan()');
+    const pricing = files_(files, 'src/pricing.ts');
+    expect(pricing).toContain('routeData<string>()');
+    expect(pricing).not.toContain('constructor');
   });
 
   it('reaches the generated client through its own entry', async () => {
@@ -120,6 +143,8 @@ describe('the server-render template', () => {
     const types = files_(files, 'src/volt-server-render.d.ts');
     expect(types).toContain("declare module 'virtual:volt/server'");
     expect(types).toContain("declare module 'virtual:volt/client'");
+    expect(types).toContain("declare module 'virtual:volt/shell'");
+    expect(types).not.toContain('setShell');
   });
 });
 

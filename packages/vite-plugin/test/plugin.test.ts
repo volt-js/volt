@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { SourceMap, type SourceMapPayload } from 'node:module';
 import { resolve } from 'node:path';
 import { volt } from '../src/index.js';
 import { resolveConfig, type Plugin } from 'vite';
@@ -45,8 +46,12 @@ async function runTransform(
     },
   };
   const result = await hook.call(context, code, id);
+  lastMap = result && 'map' in result ? (result.map as SourceMapPayload | null) : null;
   return result ? result.code : null;
 }
+
+/** The source map the last transform returned, if it returned one. */
+let lastMap: SourceMapPayload | null = null;
 
 function plugins(options?: Parameters<typeof volt>[0]) {
   const all = volt(options);
@@ -80,6 +85,33 @@ describe('template precompilation', () => {
     expect(output).toContain('import * as __volt_rt from "@voltdev/core/runtime"');
     // The handler is delegated rather than bound per element.
     expect(output).toContain('__volt_rt.delegate');
+  });
+
+  it('maps what it emits back to the source, below the hoisted templates too', async () => {
+    // The templates are hoisted above the class, so every line of the module
+    // moves down. Without a map that says so, a stack trace, a breakpoint and
+    // the dev server's overlay all point that many lines below the code that
+    // ran.
+    const { templates } = plugins();
+    const output = (await runTransform(templates, COMPONENT))!;
+    expect(lastMap, 'no source map').not.toBeNull();
+
+    const line = (text: string): number => text.split('\n').findIndex((each) => each.includes('inc() {'));
+    const emitted = line(output);
+    const column = output.split('\n')[emitted]!.indexOf('inc() {');
+    expect(emitted).toBeGreaterThan(line(COMPONENT));
+
+    const map = new SourceMap(lastMap!);
+    expect(map.findEntry(emitted, column)).toMatchObject({
+      originalLine: line(COMPONENT),
+      originalColumn: column,
+    });
+
+    // And what it hoisted is this module's too. Unmapped, it would be counted
+    // by anything reading the map — a bundle analysis, a profiler — as part of
+    // whatever module came before it.
+    const render = output.split('\n').findIndex((each) => each.includes('function __volt_render_0'));
+    expect(map.findEntry(render, 0)).toMatchObject({ originalLine: 0, originalColumn: 0 });
   });
 
   it('registers the html file so edits hot-reload', async () => {
@@ -466,17 +498,17 @@ describe('which emit a build gets', () => {
   });
 
   it('claims them for a project in `serverRender`, which did not say so twice', async () => {
-    // `start` server-renders, so its client half has to attach to what the
-    // server wrote. Making the project write `hydrate: true` beside `start:
-    // true` would be asking it to restate a decision it has already made, and
-    // getting one of the two wrong produces a page that builds a second copy
-    // on top of the first.
+    // `serverRender` server-renders, so its client half has to attach to what
+    // the server wrote. Making the project write `hydrate: true` beside
+    // `serverRender: true` would be asking it to restate a decision it has
+    // already made, and getting one of the two wrong produces a page that
+    // builds a second copy on top of the first.
     const { templates } = plugins({ serverRender: true });
     const out = await runTransform(templates, COMPONENT);
     expect(emitOf(out!)).toBe('hydrate');
   });
 
-  it('still builds from nothing for a start project whose routes are all csr', async () => {
+  it('still builds from nothing for a serverRender project whose routes are all csr', async () => {
     // The escape hatch stays reachable: `hydrate` is only implied, so a
     // project that wants the wiring without the server rendering says so.
     const { templates } = plugins({ serverRender: true, hydrate: false });

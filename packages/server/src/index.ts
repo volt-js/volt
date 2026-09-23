@@ -32,7 +32,7 @@
  */
 
 export { Server } from './decorator.js';
-export { guard } from './guard.js';
+export { guard, withRequest } from './guard.js';
 export { createHandler, isServerCall, DEFAULT_BASE } from './handler.js';
 export type { HandlerOptions, ErrorContext } from './handler.js';
 export { ServerError, Unauthorized, Forbidden, BadRequest } from './errors.js';

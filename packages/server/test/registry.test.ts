@@ -97,6 +97,46 @@ describe('what the table is for', () => {
     expect(serverFunctions().map((fn) => fn.id)).toContain('dump_id');
   });
 
+  it('runs a direct call on an instance of its own, as the handler runs a posted one', async () => {
+    // During a server render a component or a loader calls the method on
+    // whatever instance it holds — the module-level one the reference writes,
+    // shared by every request in the process. Two calls in flight on it are
+    // two requests, and a value one keeps on `this` across an `await` is
+    // then whichever request wrote it last.
+    let release!: () => void;
+    const held = new Promise<void>((done) => (release = done));
+    class Account {
+      user = 'nobody';
+      async plan(user: string): Promise<string> {
+        this.user = user;
+        if (user === 'ada') await held;
+        return `plan for ${this.user}`;
+      }
+    }
+    registerServerFunction(Account, 'plan', 'per_call_id', key('app/account.ts', 'Account.plan'));
+    const shared = new Account();
+
+    const ada = shared.plan('ada');
+    const grace = await shared.plan('grace');
+    release();
+
+    expect(grace).toBe('plan for grace');
+    expect(await ada).toBe('plan for ada');
+    // Nothing was written to the instance the caller held, either.
+    expect(shared.user).toBe('nobody');
+  });
+
+  it('keeps the arity of the method as written, which the handler checks arguments against', () => {
+    class Todos {
+      async rename(id: string, title: string): Promise<string> {
+        return `${id}:${title}`;
+      }
+    }
+    registerServerFunction(Todos, 'rename', 'arity_id', key('app/todos.ts', 'Todos.rename'));
+
+    expect(Todos.prototype.rename.length).toBe(2);
+  });
+
   it('takes the readable name from the key, which a minifier cannot rewrite', () => {
     // `target.name` is whatever survived the server bundle's mangling. The key
     // is a build-time string, so a 500 in a log is still attributable.

@@ -14,20 +14,15 @@
  */
 import { afterAll, describe, expect, it } from 'vitest';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { symlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { renderProject, writeProject } from '../src/scaffold.js';
 import { TEMPLATES } from '../src/templates.js';
+import { REPO, removeScaffolds, scaffold } from './scaffolded.js';
 
 const run = promisify(execFile);
-const REPO = resolve(import.meta.dirname, '../../..');
-const created: string[] = [];
 
-afterAll(async () => {
-  await Promise.all(created.map((path) => rm(path, { recursive: true, force: true })));
-});
+afterAll(removeScaffolds);
 
 /**
  * Where a package's types live once installed.
@@ -45,12 +40,7 @@ const TYPES: Readonly<Record<string, string>> = {
 };
 
 async function generate(id: string): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), `create-volt-${id}-`));
-  created.push(directory);
-
-  const template = TEMPLATES.find((each) => each.id === id);
-  if (!template) throw new Error(`no template ${id}`);
-  await writeProject(directory, await renderProject({ name: `${id}-app`, template }));
+  const directory = await scaffold(id);
 
   // The workspace's own installed tree, so `vite/client`, `vitest` and the
   // rest resolve without a network install of versions this repository has

@@ -1,9 +1,9 @@
 <article>
   <h2>Pricing</h2>
-  <p>Your plan: <strong>{ plan.get() }</strong></p>
+  <p>Your plan: <strong>{ plan() }</strong></p>
   <p>
-    Rendered per request. The plan above was resolved on the server and sent
-    with the page, so this text is right in the first byte rather than after a
-    round trip.
+    Rendered per request. The plan above is what this route's loader answered
+    for the request that asked, so it is right in the first byte rather than
+    after a round trip.
   </p>
 </article>

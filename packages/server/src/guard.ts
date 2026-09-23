@@ -17,7 +17,8 @@
  * takes it away again, so the only place a guard can read it is before the
  * body has awaited anything. Which is where a guard belongs regardless: work
  * that runs before authorization is work an unauthorized caller has already
- * caused.
+ * caused. A server render does the same for each synchronous span of itself,
+ * which is every place a component can start a call from.
  */
 
 import { Unauthorized } from './errors.js';
@@ -25,11 +26,21 @@ import { Unauthorized } from './errors.js';
 let activeRequest: Request | null = null;
 
 /**
- * @internal Make `request` visible to `guard` for the duration of `run`.
+ * Make `request` visible to `guard` for the duration of `run`, and no longer.
  *
- * Restores rather than clears, because a server function is free to call
- * another one directly and the inner call must not leave the outer without a
- * request.
+ * Two things call a server function, and both have to say which request it
+ * belongs to. The function handler does, for a call that arrived as a POST.
+ * A server render is the other: there the lowering has left the real method,
+ * so a component that calls one calls it directly, with no handler in
+ * between. A render is given this as its `around` —
+ * `around: (run) => withRequest(request, run)` — which enters it for the
+ * build and for every flush, and a server wraps `router.resolve(url)` in it
+ * for the loaders that run before the render.
+ *
+ * Synchronous by contract, like the rule it serves: `run` is covered until it
+ * returns, which for an async function is its first `await`. Restores rather
+ * than clears, because a server function is free to call another one directly
+ * and the inner call must not leave the outer without a request.
  */
 export function withRequest<T>(request: Request, run: () => T): T {
   const previous = activeRequest;
@@ -64,7 +75,12 @@ export function guard<T>(
         '    @Server()\n' +
         '    async create(text: string): Promise<{ id: string }> {\n' +
         '      const user = await guard(session);\n' +
-        '      ...',
+        '      ...\n' +
+        '  During a server render, a server function called directly sees the\n' +
+        '  request only inside the render\'s `around`, which covers the build and\n' +
+        '  each flush — not the `.then` of another call, which runs between them.\n' +
+        '  A call that needs another\'s answer belongs in a resource whose source\n' +
+        '  is that answer: it starts in the next flush, where the request is.',
     );
   }
   return Promise.resolve(check(request)).then((subject) => {

@@ -222,7 +222,17 @@ const BUDGETS: Record<string, number> = {
   // mechanism rather than two: an error raised anywhere under a boundary now
   // reaches the same fallback whether the headers have gone or not. Measured
   // at 4588 B gzipped.
-  'packages/core/dist/server-*.js': 4_600,
+  //
+  // Raised from 4600 by `around`, the option a server render lends the request
+  // to a guarded server function through: 28 B, 4595 B to 4623 B, measured by
+  // building the package with and without it. It is the option handed to
+  // `settleRequest` from both buffered renders, and the stream's own span over
+  // its shell, its late chunks and the flushes between them — without which a
+  // component calling a server function during a render is refused by its
+  // guard. 1 B more is the stream calling `setup`, which it had been typed as
+  // taking and never ran. Paid only by a server: nothing here is reachable
+  // from the client entry.
+  'packages/core/dist/server-*.js': 4_650,
   // The tools themselves. A production build drops the whole file — that is
   // asserted on bundled bytes in `devtools.test.ts` — so this is a ceiling on
   // what a development build carries, and it is here so that growing it is a

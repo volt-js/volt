@@ -75,8 +75,16 @@ export function runInRequest<T>(scope: RequestScope, fn: () => T): T {
  * The key is a symbol so the slot is owned by whoever declares it — component
  * styles, the ambient locale, the id positions — without this module knowing
  * what any of them are.
+ *
+ * In a browser with no request, the page is the request and keeps it. On a
+ * server with no request, nothing keeps it: each read builds its own.
  */
 export function requestState<T>(key: symbol, create: () => T): T {
+  // A server with no request current is running for some request without
+  // being inside it — a route loader, a promise's continuation — and the
+  // process is every request's. Filed there, what the first reader's work kept
+  // is what every later reader's finds, so it is built and kept by nothing.
+  if (__VOLT_SERVER__ && !current) return create();
   const store = current ? current.state : processState;
   const existing = store.get(key);
   // `has` only on a miss, so a slot that legitimately holds `undefined` is
@@ -141,12 +149,31 @@ function settleRoundsError(): Error {
  * times it out — the one failure a server must not have, because nothing in
  * the process is left to say what went wrong.
  *
+ * `around` is entered inside the request for the build and for every flush,
+ * each round and not only the first — the synchronous spans, which are the
+ * only places the tree can start anything. It is how a second ambient that
+ * must not be carried across an `await` is made visible to the render: a
+ * server function's `guard` reads the request that way. What runs *between*
+ * the spans is the continuation of whatever the request is waiting on, and
+ * `around` does not cover it, because nothing can: those continuations run
+ * interleaved with every other request's. A call that needs another's answer
+ * belongs in something that answer re-runs — a resource whose source it is —
+ * which runs again in the next round's flush, where `around` is.
+ *
+ * It is handed in rather than kept in request state because whoever supplies
+ * it is outside the scope, where a server keeps no request state at all — and
+ * an argument cannot be filed anywhere another request could find it.
+ *
  * The whole body is a server build's. In a client build `__VOLT_SERVER__` is
  * `false`, the minifier removes everything below the guard, and a call here
  * does nothing at all: the server render path is not code a browser ships,
  * and a component's data is fetched by the client's own flush instead.
  */
-export async function settleRequest(scope: RequestScope, build: () => void): Promise<void> {
+export async function settleRequest(
+  scope: RequestScope,
+  build: () => void,
+  around?: <T>(run: () => T) => T,
+): Promise<void> {
   if (!__VOLT_SERVER__) {
     if (__VOLT_DEV__ && typeof console !== 'undefined') {
       console.warn(
@@ -158,10 +185,13 @@ export async function settleRequest(scope: RequestScope, build: () => void): Pro
     return;
   }
 
-  runInRequest(scope, build);
+  const span = (run: () => void): void =>
+    runInRequest(scope, around ? () => around(run) : run);
+
+  span(build);
 
   for (let round = 0; ; round++) {
-    runInRequest(scope, flushSync);
+    span(flushSync);
     const pending = scope.pending;
     if (pending.length === 0) return;
     scope.pending = [];

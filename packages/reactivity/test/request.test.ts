@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   Signal,
   createRequestScope,
+  currentRequest,
   dataEffect,
   flushSync,
   renderEffect,
@@ -76,6 +77,91 @@ describe('settling a request', () => {
   });
 });
 
+describe('what a request wraps around its passes', () => {
+  /**
+   * A second ambient in the shape `withRequest` has: visible while `run` runs,
+   * and put back afterwards, so what a test reads outside it is the truth.
+   */
+  function ambient(): { around: <T>(run: () => T) => T; read: () => string | null } {
+    let visible: string | null = null;
+    return {
+      around: (run) => {
+        const previous = visible;
+        visible = 'the request';
+        try {
+          return run();
+        } finally {
+          visible = previous;
+        }
+      },
+      read: () => visible,
+    };
+  }
+
+  it('is entered for the build and for every flush, however many rounds the data takes', async () => {
+    serverBuild(true);
+    const { around, read } = ambient();
+    const round = new Signal.State(0);
+    const seen: string[] = [];
+    const scope = createRequestScope();
+
+    await settleRequest(
+      scope,
+      () => {
+        seen.push(`build: ${read()}`);
+        // A waterfall: each answer is the source of the next request, so the
+        // request for round two can only start in the flush after round one's
+        // answer has landed — and the one for round three after that.
+        dataEffect(() => {
+          const n = round.get();
+          seen.push(`round ${n}: ${read()}`);
+          if (n === 3) return;
+          trackRequestData(
+            Promise.resolve().then(() => {
+              seen.push(`answer ${n}: ${read()}`);
+              round.set(n + 1);
+            }),
+          );
+        });
+      },
+      around,
+    );
+
+    // Every pass that can start a call is inside it. The continuations are not,
+    // and cannot be: they run while the request waits, interleaved with every
+    // other request in the process, which is exactly where nothing may be
+    // visible.
+    expect(seen).toEqual([
+      'build: the request',
+      'round 0: the request',
+      'answer 0: null',
+      'round 1: the request',
+      'answer 1: null',
+      'round 2: the request',
+      'answer 2: null',
+      'round 3: the request',
+    ]);
+    expect(read()).toBeNull();
+  });
+
+  it('is entered inside the request, so what it runs still finds the request scope', async () => {
+    serverBuild(true);
+    const scope = createRequestScope();
+    const inside: boolean[] = [];
+
+    await settleRequest(
+      scope,
+      () => {},
+      (run) => {
+        inside.push(currentRequest() === scope);
+        return run();
+      },
+    );
+
+    expect(inside).toEqual([true, true]);
+  });
+});
+
 describe('data a request is waiting for', () => {
   it('is collected on a server', () => {
     serverBuild(true);
@@ -134,5 +220,29 @@ describe('a request-scoped slot', () => {
 
     expect(runInRequest(second, slot).size).toBe(0);
     expect(runInRequest(first, slot).size).toBe(1);
+  });
+
+  it('is kept by nothing on a server when no request is current', () => {
+    // A route loader, a promise continuation, a module's top level: on a
+    // server each runs for some request without being inside it. Kept in the
+    // process, what the first of them filed is what every later one reads —
+    // one reader's locale, ids or registered signals in another's page.
+    serverBuild(true);
+    const key = Symbol('volt.test.slot');
+    const slot = (): Map<string, string> => requestState(key, () => new Map<string, string>());
+
+    slot().set('user', 'ada');
+
+    expect(slot().get('user')).toBeUndefined();
+    expect(runInRequest(createRequestScope(), slot).size).toBe(0);
+  });
+
+  it('is kept by the page in a browser, which is the only request there is', () => {
+    const key = Symbol('volt.test.slot');
+    const slot = (): Map<string, string> => requestState(key, () => new Map<string, string>());
+
+    slot().set('user', 'ada');
+
+    expect(slot().get('user')).toBe('ada');
   });
 });

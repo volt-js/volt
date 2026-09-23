@@ -35,6 +35,39 @@ export interface ServerFunction {
 
 const registry = new Map<string, ServerFunction>();
 
+/** The methods already made to run per call, so registering twice wraps once. */
+const perCall = new WeakSet<object>();
+
+type Method = (this: unknown, ...args: unknown[]) => unknown;
+
+/**
+ * Make every call to `method` run on an instance of its own.
+ *
+ * A server function's class is a namespace, not a place to keep a session:
+ * whatever a method assigns to `this` belongs to the call that assigned it.
+ * A POST arrives with no instance, so the handler would have to make one per
+ * call anyway — but during a server render nothing arrives at all. A component
+ * or a loader calls the method on the instance it holds, and that is the
+ * module-level one the reference writes, shared by every request the process
+ * is serving. A value kept on it across an `await` is then whichever request
+ * wrote it last, which is one reader's page built from another's answer.
+ *
+ * So the instance is made here, for both, and the caller's is never touched.
+ * The length is the method's own, because it is what the handler counts the
+ * arguments a request carried against.
+ */
+function runPerCall(target: abstract new () => object, method: string): void {
+  const prototype = target.prototype as Record<string, unknown>;
+  const written = prototype[method];
+  if (typeof written !== 'function' || perCall.has(written)) return;
+  const run = function (this: unknown, ...args: unknown[]): unknown {
+    return (written as Method).apply(new (target as new () => object)(), args);
+  };
+  Object.defineProperty(run, 'length', { value: written.length });
+  perCall.add(run);
+  prototype[method] = run;
+}
+
 export function registerServerFunction(
   target: abstract new () => object,
   method: string,
@@ -49,6 +82,7 @@ export function registerServerFunction(
         'under the wrong guards. Rename one of the two methods.',
     );
   }
+  runPerCall(target, method);
   registry.set(id, { id, target, method, source, name: source.slice(source.indexOf('#') + 1) });
 }
 

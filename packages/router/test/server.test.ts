@@ -243,3 +243,50 @@ describe('a branch written in one pass', () => {
     ).rejects.toThrow(/:outlet/);
   });
 });
+
+describe('when a branch asks for its data', () => {
+  it('is before resolve() has returned, every loader of it, lazy route or not', async () => {
+    // Load-bearing for a server, which makes the request visible to a guarded
+    // server function by wrapping `resolve()` in `withRequest` — a synchronous
+    // wrapper, so it covers a loader only if the loader is called before
+    // `resolve()` first yields. One `await` ahead of the loaders anywhere in
+    // `commit` and every loader that calls a server function is refused, with
+    // nothing in the router to say why.
+    let prologue = true;
+    const started: string[] = [];
+    const loader =
+      (name: string) =>
+      (): string => {
+        started.push(`${name} ${prologue ? 'in the prologue' : 'late'}`);
+        return name;
+      };
+
+    const lazyDocs = async (): Promise<typeof Docs> => Docs;
+    const table = defineRoutes([
+      {
+        path: '/',
+        component: Shell,
+        loader: loader('shell'),
+        children: [
+          {
+            path: 'docs',
+            component: lazyDocs,
+            loader: loader('docs'),
+            children: [{ path: ':id', component: Topic, loader: loader('topic') }],
+          },
+        ],
+      },
+    ]);
+
+    const router = createRouter({ routes: table });
+    const resolving = router.resolve('https://example.test/docs/5');
+    prologue = false;
+
+    expect((await resolving).status).toBe('completed');
+    expect(started).toEqual([
+      'shell in the prologue',
+      'docs in the prologue',
+      'topic in the prologue',
+    ]);
+  });
+});

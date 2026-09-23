@@ -131,7 +131,10 @@ describe('a list that spikes and settles', () => {
   });
 });
 
-describe('what a no-op reconcile allocates', () => {
+// Ten thousand rows reconciled nine times, with eight full collections before
+// each of the five measured passes: seconds of work by design, which vitest's
+// default of five cuts off whenever the machine is busy with anything else.
+describe('what a no-op reconcile allocates', { timeout: 30_000 }, () => {
   it('stays inside the budget the buffer reuse bought', () => {
     const N = 10_000;
     const items = labels(N);
