@@ -99,6 +99,18 @@ function mountAvatar(overrides: Partial<AvatarOptions> = {}) {
 }
 
 describe('avatar loading', () => {
+  it('is loading from the moment it is built with a source, before any effect has run', () => {
+    // What a server writes: its render stops before the user lane, so the
+    // status it carries is the one the avatar was built with. Built bare
+    // rather than mounted, since mounting runs the effect before anything
+    // here could read.
+    createRoot((dispose) => {
+      expect(createAvatar({ src: () => '/ada.png' }).status()).toBe('loading');
+      expect(createAvatar({ src: () => null }).status()).toBe('idle');
+      dispose();
+    });
+  });
+
   it('is loading once there is a source, and loaded when the image says so', () => {
     const { avatar, load } = mountAvatar();
     flushSync();

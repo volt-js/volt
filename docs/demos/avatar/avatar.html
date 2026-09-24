@@ -1,0 +1,31 @@
+<div class="rows">
+  <div class="row">
+    <v-avatar :src="photo.get()" name="Ama Mensah"></v-avatar>
+    <v-avatar src="/avatars/no-such-picture.png" name="Grace Hopper"></v-avatar>
+    <v-avatar name="Alan Turing"></v-avatar>
+    <v-avatar name="Mei Chen" shape="square"></v-avatar>
+    <v-button :onPress="toggle">{ broken() ? 'Mend the picture' : 'Break the picture' }</v-button>
+  </div>
+  <span class="note">A picture, one that failed, none at all, and a square. Each
+    is heard once, by name — the initials are what is seen, not what is said.</span>
+
+  <div class="row">
+    <v-avatar size="sm" name="Katherine Johnson"></v-avatar>
+    <v-avatar name="Katherine Johnson"></v-avatar>
+    <v-avatar size="lg" name="Katherine Johnson"></v-avatar>
+  </div>
+
+  <!-- A row of them is this page's layout, written against the sheet's own
+       class: there is no group tag to learn. -->
+  <div class="row">
+    <div class="team" role="group" aria-label="Reviewers">
+      <v-avatar
+        :for="person in team"
+        :key="person.name"
+        :src="person.photo"
+        :name="person.name"
+      ></v-avatar>
+    </div>
+    <span class="note">Overlapped by the page's CSS, not by a tag.</span>
+  </div>
+</div>

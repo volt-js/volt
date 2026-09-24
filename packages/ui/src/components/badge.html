@@ -1,0 +1,10 @@
+<span :ref="anchor" class="volt-badge-anchor" :focusin="describe()">
+  <slot></slot>
+  <span
+    :host
+    class="volt-badge"
+    :attr-id="badgeId()"
+    :attr-data-tone="toneOf()"
+    :spread="badgeProps()"
+  >{ text() }</span>
+</span>

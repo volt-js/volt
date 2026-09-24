@@ -1,0 +1,59 @@
+.rows {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-4);
+}
+
+.line {
+  margin-block: 0;
+  font-size: var(--volt-font-size-3);
+  line-height: var(--volt-line-height-normal);
+}
+
+.note {
+  max-inline-size: 30rem;
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}
+
+// Two columns of the same chords, so the platforms can be read across.
+.platforms {
+  border-collapse: collapse;
+}
+
+.platforms th {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+  font-weight: var(--volt-font-weight-medium);
+  text-align: start;
+}
+
+.platforms th,
+.platforms td {
+  padding-block: var(--volt-space-1);
+  padding-inline: 0 var(--volt-space-8);
+}
+
+// A menu's rows, with the shortcut at the end of each: the small size, beside
+// text that is small already.
+.menu {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-1);
+  max-inline-size: 18rem;
+  margin: 0;
+  padding: var(--volt-space-1);
+  list-style: none;
+  border: var(--volt-border-width-1) solid var(--volt-color-border);
+  border-radius: var(--volt-radius-2);
+  background-color: var(--volt-color-surface);
+}
+
+.item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  column-gap: var(--volt-space-4);
+  padding-block: var(--volt-space-1);
+  padding-inline: var(--volt-space-2);
+}

@@ -9,12 +9,16 @@
 import type { ComponentStyles } from '../css.js';
 import { accordionClasses, accordionStyles } from './accordion.js';
 import { alertClasses, alertStyles } from './alert.js';
+import { avatarClasses, avatarStyles } from './avatar.js';
+import { badgeClasses, badgeStyles } from './badge.js';
 import { breadcrumbClasses, breadcrumbStyles } from './breadcrumb.js';
 import { buttonClasses, buttonStyles } from './button.js';
 import { checkboxClasses, checkboxStyles } from './checkbox.js';
+import { chipClasses, chipStyles } from './chip.js';
 import { collapsibleClasses, collapsibleStyles } from './collapsible.js';
 import { dialogClasses, dialogStyles } from './dialog.js';
 import { fieldClasses, fieldStyles } from './field.js';
+import { kbdClasses, kbdStyles } from './kbd.js';
 import { menuClasses, menuStyles } from './menu.js';
 import { paginationClasses, paginationStyles } from './pagination.js';
 import { popoverClasses, popoverStyles } from './popover.js';
@@ -33,12 +37,16 @@ import { tooltipClasses, tooltipStyles } from './tooltip.js';
 export {
   accordionStyles,
   alertStyles,
+  avatarStyles,
+  badgeStyles,
   breadcrumbStyles,
   buttonStyles,
   checkboxStyles,
+  chipStyles,
   collapsibleStyles,
   dialogStyles,
   fieldStyles,
+  kbdStyles,
   menuStyles,
   paginationStyles,
   popoverStyles,
@@ -59,12 +67,16 @@ export {
 export const componentStyles: readonly ComponentStyles[] = [
   accordionStyles,
   alertStyles,
+  avatarStyles,
+  badgeStyles,
   breadcrumbStyles,
   buttonStyles,
   checkboxStyles,
+  chipStyles,
   collapsibleStyles,
   dialogStyles,
   fieldStyles,
+  kbdStyles,
   menuStyles,
   paginationStyles,
   popoverStyles,
@@ -94,12 +106,16 @@ export const componentStyles: readonly ComponentStyles[] = [
 export const classes = {
   accordion: accordionClasses,
   alert: alertClasses,
+  avatar: avatarClasses,
+  badge: badgeClasses,
   breadcrumb: breadcrumbClasses,
   button: buttonClasses,
   checkbox: checkboxClasses,
+  chip: chipClasses,
   collapsible: collapsibleClasses,
   dialog: dialogClasses,
   field: fieldClasses,
+  kbd: kbdClasses,
   menu: menuClasses,
   pagination: paginationClasses,
   popover: popoverClasses,

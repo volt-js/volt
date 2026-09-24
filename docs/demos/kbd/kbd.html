@@ -1,0 +1,29 @@
+<div class="rows">
+  <p class="line">
+    Press <v-kbd :ref="search" keys="mod+k"></v-kbd> anywhere to search, and
+    <v-kbd keys="Escape"></v-kbd> to close it again.
+  </p>
+  <span class="note">Drawn for the platform this page is running on. A screen reader
+    hears “{ heard() }”, and the symbols are never read.</span>
+
+  <table class="platforms">
+    <thead>
+      <tr><th scope="col">Apple</th><th scope="col">Everywhere else</th></tr>
+    </thead>
+    <tbody>
+      <tr :for="chord in chords" :key="chord">
+        <td><v-kbd :keys="chord" platform="apple"></v-kbd></td>
+        <td><v-kbd :keys="chord" platform="other"></v-kbd></td>
+      </tr>
+    </tbody>
+  </table>
+  <span class="note"><code>mod</code> is Command on one and Control on the other. The fourth row is the
+    plus key: the separator and the key are the same glyph, and the keycap's edge is what
+    tells them apart.</span>
+
+  <ul class="menu" aria-label="Edit">
+    <li class="item"><span>Copy</span><v-kbd keys="mod+c" size="sm"></v-kbd></li>
+    <li class="item"><span>Paste</span><v-kbd keys="mod+v" size="sm"></v-kbd></li>
+    <li class="item"><span>Paste without formatting</span><v-kbd keys="mod+Shift+v" size="sm"></v-kbd></li>
+  </ul>
+</div>

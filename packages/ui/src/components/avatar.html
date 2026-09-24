@@ -1,0 +1,15 @@
+<span
+  :host
+  class="volt-avatar"
+  :spread="avatar.rootProps()"
+  :attr-data-size="size.get()"
+  :attr-data-shape="shape.get()"
+>
+  <img :ref="image" class="volt-avatar-image" :spread="imageProps()">
+
+  <span
+    :if="avatar.isFallbackVisible()"
+    class="volt-avatar-fallback"
+    :spread="fallbackProps()"
+  ><slot name="fallback" :initials="avatar.initials()">{ avatar.initials() }</slot></span>
+</span>

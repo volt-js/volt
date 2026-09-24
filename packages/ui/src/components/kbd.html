@@ -1,0 +1,14 @@
+<kbd :host class="volt-kbd" :attr-data-size="size.get()" :spread="kbdProps()">
+  <template :for="(part, index) in shortcut.parts()" :key="$index">
+    <span
+      :if="index > 0 && separator() !== ''"
+      class="volt-kbd-separator"
+      aria-hidden="true"
+    >{ separator() }</span>
+    <kbd
+      class="volt-kbd-key"
+      :attr-data-character="character(part)"
+      :spread="shortcut.keyProps(part.key)"
+    >{ part.text }</kbd>
+  </template>
+</kbd>

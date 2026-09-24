@@ -114,12 +114,20 @@ export interface Avatar {
  * say which one the user should see, and every element carries `data-status`.
  */
 export function createAvatar(options: AvatarOptions = {}): Avatar {
-  const status = options.status ?? new Signal.State<AvatarStatus>('idle');
   const delay = options.fallbackDelay ?? 0;
   const maxInitials = options.maxInitials ?? 2;
 
   const readSrc = (): string => options.src?.() ?? '';
   const readName = (): string => options.name?.()?.trim() ?? '';
+
+  // Loading from the start when there is a source, rather than idle until the
+  // effect below says so: that effect runs in the user lane, which a server
+  // never reaches, so a page rendered there would carry `idle` where the same
+  // page built in a browser carries `loading` from its first flush. A load
+  // under way when the avatar is built is its first status, not a change, so
+  // `onStatusChange` is not told of it. A status the caller owns is left as
+  // the caller set it.
+  const status = options.status ?? new Signal.State<AvatarStatus>(untrack(readSrc) ? 'loading' : 'idle');
 
   // Whether the fallback has waited out `fallbackDelay`. Held apart from
   // status so the wait restarts with each new load rather than each change.

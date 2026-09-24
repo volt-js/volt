@@ -1,0 +1,17 @@
+<span
+  :host
+  :ref="element"
+  class="volt-chip"
+  :attr-data-tone="tone.get()"
+  :attr-data-size="size.get()"
+  :spread="chipProps()"
+  :keydown="chip.onKeyDown($event)"
+>
+  <span :ref="words" class="volt-chip-label"><slot></slot></span>
+  <button
+    :if="chip.isRemovable()"
+    class="volt-chip-remove"
+    :spread="chip.removeProps()"
+    :click="chip.remove()"
+  >×</button>
+</span>

@@ -85,6 +85,7 @@ export default defineConfig({
           { text: 'Navigation components', link: '/reference/ui-navigation' },
           { text: 'Feedback components', link: '/reference/ui-feedback' },
           { text: 'Data components', link: '/reference/ui-data' },
+          { text: 'Display components', link: '/reference/ui-display' },
           { text: 'Data grid', link: '/reference/grid' },
           { text: 'Rich-text editor', link: '/reference/editor' },
         ],

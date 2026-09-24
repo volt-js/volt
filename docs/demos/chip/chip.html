@@ -1,0 +1,40 @@
+<div class="rows">
+  <div class="tags">
+    <v-chip
+      :for="language in languages.get()"
+      :key="language"
+      removable
+      :onRemove="() => drop(language)"
+    >{ language }</v-chip>
+    <span :if="languages.get().length === 0" class="note">No languages left.</span>
+  </div>
+
+  <div class="row">
+    <v-button size="sm" :onPress="restore">Put them back</v-button>
+    <span class="note">Tab to a tag and press Delete or Backspace. Focus moves to the tag
+      after it, or the one before when it was the last.</span>
+  </div>
+
+  <div class="tags">
+    <v-chip tone="neutral">Draft</v-chip>
+    <v-chip tone="accent">In review</v-chip>
+    <v-chip tone="success">Paid</v-chip>
+    <v-chip tone="warning">Due Friday</v-chip>
+    <v-chip tone="danger">Overdue</v-chip>
+  </div>
+
+  <div class="tags">
+    <v-chip size="sm">v1.2</v-chip>
+    <v-chip size="sm" tone="accent">beta</v-chip>
+    <v-chip
+      :if="reviewing.get()"
+      size="sm"
+      removable
+      label="Ada Lovelace"
+      :onRemove="() => reviewing.set(false)"
+    ><b>AL</b> reviewing</v-chip>
+  </div>
+
+  <span class="note">The words say what each status is; the tone only repeats it. The last tag's
+    button is named after its <code>label</code>, since its words are not a name.</span>
+</div>

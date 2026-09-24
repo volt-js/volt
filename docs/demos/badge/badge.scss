@@ -1,0 +1,41 @@
+// Rows of badged controls and the buttons that change their counts, with room
+// above each row for the badges that hang off the top of it.
+.rows {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-6);
+  padding-block-start: var(--volt-space-2);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--volt-space-5);
+  row-gap: var(--volt-space-4);
+}
+
+.note {
+  max-inline-size: 26rem;
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}
+
+// Something that is not a control to put a status on: nothing here takes
+// focus, so the dot is heard where it sits rather than with a button.
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--volt-space-8);
+  block-size: var(--volt-space-8);
+  border-radius: var(--volt-radius-full);
+  background-color: var(--volt-color-accent-muted);
+  color: var(--volt-color-on-surface);
+  font-size: var(--volt-font-size-1);
+  font-weight: var(--volt-font-weight-semibold);
+}
+
+.line {
+  margin-block: 0;
+}

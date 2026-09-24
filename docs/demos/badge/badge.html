@@ -1,0 +1,38 @@
+<div class="rows">
+  <div class="row">
+    <v-badge :count="unread" describes="unread messages">
+      <v-button>Inbox</v-button>
+    </v-badge>
+
+    <v-badge :count="unread" dot describes="unread messages">
+      <v-button>Chat</v-button>
+    </v-badge>
+
+    <v-badge count="3" tone="accent" describes="new releases">
+      <v-button>Updates</v-button>
+    </v-badge>
+  </div>
+
+  <div class="row">
+    <v-button variant="primary" :onPress="arrive">One more</v-button>
+    <v-button :onPress="flood">A hundred more</v-button>
+    <v-button :onPress="read">Mark all read</v-button>
+    <span class="note">Past 99 the badge reads 99+, and a screen reader hears
+      “More than 99 unread messages”. At zero both badges go. Tab to Inbox and
+      the count is read with the button.</span>
+  </div>
+
+  <div class="row">
+    <v-badge :dot="online.get()" describes="Online">
+      <span class="avatar" aria-label="Ada Lovelace" role="img">AL</span>
+    </v-badge>
+    <v-button :onPress="toggle">{ online.get() ? 'Go offline' : 'Come back' }</v-button>
+    <span class="note">A dot with no count is a status: shown while it is set, and
+      named by what it describes.</span>
+  </div>
+
+  <p class="line">
+    Drafts <v-badge :count="drafts" tone="neutral" describes="drafts"></v-badge>
+    — with nothing written inside, the badge stands in line.
+  </p>
+</div>
