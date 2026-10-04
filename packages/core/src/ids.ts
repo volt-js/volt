@@ -24,7 +24,9 @@
  * from an effect rather than from its parent's construction, has no frame to
  * sit in and mints from the root. Those ids stay unique, which is all a
  * browser asks of them; they are not stable across a reload, and nothing that
- * appears only after hydration needs them to be.
+ * appears only after hydration needs them to be. A lazy component is the
+ * exception, because it appears late on one side and not the other: it holds
+ * its place instead — see `holdPosition`.
  */
 
 import { clearRequestState, requestState } from '@voltdev/reactivity';
@@ -64,6 +66,38 @@ export function enterPosition(): Frame | null {
 
 export function exitPosition(previous: Frame | null): void {
   frame = previous;
+}
+
+/**
+ * Take a child's place in the current frame for a component built later.
+ *
+ * A lazy component is instantiated when its chunk lands, from an effect, where
+ * there is no frame at all — so it would mint from the root, and whatever came
+ * after it in its parent would be numbered one lower than on a side that had
+ * the chunk already. Both sides take the place when the walk passes it, and
+ * both build into it through `atPosition`, which is what makes the server's
+ * ids and the browser's agree however each came by the chunk.
+ *
+ * What is kept is a stand-in for the parent, holding the index this child was
+ * given: its path is the parent's, so a frame opened under it is the frame the
+ * child would have had.
+ */
+export function holdPosition(): Frame {
+  const parent = frame ?? rootFrame();
+  return { parent: parent.parent, index: parent.index, next: parent.next++, path: parent.path };
+}
+
+/** Run `build` where `holdPosition` took a place, so the frame it opens is that place. */
+export function atPosition<T>(held: Frame, build: () => T): T {
+  const previous = frame;
+  // A copy, so the place itself is never advanced: building into it again
+  // would open the same place, not the next.
+  frame = { ...held };
+  try {
+    return build();
+  } finally {
+    frame = previous;
+  }
 }
 
 function pathOf(target: Frame): string {

@@ -12,6 +12,8 @@
  * the application's render can reach, and this is the build tool, which only
  * ever runs in Node.
  */
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -20,6 +22,7 @@ import type { TLSSocket } from 'node:tls';
 import { pathToFileURL } from 'node:url';
 import type { Connect, ViteDevServer } from 'vite';
 import { builtEntry } from './server-build.js';
+import { fileForPathname } from './ssg.js';
 
 type Handler = (request: Request) => Promise<Response> | Response;
 
@@ -90,7 +93,9 @@ async function answer(
 }
 
 /**
- * The middleware that hands a request to the built server, for `vite preview`.
+ * The middleware that answers `vite preview` the way a host would: the page
+ * the build wrote for the path, if it wrote one, and otherwise the built
+ * server.
  *
  * Installed after the preview server's own, which serve the client build's
  * files — so a preview is the deployment the docs describe, the files first
@@ -98,19 +103,67 @@ async function answer(
  * preview answered every page 404: the page is no longer a file in the
  * client's directory, and nothing else there could render it.
  *
- * Loaded once, from `directory` — a preview is of one build, and a new build
- * is a new preview.
+ * The `ssg` pages are files in the client's directory, and Vite's own file
+ * middleware still does not answer a path with one: it looks for a file named
+ * as the path is, with no extension tried, so for `/` it looks for a file
+ * called `index` and for `/about` a file called `about`, and moves on. A
+ * static host answers `/` with `index.html` and `/about` with `about.html`,
+ * so this does first, before the request could reach the server and be
+ * rendered again.
+ *
+ * The server is loaded once, from `server` — a preview is of one build, and a
+ * new build is a new preview.
  */
-export function previewMiddleware(directory: string, entry: string): Connect.NextHandleFunction {
+export function previewMiddleware(
+  client: string,
+  server: string,
+  entry: string,
+): Connect.NextHandleFunction {
   let loaded: Promise<Handler> | null = null;
   return (req, res, next) => {
-    loaded ??= loadBuilt(directory, entry);
-    void loaded
-      .then(async (handler) => sendResponse(res, await handler(toRequest(req))))
-      .catch((error: unknown) => {
-        next(error instanceof Error ? error : new Error(String(error)));
-      });
+    void (async () => {
+      const page = await writtenPage(client, req);
+      if (page !== null) {
+        res.statusCode = 200;
+        res.setHeader('content-type', 'text/html; charset=utf-8');
+        if (req.method === 'HEAD') res.end();
+        else await pipeline(createReadStream(page), res);
+        return;
+      }
+      loaded ??= loadBuilt(server, entry);
+      await sendResponse(res, await (await loaded)(toRequest(req)));
+    })().catch((error: unknown) => {
+      next(error instanceof Error ? error : new Error(String(error)));
+    });
   };
+}
+
+/**
+ * The page the build wrote for this request's path, or null where it wrote
+ * none.
+ *
+ * Not for `/about/`, which a host either redirects to `/about` or answers
+ * from something else: served there, `about.html` would be a page at a path
+ * it was not rendered for, which the client builds again rather than claims.
+ */
+async function writtenPage(client: string, req: IncomingMessage): Promise<string | null> {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return null;
+  const { pathname } = new URL(req.url ?? '/', 'http://preview');
+  if (pathname !== '/' && pathname.endsWith('/')) return null;
+  let file: string;
+  try {
+    // As it was asked for: `fileForPathname` decodes it once, as a host
+    // decodes it, to the name the page for `/h%C3%A9llo` was written under. A
+    // path that would leave the directory is refused there, and is no page.
+    file = fileForPathname(client, pathname, 'flat');
+  } catch {
+    return null;
+  }
+  try {
+    return (await stat(file)).isFile() ? file : null;
+  } catch {
+    return null;
+  }
 }
 
 async function loadBuilt(directory: string, entry: string): Promise<Handler> {

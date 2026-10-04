@@ -218,7 +218,7 @@ the difference between updating one thing and updating everything that looked.
 | `preload(to)` | Fetch what a URL would need to render, without going there |
 | `revalidate()` | Run the current routes' loaders again, in place, without re-mounting |
 | `block(blocker)` | Register a blocker; returns the function that removes it |
-| `resolve(url)` | Match a URL, load what it needs, and publish it. No history, no listeners — this is what a server render calls |
+| `resolve(url, options?)` | Match a URL, load what it needs, and publish it. No history, no listeners — this is what a server render calls, and what a client hands [the server's loader answers](#a-server-s-answers-in-the-browser) to |
 | `start(options?)` | Listen, and resolve where the browser already is. `{ resolve: false }` keeps what a server render already published |
 | `stop()` | Stop listening, and empty the outlets |
 | `outletAt(depth)` | What renders at a depth, for `provideOutlet`. Depth 0 is the first matched route |
@@ -250,6 +250,45 @@ with `{ status, error? }`, where `status` is `'completed'`, `'blocked'`,
 | `replace` | Replace the current history entry rather than adding one |
 | `state` | Stored on the history entry, readable as `state()` |
 | `preserveScroll` | Leave the scroll position alone |
+
+### A server's answers, in the browser
+
+`resolve` is the member both sides call: a server per request, to render the
+branch, and a client once, before it attaches to the page. On a server build
+its result carries what the loaders answered, and in the browser it takes them
+back:
+
+```ts
+// On the server, per request
+const result = await router.resolve(request.url);
+result.data; // { '/users/7': { 1: { name: 'Ada' } } }
+
+// In the browser, once, with what the page carried
+await router.resolve(location.href, { data });
+```
+
+| `ResolveResult` | Description |
+|---|---|
+| `status`, `error` | As `navigate` resolves with |
+| `data` | On a server build only: what each loader of the branch answered, under the path it resolved and then the depth of the loader's route, outermost first. Only the depths with a loader |
+
+| `ResolveOptions` | Description |
+|---|---|
+| `data` | Answers to adopt in place of calling the loaders, in the shape `ResolveResult.data` has |
+
+An answer is adopted only from the entry for the path being resolved — at
+another path the same depth can hold another route, or the same route with
+other parameters — and only by this `resolve`: a navigation after it, and
+`revalidate()`, ask the loaders as ever. A depth left out is a loader asked as
+usual, and a route with no loader takes nothing from whatever is carried at its
+depth. `data` is a server build's only because only a server has a page to
+carry it in; a browser's router carrying the code that collects it would make
+every client-rendered application pay for a server's feature.
+
+[`serverRender`](./server-render#data-during-a-render) does both halves —
+carries the server's `data` in the page, through the state payload's
+serializer and under its rule about what JSON carries, and hands it to the
+client's `resolve` — so an application with the option on writes neither line.
 
 ### Blocking a navigation
 
@@ -320,7 +359,10 @@ It takes either what `matchRoutes` returns for one URL or a branch from
 one request has matches, and a build enumerating every route has branches.
 
 `fallback` is the application's own default. Nothing in the router decides that
-server rendering happens at all. [`serverRender`](./server-render) is what reads this.
+server rendering happens at all. [`serverRender`](./server-render) is what reads
+this: its `vite build` writes each `ssg` route's page to a file, running the
+route's loaders there, once, for a request with no reader in it — see
+[the pages the build writes](./server-render#the-pages-the-build-writes).
 
 ## Without a browser
 

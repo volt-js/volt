@@ -59,6 +59,7 @@ import {
   sessionIdentity,
   settleIdentity,
   takePage,
+  writeStaticPages,
 } from './server-build.js';
 import type { Plugin, ViteDevServer } from 'vite';
 import { DecoratorError, planLowering } from './decorators.js';
@@ -935,15 +936,31 @@ function serverRenderPlugin(
       // After the preview's own, like the dev server's: the client's files are
       // answered as files, and only what is not one reaches the server build.
       const { config } = server;
+      const client = resolvePath(config.root, config.environments['client']!.build.outDir);
       const directory = resolvePath(config.root, config.environments['ssr']!.build.outDir);
       return () => {
-        server.middlewares.use(previewMiddleware(directory, options.entry));
+        server.middlewares.use(previewMiddleware(client, directory, options.entry));
       };
     },
 
     async buildApp(builder) {
       await builder.build(builder.environments['client']!);
-      await builder.build(builder.environments['ssr']!);
+      const built = await builder.build(builder.environments['ssr']!);
+      // Then the `ssg` pages, through the server just built, into the
+      // client's directory, where a host serves them as files.
+      const { root, logger } = builder.config;
+      const outDirOf = (name: string): string =>
+        resolvePath(root, builder.environments[name]!.config.build.outDir);
+      await writeStaticPages({
+        root,
+        client: outDirOf('client'),
+        server: outDirOf('ssr'),
+        entry: options.entry,
+        built,
+        defaultMode: options.defaultMode,
+        params: options.params,
+        logger,
+      });
     },
 
     resolveId(id) {

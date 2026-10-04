@@ -182,6 +182,7 @@ describe('what a project supplies', () => {
 const ROUTER = resolve(import.meta.dirname, '../../router/src/index.ts');
 const CORE = resolve(import.meta.dirname, '../../core/src/index.ts');
 const SERVER_HANDLER = resolve(import.meta.dirname, '../../server/src/handler.ts');
+const CORE_SERVER = resolve(import.meta.dirname, '../../core/src/server.ts');
 
 /**
  * A route table that exercises every branch of the handler.
@@ -241,8 +242,11 @@ async function handlerFor(
   const wiring = resolveServerRender(true);
 
   const stubs: Record<string, string> = {
+    // The renderer stubbed and the payload's serializer the real one, because
+    // what a page carries to the browser is what the loader tests read.
     '@voltdev/core/server':
-      'export const renderToString = async (component, options) => (globalThis.__render(options));',
+      'export const renderToString = async (component, options) => (globalThis.__render(options));\n' +
+      `export { escapeJsonForScript, stateJson } from ${JSON.stringify(CORE_SERVER)};`,
     // `needsHydration` is the one answer this suite drives, so it is the one
     // thing wrapped; everything else a router asks of the component runtime is
     // the real thing, because a stub that disagreed with it is exactly the
@@ -601,8 +605,9 @@ describe('claiming a page, or building it', () => {
     // The order is the whole of it. Claiming with an unresolved router claims
     // a branch that is not there; building with one builds the shell and
     // nothing under it; and listening first lets a click arrive before the
-    // page it would navigate from exists.
-    const resolved = code.indexOf('await router.resolve(location.href)');
+    // page it would navigate from exists. The resolve is handed whatever
+    // loader answers the page carried.
+    const resolved = code.indexOf('await router.resolve(location.href, { data })');
     const attached = code.indexOf('hydrate(App, host, { setup })');
     const listening = code.indexOf('router.start({ resolve: false })');
     expect(resolved).toBeGreaterThan(-1);
@@ -672,3 +677,131 @@ describe('the page a client claims', () => {
   });
 });
 
+
+describe('the loader answers a page carries', () => {
+  const globals = globalThis as Record<string, unknown>;
+
+  /**
+   * The page `/account` is answered with, its loader answering `value`.
+   *
+   * As a server build, which the router collects the answers on and nothing
+   * else does; the runner's flag is a global the bundled router reads.
+   */
+  async function account(
+    value: unknown,
+    overrides: Parameters<typeof handlerFor>[0] = {},
+  ): Promise<Response> {
+    const flag = globals['__VOLT_SERVER__'];
+    globals['__VOLT_SERVER__'] = true;
+    globals['__loader'] = () => value;
+    try {
+      const { handler } = await handlerFor(overrides);
+      return await handler(new Request('http://x/account'));
+    } finally {
+      globals['__VOLT_SERVER__'] = flag;
+      delete globals['__loader'];
+    }
+  }
+
+  /** What the page carries them in, parsed as the client parses it. */
+  function answersIn(html: string): unknown {
+    const json = /<script type="application\/json" data-volt-loaders>(.*?)<\/script>/s.exec(html)?.[1];
+    return json === undefined ? undefined : JSON.parse(json);
+  }
+
+  it('are each loader’s, by depth, under the path they answered for', async () => {
+    const html = await (await account({ plan: 'Team', seats: 3 })).text();
+
+    // Depth 1: the layout above the page has no loader and carries nothing.
+    expect(answersIn(html)).toEqual({ '/account': { 1: { plan: 'Team', seats: 3 } } });
+    // After the markup, beside the state payload, and before the module
+    // script that reads it.
+    const at = html.indexOf('data-volt-loaders');
+    expect(at).toBeGreaterThan(html.indexOf('<script>state</script>'));
+    expect(at).toBeLessThan(html.indexOf('<script type="module"'));
+  });
+
+  it('cannot end their element, whatever an answer holds', async () => {
+    // Script content is raw text: a `</script>` in a value would close the
+    // element and put the rest of the value into the page as markup, and a
+    // `<!--` would swallow the document after it.
+    const hostile = '</script><script>alert(1)</script><!--';
+    const html = await (await account({ note: hostile })).text();
+
+    expect(html).not.toContain('<script>alert(1)');
+    expect(html).not.toContain('<!--');
+    expect(answersIn(html)).toEqual({ '/account': { 1: { note: hostile } } });
+  });
+
+  it('refuse what JSON would carry wrongly, naming the route that answered it', async () => {
+    // Carried, `NaN` arrives as `null`: a value the page was not rendered
+    // from, and one the client would start from without asking again.
+    expect((await account({ total: Number.NaN })).status).toBe(500);
+    await expect(account({ total: Number.NaN }, { dev: true })).rejects.toThrow(
+      /loader of \/account answered with a value this page cannot carry[\s\S]*NaN/,
+    );
+    await expect(account({ id: 1n }, { dev: true })).rejects.toThrow(/bigint/);
+  });
+
+  it('carry a Date as the string its toJSON gives, which is what the state payload does', async () => {
+    // The serializer applies `toJSON` before it looks at a value, so a Date
+    // reaches its refusal as a string and is carried as one: the browser
+    // starts from `'2026-01-02T03:04:05.000Z'` where the server had a Date.
+    // Not refused, because a `hydratable` holding one is not refused either,
+    // and the two payloads keeping one rule is what lets an author learn it
+    // once. A Date the page was rendered from, along with a Map, waits on the
+    // wire format server functions also need — and that is the state
+    // payload's sentence too.
+    const since = new Date(Date.UTC(2026, 0, 2, 3, 4, 5));
+    const html = await (await account({ since })).text();
+    expect(answersIn(html)).toEqual({ '/account': { 1: { since: since.toJSON() } } });
+    expect(since.toJSON()).toBe('2026-01-02T03:04:05.000Z');
+  });
+
+  it('are each reader’s own when two pages are answered at once', async () => {
+    // Two requests in flight together, each loader reading its own request
+    // through the guard and answering only once both have been asked. What a
+    // page carries is what its own render was printed from and not the other
+    // reader's: the answers are the request's router's, and nothing of them
+    // is kept where a second request could read it.
+    const flag = globals['__VOLT_SERVER__'];
+    globals['__VOLT_SERVER__'] = true;
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    globals['__loader'] = () => {
+      // The guard reads the request before the loader's first await, and its
+      // answer is waited for like any other.
+      const who = guard((request) => request.headers.get('x-user'));
+      return who.then((user) => gate.then(() => ({ user })));
+    };
+    try {
+      const { handler } = await handlerFor();
+      const ask = (user: string) =>
+        handler(new Request('http://x/account', { headers: { 'x-user': user } }));
+      const pages = [ask('ada'), ask('bob')];
+      open();
+      const [ada, bob] = await Promise.all(
+        pages.map(async (page) => answersIn(await (await page).text())),
+      );
+      expect(ada).toEqual({ '/account': { 1: { user: 'ada' } } });
+      expect(bob).toEqual({ '/account': { 1: { user: 'bob' } } });
+    } finally {
+      globals['__VOLT_SERVER__'] = flag;
+      delete globals['__loader'];
+    }
+  });
+
+  it('leave out a loader that answered nothing, which the client then asks itself', async () => {
+    // `undefined` has no JSON, so it is not carried, as the state payload does
+    // not carry it either.
+    const html = await (await account(undefined)).text();
+    expect(html).not.toContain('data-volt-loaders');
+  });
+
+  it('are not carried, or refused, on a page nothing will claim', async () => {
+    const statics = { interactive: [false, false], root: false } as const;
+    const html = await (await account({ plan: 'Team' }, statics)).text();
+    expect(html).not.toContain('data-volt-loaders');
+    expect((await account({ total: Number.NaN }, statics)).status).toBe(200);
+  });
+});

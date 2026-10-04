@@ -1300,6 +1300,111 @@ describe('lifecycle', () => {
   });
 });
 
+describe('loader answers a server already has', () => {
+  /** Every loader call, as `route id`. */
+  let calls: string[] = [];
+
+  const table = defineRoutes([
+    {
+      path: '/users',
+      component: UsersLayout,
+      loader: () => {
+        calls.push('users');
+        return 'users';
+      },
+      children: [
+        {
+          path: ':id',
+          component: UserPage,
+          loader: ({ params }) => {
+            calls.push(`user ${params['id']}`);
+            return { name: `fetched ${params['id']}` };
+          },
+        },
+      ],
+    },
+    { path: '/about', component: UserPage },
+  ]);
+
+  /** What a server resolving `/users/7` carries: the leaf's answer, at its depth. */
+  const carried = { '/users/7': { 1: { name: 'carried 7' } } };
+
+  beforeEach(() => {
+    calls = [];
+  });
+
+  it('are adopted in place of calling the loaders, and only the loaders they answer for', async () => {
+    const router = track(createRouter({ routes: table }));
+
+    const result = await router.resolve('/users/7', { data: carried });
+
+    expect(result.status).toBe('completed');
+    attach(router);
+    expect(host.querySelector('.user')?.textContent).toBe('carried 7');
+    // The layout's loader has no answer in what was carried, so it is asked,
+    // exactly as it would have been.
+    expect(calls).toEqual(['users']);
+  });
+
+  it('give a route with no loader nothing, whatever is carried at its depth', async () => {
+    const router = track(createRouter({ routes: table }));
+
+    await router.resolve('/about', { data: { '/about': { 0: { name: 'stray' } } } });
+
+    attach(router);
+    expect(host.querySelector('.user')?.textContent).toBe('nothing');
+  });
+
+  it('count `null` as an answer: the loader is not asked, and the route reads it', async () => {
+    // JSON has `null` where it has no `undefined`, so a loader that answered
+    // `null` is one the page carries an answer for. Asked again, it would be
+    // because the answer was tested for truth rather than for presence.
+    const router = track(createRouter({ routes: table }));
+
+    await router.resolve('/users/7', { data: { '/users/7': { 0: null, 1: null } } });
+
+    attach(router);
+    expect(calls).toEqual([]);
+    expect(host.querySelector('.user')?.textContent).toBe('nothing');
+  });
+
+  it('are adopted only for the path they were answered for', async () => {
+    // Answers for another path are another branch's: the same depth can hold
+    // another route, or the same route with other parameters, and the page
+    // would show one reader's data at another's address.
+    const other = track(createRouter({ routes: table }));
+    await other.resolve('/users/8', { data: carried });
+    attach(other);
+    expect(host.querySelector('.user')?.textContent).toBe('fetched 8');
+    expect(calls).toEqual(['users', 'user 8']);
+
+    // And the same answers at the path they name are, so the refusal above is
+    // about the path rather than about the answers.
+    calls = [];
+    await track(createRouter({ routes: table })).resolve('/users/7', { data: carried });
+    expect(calls).toEqual(['users']);
+  });
+
+  it('are not what a navigation after the first, or a revalidation, starts from', async () => {
+    const router = track(createRouter({ routes: table }));
+    window.history.replaceState(null, '', '/users/7');
+    await router.resolve(window.location.href, { data: carried });
+    attach(router);
+    await router.start({ resolve: false });
+    expect(calls).toEqual(['users']);
+
+    calls = [];
+    await router.navigate('/users/8');
+    await router.navigate('/users/7');
+    expect(calls).toEqual(['user 8', 'user 7']);
+    expect(host.querySelector('.user')?.textContent).toBe('fetched 7');
+
+    calls = [];
+    expect((await router.revalidate()).status).toBe('completed');
+    expect(calls).toEqual(['users', 'user 7']);
+  });
+});
+
 describe('view transitions', () => {
   const routes = defineRoutes([
     {

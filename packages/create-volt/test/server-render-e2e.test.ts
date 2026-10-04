@@ -137,6 +137,19 @@ describe('the template, built', { timeout: 180_000 }, () => {
     expect(assets.some((file) => file.endsWith('.js'))).toBe(true);
   });
 
+  it('writes the `ssg` home page where a static host serves `/` from, as the handler would answer it', async () => {
+    // The one route that says `ssg`, and no other: `/pricing` is the reader's
+    // and `/dashboard` is the browser's. The bytes are the handler's own, so
+    // a client claims the file exactly as it claims a render.
+    const file = join(out, 'client/index.html');
+    expect(await exists(file)).toBe(true);
+    expect(await readFile(file, 'utf8')).toBe(
+      await (await handler(new Request('http://localhost/'))).text(),
+    );
+    expect(await exists(join(out, 'client/pricing.html'))).toBe(false);
+    expect(await exists(join(out, 'client/dashboard.html'))).toBe(false);
+  });
+
   describe('served', () => {
     it.each(SERVER_RENDERED)('renders $path ($mode) into the page, inside every outlet above it', async ({ path, heading }) => {
       const response = await handler(new Request(`http://localhost${path}`));
@@ -220,6 +233,50 @@ describe('the template, built', { timeout: 180_000 }, () => {
       expect(document.querySelector('main > section > article h2')?.textContent).toBe(heading);
     });
 
+    it('claims the page the build wrote, which the host serves as a file', async () => {
+      const response = await fetch(`${origin}/`);
+      const html = await response.text();
+      expect(html).toBe(await readFile(join(out, 'client/index.html'), 'utf8'));
+
+      const errors: unknown[] = [];
+      const window = new Window({
+        url: `${origin}/`,
+        console: capture(errors),
+        settings: {
+          enableJavaScriptEvaluation: true,
+          suppressInsecureJavaScriptEnvironmentWarning: true,
+        },
+      });
+      window.addEventListener('error', (event) => errors.push((event as unknown as ErrorEvent).error));
+      const { document } = window;
+      try {
+        document.write(html);
+        const printed = {
+          shell: document.querySelector('#app > .shell'),
+          section: document.querySelector('main > section'),
+          article: document.querySelector('main > section > article'),
+          heading: document.querySelector('main > section > article h2'),
+          home: document.querySelector('nav a[href="/"]'),
+        };
+        for (const [name, node] of Object.entries(printed)) {
+          expect(node, `the build did not write ${name}`).toBeTruthy();
+        }
+
+        await window.happyDOM.waitUntilComplete();
+        expect(errors).toEqual([]);
+        // The same objects: a file written at build time is claimed, not
+        // rebuilt, because it carries what a render carries.
+        expect(document.querySelector('#app > .shell')).toBe(printed.shell);
+        expect(document.querySelector('main > section')).toBe(printed.section);
+        expect(document.querySelector('main > section > article')).toBe(printed.article);
+        expect(document.querySelector('main > section > article h2')).toBe(printed.heading);
+        expect(printed.heading?.textContent).toBe('Home');
+        expect(printed.home?.getAttribute('aria-current')).toBe('page');
+      } finally {
+        await window.happyDOM.close();
+      }
+    });
+
     it('claims the nodes the server printed, and navigates from them', async () => {
       const html = await (await fetch(`${origin}/pricing`)).text();
 
@@ -239,6 +296,7 @@ describe('the template, built', { timeout: 180_000 }, () => {
       const { document } = window;
 
       try {
+        const booting = requests.length;
         document.write(html);
         // Taken before the module script has run — it is still being fetched
         // — so these are the server's nodes, whatever the client does next.
@@ -257,6 +315,9 @@ describe('the template, built', { timeout: 180_000 }, () => {
 
         await window.happyDOM.waitUntilComplete();
         expect(errors).toEqual([]);
+        // The page arrived with its loader's answer and starts from it, so
+        // booting asks the host for the page's own files and for no plan.
+        expect(requests.slice(booting).filter((request) => request.startsWith('POST '))).toEqual([]);
 
         // The same objects, not equal ones. A client that threw the server's
         // tree away and built its own would produce identical markup, and
@@ -321,6 +382,12 @@ describe('the template, built', { timeout: 180_000 }, () => {
       const document = parse(await response.text());
       expect(document.querySelector('main > section > article h2')?.textContent).toBe(heading);
       expect(document.querySelector('#app')?.getAttribute('data-volt-build')).toMatch(/\S/);
+    });
+
+    it('answers `/` with the page the build wrote', async () => {
+      expect(await (await fetch(`${origin}/`)).text()).toBe(
+        await readFile(join(out, 'client/index.html'), 'utf8'),
+      );
     });
 
     it('answers the client’s files as files, and a URL the table does not match with 404', async () => {

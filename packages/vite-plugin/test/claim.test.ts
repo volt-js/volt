@@ -30,7 +30,7 @@ import { Window } from 'happy-dom';
 import { createBuilder, createServer, type HotPayload } from 'vite';
 import { volt, type ServerRenderOptions } from '../src/index.js';
 import { sendResponse, toRequest } from '../src/dev-server.js';
-import { FIXTURE, alias, markOf } from './server-render-fixture.js';
+import { FIXTURE, alias, markOf, planEndpoint } from './server-render-fixture.js';
 
 type Handler = (request: Request) => Promise<Response>;
 
@@ -58,6 +58,8 @@ interface Hosted {
   origin: string;
   /** Whether the host refuses server-function calls, as an outage would. */
   refuseCalls: boolean;
+  /** Every request the host was sent, as `METHOD /path`. */
+  requests: string[];
   close(): Promise<void>;
 }
 
@@ -89,10 +91,11 @@ async function host(
     .default.fetch;
 
   const files = join(out, 'client');
-  const hosted: Hosted = { origin: '', refuseCalls: false, close: async () => {} };
+  const hosted: Hosted = { origin: '', refuseCalls: false, requests: [], close: async () => {} };
   const server: Server = createHttpServer((req, res) => {
     void (async () => {
       const path = new URL(req.url ?? '/', 'http://host').pathname;
+      hosted.requests.push(`${req.method} ${path}`);
       if (hosted.refuseCalls && req.method === 'POST') {
         res.statusCode = 503;
         res.end();
@@ -228,9 +231,11 @@ describe('a page this build printed', { timeout: 120_000 }, () => {
     // The server rendered the page with its loader's answer; the browser's
     // run of the same loader is a call to a host that is not answering. What
     // is on the screen is still the right page for this URL, so it stays —
-    // node for node, and with the root still saying which page it is.
+    // node for node, and with the root still saying which page it is. The
+    // page carries no answers, or the browser would start from them and never
+    // ask.
     hosted.refuseCalls = true;
-    const page = await boot(hosted, '/pricing');
+    const page = await boot(hosted, '/pricing', uncarried);
     try {
       expectClaimed(page);
       const pricing = page.document.querySelector('nav a[href="/pricing"]')!;
@@ -591,11 +596,256 @@ describe('a page the client builds again, in development', { timeout: 120_000 },
     }
   });
 
+  it('says when the answers the page carried did not parse, and asks the loader once', async () => {
+    const from = hosted.requests.length;
+    const page = await boot(hosted, '/pricing', cutShort);
+    try {
+      expect(page.errors).toHaveLength(1);
+      expect(String(page.errors[0])).toContain('did not parse');
+      expectClaimed(page);
+      expect(page.document.querySelector('article strong')?.textContent).toBe('Free');
+      expect(
+        hosted.requests.slice(from).filter((request) => request === `POST /_volt/${planEndpoint()}`),
+      ).toHaveLength(1);
+    } finally {
+      await page.close();
+    }
+  });
+
   it('says nothing when it claims the page', async () => {
     const page = await boot(hosted, '/pricing');
     try {
       expect(page.errors).toEqual([]);
       expectClaimed(page);
+    } finally {
+      await page.close();
+    }
+  });
+});
+
+/**
+ * The page with the loader answers it carried taken out, as a server that
+ * carried none would have sent it.
+ */
+function uncarried(html: string): string {
+  return html.replace(/<script type="application\/json" data-volt-loaders>[\s\S]*?<\/script>/, '');
+}
+
+/**
+ * The page with its loader answers cut off mid-value, as a transfer that
+ * stopped short, or a rewrite that broke the JSON, leaves them.
+ */
+function cutShort(html: string): string {
+  return html.replace(/(data-volt-loaders>)[^<]*(<\/script>)/, '$1{"/pricing":{"1":"Fr$2');
+}
+
+describe('the loader answers a page was rendered from', { timeout: 120_000 }, () => {
+  let hosted: Hosted;
+
+  beforeAll(async () => {
+    hosted = await host(FIXTURE, true);
+  }, 120_000);
+
+  afterAll(() => hosted.close());
+
+  /** How often the pricing page's loader asked the host for the plan, since request `from`. */
+  const planCalls = (from: number): number =>
+    hosted.requests.slice(from).filter((request) => request === `POST /_volt/${planEndpoint()}`)
+      .length;
+
+  it('are what a page this build printed starts from, asking the host for nothing', async () => {
+    const from = hosted.requests.length;
+    const page = await boot(hosted, '/pricing');
+    try {
+      expect(page.errors).toEqual([]);
+      expectClaimed(page);
+      expect(page.document.querySelector('article strong')?.textContent).toBe('Free');
+      expect(planCalls(from)).toBe(0);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it.each([
+    ['another build’s', (html: string) => html.replace(/data-volt-build="[^"]+"/, 'data-volt-build="another.deadbeef"')],
+    ['another path’s', (html: string) => html.replace(/data-volt-path="[^"]+"/, 'data-volt-path="/elsewhere"')],
+  ])('are not, when the page is %s and built afresh: the loader asks once', async (_, edit) => {
+    // The answers go with the markup they were printed with. A page whose
+    // markup is refused is a page whose answers may be another deploy's, or
+    // another branch's at the same depths.
+    const from = hosted.requests.length;
+    const page = await boot(hosted, '/pricing', edit);
+    try {
+      expect(page.errors).toEqual([]);
+      expect(nodesOf(page.document).some((node) => page.printed.includes(node))).toBe(false);
+      expect(page.document.querySelector('article strong')?.textContent).toBe('Free');
+      expect(planCalls(from)).toBe(1);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('are asked for once by a page that carried none, which it still claims', async () => {
+    const from = hosted.requests.length;
+    const page = await boot(hosted, '/pricing', uncarried);
+    try {
+      expect(page.errors).toEqual([]);
+      expectClaimed(page);
+      expect(planCalls(from)).toBe(1);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('are asked for once when what the page carried was cut short, which it still claims', async () => {
+    // The markup is still this build's for this path, so it is claimed; the
+    // answers are what cannot be read, so the loader is asked as if none had
+    // been carried. A production build says nothing about it.
+    const from = hosted.requests.length;
+    const page = await boot(hosted, '/pricing', cutShort);
+    try {
+      expect(page.errors).toEqual([]);
+      expectClaimed(page);
+      expect(page.document.querySelector('article strong')?.textContent).toBe('Free');
+      expect(page.document.querySelector('script[data-volt-loaders]')).toBeNull();
+      expect(planCalls(from)).toBe(1);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('are not what a navigation after the first starts from', async () => {
+    const page = await boot(hosted, '/pricing');
+    try {
+      (page.document.querySelector('nav a[href="/"]') as HTMLElement).click();
+      await until(() => page.document.querySelector('.shell > article.home') !== null);
+      const from = hosted.requests.length;
+      (page.document.querySelector('nav a[href="/pricing"]') as HTMLElement).click();
+      await until(() => page.document.querySelector('article strong')?.textContent === 'Free');
+      expect(page.errors).toEqual([]);
+      expect(planCalls(from)).toBe(1);
+    } finally {
+      await page.close();
+    }
+  });
+});
+
+/**
+ * A component in a chunk of its own, on a page the server printed.
+ *
+ * The server waits for the chunk and writes the component; the browser holds
+ * the server's nodes until its own copy of the chunk lands and claims them
+ * then, so the page is live at once and the component is live when it can be.
+ * `core/test/lazy-server.test.ts` proves each half against the runtime. This
+ * is the same page through a real build, with the chunk fetched over the
+ * host's connection by the client `serverRender` generates.
+ *
+ * The pages are `fixtures/server-render-lazy`, laid over a copy of the
+ * fixture: the pages every other test builds carry no chunk only this one
+ * asks for.
+ */
+describe('a component that arrives in a chunk of its own', { timeout: 120_000 }, () => {
+  const LAZY = join(import.meta.dirname, 'fixtures/server-render-lazy');
+  let hosted: Hosted;
+
+  beforeAll(async () => {
+    const root = await scratch('project');
+    await cp(FIXTURE, root, { recursive: true });
+    await cp(LAZY, join(root, 'src'), { recursive: true });
+    const routes = join(root, 'src/routes.ts');
+    const table = (await readFile(routes, 'utf8'))
+      .replace(
+        "import { Broken } from './broken.js';",
+        "import { Broken } from './broken.js';\nimport { Charts } from './charts.js';\nimport { Gauges } from './gauges.js';",
+      )
+      .replace(
+        "{ path: 'broken', component: Broken },",
+        "{ path: 'broken', component: Broken },\n      { path: 'charts', component: Charts },\n      { path: 'gauges', component: Gauges },",
+      );
+    // Said here, so a fixture whose table moved reads as that rather than as
+    // two pages the host cannot find.
+    expect(table).toContain("{ path: 'gauges', component: Gauges }");
+    await writeFile(routes, table);
+    hosted = await host(root, true);
+  }, 120_000);
+
+  afterAll(() => hosted.close());
+
+  it('is written by the server, which waits for the chunk rather than printing the fallback', async () => {
+    const response = await fetch(hosted.origin + '/charts');
+    const html = await response.text();
+    expect(response.status).toBe(200);
+    expect(html).toContain('<p class="meter">');
+    expect(html).toContain('<em>server</em>');
+    expect(html).not.toContain('Loading the meter');
+  });
+
+  it('is claimed, every node of it, and is live once the chunk lands', async () => {
+    const page = await boot(hosted, '/charts');
+    try {
+      expect(page.errors).toEqual([]);
+      // Landed or not, the nodes are the server's: held until the chunk is
+      // here, claimed once it is, and never drawn over in between.
+      expectClaimed(page);
+      // The chunk landing is the component's bindings landing on those nodes.
+      // The server printed one word and the browser writes the other into the
+      // same text node, which is the only sign a claim leaves.
+      const side = page.document.querySelector('.meter em')!;
+      await until(() => side.textContent === 'browser');
+      expectClaimed(page);
+
+      const count = page.document.querySelector('.meter .count')!;
+      (page.document.querySelector('.meter button') as HTMLElement).click();
+      await until(() => count.textContent === '1');
+      expect(page.document.querySelector('.meter .count')).toBe(count);
+      expect(page.errors).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('leaves its fallback, marked, where the chunk failed on the server, and the browser replaces it', async () => {
+    // The server's page answers all the same, with the fallback where the
+    // component would be and a mark saying so; the rest is written around it.
+    const response = await fetch(hosted.origin + '/gauges');
+    const html = await response.text();
+    expect(response.status).toBe(200);
+    expect(html).toContain('<!--fallback-->Loading the gauge…');
+    expect(html).not.toContain('class="gauge"');
+    expect(html).toContain('<h1>Gauges</h1>');
+
+    const page = await boot(hosted, '/gauges');
+    try {
+      const heading = page.document.querySelector('h1')!;
+      const fallback = page.printed.find(
+        (node) => node.nodeType === 3 && node.textContent === 'Loading the gauge…',
+      );
+      expect(fallback).toBeDefined();
+      expect(page.printed).toContain(heading);
+
+      // The chunk loads here, and what it builds goes where the fallback was
+      // rather than being bound to it: a fallback whose first node happened
+      // to share the component's tag would otherwise pass the one comparison
+      // a claim makes.
+      await until(() => page.document.querySelector('p.gauge') !== null);
+      expect(page.errors).toEqual([]);
+      const now = nodesOf(page.document);
+      const gone = page.printed.filter((node) => !now.includes(node));
+      expect(gone).toContain(fallback);
+      // Only what stood between the fallback's delimiters was built over —
+      // the mark and the text; the delimiters stay, the hole around them
+      // having been seeded with them. Every element the server printed is
+      // still the page's, the heading among them, and the component's are new.
+      expect(gone.some((node) => node.nodeType === 1)).toBe(false);
+      expect(gone.filter((node) => node.nodeType === 8).map((node) => (node as Comment).data)).toEqual([
+        'fallback',
+      ]);
+      expect(page.document.querySelector('h1')).toBe(heading);
+      expect(page.printed).not.toContain(page.document.querySelector('p.gauge'));
+
+      const count = page.document.querySelector('.gauge .count')!;
+      (page.document.querySelector('.gauge button') as HTMLElement).click();
+      await until(() => count.textContent === '1');
     } finally {
       await page.close();
     }

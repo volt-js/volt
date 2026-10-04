@@ -48,6 +48,7 @@ interface ServerRenderOptions {
   entry?: string;               // default: '/server.ts'
   defaultMode?: 'csr' | 'ssr' | 'ssg'; // default: 'ssr'
   base?: string;                // default: '/_volt/'
+  params?: ParamsForPattern;    // the pages of an `ssg` pattern with a parameter
 }
 ```
 
@@ -64,6 +65,10 @@ against is the one deployed.
 
 `base` is where server-function calls arrive, and it must match what the
 call-site transform posts to. See [server functions](./server-functions).
+
+`params` says which pages `vite build` writes for an `ssg` route whose pattern
+has a parameter, such as `/docs/:page`. See
+[the pages the build writes](#the-pages-the-build-writes).
 
 ## Where the wiring lives
 
@@ -158,9 +163,10 @@ mark, so the page is built in the browser. A mark from another build, or for
 another path — a host that rewrites `/` to `/pricing` hands the browser one
 route's markup at another route's address — is markup whose paths would land on
 the wrong nodes, so that page is built afresh too, and its
-[state payload](./server#the-state-payload) is dropped unread: another build may
-have kept a `hydratable` key and changed what it holds, and another page's
-values are not this one's. Building again is the right answer and a quiet
+[state payload](./server#the-state-payload) is dropped unread, along with
+[the loader answers](#data-during-a-render) it carried: another build may
+have kept a `hydratable` key, or a route, and changed what it holds, and
+another page's values are not this one's. Building again is the right answer and a quiet
 one — the reader sees the page drawn twice — so a development build says which
 it was in the console: the two builds, or the two paths. A production build
 carries none of that.
@@ -171,6 +177,13 @@ deploys with different templates on the same compiler share it, and a client
 cached from the first would claim the second's markup. The second is over the
 code the client build emitted, which is what makes the pair name a build. Under
 `vite` it is one per dev server, since the code changes with every edit.
+
+A component in a chunk of its own is the one thing on a claimed page the
+client cannot claim at once. Its range is held until the chunk lands and
+claimed then, so the rest of the page is live at once and the component is
+live when it can be; where the server could not load the chunk and printed the
+fallback instead, the browser builds the component in the fallback's place.
+See [hydration](./server#hydration).
 
 ## Developing and building
 
@@ -185,10 +198,10 @@ reader and keeps what it made of one under its URL, so over two readers' renders
 of one URL at once it would hand each whatever it finished last. A page under
 `vite` is the handler's page as written, as it is in a deploy.
 
-**`vite build`** builds twice, client first:
+**`vite build`** builds twice, client first, and then writes the `ssg` pages:
 
 ```text
-dist/client/   the files a host serves as they are
+dist/client/   the files a host serves as they are, each `ssg` page among them
 dist/server/   server.js, which a host runs — and never serves
 ```
 
@@ -196,16 +209,21 @@ The client is built first because the server is built with two things only the
 client build has: its page and its identity. The page is taken out of
 `dist/client` rather than copied, because as a file there it is what a host
 that serves files first would send for `/`, unrendered, without the handler
-hearing of the request. The server bundle is self-contained — an edge runtime
-has no `node_modules` to resolve anything from — and holds every `@Server()`
-body, which is why it is not written beside the client's files.
+hearing of the request. When `/` is an `ssg` route, `index.html` is back in
+`dist/client` once the build ends — rendered, which is what a host should send.
+The server bundle is self-contained — an edge runtime has no `node_modules` to
+resolve anything from — and holds every `@Server()` body, which is why it is not
+written beside the client's files. The `ssg` pages are written last, through
+that bundle; see [the pages the build writes](#the-pages-the-build-writes).
 
 A deployment serves `dist/client` as files and hands every other request to the
 `fetch` that `server.js` exports.
 
 **`vite preview`** is that deployment on your machine: the files in
 `dist/client` as they are, and every other request through the `fetch` in
-`dist/server`. It serves the last build, so build first.
+`dist/server`. A path the build wrote a page for is answered with the file, as
+a static host answers it — `/` with `index.html`, `/about` with `about.html`.
+It serves the last build, so build first.
 
 ## Data during a render
 
@@ -228,7 +246,9 @@ export class Pricing {
 call on the server and a POST from the browser, one line on both sides. On the
 server nothing arrives as a call for its `guard` to read, so the handler lends
 it the page's request — for each synchronous span of the work, and never across
-an `await`, where another request's work runs next.
+an `await`, where another request's work runs next. An `ssg` page's request is
+nobody's, and its loaders run once, at build time; see
+[the pages the build writes](#the-pages-the-build-writes).
 
 What that covers:
 
@@ -260,12 +280,37 @@ What it does not:
   loader is kept by nothing: on a server each read outside a request builds
   its own, because the process is every request's, so what a loader files
   there reaches no page — its own included.
-- **Loader data is not carried to the browser yet.** The client resolves the
-  URL itself before it hydrates, which runs the branch's loaders again: the
-  template's `/pricing` asks for its plan a second time when it boots.
 - **The handler does not stream.** It renders with `renderToString`, so a page
   goes out when its slowest data has answered. `renderToStream` lends the
   request to its late chunks as well, for an entry that streams.
+
+**What the loaders answered goes with the page.** The client resolves the URL
+itself before it hydrates, and asking every loader on the branch again for a
+page that was printed from their answers is a second round trip to arrive at
+what is already on the screen. So a page that will be claimed carries them: a
+`<script type="application/json" data-volt-loaders>` beside the state payload,
+holding what a server build's `resolve()` answered with — each loader's answer,
+under the path it answered for and then the depth of its route in the branch.
+The client hands them to its first `resolve`, which adopts each in place of
+calling that loader; see
+[`resolve(url, { data })`](./router#a-server-s-answers-in-the-browser). The
+template's `/pricing` asks for its plan once, on the server. Only that first
+resolve starts from them: a navigation after it, and a revalidation, ask the
+loaders as ever. And only the page's own: one the client builds afresh —
+another build's, another path's — drops them unread with the state payload,
+and a route that is not [interactive](#partial-hydration) is sent none, since
+nothing would read them.
+
+They travel through the state payload's serializer, under
+[its rule](./server#the-state-payload): JSON, with a value JSON would carry
+wrongly — `NaN`, a `bigint`, a function, a hole in an array — refused, which
+fails the request naming the route whose loader answered it, rather than
+sending the browser a value the page was not rendered from. A loader that
+answers `undefined` is left out, and asked again. A `Date` is carried as the
+string its `toJSON` gives, exactly as a `hydratable` holding one is, so a
+template that calls a method of it renders on the server and throws in the
+browser; it waits, with Maps and shared references, on the wire format server
+functions also need.
 
 **A query cache is the root component's to provide.** The handler puts the
 router and the outlet in each render's scope and nothing else, so an
@@ -319,10 +364,9 @@ Three rather than the six a rendering-modes table usually lists: streaming is
 how an `ssr` route is *delivered* rather than a fourth choice, and edge is a
 constraint on the whole build rather than something one route opts into.
 
-**`vite build` does not write the `ssg` files.** The handler renders an `ssg`
-route per request, exactly as it renders an `ssr` one, so the page is complete
-either way; it becomes bytes on disk when a project runs
-[`prerender`](#static-generation) after the build.
+**`vite build` writes each `ssg` page to a file** in `dist/client`, which a
+host serves as one, and the handler answers the same path with the same page;
+see [the pages the build writes](#the-pages-the-build-writes).
 
 **An `ssr` page is answered with `Cache-Control: private`.** It was rendered
 for the request that asked — every guard on the way read that request — and a
@@ -339,6 +383,126 @@ would leave the layout unable to say anything. `routeMode(matches, fallback)`
 from [`@voltdev/router`](./router) is the resolution, and the fallback is the
 application's: nothing in the router decides that server rendering happens at
 all.
+
+### The pages the build writes
+
+Once both builds are done, `vite build` imports `dist/server/server.js` in Node,
+reads the route table in it, and renders every `ssg` route's page through it —
+the bundle a host will run rather than the source, so each page is the
+handler's answer for its path, byte for byte: the build's mark and the
+path's, the state payload, the loader answers, the styles, the hashed assets.
+A client claims the file exactly as it claims a page the handler rendered.
+Each goes into `dist/client`, where a static host finds it without being told
+anything:
+
+| Path | File in `dist/client` |
+|---|---|
+| `/` | `index.html` |
+| `/about` | `about.html` |
+| `/docs/intro` | `docs/intro.html` |
+
+`about.html` rather than `about/index.html`, because of what hosts do with each
+by default. Cloudflare, Netlify and GitHub Pages serve `about.html` at `/about`
+as they find it. `about/index.html` they serve at `/about/`, and they answer
+`/about` with a redirect there — after which the address bar names a path the
+page was not rendered for, and the client builds the page again rather than
+claiming it. A host that serves neither at `/about` hands the request to the
+handler, which answers it with the same page.
+
+The server is imported whether or not any route is `ssg`, because only the
+table in it can say. A server entry that cannot start in Node — one that reaches
+for its host's own modules as it loads — fails the build, and the build says
+what it was starting it for. It is started in a worker thread of its own, which
+is ended once the pages are written: a timer or a connection the server opens
+as it loads ends with it, rather than keeping `vite build` running when the
+build is done. An entry that imports `virtual:volt/server` behind an `import()`
+is started at the chunk that import loads. A page that fails there, or a server
+that cannot start, is reported with the frames of the stack it was thrown with
+in the server; only its message would otherwise cross from the thread. A
+server that ends the thread while a page is owed fails the build too.
+
+**A loader on an `ssg` route runs at build time**, once, for a request that is
+nobody's: a `GET` of the path at `http://localhost`, with no query, no headers
+and no cookies. That is the request its server functions' guards read. A guard
+that needs a reader refuses it, and the build fails naming the path and what
+refused rather than writing a page with the failure in it: a file is what every
+reader is sent. A loader that needs the reader's request belongs on an `ssr`
+route. That is the page's first render only: once a client has claimed a page,
+a navigation to an `ssg` route runs its loaders in the browser like any route's,
+and their server functions are calls from the reader, with the reader's cookies.
+A page the handler answers 404 fails the build as well, since a host
+would serve the file with a 200: that is a route no request reaches, such as a
+static segment a URL percent-encodes — `café`, which a request spells
+`caf%C3%A9` — because the router compares a static segment as it is written.
+
+**The handler answers an `ssg` path with the same page.** It cannot answer with
+the file — an edge runtime has no filesystem, and the pages are written after
+the bundle that would have to carry them — so it renders the page, from the
+request the build rendered it from rather than the one that arrived. Same
+bundle, same request, same page: not this reader's cookies or query, which would
+make it this reader's page at an address that promises everyone one, and with
+no `private` to keep a shared cache from keeping it. What can differ is what the
+loaders read: if that has changed since the build, the handler's page is the one
+the next build would write, and a client claims either, since both carry this
+build's mark. A host that serves `dist/client` first never sends the handler a
+path the build wrote; one that does not sends it every path, and any host sends
+it a path the build did not write. Under `vite` an `ssg` route is rendered from
+that same request, so a loader that needs a reader fails there as it will fail
+the build.
+
+**A pattern with a parameter names no path**, so the build is told which pages
+to write for it, with `params`:
+
+```ts
+// vite.config.ts
+import { readdir } from 'node:fs/promises';
+import { defineConfig } from 'vite';
+import { volt } from '@voltdev/vite-plugin';
+
+export default defineConfig({
+  plugins: [
+    volt({
+      serverRender: {
+        params: async ({ pattern }) =>
+          pattern === '/docs/:page'
+            ? (await readdir('content/docs')).map((file) => ({ page: file.replace(/\.md$/, '') }))
+            : undefined,
+      },
+    }),
+  ],
+});
+```
+
+It is asked once for each `ssg` pattern with a parameter, with the pattern and
+the route's id, and answers with the parameters of each page to write. It is the
+one place the build learns them: in the config rather than on the route, because
+they come from somewhere — a directory, a content API — and the config runs in
+Node at build time, where the route table, which is on the render path, may not
+reach. It is the same function [`prerender`](#static-generation) takes as
+`params`.
+
+- **Saying nothing** — `undefined` or `null`, or no `params` at all — for a
+  pattern with a required parameter fails the build, naming the pattern: a page
+  left unwritten with no word said is one the handler renders on demand, and
+  nobody would know. An optional parameter or a splat can be left out, so such
+  a pattern answered with nothing is written at the path it has without one.
+- **An empty list** writes no page for the pattern beyond that one — a section
+  with no pages yet — and each of its other paths is the handler's to render
+  when asked.
+- **A list with values** is the whole of what is written for the pattern. For
+  `/docs/:page?` that leaves out `/docs`, unless `{}` is among them.
+- **Each value is a page at the address a link to it has**, encoded as
+  [`buildPath`](./router#without-a-browser) encodes it: `{ page: 'q&a' }` is
+  the page for `/docs/q%26a`, written to `docs/q&a.html`, which is the name a
+  host decodes that address to. A value that makes `index` the last segment
+  fails the build: `/docs/index` would be `docs/index.html`, which a host
+  serves at `/docs/`, and `/index` would be `/`'s own `index.html`. Leave it
+  out, and the handler answers it.
+- **A path it does not name** is the handler's too, rendered when asked from
+  the build's request, like any `ssg` path.
+- **A path it names that a more specific route answers**, where that route is
+  not `ssg`, fails the build: the file would be what a host serves in that
+  route's place, to every reader.
 
 ## Partial hydration
 
@@ -357,8 +521,9 @@ The compiler's answer travels with the render the plugin writes, and
 interactive if *any* component on its branch is: the outlet renders the leaf's
 markup inside the layout's and either can hold a binding.
 
-When a route is not, `serverRender` omits two things from the page — the module
-script, and the state payload hydration would have read. On a page of prose the
+When a route is not, `serverRender` omits three things from the page — the
+module script, the state payload hydration would have read, and the loader
+answers its first resolve would have started from. On a page of prose the
 payload is easily the larger half.
 
 **What this does not do:** the chunk still exists in the build, for the routes
@@ -371,9 +536,12 @@ failure than shipping JavaScript nobody needed.
 
 ## Static generation
 
-`@voltdev/vite-plugin/ssg` is the build-time half. It is a separate entry point
-because a project calls it from a script after `vite build`, never from a module
-the browser loads.
+`@voltdev/vite-plugin/ssg` is the machinery underneath
+[the pages the build writes](#the-pages-the-build-writes), for a project that
+renders without `serverRender` — a client-rendered site prerendering with a
+renderer of its own. It is a separate entry point because such a project calls
+it from a script after `vite build`, never from a module the browser loads.
+`serverRender` calls it for you, and nothing here is needed beside it.
 
 ```ts
 import { enumerateRoutes, prerender } from '@voltdev/vite-plugin/ssg';
@@ -389,7 +557,7 @@ const { pages, skipped } = await prerender({
 
 | Function | What it does |
 |---|---|
-| `enumerateRoutes(branches, params?)` | Every URL the table can produce, and what it could not |
+| `enumerateRoutes(branches, params?, defaultMode?)` | Every URL the table can produce, and what it could not |
 | `prerender(options)` | Renders each and writes the files |
 | `createRenderCache(options)` | A staleness policy over one renderer |
 | `fileForPathname(outDir, pathname, layout?)` | Where a URL's file goes |
@@ -398,11 +566,18 @@ Routes are enumerated from the router's own table rather than by re-reading the
 filesystem, and only the `ssg` ones are written. A `csr` or `ssr` route comes
 back in `skipped` with the reason `not-static` rather than being quietly
 missing — a route absent from a build output with no reason given is
-indistinguishable from one the enumerator failed to see. A table with no modes
-anywhere is taken as wholly static, which is what a site with no server is.
+indistinguishable from one the enumerator failed to see. A route that declares
+no mode anywhere on its branch renders as `defaultMode`, which is `ssg` unless
+given: a table with no modes anywhere is taken as wholly static, which is what a
+site with no server is. `serverRender` gives its own default, `ssr` unless
+configured.
 
 A pattern with parameters needs values; supply them with `params`, and a
 pattern that needs some and is offered none is skipped with `no-params`.
+`layout` is `'directory'` unless given, writing `/about` as `about/index.html`;
+`serverRender` writes `'flat'`, `about.html`, for the reason given above. Flat,
+a page whose last segment is `index` is refused, since its file is the one a
+host serves at its directory's address.
 
 ### Revalidation
 
@@ -478,12 +653,15 @@ the pass that erases it.
 It runs end to end, and `packages/create-volt/test/server-render-e2e.test.ts` is
 the proof: it generates the template, installs Volt's packages into it from their
 built output the way a registry would, and then builds it through its own
-config, asks the server bundle for every route, a server-function call and a URL
-the table does not have, serves the rendered pages again behind a host that
-serves the client's files as they are, hydrates the pricing page in a DOM —
-asserting the nodes afterwards are the ones the server printed — navigates from
-it, previews the build as `pnpm preview` does, and asks its dev server for a
-page. It also builds the template with a `node:` import added to a page, to
+config, checks that the build wrote the `ssg` home page to
+`dist/client/index.html` as the handler answers `/` and wrote nothing for the
+other two, asks the server bundle for every route, a server-function call and a
+URL the table does not have, serves the rendered pages again behind a host that
+serves the client's files as they are, hydrates the home page it serves from
+that file and the pricing page in a DOM — asserting the nodes afterwards are the
+ones the file or the server printed, and that booting asked the host for no
+plan — navigates from it, previews the build as `pnpm preview` does, and asks
+its dev server for a page. It also builds the template with a `node:` import added to a page, to
 watch `renderPath` refuse it, and turns the option off by the README's steps
 and runs what is left in a DOM as a client-rendered application.
 

@@ -21,10 +21,15 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { cp, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { inspect } from 'node:util';
 import { createBuilder, preview, type Plugin } from 'vite';
+import { buildPath } from '@voltdev/router';
 import { volt, type VoltPluginOptions } from '../src/index.js';
+import type { ParamsForPattern } from '../src/ssg.js';
 import { FIXTURE, alias, claimOf, markOf, planEndpoint } from './server-render-fixture.js';
 
 const made: string[] = [];
@@ -268,6 +273,557 @@ describe('a build with `serverRender` on', { timeout: 120_000 }, () => {
 
     expect(mark).not.toBeNull();
     expect(claimOf(client)).toBe(mark);
+  });
+});
+
+/**
+ * The fixture with `ssg` routes in it: the home page, and a documentation
+ * page whose pattern has a parameter. What `params` answers for that pattern
+ * is what the build writes it for. Each documentation page shows the plan its
+ * loader answered, which is `Team` for a reader who says who they are and
+ * `Free` for one who does not.
+ */
+async function staticFixture(edit?: (root: string) => Promise<void>): Promise<string> {
+  return copyOfFixture(async (root) => {
+    const routes = join(root, 'src/routes.ts');
+    await writeFile(
+      routes,
+      (await readFile(routes, 'utf8'))
+        .replace(
+          "import { Broken } from './broken.js';",
+          "import { Broken } from './broken.js';\nimport { Doc } from './doc.js';",
+        )
+        .replace('{ index: true, component: Home },', "{ index: true, component: Home, mode: 'ssg' },")
+        .replace(
+          "{ path: 'broken', component: Broken },",
+          "{ path: 'broken', component: Broken },\n" +
+            "      { path: 'docs/:page', component: Doc, mode: 'ssg', loader: () => currentPlan() },",
+        ),
+    );
+    await writeFile(
+      join(root, 'src/doc.ts'),
+      [
+        "import { Component } from '@voltdev/core';",
+        "import { routeData, useRouter } from '@voltdev/router';",
+        "@Component({ selector: 'v-doc', templateUrl: './doc.html' })",
+        'export class Doc {',
+        '  router = useRouter();',
+        '  plan = routeData<string>();',
+        "  page(): string { return this.router.param('page') ?? ''; }",
+        '}',
+        '',
+      ].join('\n'),
+    );
+    await writeFile(
+      join(root, 'src/doc.html'),
+      '<article class="doc"><h1>{ page() }</h1><p>Plan: <strong>{ plan() }</strong></p></article>',
+    );
+    await edit?.(root);
+  });
+}
+
+/** What the documentation pattern is written for; nothing else has a parameter. */
+const docs: ParamsForPattern = ({ pattern }) =>
+  pattern === '/docs/:page' ? [{ page: 'intro' }, { page: 'install' }] : undefined;
+
+describe('the pages a build writes for its `ssg` routes', { timeout: 120_000 }, () => {
+  let root: string;
+  let out: string;
+
+  beforeAll(async () => {
+    root = await staticFixture();
+    out = await build(root, { volt: { serverRender: { params: docs } } });
+  }, 120_000);
+
+  it('writes each one where a static host serves its path from, and nothing for the rest', async () => {
+    // `/docs/intro` as `docs/intro.html`, which Cloudflare, Netlify and GitHub
+    // Pages serve at `/docs/intro` as they find it. `docs/intro/index.html`
+    // they serve at `/docs/intro/`, and send `/docs/intro` there with a
+    // redirect — and the address bar then names a path the page was not
+    // rendered for, so the client builds it again rather than claiming it.
+    const written = [...(await files(out)).keys()].filter((path) => path.endsWith('.html'));
+    expect(written.sort()).toEqual([
+      'client/docs/install.html',
+      'client/docs/intro.html',
+      'client/index.html',
+    ]);
+  });
+
+  it('writes the bytes the handler answers a request for that path with', async () => {
+    // The same page, so the client claims a page a host served as a file
+    // exactly as it claims one the handler rendered: the build's mark, the
+    // path's, the state payload and the loader answers are all in it.
+    const handler = await handlerOf(out);
+    for (const [path, file] of [
+      ['/', 'client/index.html'],
+      ['/docs/intro', 'client/docs/intro.html'],
+    ] as const) {
+      const answered = await (await handler(new Request(`http://localhost${path}`))).text();
+      expect(await readFile(join(out, file), 'utf8')).toBe(answered);
+      expect(markOf(answered)).not.toBeNull();
+      expect(answered).toContain(`data-volt-path="${path}"`);
+    }
+    const intro = await readFile(join(out, 'client/docs/intro.html'), 'utf8');
+    expect(intro).toContain('<article class="doc"><h1>intro</h1><p>Plan: <strong>Free</strong>');
+    expect(intro).toMatch(/<script type="application\/json" data-volt-loaders>\{"\/docs\/intro":/);
+  });
+
+  it('is what the handler answers for that path whoever asks, so a host that sends it there gets the file', async () => {
+    // A host that serves no files, or a path `params` did not name, reaches
+    // the handler. An `ssg` page is everyone's by its own declaration, so the
+    // handler renders it from the request the build did — not from this
+    // reader's cookies, query or address, which would make it this reader's
+    // page under an address that promises everyone the same one.
+    const handler = await handlerOf(out);
+    const asked = await handler(
+      new Request('https://example.com/docs/intro?from=search', {
+        headers: { 'x-user': 'ada', cookie: 'session=ada' },
+      }),
+    );
+    expect(await asked.text()).toBe(await readFile(join(out, 'client/docs/intro.html'), 'utf8'));
+    expect(asked.headers.get('cache-control')).toBeNull();
+    // Not named, and the same page the build would have written for it.
+    const unnamed = await (
+      await handler(new Request('http://localhost/docs/upgrade', { headers: { 'x-user': 'ada' } }))
+    ).text();
+    expect(unnamed).toContain('<h1>upgrade</h1><p>Plan: <strong>Free</strong>');
+  });
+
+  it('is previewed from those files, as a host serves them, and the rest through the server', async () => {
+    // Proved by editing a written page: what comes back is the file as it is
+    // on disk, which a render could not have produced.
+    const file = join(out, 'client/docs/intro.html');
+    const page = await readFile(file, 'utf8');
+    await writeFile(file, page.replace('</body>', '<!-- from the file --></body>'));
+    const server = await preview({
+      root,
+      configFile: false,
+      logLevel: 'silent',
+      plugins: volt({ serverRender: { params: docs } }),
+      build: { outDir: out },
+      preview: { port: 0 },
+    });
+    try {
+      const origin = server.resolvedUrls!.local[0]!.replace(/\/$/, '');
+      const intro = await fetch(`${origin}/docs/intro`);
+      expect(intro.status).toBe(200);
+      expect(intro.headers.get('content-type')).toMatch(/^text\/html/);
+      expect(await intro.text()).toContain('<!-- from the file -->');
+      expect(await (await fetch(`${origin}/`)).text()).toBe(
+        await readFile(join(out, 'client/index.html'), 'utf8'),
+      );
+      // Rendered per request as before: nothing was written for it.
+      const pricing = await (await fetch(`${origin}/pricing`, { headers: { 'x-user': 'ada' } })).text();
+      expect(pricing).toContain('<strong>Team</strong>');
+      // The file is the page for `/docs/intro` asked for as a host serves a
+      // file: with a GET. At `/docs/intro/` it would be a page at a path it
+      // was not rendered for, which the client builds again rather than
+      // claims, and a POST is no request a host answers with a file.
+      const slashed = await (await fetch(`${origin}/docs/intro/`)).text();
+      expect(slashed).not.toContain('<!-- from the file -->');
+      expect(slashed).toContain('data-volt-path="/docs/intro/"');
+      const posted = await (await fetch(`${origin}/docs/intro`, { method: 'POST' })).text();
+      expect(posted).not.toContain('<!-- from the file -->');
+      expect(posted).toContain('<h1>intro</h1>');
+    } finally {
+      await writeFile(file, page);
+      await server.close();
+    }
+  });
+
+  it('refuses an `ssg` pattern with a parameter nothing answered for, naming both', async () => {
+    // A pattern with a parameter names no path on its own, and a page left
+    // unwritten with no word said is indistinguishable from one the build
+    // failed to see.
+    await expect(build(root)).rejects.toThrow(/\/docs\/:page[\s\S]*serverRender[\s\S]*params/);
+    // A configuration in JavaScript says nothing with `null` as readily as
+    // with `undefined`, and only a list is an answer.
+    const nothing = (() => null) as unknown as ParamsForPattern;
+    await expect(build(root, { volt: { serverRender: { params: nothing } } })).rejects.toThrow(
+      /\/docs\/:page[\s\S]*serverRender[\s\S]*params/,
+    );
+  });
+
+  it('writes no page for a pattern `params` answers with none, and leaves its paths to the handler', async () => {
+    // An empty list is an answer — a section with no pages in it yet — where
+    // nothing at all is a pattern nobody said anything about. Each path of it
+    // is then the handler's to render when it is asked for, as a path `params`
+    // did not name is.
+    const none: ParamsForPattern = ({ pattern }) => (pattern === '/docs/:page' ? [] : undefined);
+    const out = await build(root, { volt: { serverRender: { params: none } } });
+    const written = [...(await files(out)).keys()].filter((path) => path.endsWith('.html'));
+    expect(written).toEqual(['client/index.html']);
+    const asked = await (await handlerOf(out))(new Request('http://localhost/docs/intro'));
+    expect(await asked.text()).toContain('<h1>intro</h1>');
+  });
+
+  it('refuses a path `params` names that a route rendered per request answers', async () => {
+    // `/docs/changelog` is its own route, more specific than `/docs/:page`,
+    // and rendered per request. A file written there from the pattern's page
+    // would be what a host serves in its place, to every reader.
+    const shadowed = await staticFixture(async (root) => {
+      const routes = join(root, 'src/routes.ts');
+      await writeFile(
+        routes,
+        (await readFile(routes, 'utf8')).replace(
+          "{ path: 'broken', component: Broken },",
+          "{ path: 'broken', component: Broken },\n      { path: 'docs/changelog', component: Home },",
+        ),
+      );
+    });
+    const named: ParamsForPattern = () => [{ page: 'intro' }, { page: 'changelog' }];
+    await expect(build(shadowed, { volt: { serverRender: { params: named } } })).rejects.toThrow(
+      /\/docs\/changelog[\s\S]*not render as `ssg`/,
+    );
+  });
+
+  it('fails when a loader’s guard refuses the build’s request, rather than writing the failure', async () => {
+    // The page is written once, by the build, so its loaders run there — with
+    // a request that has nothing of a reader's in it. A guard that needs one
+    // refuses, and that is the build's to report, not a page's to carry.
+    const guarded = await staticFixture(async (root) => {
+      const routes = join(root, 'src/routes.ts');
+      await writeFile(
+        routes,
+        (await readFile(routes, 'utf8'))
+          .replace("import { currentPlan } from './api.js';", "import { currentPlan, whoAmI } from './api.js';")
+          .replace(
+            "{ path: 'broken', component: Broken },",
+            "{ path: 'broken', component: Broken },\n      { path: 'account', component: Home, mode: 'ssg', loader: () => whoAmI() },",
+          ),
+      );
+      const api = join(root, 'src/api.ts');
+      await writeFile(
+        api,
+        (await readFile(api, 'utf8')).replace(
+          'const api = new Api();',
+          [
+            'export class Account {',
+            '  @Server()',
+            '  async whoAmI(): Promise<string> {',
+            "    const who = await guard((request) => request.headers.get('x-user'));",
+            '    return who;',
+            '  }',
+            '}',
+            'const account = new Account();',
+            'export const whoAmI = (): Promise<string> => account.whoAmI();',
+            'const api = new Api();',
+          ].join('\n'),
+        ),
+      );
+    });
+    const out = await scratch('dist');
+    const builder = await createBuilder(
+      {
+        root: guarded,
+        configFile: false,
+        logLevel: 'silent',
+        plugins: volt({ serverRender: { params: docs } }),
+        resolve: { alias },
+        build: { outDir: out, emptyOutDir: true },
+      },
+      null,
+    );
+    await expect(builder.buildApp()).rejects.toThrow(/\/account[\s\S]*no cookies[\s\S]*Unauthorized/);
+    await expect(readFile(join(out, 'client/account.html'), 'utf8')).rejects.toThrow(/ENOENT/);
+  });
+
+  it('says where a page’s render failed, with the stack the server threw it with', async () => {
+    // The page is rendered in the server's own thread, and what crosses back
+    // is a message. Without the stack the build says what failed and not
+    // where — a `TypeError` from somewhere in the application, with no line.
+    const failing = await staticFixture(async (root) => {
+      const routes = join(root, 'src/routes.ts');
+      await writeFile(
+        routes,
+        (await readFile(routes, 'utf8')).replace(
+          "{ path: 'broken', component: Broken },",
+          "{ path: 'broken', component: Broken },\n" +
+            "      { path: 'changelog', component: Home, mode: 'ssg', loader: () => readTheChangelog() },",
+        ) +
+          '\nfunction readTheChangelog(): string {\n' +
+          "  throw new TypeError('the changelog is missing');\n" +
+          '}\n',
+      );
+    });
+    const failed = await build(failing, { volt: { serverRender: { params: docs } } }).catch(
+      (error: unknown) => error,
+    );
+    expect(failed).toBeInstanceOf(Error);
+    expect(inspect(failed)).toMatch(
+      /\/changelog[\s\S]*the changelog is missing[\s\S]*at readTheChangelog \(file:/,
+    );
+  });
+
+  it('refuses a page the handler answers with something other than a page', async () => {
+    // `café` is spelled `caf%C3%A9` in a URL, and the router compares a
+    // static segment as it is written, so no request reaches that route and
+    // the handler answers its address 404. Written, the not-found page would
+    // be a file a host serves at that address with a 200 — whether the route
+    // says `ssg` itself or the application's default does.
+    const unreachable = await staticFixture(async (root) => {
+      const routes = join(root, 'src/routes.ts');
+      await writeFile(
+        routes,
+        (await readFile(routes, 'utf8')).replace(
+          "{ path: 'broken', component: Broken },",
+          "{ path: 'broken', component: Broken, mode: 'ssr' },\n      { path: 'café', component: Home, mode: 'ssg' },",
+        ),
+      );
+    });
+    for (const defaultMode of ['ssg', 'ssr'] as const) {
+      await expect(
+        build(unreachable, { volt: { serverRender: { params: docs, defaultMode } } }),
+      ).rejects.toThrow(/\/café[\s\S]*answered 404[\s\S]*no route matches/);
+    }
+  });
+
+  it('fails, rather than waiting for ever, when the server ends while a page is being rendered', { timeout: 60_000 }, async () => {
+    // A server that ends its own process on a fatal error is ending the
+    // build's thread, with pages still owed. Each of them is a failure the
+    // build reports; none of them is an answer to wait for.
+    const exiting = await staticFixture(async (root) => {
+      const routes = join(root, 'src/routes.ts');
+      await writeFile(
+        routes,
+        (await readFile(routes, 'utf8')).replace(
+          "{ path: 'broken', component: Broken },",
+          "{ path: 'broken', component: Broken },\n" +
+            "      { path: 'fatal', component: Home, mode: 'ssg', loader: () => new Promise(() => setTimeout(() => process.exit(3), 50)) },",
+        ),
+      );
+    });
+    await expect(
+      build(exiting, { volt: { serverRender: { params: docs } } }),
+    ).rejects.toThrow(/\/fatal[\s\S]*exited with code 3/);
+  });
+
+  it('says why it started the server, when the server cannot start in Node', async () => {
+    // Started whatever the table says, because only the table in it can say
+    // which routes are `ssg` — so a server that throws as it loads fails a
+    // build with none, and the build has to say what it was doing — and,
+    // since the server ran in a thread of its own, where in it the throw was.
+    const unstartable = await copyOfFixture(async (root) => {
+      const entry = join(root, 'server.ts');
+      await writeFile(entry, `${await readFile(entry, 'utf8')}\nthrow new Error('not on this host');\n`);
+    });
+    await expect(build(unstartable)).rejects.toThrow(
+      /imports the server it built, in Node[\s\S]*not on this host\n\s+at .*server\.js:\d+/,
+    );
+  });
+
+  it('marks a page for the address a link to it has, whatever its parameter holds', async () => {
+    // A link is built by the router, which encodes a parameter whole: `q&a`
+    // is `/docs/q%26a` in the address bar. A host decodes that to find
+    // `docs/q&a.html`, and the client claims what it serves only when the
+    // page's path is the address it was opened at. `%41` is a value that
+    // reads as an escape itself, and is decoded once, not twice.
+    const values = ['q&a', 'c++', '%41'];
+    const named: ParamsForPattern = ({ pattern }) =>
+      pattern === '/docs/:page' ? values.map((page) => ({ page })) : undefined;
+    const out = await build(root, { volt: { serverRender: { params: named } } });
+    const handler = await handlerOf(out);
+    for (const page of values) {
+      const address = buildPath('/docs/:page', { page });
+      const file = await readFile(join(out, `client/docs/${page}.html`), 'utf8');
+      expect(file).toContain(`data-volt-path="${address.replaceAll('&', '&amp;')}"`);
+      expect(file).toBe(await (await handler(new Request(`http://localhost${address}`))).text());
+      await writeFile(join(out, `client/docs/${page}.html`), `${file}<!-- ${page} -->`);
+    }
+    const server = await preview({
+      root,
+      configFile: false,
+      logLevel: 'silent',
+      plugins: volt({ serverRender: { params: named } }),
+      build: { outDir: out },
+      preview: { port: 0 },
+    });
+    try {
+      const origin = server.resolvedUrls!.local[0]!.replace(/\/$/, '');
+      for (const page of values) {
+        const served = await fetch(origin + buildPath('/docs/:page', { page }));
+        expect(await served.text()).toContain(`<!-- ${page} -->`);
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('finds the pages of a server whose entry imports the handler only when asked', async () => {
+    // An entry that keeps its first request cheap imports the handler behind
+    // an `import()`, which puts the generated module in a chunk of its own —
+    // one that importing the entry never evaluates.
+    const lazy = await staticFixture(async (root) => {
+      await writeFile(
+        join(root, 'server.ts'),
+        [
+          'export default {',
+          "  fetch: async (request: Request) => (await import('virtual:volt/server')).handler(request),",
+          '};',
+          '',
+        ].join('\n'),
+      );
+    });
+    const out = await build(lazy, { volt: { serverRender: { params: docs } } });
+    const written = [...(await files(out)).keys()].filter((path) => path.endsWith('.html'));
+    expect(written.sort()).toEqual([
+      'client/docs/install.html',
+      'client/docs/intro.html',
+      'client/index.html',
+    ]);
+    const handler = await handlerOf(out);
+    expect(await readFile(join(out, 'client/docs/intro.html'), 'utf8')).toBe(
+      await (await handler(new Request('http://localhost/docs/intro'))).text(),
+    );
+  });
+
+  it('ends once the pages are written, whatever the server started as it loaded', async () => {
+    // A server that sweeps a cache on a timer from the moment it loads is an
+    // ordinary one, and the build starts it to write the pages. Vite's CLI
+    // ends a build by having nothing left to run, so a timer the server left
+    // in the build's process is a `vite build` that never ends.
+    const sweeping = await staticFixture(async (root) => {
+      const entry = join(root, 'server.ts');
+      await writeFile(entry, `${await readFile(entry, 'utf8')}\nsetInterval(() => {}, 60_000);\n`);
+      await writeFile(
+        join(root, 'vite.config.ts'),
+        [
+          `import { volt } from ${JSON.stringify(join(import.meta.dirname, '../src/index.ts'))};`,
+          `import { alias } from ${JSON.stringify(join(import.meta.dirname, 'server-render-fixture.ts'))};`,
+          "const params = ({ pattern }) => (pattern === '/docs/:page' ? [{ page: 'intro' }] : undefined);",
+          "export default { plugins: [volt({ serverRender: { params } })], resolve: { alias }, logLevel: 'silent' };",
+          '',
+        ].join('\n'),
+      );
+    });
+    const vite = join(dirname(createRequire(import.meta.url).resolve('vite/package.json')), 'bin/vite.js');
+    const ended = await new Promise<Error | null>((resolve) => {
+      execFile(
+        process.execPath,
+        [vite, 'build', '--configLoader', 'runner'],
+        { cwd: sweeping, timeout: 60_000 },
+        (error) => resolve(error),
+      );
+    });
+    expect(ended).toBeNull();
+    expect(await readFile(join(sweeping, 'dist/client/docs/intro.html'), 'utf8')).toContain(
+      '<h1>intro</h1>',
+    );
+  });
+
+  it('writes a page with a component in a chunk of its own as a warm server answers it', async () => {
+    // The build renders each page in a server that has loaded nothing yet,
+    // and a server that has been answering for an hour has every chunk. The
+    // file is the page either way, or a host sends one and the handler the
+    // other for the same path.
+    const charted = await staticFixture(async (root) => {
+      await cp(join(import.meta.dirname, 'fixtures/server-render-lazy'), join(root, 'src'), {
+        recursive: true,
+      });
+      const routes = join(root, 'src/routes.ts');
+      await writeFile(
+        routes,
+        (await readFile(routes, 'utf8'))
+          .replace(
+            "import { Broken } from './broken.js';",
+            "import { Broken } from './broken.js';\nimport { Charts } from './charts.js';",
+          )
+          .replace(
+            "{ path: 'broken', component: Broken },",
+            "{ path: 'broken', component: Broken },\n      { path: 'charts', component: Charts, mode: 'ssg' },",
+          ),
+      );
+    });
+    const out = await build(charted, { volt: { serverRender: { params: docs } } });
+    const file = await readFile(join(out, 'client/charts.html'), 'utf8');
+    expect(file).toContain('<p class="meter">');
+    expect(file).not.toContain('Loading the meter');
+    const handler = await handlerOf(out);
+    const cold = await (await handler(new Request('http://localhost/charts'))).text();
+    const warm = await (await handler(new Request('http://localhost/charts'))).text();
+    expect(cold).toBe(file);
+    expect(warm).toBe(file);
+  });
+
+  it('refuses a page named `index`, whose file a host serves at another path', async () => {
+    // `/index` is written as `index.html`, which is `/`'s file, and
+    // `/docs/index` as `docs/index.html`, which a host serves at `/docs/`. A
+    // content directory with an `index.md` in it names such a page as readily
+    // as any other, and the file would be another path's page to every reader
+    // a host serves it to.
+    const pages = await staticFixture(async (root) => {
+      const routes = join(root, 'src/routes.ts');
+      await writeFile(
+        routes,
+        (await readFile(routes, 'utf8')).replace(
+          "{ path: 'broken', component: Broken },",
+          "{ path: 'broken', component: Broken },\n      { path: ':page', component: Doc, mode: 'ssg' },",
+        ),
+      );
+    });
+    for (const [pattern, path, file] of [
+      ['/:page', '/index', 'index.html'],
+      ['/docs/:page', '/docs/index', 'docs/index.html'],
+    ] as const) {
+      const named: ParamsForPattern = (route) =>
+        route.pattern === pattern
+          ? [{ page: 'intro' }, { page: 'index' }]
+          : route.pattern === '/:page' || route.pattern === '/docs/:page'
+            ? []
+            : undefined;
+      const out = await scratch('dist');
+      const builder = await createBuilder(
+        {
+          root: pages,
+          configFile: false,
+          logLevel: 'silent',
+          plugins: volt({ serverRender: { params: named } }),
+          resolve: { alias },
+          build: { outDir: out, emptyOutDir: true },
+        },
+        null,
+      );
+      await expect(builder.buildApp()).rejects.toThrow(
+        new RegExp(`${path}[\\s\\S]*${file.replace('.', '\\.')}`),
+      );
+      // Refused before a page is rendered, so none of them is left behind.
+      const written = [...(await files(out)).keys()].filter((name) => name.endsWith('.html'));
+      expect(written).toEqual([]);
+    }
+  });
+
+  it('writes each page with the ids it has rendered alone, though the build renders several at once', async () => {
+    // The build renders its pages side by side in one server, and the handler
+    // renders whichever path it is asked for after whatever it answered
+    // before. An id is the element's position, so each page has its own
+    // whichever renders beside it or before it — and the file, the handler's
+    // answer and the client that claims either agree on it.
+    const minted = await staticFixture(async (root) => {
+      const doc = join(root, 'src/doc.ts');
+      await writeFile(
+        doc,
+        (await readFile(doc, 'utf8'))
+          .replace("import { Component } from '@voltdev/core';", "import { Component, createId } from '@voltdev/core';")
+          .replace('  router = useRouter();', "  router = useRouter();\n  title = createId('doc');"),
+      );
+      await writeFile(
+        join(root, 'src/doc.html'),
+        '<article class="doc" :aria-labelledby="title"><h1 :id="title">{ page() }</h1><p>Plan: <strong>{ plan() }</strong></p></article>',
+      );
+    });
+    const pages = Array.from({ length: 10 }, (_, i) => `p${i}`);
+    const many: ParamsForPattern = ({ pattern }) =>
+      pattern === '/docs/:page' ? pages.map((page) => ({ page })) : undefined;
+    const out = await build(minted, { volt: { serverRender: { params: many } } });
+    const handler = await handlerOf(out);
+    const ids = new Set<string>();
+    for (const page of pages.toReversed()) {
+      const file = await readFile(join(out, `client/docs/${page}.html`), 'utf8');
+      ids.add(/<h1 id="([^"]+)"/.exec(file)?.[1] ?? '');
+      expect(file).toBe(await (await handler(new Request(`http://localhost/docs/${page}`))).text());
+    }
+    expect([...ids]).toHaveLength(1);
+    expect([...ids][0]).toMatch(/^doc-/);
   });
 });
 

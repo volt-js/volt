@@ -37,6 +37,7 @@ import {
   renderEffect,
   requestState,
   runWithScope,
+  trackRequestData,
   type Dispose,
   type Scope,
 } from '@voltdev/reactivity';
@@ -51,8 +52,9 @@ import {
   removeComponent,
 } from './devtools.js';
 import { voltError } from './diagnostics.js';
-import { hydrate as hydrateInto, insert, spread } from './dom.js';
-import { enterPosition, exitPosition } from './ids.js';
+import { holdClaimed, hydrate as hydrateInto, insert, spread } from './dom.js';
+import { atPosition, enterPosition, exitPosition, holdPosition } from './ids.js';
+import type { MarkupWriter } from './server.js';
 
 // `Symbol.metadata` is stage-3 and missing from current engines. Without it
 // the decorator transform quietly skips attaching metadata to the class, so it
@@ -950,8 +952,14 @@ const LAZY = new WeakMap<ComponentType<unknown>, LazyRecord>();
  * assigns this, so the whole path drops out. Measured on `examples/counter` in
  * `bundle-composition.test.ts`.
  */
-let renderLazy: ((record: LazyRecord, props: Record<string, unknown> | null, slots: SlotMap | null) => unknown) | null =
-  null;
+let renderLazy:
+  | ((
+      record: LazyRecord,
+      props: Record<string, unknown> | null,
+      slots: SlotMap | null,
+      out: unknown,
+    ) => unknown)
+  | null = null;
 
 /**
  * A component fetched on first use, so it lands in its own chunk.
@@ -1011,10 +1019,106 @@ function startLoad(record: LazyRecord): Promise<void> {
       record.component.set(resolved);
     })
     .catch((error: unknown) => {
+      if (__VOLT_SERVER__) {
+        // Forgotten rather than kept. A process is every reader's, so a
+        // failure kept on the record would be every later request's too — a
+        // chunk that failed to load once, for a moment, would be missing from
+        // every page until a restart. The renders that waited on this attempt
+        // keep their fallback, and the next request loads again.
+        record.inFlight = null;
+        if (__VOLT_DEV__) {
+          console.warn(
+            '[volt] a lazy component failed to load during a server render, so its fallback ' +
+              'was written in its place. The browser loads it again when the page hydrates.',
+            error,
+          );
+        }
+        return;
+      }
       record.failure.set(error ?? new Error('[volt] lazy component failed to load'));
     });
 
   return record.inFlight;
+}
+
+/**
+ * The comment a server writes ahead of a lazy component's fallback.
+ *
+ * Its range on the page is either the component's markup or the fallback that
+ * stood in for it — a load that failed on the server — and only the first can
+ * be claimed. The browser hands this to `holdClaimed`, which is how the range
+ * knows which it is; why claiming the second would be worse than a mismatch is
+ * said there.
+ */
+const FALLBACK = 'fallback';
+
+/**
+ * A lazy component in a server render: the fallback now, and the component in
+ * its place once the chunk has loaded.
+ *
+ * The load is data the request waits for, like a resource's fetch, so a page
+ * is not sent with the fallback in it for want of a chunk that was a moment
+ * away. The fallback is written into a region, and the effect that rewrites it
+ * runs again in the flush after the chunk lands — inside the request, in the
+ * same frame the walk passed, so the component's styles and ids are the ones
+ * it would have had in the walk itself.
+ *
+ * The range is always delimited, loaded or not, because the browser needs to
+ * know which nodes are the component's before it can have the component: see
+ * `createLazyComponent`.
+ *
+ * A load that fails leaves the fallback, marked so the browser replaces it
+ * rather than claiming it — see `FALLBACK`. Not the `error` output: that carries a retry nobody
+ * can press until the page hydrates, and by then the browser has loaded the
+ * chunk itself — and the error it describes is this process's, not the
+ * reader's. Under `renderToStream` the shell goes out before a chunk that
+ * was not already loaded can land, so the region is sent with the fallback
+ * in it, marked, and the browser loads the chunk the same way; the stream
+ * still waits for the load, as it waits for any data the request registered,
+ * and builds nothing into bytes it has already sent.
+ */
+function writeLazy(
+  record: LazyRecord,
+  props: Record<string, unknown> | null,
+  slots: SlotMap | null,
+  out: MarkupWriter,
+): void {
+  out.openHole();
+  const loaded = untrack(() => record.component.get());
+  if (loaded) {
+    instantiate(loaded, { props, slots, out });
+  } else {
+    const place = holdPosition();
+    const region = out.region();
+    trackRequestData(startLoad(record));
+    renderEffect(() => {
+      const component = record.component.get();
+      // Bytes a stream has sent are not written again, so building the
+      // component for them is work nobody sees: its constructor, the data it
+      // asks for, which the stream would wait on, and a throw that would end
+      // a response that was fine. The browser builds it over the mark.
+      if (out.sent) return;
+      // Untracked, as a walk is: a value is written where it stood, and a
+      // signal the component reads must not build it again.
+      untrack(() =>
+        out.rewrite(region, () =>
+          // The fallback in the held place too, so what it mints is taken
+          // from the component's place rather than from the count everything
+          // after it is numbered from — which the browser, holding what was
+          // written instead of drawing a fallback, never moves.
+          atPosition(place, () => {
+            if (component) {
+              instantiate(component, { props, slots, out });
+              return;
+            }
+            out.comment(FALLBACK);
+            out.child(record.options.fallback?.());
+          }),
+        ),
+      );
+    });
+  }
+  out.closeHole();
 }
 
 /**
@@ -1023,30 +1127,84 @@ function startLoad(record: LazyRecord): Promise<void> {
  * `insert` already treats a function as a reactive source, so the placeholder,
  * the loaded component and a failure all flow through the same path that any
  * other changing value would — no separate suspension machinery, and no
- * compiler support.
+ * compiler support. A component whose chunk is already here is built at once
+ * instead, where the walk is: nothing about it is going to change, so there
+ * is nothing for an effect to wait on.
+ *
+ * Hydrating, the server's range for the component is held until the chunk
+ * lands and claimed then: the nodes the reader has been looking at become the
+ * component's, and nothing is drawn over them in the meantime — neither the
+ * fallback nor a second copy. The alternative was a page that says which lazy
+ * components it rendered and an entry that loads those chunks before claiming
+ * anything, which is an exact claim too and has two costs this does not. The
+ * whole page waits for its slowest chunk before a single listener attaches,
+ * which is the wait `lazy` exists to take off the page; and every client
+ * entry, `serverRender`'s and each hand-written `hydrate`, has to know to do
+ * it. Here the rest of the page is live at once and nothing has to be told. A
+ * page that did load a chunk first — `preload` before `hydrate` — is claimed
+ * at once, by the path a loaded chunk takes anyway.
+ *
+ * What is held is shown until something replaces it: the component, or the
+ * `error` output if the chunk fails in the browser. A failure with nothing to
+ * show leaves the server's markup, inert but still saying what is true. A
+ * fallback the server wrote when the chunk failed there is held the same way
+ * and built over rather than claimed, which the range itself knows from the
+ * mark — see `FALLBACK` — and a failure here takes it away, since a fallback
+ * says the component is coming.
  */
 function createLazyComponent(
   record: LazyRecord,
   props: Record<string, unknown> | null,
   slots: SlotMap | null,
+  out: unknown,
 ): unknown {
+  if (__VOLT_SERVER__ && out) {
+    writeLazy(record, props, slots, out as MarkupWriter);
+    return null;
+  }
+
   void startLoad(record);
 
+  let held = holdClaimed(FALLBACK);
+
+  const build = (component: ComponentType<unknown>, place: ReturnType<typeof holdPosition> | null) => {
+    const range = held;
+    held = null;
+    const make = () => instantiate(component, { props, slots });
+    const made = place ? () => atPosition(place, make) : make;
+    if (range === null) return made();
+    const { nodes } = range;
+    // The delimiters go with it, since the hole around this one was seeded
+    // with them: handing back exactly what it holds is what makes it touch
+    // nothing, and building over a fallback touch only what stood between.
+    return [nodes[0], range.claim(made), nodes[nodes.length - 1]];
+  };
+
+  const loaded = untrack(() => record.component.get());
+  if (loaded) return build(loaded, null);
+
+  const place = holdPosition();
+  const retry = () => {
+    record.inFlight = null;
+    record.failure.set(undefined);
+    void startLoad(record);
+  };
+
   return () => {
-    const failure = record.failure.get();
-    if (failure !== undefined) {
-      const retry = () => {
-        record.inFlight = null;
-        record.failure.set(undefined);
-        void startLoad(record);
-      };
-      return record.options.error?.(failure, retry) ?? null;
-    }
-
     const component = record.component.get();
-    if (!component) return record.options.fallback?.() ?? null;
+    // Untracked, as `branch` builds: a signal the component reads while it is
+    // constructed must not build it again, claimed nodes and all.
+    if (component) return untrack(() => build(component, place));
 
-    return instantiate(component, { props, slots });
+    const failure = record.failure.get();
+    if (failure !== undefined && record.options.error) {
+      held = null;
+      return record.options.error(failure, retry);
+    }
+    // A fallback the server wrote says the component is on its way, which a
+    // failure here makes untrue, so it goes as a fallback drawn here would.
+    if (held && (failure === undefined || !held.marked)) return held.nodes;
+    return failure === undefined ? (record.options.fallback?.() ?? null) : null;
   };
 }
 
@@ -1073,7 +1231,7 @@ export function createComponent(
     const lazyRecord = LAZY.get(component);
     // A record only exists because `lazy` created it, and creating one is what
     // assigns `renderLazy`, so reaching here with it unset is impossible.
-    if (lazyRecord) return renderLazy!(lazyRecord, props, slots);
+    if (lazyRecord) return renderLazy!(lazyRecord, props, slots, out);
 
     if (__VOLT_DEV__ && events) {
       // Components have no event channel: a parent passes a function in as an

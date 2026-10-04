@@ -20,7 +20,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
-import { defineRoutes, flattenRoutes } from '@voltdev/router';
+import { buildPath, defineRoutes, flattenRoutes } from '@voltdev/router';
 import {
   createRenderCache,
   enumerateRoutes,
@@ -111,11 +111,60 @@ describe('enumerating what a table can produce', () => {
     expect(skipped.map((entry) => entry.pattern)).not.toContain('/docs/:page?');
   });
 
+  it('still writes that omitted form when the pattern is answered with no values', async () => {
+    // No values is no page *beyond* the one the pattern names on its own.
+    const { routes } = await enumerateRoutes(branchesOf(site), () => []);
+    const pathnames = routes.map((route) => route.pathname);
+    expect(pathnames).toContain('/docs');
+    expect(pathnames).toContain('/files');
+  });
+
+  it('writes only the values when there are some, and the omitted form when `{}` is one', async () => {
+    // Values are the whole answer: the omitted form is a page like any other,
+    // and the empty set of parameters is how it is named among them.
+    const without = await enumerateRoutes(branchesOf(site), ({ pattern }) =>
+      pattern === '/docs/:page?' ? [{ page: 'intro' }] : undefined,
+    );
+    const docs = (enumeration: Awaited<ReturnType<typeof enumerateRoutes>>) =>
+      enumeration.routes.filter((route) => route.id === 'docs').map((route) => route.pathname);
+    expect(docs(without)).toEqual(['/docs/intro']);
+    const withIt = await enumerateRoutes(branchesOf(site), ({ pattern }) =>
+      pattern === '/docs/:page?' ? [{ page: 'intro' }, {}] : undefined,
+    );
+    expect(docs(withIt)).toEqual(['/docs/intro', '/docs']);
+  });
+
   it('spreads a splat over the segments it stands for', async () => {
     const { routes } = await enumerateRoutes(branchesOf(site), ({ pattern }) =>
       pattern === '/files/*' ? [{ '*': 'a/b/c.txt' }] : undefined,
     );
     expect(routes.map((route) => route.pathname)).toContain('/files/a/b/c.txt');
+  });
+
+  it('names each URL as the router builds a link to it, and files it under the decoded name', async () => {
+    // The address a link has is the one a page is rendered for and claimed
+    // at; the file is named as a host decodes that address to find it.
+    const { routes } = await enumerateRoutes(branchesOf(site), ({ pattern }) =>
+      pattern === '/blog/:slug'
+        ? [{ slug: 'q&a' }, { slug: 'c++' }, { slug: 'café' }]
+        : pattern === '/files/*'
+          ? [{ '*': 'a b/100%' }]
+          : undefined,
+    );
+    const named = routes.filter((route) => route.id === 'blog.post' || route.id === 'files');
+    expect(named.map((route) => route.pathname)).toEqual([
+      buildPath('/blog/:slug', { slug: 'q&a' }),
+      buildPath('/blog/:slug', { slug: 'c++' }),
+      buildPath('/blog/:slug', { slug: 'café' }),
+      buildPath('/files/*', { '*': 'a b/100%' }),
+    ]);
+    const dir = resolve('/site');
+    expect(named.map((route) => fileForPathname(dir, route.pathname, 'flat'))).toEqual([
+      join(dir, 'blog/q&a.html'),
+      join(dir, 'blog/c++.html'),
+      join(dir, 'blog/café.html'),
+      join(dir, 'files/a b/100%.html'),
+    ]);
   });
 
   it('refuses a parameter value that would move the page off its own route', async () => {
@@ -299,6 +348,33 @@ describe('writing the files', () => {
     expect(await readdir(dir)).not.toContain('about');
   });
 
+  it('refuses a flat page whose last segment is `index`, before rendering any', async () => {
+    // Flat, `/index` is `index.html` — the root's own file — and `/blog/index`
+    // is `blog/index.html`, which a host serves at `/blog/`. Written, either
+    // is another address's page; the first overwrites one this build wrote.
+    const dir = await outDir();
+    expect(() => fileForPathname(dir, '/index', 'flat')).toThrow(/"\/index"[\s\S]*\//);
+    expect(() => fileForPathname(dir, '/blog/index', 'flat')).toThrow(/"\/blog\/index"[\s\S]*\/blog\//);
+    expect(() => fileForPathname(dir, '/blog/ind%65x', 'flat')).toThrow(/\/blog\//);
+    expect(fileForPathname(dir, '/blog/index')).toBe(join(dir, 'blog/index/index.html'));
+    expect(fileForPathname(dir, '/blog/indexes', 'flat')).toBe(join(dir, 'blog/indexes.html'));
+
+    const rendered: string[] = [];
+    const failed = await prerender({
+      branches: branchesOf(site),
+      outDir: dir,
+      layout: 'flat',
+      params: ({ pattern }) => (pattern === '/blog/:slug' ? [{ slug: 'index' }] : undefined),
+      render: (pathname) => {
+        rendered.push(pathname);
+        return `<h1>${pathname}</h1>`;
+      },
+    }).catch((error: unknown) => error);
+    expect(failed).toBeInstanceOf(PrerenderError);
+    expect(rendered).toEqual([]);
+    expect(await readdir(dir)).toEqual([]);
+  });
+
   it('leaves the cache warm, so a server started after it renders nothing', async () => {
     const dir = await outDir();
     let renders = 0;
@@ -408,6 +484,19 @@ describe('a table that says how each route renders', () => {
     return enumerateRoutes(branches).then((enumeration) => {
       expect(enumeration.routes).toHaveLength(2);
       expect(enumeration.skipped).toEqual([]);
+    });
+  });
+
+  it('reads a branch that declares nothing as the default the caller gives', () => {
+    // `serverRender` enumerates under the application's own default, which is
+    // `ssr` unless it says otherwise: a route that declares no mode there is
+    // rendered per request, and is not a page the build writes.
+    const branches = flattenRoutes(
+      defineRoutes([{ path: '/', children: [{ index: true }, { path: 'about', mode: 'ssg' }] }]),
+    );
+    return enumerateRoutes(branches, undefined, 'ssr').then((enumeration) => {
+      expect(enumeration.routes.map((r) => r.pathname)).toEqual(['/about']);
+      expect(enumeration.skipped).toEqual([{ pattern: '/', id: '/', reason: 'not-static' }]);
     });
   });
 });

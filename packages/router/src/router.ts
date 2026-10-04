@@ -149,6 +149,46 @@ export interface RouterOptions<R extends readonly RouteDefinition[]> {
   readonly viewTransition?: boolean;
 }
 
+/**
+ * What a branch's loaders answered, as a server carries it to the browser that
+ * claims the page it rendered from them: by the path they answered for, then
+ * by the depth of each loader's route in the branch, outermost first.
+ *
+ *     { '/users/7': { 1: { name: 'Ada' } } }
+ *
+ * Keyed by path so that answers are only ever found at the path they were
+ * given for. A depth left out is a loader asked again, and a route with no
+ * loader takes nothing from here whatever its depth holds.
+ */
+export type LoaderData = Readonly<Record<string, Readonly<Record<number, unknown>>>>;
+
+export interface ResolveOptions {
+  /**
+   * Answers to start from instead of calling the loaders: what a server's
+   * `resolve()` came back with, carried with the page it rendered.
+   *
+   * A page a client claims was printed from the server's answers, and asking
+   * every loader again for it is a second round trip to arrive at what is
+   * already on the screen. Adopted only from the answers for the path being
+   * resolved — at another, the same depth holds another route, or the same
+   * route with other parameters — and only by this resolve: a navigation after
+   * it, and a revalidation, ask the loaders as ever.
+   */
+  readonly data?: LoaderData;
+}
+
+export interface ResolveResult extends NavigationResult {
+  /**
+   * On a server build, what each loader of the branch answered, once the
+   * resolve has completed.
+   *
+   * A server build's only, because only a server has a page to carry it in. A
+   * browser's router carrying the code that collects it would make every
+   * client-rendered application pay for a server's feature.
+   */
+  readonly data?: LoaderData;
+}
+
 export interface StartOptions {
   /**
    * Resolve the current URL as part of starting. Default true.
@@ -244,8 +284,12 @@ export interface Router<Paths extends string = string> {
    * A relative URL is resolved against the browser's location, or against a
    * stand-in origin where there is no browser — only the path, the query and
    * the fragment are ever read.
+   *
+   * On a server it answers with what the loaders answered, and in the browser
+   * that claims the page it can be handed them back, so they are not asked
+   * twice for one page.
    */
-  resolve(url: string | URL): Promise<NavigationResult>;
+  resolve(url: string | URL, options?: ResolveOptions): Promise<ResolveResult>;
 
   /**
    * Take over the browser: listen for clicks, pops and unloads, take scroll
@@ -701,12 +745,22 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
     readonly data: unknown;
   }
 
+  /**
+   * A route's loader answer: the one it was `given`, if it was given one, and
+   * otherwise the loader's.
+   *
+   * The route is asked whether it has a loader first, so an answer carried for
+   * a route that has none is never what it reads. `undefined` is no answer,
+   * which is also how the page carries one: JSON has no way to say it.
+   */
   const runLoader = async (
     match: RouteMatch,
     url: URL,
     signal: AbortSignal,
+    given?: unknown,
   ): Promise<unknown> => {
     if (!match.route.loader) return undefined;
+    if (given !== undefined) return given;
     return await match.route.loader({ params: match.params, url, signal });
   };
 
@@ -714,12 +768,13 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
     match: RouteMatch,
     url: URL,
     signal: AbortSignal,
+    given: unknown,
   ): Promise<Loaded> => {
     // The chunk and the data go out together. Waiting for the module before
     // starting the fetch would serialise two independent round trips, which is
     // most of what makes a lazy route feel slower than an eager one.
     const pending = loadRouteComponent(match.route);
-    const [component, data] = await Promise.all([pending, runLoader(match, url, signal)]);
+    const [component, data] = await Promise.all([pending, runLoader(match, url, signal, given)]);
     return { component: component ?? null, data };
   };
 
@@ -735,6 +790,8 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
     readonly delta?: number;
     /** Ask every surviving route's loader again, whatever `shouldRevalidate` says. */
     readonly forceRevalidate?: boolean;
+    /** Answers to adopt rather than ask for; see `ResolveOptions.data`. */
+    readonly data?: LoaderData;
     /**
      * Whether this commit owns the address bar and the scroll position.
      *
@@ -770,7 +827,7 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
     return false;
   };
 
-  const commit = async (url: URL, options: CommitOptions): Promise<NavigationResult> => {
+  const commit = async (url: URL, options: CommitOptions): Promise<ResolveResult> => {
     const id = (generation += 1);
     const browser = options.browser === true;
     const from = here();
@@ -827,6 +884,9 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
 
     const loaded = new Map<number, Loaded>();
     const revalidated = new Map<number, unknown>();
+    // Answers a server already had, found only under the path it had them
+    // for: the depths line up with this branch's only there.
+    const given = options.data?.[url.pathname];
 
     try {
       // Every loader of the branch is called before this first yields: nothing
@@ -839,7 +899,8 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
       // holds this to it.
       await Promise.all([
         ...next.slice(reusable).map(async (match, offset) => {
-          loaded.set(reusable + offset, await loadSegment(match, url, controller.signal));
+          const depth = reusable + offset;
+          loaded.set(depth, await loadSegment(match, url, controller.signal, given?.[depth]));
         }),
         ...next.slice(0, reusable).map(async (match, index) => {
           const should =
@@ -977,6 +1038,17 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
 
     if (browser && !options.preserveScroll) restoreScroll(mode, entry.key, to.hash);
 
+    // What the page a server writes from this branch carries to the browser,
+    // so the client that claims it starts from these rather than asking every
+    // loader again. Read off the segments rather than off this navigation's
+    // loads, which leave out whatever an earlier resolve already had.
+    if (__VOLT_SERVER__) {
+      const values: Record<number, unknown> = {};
+      segments.forEach((segment, depth) => {
+        if (segment.route.loader) values[depth] = segment.data.get();
+      });
+      return { status: 'completed', data: { [url.pathname]: values } };
+    }
     return { status: 'completed' };
   };
 
@@ -1139,7 +1211,8 @@ export function createRouter<const R extends readonly RouteDefinition[]>(
     preload,
     outletAt,
 
-    resolve: (to) => commit(urlFor(to), { mode: 'initial' }),
+    resolve: (to, resolveOptions) =>
+      commit(urlFor(to), { mode: 'initial', data: resolveOptions?.data }),
 
     revalidate: () => {
       requireStarted('revalidate()');

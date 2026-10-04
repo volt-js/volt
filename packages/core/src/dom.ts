@@ -537,6 +537,102 @@ export function takeClaimed(): Node | Node[] | null {
   return rest.length === 1 ? rest[0]! : rest;
 }
 
+/** The server's range for a block `holdClaimed` stepped over, and the way to claim it. */
+export interface HeldRange {
+  /**
+   * Every node of the range, its own delimiters included: that is the shape
+   * the hole around it was seeded with, so handing these back touches nothing.
+   */
+  nodes: Node[];
+  /**
+   * Whether the range opens with the mark: something the server wrote in the
+   * block's place rather than the block, which the block may have reason to
+   * take away before it can build — a fallback whose load has failed.
+   */
+  marked: boolean;
+  /**
+   * Build against the nodes between the delimiters, taking them rather than
+   * cloning — or, for a range that opens with the mark, build with nothing
+   * offered, so what is built replaces them.
+   */
+  claim<T>(build: () => T): T;
+}
+
+/**
+ * Step over a block's server range now, and claim it whenever the block can
+ * be built — at once, or after hydration has finished.
+ *
+ * `takeClaimed` answers the same question for a block that owns the rest of
+ * its hole. A lazy component cannot assume that — it may be one row of a list
+ * the server wrote back to back — so the server delimits its range and this
+ * takes exactly that range, leaving the cursor after it for whatever the
+ * server wrote next. The claim is handed back rather than made here because
+ * the component may not exist yet: its chunk is in flight, and the nodes are
+ * kept until it lands. Claiming then, rather than replacing, is what keeps a
+ * late chunk from redrawing what the reader has been looking at all along.
+ *
+ * `mark` is the comment the server writes first inside a range that is not
+ * the block's markup — a lazy component's fallback, left where its chunk
+ * failed to load — and only the block knows it. Such a range is held like
+ * any other and never claimed: a fallback whose first node has the
+ * component's tag would pass the one comparison a claim makes, and the
+ * component's bindings would land on the fallback's nodes. Its claim builds
+ * with nothing offered, and reports nothing, since nothing disagreed.
+ *
+ * Null wherever nothing is being claimed. A range that does not start where
+ * the claim is standing, or that has no end — the response was cut off inside
+ * it — is a page this block did not write, and is reported and given up on
+ * the way `hClaim` gives up.
+ */
+export function holdClaimed(mark: string): HeldRange | null {
+  return holding === null ? null : holding(mark);
+}
+
+/**
+ * The walk behind `holdClaimed`, installed by `hydrate`.
+ *
+ * Every lazy component asks, and only a page that hydrates can answer, so the
+ * walk is reached from `hydrate` rather than from `lazy`: an application that
+ * mounts and never hydrates keeps its lazy components without carrying the
+ * claim, the delimiter scan and the cursor they read — the split `mount` and
+ * `hydrate` are two entries for.
+ */
+let holding: ((mark: string) => HeldRange | null) | null = null;
+
+function holdRange(mark: string): HeldRange | null {
+  const claim = claiming;
+  if (claim === null || claim.stalled) return null;
+  const start = claim.index;
+  const open = claim.nodes[start] ?? null;
+  // Looked for after the open: a hole the response was cut off inside has no
+  // close among what follows, and `hClose` answers with the open itself.
+  const end =
+    open !== null && isDelimiter(open, HOLE_OPEN)
+      ? claim.nodes.indexOf(hClose(open), start + 1)
+      : -1;
+  if (end < 0) {
+    reportMismatch?.({ parent: claim.parent, expected: '#comment', found: open });
+    claim.stalled = true;
+    return null;
+  }
+  claim.index = end + 1;
+  const nodes = claim.nodes.slice(start, claim.index);
+  const inner = isDelimiter(nodes[1]!, mark) ? null : nodes.slice(1, -1);
+  return {
+    nodes,
+    marked: inner === null,
+    claim(build) {
+      const previous = claiming;
+      claiming = inner === null ? null : { parent: claim.parent, nodes: inner, index: 0, stalled: false };
+      try {
+        return build();
+      } finally {
+        claiming = previous;
+      }
+    },
+  };
+}
+
 /**
  * The far end of a hole: the `<!--]-->` closing what `open` opened.
  *
@@ -639,6 +735,7 @@ export function hydrate(host: Node, build: () => unknown): void {
   // arrived yet apply as they land rather than piling up behind a page that
   // has already booted.
   drainStream();
+  holding = holdRange;
   hInsert(host, null, null, build);
 }
 

@@ -596,9 +596,11 @@ export function renderToStream(
    */
   const replacement = (id: string, out: MarkupWriter, op: 'b' | 'e'): string => {
     for (const collected of out.portals()) portals.push(collected);
+    const html = out.toString();
+    out.sent = true;
     return (
       styles() +
-      `<template ${BOUNDARY_ATTRIBUTE}="${id}">${out.toString()}</template>` +
+      `<template ${BOUNDARY_ATTRIBUTE}="${id}">${html}</template>` +
       record(`["${op}","${id}"]`)
     );
   };
@@ -761,6 +763,7 @@ export function renderToStream(
         );
         for (const collected of writer.portals()) portals.push(collected);
         send(styles() + writer.toString() + stateScript(shellState, options));
+        writer.sent = true;
         shellFlushed = true;
         // Set with the send rather than before it: everything up to this line
         // is still a region a boundary can rewrite in place, and the boundary

@@ -180,6 +180,17 @@ export class MarkupWriter {
    * content while `:model` is written where the attributes are. See `model`.
    */
   private pending: string | null = null;
+  /**
+   * Whether these bytes have gone to the reader, after which rewriting a
+   * region changes nothing anybody will see.
+   *
+   * Set by `renderToStream`, the one consumer that reads a writer before its
+   * request has settled: the shell after its first flush, and a late chunk
+   * the moment it is written. A lazy component asks before building itself
+   * into the region it left, since a chunk that lands after the shell has
+   * gone is a component nobody will be sent.
+   */
+  sent = false;
 
   /** Static markup, exactly as the client's template string carries it. */
   raw(chunk: string): void {
@@ -219,13 +230,14 @@ export class MarkupWriter {
   }
 
   /**
-   * A comment the stream's own machinery reads, rather than the compiler's.
+   * A comment the runtime's own machinery reads, rather than the compiler's.
    *
    * Straight onto the segment for the reason the delimiters are: these are the
    * writer's bytes, and the content `raw` holds back belongs behind an
    * element's `>` rather than behind a marker. `text` is never a runtime
-   * value — the only caller is `stream.ts`, writing a boundary id it minted
-   * itself — so there is nothing here for a `-->` to escape from.
+   * value — the callers are `stream.ts`, writing a boundary id it minted
+   * itself, and a lazy component marking the fallback it left — so there is
+   * nothing here for a `-->` to escape from.
    */
   comment(text: string): void {
     this.parts.push('<!--', text, '-->');

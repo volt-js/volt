@@ -560,17 +560,19 @@ describe('what an application does not use', { timeout: 120_000 }, () => {
   const root = resolve(import.meta.dirname, '../../..');
 
   /** An application entry whose whole template is `source`, bundled and minified. */
-  async function appFor(source: string): Promise<string> {
+  function appFor(source: string): Promise<string> {
     const { body } = compile(source, { runtime: '_rt', target: 'client' });
+    return bundled(
+      "import * as _rt from '@voltdev/core/runtime';\n" +
+        `const render = (function () {\n${body}\n})();\n` +
+        'globalThis.app = { render, mount: _rt.hydrate };',
+    );
+  }
+
+  /** An entry module, bundled and minified as an application's build would. */
+  async function bundled(contents: string): Promise<string> {
     const result = await esbuild({
-      stdin: {
-        contents:
-          "import * as _rt from '@voltdev/core/runtime';\n" +
-          `const render = (function () {\n${body}\n})();\n` +
-          'globalThis.app = { render, mount: _rt.hydrate };',
-        resolveDir: root,
-        loader: 'ts',
-      },
+      stdin: { contents, resolveDir: root, loader: 'ts' },
       bundle: true,
       write: false,
       format: 'esm',
@@ -586,6 +588,26 @@ describe('what an application does not use', { timeout: 120_000 }, () => {
     });
     return result.outputFiles[0]!.text;
   }
+
+  it('leaves the held-range walk to an application that hydrates', async () => {
+    // A component in a chunk of its own asks the page it is hydrating into
+    // which nodes the server wrote for it. The walk that answers is installed
+    // by `hydrate` rather than reached from `lazy`, so an application that
+    // splits a component and mounts drops it, and one that hydrates carries
+    // it whether or not it splits anything — the placement `size.test.ts`
+    // accounts for. The walk names what it expected in its mismatch report,
+    // and a string survives minifying, so the string says where it shipped.
+    const splitsAndMounts = await bundled(
+      "import { mount } from '@voltdev/core';\n" +
+        "import { lazy } from '@voltdev/core/runtime';\n" +
+        'globalThis.app = { mount, lazy };',
+    );
+    const hydrates = await bundled(
+      "import { hydrate } from '@voltdev/core';\nglobalThis.app = { hydrate };",
+    );
+    expect(splitsAndMounts).not.toContain('"#comment"');
+    expect(hydrates).toContain('"#comment"');
+  });
 
   it('leaves the list reconciler out of an application with no list in it', async () => {
     const withList = await appFor(

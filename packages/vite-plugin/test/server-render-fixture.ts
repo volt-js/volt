@@ -26,6 +26,8 @@ export const alias: Alias[] = [
   ['@voltdev/core/server', 'core/src/server.ts'],
   ['@voltdev/core/runtime', 'core/src/runtime.ts'],
   ['@voltdev/core/jit', 'core/src/jit.ts'],
+  // What the plugin's own lowering of `Signal.State` imports from.
+  ['@voltdev/core/signals', 'core/src/signals.ts'],
   ['@voltdev/core', 'core/src/index.ts'],
   ['@voltdev/reactivity/signals', 'reactivity/src/signals.ts'],
   ['@voltdev/reactivity', 'reactivity/src/index.ts'],

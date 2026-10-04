@@ -125,7 +125,10 @@ synchronously, and a server that renders passes it as the render's
 [`around`](./server#render-options) so each span of the render reaches its
 guards with the request behind it. [`serverRender`](./server-render#data-during-a-render)
 does this for you. A call made from a promise's continuation runs outside every
-span and is refused.
+span and is refused. On an `ssg` route the page is rendered by the build, and
+the request it lends has no reader in it — no cookies, no headers — so a guard
+that needs one fails the build; see
+[the pages the build writes](./server-render#the-pages-the-build-writes).
 
 ## Errors
 

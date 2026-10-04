@@ -48,6 +48,12 @@ export type PatternSegment =
   | { readonly kind: 'param'; readonly name: string; readonly optional: boolean }
   | { readonly kind: 'splat'; readonly name: string };
 
+/**
+ * Where a route's markup is made: `@voltdev/router`'s `RenderMode`, restated
+ * for the reason `PatternSegment` is.
+ */
+export type RenderMode = 'csr' | 'ssr' | 'ssg';
+
 /** One root-to-leaf branch, as `flattenRoutes` returns it. */
 export interface RouteBranchLike {
   /** Every route's segments in the branch, end to end. */
@@ -62,7 +68,7 @@ export interface RouteBranchLike {
    * over a table with no modes in it is asking for every route, which is what
    * a wholly static site is.
    */
-  readonly routes?: readonly { readonly mode?: 'csr' | 'ssr' | 'ssg' }[];
+  readonly routes?: readonly { readonly mode?: RenderMode }[];
 }
 
 /** Matched parameters. Always strings — a URL has no other type. */
@@ -180,13 +186,18 @@ function buildPathname(
       );
     }
 
+    // Each value encoded whole, as the router's `buildPath` encodes it, so the
+    // pathname is the address a link to the page has: `q&a` is `q%26a` there,
+    // and a page rendered for `/docs/q&a` is one for another spelling of it,
+    // which the client does not claim at the link's. `fileForPathname`
+    // decodes it again, as a host does to find the file.
     if (segment.kind === 'splat') {
       // A splat really is several segments; anything else is exactly one, and
       // a separator inside it would silently move the page.
       for (const part of value.split('/')) {
         if (part === '') continue;
         checkSegment(part, pattern, segment.name);
-        out.push(part);
+        out.push(encodeURIComponent(part));
       }
       continue;
     }
@@ -199,10 +210,22 @@ function buildPathname(
       );
     }
     checkSegment(value, pattern, `:${segment.name}`);
-    out.push(value);
+    out.push(encodeURIComponent(value));
   }
 
   return `/${out.join('/')}`;
+}
+
+/** The nearest declared mode, leaf to root, or `fallback` if none says. */
+function effectiveMode(
+  routes: readonly { readonly mode?: RenderMode }[],
+  fallback: RenderMode,
+): RenderMode {
+  for (let i = routes.length - 1; i >= 0; i--) {
+    const mode = routes[i]!.mode;
+    if (mode !== undefined) return mode;
+  }
+  return fallback;
 }
 
 /**
@@ -211,21 +234,17 @@ function buildPathname(
  * The branches arrive most specific first, so where two of them can produce
  * the same URL the more specific one is the page that gets written — the same
  * precedence `matchRoutes` would apply to a request for it.
+ *
+ * `defaultMode` is what a branch that declares no mode anywhere renders as.
+ * `ssg` unless the caller says: a table with no modes in it is a site with no
+ * server, and all of it is static. `serverRender` says otherwise — its
+ * default is the application's, `ssr` unless configured — so a branch that
+ * declares nothing there is the handler's, not the build's.
  */
-/** The nearest declared mode, leaf to root, or `ssg` if none says. */
-function effectiveMode(
-  routes: readonly { readonly mode?: 'csr' | 'ssr' | 'ssg' }[],
-): 'csr' | 'ssr' | 'ssg' {
-  for (let i = routes.length - 1; i >= 0; i--) {
-    const mode = routes[i]!.mode;
-    if (mode !== undefined) return mode;
-  }
-  return 'ssg';
-}
-
 export async function enumerateRoutes(
   branches: readonly RouteBranchLike[],
   params?: ParamsForPattern,
+  defaultMode: RenderMode = 'ssg',
 ): Promise<Enumeration> {
   const routes: PrerenderRoute[] = [];
   const skipped: SkippedRoute[] = [];
@@ -243,9 +262,8 @@ export async function enumerateRoutes(
 
     // Leaf to root: a layout says what its section does by default and the
     // page inside it is the one that knows better. A branch that declares
-    // nothing anywhere is static, because a caller handing over a table with
-    // no modes in it is asking for all of it.
-    if (branch.routes && effectiveMode(branch.routes) !== 'ssg') {
+    // nothing anywhere renders as `defaultMode`.
+    if (branch.routes && effectiveMode(branch.routes, defaultMode) !== 'ssg') {
       skipped.push({ pattern, id, reason: 'not-static' });
       continue;
     }
@@ -453,10 +471,16 @@ export interface PrerenderOptions {
   /** Seconds a page stays fresh, if the build is seeding a cache that revalidates. */
   revalidate?: number | ((pathname: string) => number | undefined);
   params?: ParamsForPattern;
+  /** What a branch that declares no mode renders as; see `enumerateRoutes`. */
+  defaultMode?: RenderMode;
   /**
-   * `directory` writes `/about` as `about/index.html`, which is what a static
-   * host serves at `/about` without a redirect. `flat` writes `about.html`,
-   * for a host that appends the extension itself.
+   * `directory` writes `/about` as `about/index.html`, which a static host
+   * serves at `/about/` — and most answer `/about` with a redirect there.
+   * `flat` writes `about.html`, which Cloudflare, Netlify and GitHub Pages
+   * serve at `/about` as it is; it is what `serverRender`'s build writes,
+   * because the client claims a page only at the path it was rendered for.
+   * Flat, a page whose last segment is `index` is refused: see
+   * `fileForPathname`.
    */
   layout?: 'directory' | 'flat';
   /** How many pages are rendered at once. */
@@ -479,18 +503,37 @@ export interface PrerenderResult {
   readonly cache: RenderCache;
 }
 
-/** Where a URL's markup belongs under `outDir`. */
+/**
+ * Where a URL's markup belongs under `outDir`.
+ *
+ * `pathname` is a URL's, percent-encoded as `enumerateRoutes` and a request
+ * both give it, and each segment is decoded for the file's name, which is how
+ * a static host finds the file for `/docs/q%26a`: as `docs/q&a`. An escape
+ * that does not decode is kept as written, as the router keeps it.
+ */
 export function fileForPathname(
   outDir: string,
   pathname: string,
   layout: 'directory' | 'flat' = 'directory',
 ): string {
-  const trimmed = pathname.replace(/^\/+|\/+$/g, '');
+  const trimmed = pathname.replace(/^\/+|\/+$/g, '').split('/').map(decodeSegment).join('/');
   const relative =
     trimmed === '' ? 'index.html' : layout === 'flat' ? `${trimmed}.html` : `${trimmed}/index.html`;
 
   const root = resolvePath(outDir);
   const file = resolvePath(root, relative);
+  // Flat, a page whose last segment is `index` has no file of its own: an
+  // `index.html` is its directory's page, which a host serves at the
+  // directory's address — `/index` would be written over `/`, and
+  // `/docs/index` served at `/docs/`, to every reader of that address.
+  if (layout === 'flat' && /(^|\/)index$/.test(trimmed)) {
+    const directory = `/${trimmed.slice(0, -'index'.length)}`;
+    throw new PrerenderError(
+      `[volt] "${pathname}" would be written to ${file}, which a host serves at ${directory} — ` +
+        'another address, whose page it would be. Under the flat layout a page cannot have ' +
+        '`index` as its last segment.',
+    );
+  }
   // Belt and braces: `buildPathname` refuses the values that could do this,
   // and a caller may hand a pathname straight in.
   if (file !== root && !file.startsWith(root + sep)) {
@@ -499,6 +542,14 @@ export function fileForPathname(
     );
   }
   return file;
+}
+
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
 }
 
 async function pool<T>(items: readonly T[], limit: number, run: (item: T) => Promise<void>) {
@@ -537,14 +588,24 @@ export async function prerender(options: PrerenderOptions): Promise<PrerenderRes
     throw new PrerenderError('[volt] prerender needs a `render` function or a `cache` to use one.');
   }
 
-  const { routes, skipped } = await enumerateRoutes(options.branches, options.params);
+  const { routes, skipped } = await enumerateRoutes(
+    options.branches,
+    options.params,
+    options.defaultMode,
+  );
   const layout = options.layout ?? 'directory';
 
   const pages: PrerenderedPage[] = [];
   const failures: { pathname: string; cause: unknown }[] = [];
 
-  await pool(routes, options.concurrency ?? 8, async (route) => {
-    const file = fileForPathname(options.outDir, route.pathname, layout);
+  // Every file named before any page is rendered, so a page that has none
+  // fails the build before a page is written rather than partway through.
+  const planned = routes.map((route) => ({
+    route,
+    file: fileForPathname(options.outDir, route.pathname, layout),
+  }));
+
+  await pool(planned, options.concurrency ?? 8, async ({ route, file }) => {
     try {
       const page = await cache.get(route.pathname);
       const html = page.html;

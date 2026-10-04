@@ -909,8 +909,8 @@ nothing is being added to a project that was not there.
       asked it for a page. Doing that found five things missing, and
       `create-volt/test/server-render-e2e.test.ts` is now what asks: it builds
       the template through its own config, asks the server bundle for every
-      route, hydrates the pricing page in a DOM and navigates from it, and asks
-      the dev server for a page.
+      route, hydrates the home page the build wrote and the pricing page in a
+      DOM and navigates from it, and asks the dev server for a page.
 
       Routes are part of the server render because an outlet is a place in a
       template: `:outlet` compiles to a hole the router fills per depth, so a
@@ -933,9 +933,46 @@ nothing is being added to a project that was not there.
       every server environment now compiles them. And the client build
       published the shell as `dist/client/index.html`, which a host that serves
       files first sends for `/` unrendered; it is in the server bundle only.
-      Two things are not done: loader data is not carried to the browser, which
-      runs the pricing page's loader again when it boots, and `vite build` does
-      not write the `ssg` page to a file.
+      Loader data now goes with the page: a server build's `resolve()` answers
+      with what the branch's loaders answered, by path and then depth; the
+      handler carries it in a `<script data-volt-loaders>` through the state
+      payload's serializer, under its rule and naming the route whose answer
+      it refuses; and a client that claims the page hands it to its first
+      `resolve()`, which adopts each answer in place of calling that loader,
+      so the pricing page's loader runs once. A page built afresh drops them
+      with the state payload, a page nothing claims is sent none, and a client
+      build pays 41 B gzipped for the adoption path with the collecting half
+      behind the server flag.
+
+      `vite build` writes the `ssg` pages. Once both builds are done it imports
+      the server bundle in a worker thread, ended when the pages are written
+      so a timer the server starts cannot keep the build running, reads the
+      table in it, and renders each `ssg` route's page through that bundle
+      into `dist/client`: `/` as
+      `index.html`, `/about` as `about.html`, which Cloudflare, Netlify and
+      GitHub Pages serve at `/about` as it is — `about/index.html` they reach
+      by a redirect to `/about/`, a path the page was not rendered for, so the
+      client would build it again rather than claim it. Each file is the
+      handler's answer for its path byte for byte, so it is claimed as a render
+      is; the template's home page is one, and the end-to-end test serves it
+      as a file and claims its nodes. A pattern with a parameter is written for
+      what `serverRender.params` answers, the function the static build's
+      `enumerateRoutes` already took, each value at the address the router's
+      `buildPath` gives a link to it (`q&a` at `/docs/q%26a`, in
+      `docs/q&a.html`), and one with a required parameter it says nothing
+      about fails the build. Loaders run there for a request with no reader in it, and a guard
+      that refuses one fails the build naming the page rather than writing the
+      refusal into a file. The handler renders an `ssg` path from that same
+      request, so a host that hands it the path gets the file's page and not
+      one made from the reader's cookies, at an address that promises everyone
+      the same one. Trying to break it found four more, each a test that
+      failed first: a value of `index` was written as `index.html` or
+      `docs/index.html`, over `/`'s page or where a host serves `/docs/`, and
+      is now refused before any page renders; `params` answering `null` left a
+      pattern unwritten without a word; a page the handler answers 404 was
+      blamed on `params`; and a render that failed in the server's thread
+      reached the build as a message with no line, where it now carries the
+      stack's frames.
 
       Asking whether the client really claims what it is sent found five
       more, each now a test that failed first. The handler spliced the render
@@ -967,6 +1004,28 @@ that was landing, which is why none of it is ticked below. Arity is now
 checked at the edge: a method declared `create(text: string)` refuses a request
 that carried no arguments rather than running with `text === undefined`.
 Parameters with defaults and rest parameters are handled, and extra arguments
+      A component in a chunk of its own rendered nothing on a server — not
+      even its fallback — and kept a failed load on its record, which a
+      process shares with every request. It is now waited for like a
+      resource's fetch: the fallback goes into a region, the region is written
+      again when the chunk lands, in the frame the walk gave it, and a chunk
+      that fails leaves the fallback marked and the failure forgotten, so the
+      next request loads again. Hydrating, the client holds the server's range
+      for it until its own copy of the chunk lands and claims it then, and
+      builds over a range the server marked as its fallback rather than
+      claiming it. `core/test/lazy-server.test.ts` proves each half against
+      the runtime, and `claim.test.ts` the same through a real build: the
+      server writes the component, the browser claims its nodes, and it counts
+      when clicked. Trying to break it found three more, each now a test that
+      failed first: a fallback that minted an id moved every id after the
+      component on the server and not in the browser; a fallback the server
+      printed stayed on the page, saying "loading", after the browser's load
+      failed too; and under `renderToStream` a chunk that landed after the
+      shell was built into bytes already sent, holding the stream open for its
+      data and ending the response if it threw. What the walk costs is in
+      `size.test.ts`: 158 B gzipped on a hydrating page whether or not
+      anything on it is split.
+
 are still accepted. What remains absent is *type* validation — "the types are
 the schema" is true of the editor and false of the endpoint until a validator
 is derived from the declared types at build time. Form integration and a

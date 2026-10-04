@@ -244,6 +244,39 @@ describe('a branch written in one pass', () => {
   });
 });
 
+describe('what a branch answered with', () => {
+  it('is resolve()’s answer on a server: each loader’s, by depth, for the path it resolved', async () => {
+    // What a page carries to the browser, so the client that claims it starts
+    // from these instead of asking every loader again. Only the depths with a
+    // loader: the layouts above the leaf answered nothing, and a depth left
+    // out is one the client asks for itself.
+    const router = createRouter({ routes });
+
+    const result = await router.resolve('https://example.test/docs/7?tab=api');
+
+    expect(result.status).toBe('completed');
+    expect(result.data).toEqual({ '/docs/7': { 2: { title: 'topic 7' } } });
+  });
+
+  it('is nothing when a loader failed, since there is no page to carry it', async () => {
+    const failing = defineRoutes([
+      {
+        path: '/',
+        component: Shell,
+        loader: () => 'shell',
+        children: [
+          { path: 'broken', component: Topic, loader: () => Promise.reject(new Error('down')) },
+        ],
+      },
+    ]);
+
+    const result = await createRouter({ routes: failing }).resolve('https://example.test/broken');
+
+    expect(result.status).toBe('failed');
+    expect(result.data).toBeUndefined();
+  });
+});
+
 describe('when a branch asks for its data', () => {
   it('is before resolve() has returned, every loader of it, lazy route or not', async () => {
     // Load-bearing for a server, which makes the request visible to a guarded

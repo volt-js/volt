@@ -38,6 +38,20 @@ does not do is put late data into bytes already written: a value is serialized
 once, where it stood when the walk passed it. Rendering data that arrives after
 the walk is what async boundaries are for, and they arrive with streaming.
 
+A component in a chunk of its own is waited for the same way. Its fallback
+goes into a region while the chunk loads, and the region is written again with
+the component once the chunk has landed, in the frame the walk gave it, so the
+ids it mints are the ones it would have minted in the walk. A chunk that fails
+to load leaves the fallback with a `<!--fallback-->` mark ahead of it, and the
+page still answers; the failure is forgotten rather than kept, since a process
+serves every reader and the next request loads again. Under `renderToStream`
+the shell goes out before a chunk that was not already loaded can land, so a
+request streamed before the chunk has loaded — the first in a process — sends
+the fallback, marked, and the browser loads the chunk itself; the stream waits
+for the load as it waits for any data the request registered, without building
+the component into bytes it has already sent, and the requests after it write
+the component in the walk.
+
 It needs a server build. Templates are compiled for one side or the other, and
 a client build emits render functions that clone markup rather than write it,
 so calling this under `__VOLT_SERVER__ === false` throws rather than producing
@@ -172,7 +186,10 @@ Values are carried as JSON. Anything JSON would carry *wrongly* is refused with
 the key named: `NaN` and `Infinity`, a `bigint`, a function, and a hole in an
 array. `undefined` as an object property is allowed, because JSON drops the key
 and reading it gives `undefined` on both sides. Dates, Maps and shared
-references wait on the wire format server functions also need.
+references wait on the wire format server functions also need. Under
+[`serverRender`](./server-render#data-during-a-render), a route's loader
+answers cross the same way and under this rule, and a refusal names the route
+whose loader answered as well as the key.
 
 ### The script, and the nonce
 
@@ -326,6 +343,14 @@ construction, which leaves that name as the only evidence a block is standing
 where it thinks it is. When it disagrees, the block clones, the wrongly-claimed
 nodes are removed by the hole that owns them, and `onHydrationMismatch` is told.
 The damage stops at the hole.
+
+A component in a chunk of its own is delimited by the server as a hole of its
+own, because the client may not have the component when the walk reaches it.
+Its range is held rather than claimed or replaced: the nodes stay as they are
+while the chunk loads and are claimed when it lands, so a late chunk redraws
+nothing the reader is looking at. A range the server marked as its fallback is
+built over instead, since a fallback whose first node shares the component's
+tag would pass the one comparison a claim makes.
 
 ## The build flag
 

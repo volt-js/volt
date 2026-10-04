@@ -41,9 +41,9 @@ function fileFor(pattern: string): string | null {
  * comments: explaining why a loop is written a certain way cost more
  * "bundle size" than the loop, which is precisely the wrong incentive.
  */
-function measured(file: string): number {
+function measured(file: string, define?: Record<string, string>): number {
   const source = readFileSync(file, 'utf8');
-  const minified = transformSync(source, { loader: 'js', minify: true, target: 'esnext' }).code;
+  const minified = transformSync(source, { loader: 'js', minify: true, target: 'esnext', define }).code;
   return gzipSync(minified, { level: 9 }).length;
 }
 
@@ -152,7 +152,28 @@ const BUDGETS: Record<string, number> = {
   // nothing carries none of it — `bundle-composition.test.ts` asserts the
   // module is absent from an application that names no outlet, which is what
   // the pure annotation on the context is for.
-  'packages/core/dist/runtime.js': 985,
+  //
+  // Raised again from 985 by `holdClaimed`, the question a component in a
+  // chunk of its own asks of the page it is hydrating into: which nodes the
+  // server wrote for it, held until the chunk lands and claimed then, so a
+  // late chunk redraws nothing the reader is looking at. 991 B measured. This
+  // entry is a re-export barrel, so the 6 B is the name. What it names is in
+  // the shared chunk, which nothing here weighs, so what an application pays
+  // is said here, measured by bundling a page with and without the change.
+  // The walk is installed by `hydrate` and reached from nowhere else, so an
+  // application that splits a component and mounts drops it, and one that
+  // hydrates carries it whether or not it splits anything: 158 B gzipped on
+  // a hydrating page with no lazy component. Reached from `lazy` instead, the
+  // same bytes would go to every application that splits and mounts; no
+  // import reaches code only from an application that does both. The rest is
+  // in `lazy`'s own path, paid by every application that splits, hydrating
+  // or not — the held range's claim, the place a late component's ids are
+  // numbered from, and building it untracked: `mount` and `lazy` bundled
+  // alone go from 5234 B to 5440 B. `examples/counter`, which does neither,
+  // carries none of it. `bundle-composition.test.ts` pins the placement — an
+  // application that splits and mounts ships no walk, one that hydrates
+  // does — and the `dom.ts` declarations the counter ships, by name.
+  'packages/core/dist/runtime.js': 1_000,
   // Raised from 400 when ids moved here from @voltdev/primitives, which is
   // where they have to be minted: an id is now a component's position in the
   // tree rather than a number from a counter, and only the component runtime
@@ -232,6 +253,12 @@ const BUDGETS: Record<string, number> = {
   // guard. 1 B more is the stream calling `setup`, which it had been typed as
   // taking and never ran. Paid only by a server: nothing here is reachable
   // from the client entry.
+  //
+  // 13 B more, 4625 B to 4638 B, is the writer saying its bytes have gone:
+  // a lazy component whose chunk lands after a streamed shell went out asks
+  // before building itself into a region nobody will be sent, which would
+  // otherwise hold the stream open for its data and end the response if it
+  // threw.
   'packages/core/dist/server-*.js': 4_650,
   // The tools themselves. A production build drops the whole file — that is
   // asserted on bundled bytes in `devtools.test.ts` — so this is a ceiling on
@@ -268,6 +295,33 @@ const BUDGETS: Record<string, number> = {
   'packages/core/dist/devtools.js': 4_900,
 };
 
+/**
+ * Ceilings on what a client build takes of a package that also has a server
+ * half: measured with `__VOLT_SERVER__` folded to `false`, as an application's
+ * build folds it, so the server's blocks are dropped before weighing. The
+ * table above weighs both halves, and for these files that is the wrong
+ * question — a client-rendered application never ships the server's — so what
+ * is ratcheted here is the half it does ship.
+ */
+const CLIENT_BUDGETS: Record<string, number> = {
+  // The router as a browser gets it: matching, loaders, the outlet's client
+  // half, links, scroll, blocking and view transitions. 5642 B at the time of
+  // writing. The server half it does not carry is the outlet writing into the
+  // request's walk and `resolve()` collecting what the loaders answered for
+  // the page to carry — the whole of which is behind the flag, so a client
+  // build drops it and `resolve()` there answers as `navigate()` does.
+  //
+  // 41 B of this is what a client pays for a page that carries its loaders'
+  // answers, whether or not it is one: the `data` a `resolve()` may be handed,
+  // read at the path being resolved and threaded through to each loader in
+  // place of calling it. Measured by bundling the router's source with and
+  // without it through this file's pipeline, 5610 B to 5651 B, and it cannot
+  // go behind the flag because the browser is the side that adopts. What it
+  // buys a server-rendered page is every loader on its branch asked once, on
+  // the server, rather than again on the connection the reader is waiting on.
+  'packages/router/dist/index.js': 5_700,
+};
+
 describe('bundle budgets', () => {
   for (const [file, budget] of Object.entries(BUDGETS)) {
     // Skipped rather than passed when `pnpm build` has not run. A budget that
@@ -276,6 +330,15 @@ describe('bundle budgets', () => {
     it.skipIf(fileFor(file) === null)(`${file} stays under ${budget} B gzipped`, () => {
       const size = measured(fileFor(file)!);
       expect(size, `${file} is ${size} B gzipped`).toBeLessThanOrEqual(budget);
+    });
+  }
+});
+
+describe('client bundle budgets', () => {
+  for (const [file, budget] of Object.entries(CLIENT_BUDGETS)) {
+    it.skipIf(fileFor(file) === null)(`${file} stays under ${budget} B gzipped as a client build`, () => {
+      const size = measured(fileFor(file)!, { __VOLT_SERVER__: 'false' });
+      expect(size, `${file} is ${size} B gzipped as a client build`).toBeLessThanOrEqual(budget);
     });
   }
 });

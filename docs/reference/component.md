@@ -294,3 +294,34 @@ saves less than it costs in compression makes the application larger.
 
 Nothing about a component changes to make this happen, and there is no
 directive or option to reach for.
+
+While its chunk is in flight a split component renders a fallback, and if the
+chunk fails to load, an error output with a way to try again.
+
+On a server the chunk is waited for, the way a resource's fetch is. The
+fallback goes into a region while the chunk loads, and the component is
+written over it once the chunk has landed, in the frame the walk gave it, so
+its ids and styles are the ones it would have had in the walk itself. A page
+is not sent with a fallback in it for want of a chunk that was a moment away,
+and a chunk loaded once is the process's, so the next request writes the
+component in the walk. When the chunk fails to load there — a module that
+reads the window when it is evaluated cannot be loaded by a server at all —
+the page still answers, with the fallback in the component's place and a
+`<!--fallback-->` mark ahead of it. The failure is forgotten rather than kept:
+a process serves every reader, and a load that failed once must not be missing
+from every later page. The error output is not written, since the retry it
+offers is a button nobody can press until the page hydrates, by which time the
+browser has loaded the chunk for itself.
+
+When that page hydrates, the component's range is the one thing the client
+cannot claim at once. It is held instead — the nodes the reader is looking at
+stay, with neither the fallback nor a second copy drawn over them — and
+claimed when the chunk lands, so the rest of the page is live at once and the
+component is live when it can be. A range the server marked as its fallback is
+shown until the component is built, then replaced rather than claimed: a
+fallback whose first node happened to share the component's tag would pass the
+one comparison a claim makes, and the component's bindings would land on the
+wrong nodes. A chunk that fails in the browser leaves what the server wrote in
+place, inert, unless there is an error output to show instead — or unless what
+the server wrote was its fallback, which says the component is on its way and
+so goes, as a fallback drawn in the browser would.

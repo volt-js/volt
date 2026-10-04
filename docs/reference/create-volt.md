@@ -75,28 +75,29 @@ build fails when anything a page renders reaches a `node:` builtin, which an
 edge runtime does not have.
 
 Its three routes use all three modes: a home page that depends on nothing in
-the request, a pricing page rendered per request with its loader's answer in
-the markup, and a dashboard the server does not render at all. A template that
-demonstrated only server rendering would demonstrate half of the promise; the
-point is that the choice survives route by route.
+the request, written to a file by the build, a pricing page rendered per request
+with its loader's answer in the markup, and a dashboard the server does not
+render at all. A template that demonstrated only server rendering would
+demonstrate half of the promise; the point is that the choice survives route by
+route.
 
 `server.ts` is the deployable entry — a `(Request) => Promise<Response>` with no
 `node:` import, which is the shape an edge host expects. `pnpm dev` answers
 every page and every server-function call with it, and `pnpm build` builds the
-client into `dist/client` and then the entry into `dist/server/server.js`.
+client into `dist/client`, then the entry into `dist/server/server.js`, and then
+writes the home page through it to `dist/client/index.html`.
 `src/volt-server-render.d.ts` declares the three virtual modules the plugin
 generates, so the project type-checks without the plugin running. Delete
 `serverRender: true` and it becomes an ordinary client-rendered project with
 nothing else to change.
 
 It runs end to end: a test in this repository generates it, installs Volt's
-built packages into it, builds it, serves every page, hydrates one and
-navigates from it, and asks its dev server for a page — see
-[the example](./server-render#the-example). Two things are not done yet. The
-pricing page's loader data is not carried to the browser, so the browser asks
-for the plan again when the page boots; and the build does not write the `ssg`
-home page to a file — the server renders it per request, complete, as it does
-the pricing page.
+built packages into it, builds it, serves every page, hydrates the home page
+from the file the build wrote and the pricing page from the server, navigates
+from it, and asks its dev server for a page — see
+[the example](./server-render#the-example). The pricing page's loader answer
+goes with the page, so the browser starts from it rather than asking for the
+plan again when the page boots.
 
 ## Availability
 

@@ -30,7 +30,7 @@ import * as runtime from '@voltdev/core/runtime';
 import * as server from '@voltdev/core/server';
 import { renderToStaticMarkup } from '@voltdev/core/server';
 import { provideRouter, useRouter } from '../src/context.js';
-import { createRouter, routeData, type Router } from '../src/router.js';
+import { createRouter, routeData, type LoaderData, type Router } from '../src/router.js';
 import { defineRoutes, type RouteDefinition } from '../src/routes.js';
 
 /** The build flag, which the test config compiles to a live read of this global. */
@@ -301,11 +301,13 @@ async function boot(
   host: HTMLElement,
   path: string,
   table: readonly RouteDefinition[] = site,
+  /** The loader answers the page carried, when it carried any. */
+  data?: LoaderData,
 ): Promise<{ router: Router; mismatches: unknown[] }> {
   window.history.replaceState(null, '', path);
   const router = createRouter({ routes: table });
   started = router;
-  await router.resolve(window.location.href);
+  await router.resolve(window.location.href, { data });
 
   const mismatches: unknown[] = [];
   const stop = runtime.onHydrationMismatch((mismatch) => mismatches.push(mismatch));
@@ -441,5 +443,66 @@ describe('a page whose loader fails in the browser', () => {
     expect(host.querySelectorAll('.shell')).toHaveLength(1);
     expect(host.querySelector('.shell .home')).not.toBeNull();
     expect(host.querySelector('.to-home')?.getAttribute('aria-current')).toBe('page');
+  });
+});
+
+describe('the loader answers a page was rendered from', () => {
+  it('are what the client that claims it starts from, so no loader is asked again', async () => {
+    // Which side answered is the answer, so a loader run again in the browser
+    // shows: bindings write rather than compare, and the claimed text would
+    // say so.
+    let calls = 0;
+    const counted = defineRoutes([
+      {
+        path: '/',
+        component: Shell,
+        children: [
+          {
+            path: 'docs/:id',
+            component: Doc,
+            loader: ({ params }) => {
+              calls += 1;
+              const side = (globalThis as { __VOLT_SERVER__?: boolean }).__VOLT_SERVER__ ? 'server' : 'browser';
+              return { title: `doc ${params['id']} from the ${side}` };
+            },
+          },
+        ],
+      },
+    ]);
+
+    // The server's half: resolve, render, and carry what the loaders answered
+    // the way the page does — through the state payload's serializer, as JSON.
+    resetIds();
+    serverBuild(true);
+    let html: string;
+    let carried: string;
+    try {
+      const router = createRouter({ routes: counted });
+      const resolved = await router.resolve('https://example.test/docs/7');
+      carried = server.stateJson({ ...resolved.data });
+      ({ html } = await renderToStaticMarkup(Site, {
+        setup: () => {
+          provideRouter(router);
+          provideOutlet(router.outletAt(0));
+        },
+      }));
+    } finally {
+      serverBuild(false);
+    }
+    const host = serve(html);
+    const printed = nodesOf(host);
+    calls = 0;
+
+    const { router, mismatches } = await boot(host, '/docs/7', counted, JSON.parse(carried) as LoaderData);
+
+    expect(calls).toBe(0);
+    expect(mismatches).toEqual([]);
+    nodesOf(host).forEach((node, index) => expect(node).toBe(printed[index]));
+    expect(host.querySelector('.doc h2')?.textContent).toBe('doc 7 from the server');
+
+    // The next page is the browser's to ask for.
+    await router.navigate('/docs/8');
+    expect(calls).toBe(1);
+    expect(host.querySelector('.doc h2')?.textContent).toBe('doc 8 from the browser');
   });
 });

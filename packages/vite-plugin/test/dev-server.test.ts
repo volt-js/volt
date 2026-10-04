@@ -94,6 +94,16 @@ describe('a navigation', { timeout: 60_000 }, () => {
     expect(html).toContain('src="/src/main.ts"');
   });
 
+  it('carries what the loader answered this reader, for the client that claims the page', async () => {
+    // The dev server's page is claimed like the built one, so it goes out
+    // with its loader's answer too — collected by the router only on a server
+    // build, which the SSR environment a `vite dev` runs the handler in is.
+    const html = await (await get('/pricing', { 'x-user': 'ada' })).text();
+    const carried = /<script type="application\/json" data-volt-loaders>(.*?)<\/script>/s.exec(html)?.[1];
+    expect(carried, 'the page carries no loader answers').toBeDefined();
+    expect(JSON.parse(carried!)).toEqual({ '/pricing': { 1: 'Team' } });
+  });
+
   it('gets the shell from the project’s own index.html', async () => {
     const html = await (await get('/pricing')).text();
     expect(html).toContain('<title>server-render fixture</title>');
