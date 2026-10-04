@@ -258,40 +258,79 @@ function textBefore($pos: ResolvedPos): string {
   return text;
 }
 
-const wordChar = /^[\p{L}\p{N}_]/u;
-const space = /^\s/u;
-
 /**
- * How much of `text` a word-delete takes off its end.
+ * The run of text immediately after a position, within its own block.
  *
- * Trailing whitespace first, then a run of one kind: word characters, or
- * punctuation. Deleting the space and then the word is what makes repeated
- * word-deletes move a word at a time rather than alternating between the two.
- *
- * The run is walked a grapheme at a time, as backspace walks it, and each is
- * classed by the character it starts with. A code unit at a time, the accent
- * of a decomposed "é" and each half of a letter outside the basic plane are
- * punctuation, and a word delete stops inside the word.
+ * The mirror of `textBefore`, stopping at the same things for the same reason:
+ * a word deletion forwards that ran through an image or a hard break would
+ * take it as part of the word.
  */
-function wordLengthAtEnd(text: string): number {
-  const segments = graphemes.segment(text);
-  let at = text.length;
-  // Step back over graphemes for as long as `keep` holds for the one before.
-  const back = (keep: (grapheme: string) => boolean): void => {
-    while (at > 0) {
-      const { segment, index } = segments.containing(at - 1)!;
-      if (!keep(segment)) return;
-      at = index;
-    }
-  };
-
-  back((grapheme) => space.test(grapheme));
-  if (at > 0) {
-    const word = wordChar.test(segments.containing(at - 1)!.segment);
-    back((grapheme) => !space.test(grapheme) && wordChar.test(grapheme) === word);
+function textAfter($pos: ResolvedPos): string {
+  const parent = $pos.parent;
+  let index = $pos.index();
+  let text = '';
+  if ($pos.textOffset > 0) {
+    text = parent.child(index).text!.slice($pos.textOffset);
+    index++;
   }
 
-  return text.length - at;
+  for (let i = index; i < parent.childCount; i++) {
+    const child = parent.child(i);
+    if (!child.isText) break;
+    text += child.text!;
+  }
+  return text;
+}
+
+/**
+ * Word boundaries, from the segmenter rather than from a class of characters.
+ *
+ * A class of characters answers "is this a letter", which is not the
+ * question. It cannot see that the apostrophe in "don't" or the point in
+ * "3.14" belong to the word around them, and in a script written without
+ * spaces it cannot see a word at all: every kana and ideograph is a letter,
+ * so a whole Japanese sentence would go in one press. The segmenter knows
+ * where words end in each of those, and it already walks graphemes, so an
+ * accent written as a combining mark stays with its letter.
+ */
+const words = new Intl.Segmenter(undefined, { granularity: 'word' });
+const space = /^\s+$/u;
+
+/**
+ * How much a word delete takes, given the segments in the order the delete
+ * walks them — outwards from the cursor.
+ *
+ * Whitespace first, then one word — or, where there is no word, a run of
+ * whatever is neither word nor space: punctuation, symbols, emoji. Taking the
+ * space and then the word is what makes repeated word deletes move a word at
+ * a time rather than alternating between the two. One word and not a run of
+ * them, because in a script without spaces the words sit directly beside each
+ * other, and a run would be the sentence again. A run of punctuation, because
+ * "..." is three segments and one thing to delete.
+ */
+function wordSpan(segments: readonly Intl.SegmentData[]): number {
+  let length = 0;
+  let i = 0;
+  while (i < segments.length && space.test(segments[i]!.segment)) length += segments[i++]!.segment.length;
+
+  const first = segments[i];
+  if (!first) return length;
+  if (first.isWordLike) return length + first.segment.length;
+
+  while (i < segments.length && !segments[i]!.isWordLike && !space.test(segments[i]!.segment)) {
+    length += segments[i++]!.segment.length;
+  }
+  return length;
+}
+
+/** How much of `text` a word delete backwards takes off its end. */
+function wordLengthAtEnd(text: string): number {
+  return wordSpan([...words.segment(text)].reverse());
+}
+
+/** How much of `text` a word delete forwards takes off its start. */
+function wordLengthAtStart(text: string): number {
+  return wordSpan([...words.segment(text)]);
 }
 
 /** Delete the word before the cursor, or fall back to deleting one character. */
@@ -305,6 +344,59 @@ export function deleteWordBackward(tr: EditorTransaction): boolean {
   if (length === 0) return deleteBackward(tr);
 
   return tr.delete(pos - length, pos).ok;
+}
+
+/**
+ * Delete the word after the cursor, or fall back to deleting one character.
+ *
+ * The same rules as `deleteWordBackward`, walked the other way: whitespace and
+ * then a word, a hard boundary at anything that is not text, and at the end of
+ * a text block what delete does there — join the block after.
+ */
+export function deleteWordForward(tr: EditorTransaction): boolean {
+  if (!tr.selection.empty) return deleteSelection(tr);
+
+  const pos = tr.selection.from;
+  const length = wordLengthAtStart(textAfter(resolve(tr.doc, pos)));
+  if (length === 0) return deleteForward(tr);
+
+  return tr.delete(pos, pos + length).ok;
+}
+
+/**
+ * Break the line without breaking the block — what Shift+Return does.
+ *
+ * The break is an inline leaf, so it goes in beside the text like a character
+ * and the paragraph stays one paragraph: one position wide, one press of
+ * backspace to remove, and a boundary a word delete stops at. It is found by
+ * the name `hard_break`; a schema with no type of that name, or a block whose
+ * content cannot hold one — a code block, which is `text*` — declines, and the
+ * person sees nothing happen rather than a split they did not ask for.
+ *
+ * It carries the marks of the position, because the next character typed
+ * reads its marks off the node before it, which is now the break: a bare break
+ * at the end of a bold line would end the bold.
+ *
+ * It closes the undo unit as return does. A line break is where a person
+ * stops and looks at what they wrote, and one undo taking back two lines is
+ * the complaint return's `closeHistory` exists to prevent.
+ */
+export function insertHardBreak(tr: EditorTransaction): boolean {
+  const type = tr.doc.type.schema.nodes['hard_break'];
+  if (!type) return false;
+
+  const { from, to, empty } = tr.selection;
+  const $from = resolve(tr.doc, from);
+  const node = type.create(null, null, $from.parent.type.allowedMarks($from.marks()));
+  // The step is what knows whether the parent can hold a break, and refuses
+  // the replacement where it cannot — in a code block, or between blocks.
+  if (!tr.replace(from, to, new Slice(Fragment.from(node), 0, 0)).ok) return false;
+
+  // As in `insertText`: a range's mapped ends would select the break rather
+  // than sit after it.
+  if (!empty) tr.setSelection(TextSelection.create(tr.doc, tr.selection.to));
+  tr.closeHistory();
+  return true;
 }
 
 /**

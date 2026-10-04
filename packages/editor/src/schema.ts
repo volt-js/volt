@@ -54,15 +54,24 @@ export interface NodeSpec {
   inline?: boolean;
   /**
    * A node with content that should nonetheless be treated as one unit. Read
-   * by `NodeType.isAtom`, which nothing in the package consults yet.
+   * by `NodeType.isAtom`, which is what the arrow keys step onto as a whole
+   * rather than into, and what `findSelection` selects rather than enters.
    */
   atom?: boolean;
+  /**
+   * Whether a node selection may hold this node. Defaults to true for every
+   * type but text. A hard break says false: the caret steps over one as it
+   * steps over a character, and an arrow press that selected it instead would
+   * take two presses to get past a line end.
+   */
+  selectable?: boolean;
   attrs?: Record<string, AttributeSpec>;
   /**
    * A node whose identity a paste should preserve — a list item or a
-   * blockquote, as opposed to a paragraph, which a paste happily merges into
-   * its surroundings. Recorded for a paste that keeps its structure, which
-   * needs slices with open ends; nothing reads it yet.
+   * heading, as opposed to a paragraph, which a paste happily merges into its
+   * surroundings. `placeSlice` reads it: a pasted slice whose first block is
+   * defining is put in whole where the selection covers a whole block, rather
+   * than having its text poured into the block that was there.
    */
   defining?: boolean;
 }
@@ -186,6 +195,20 @@ export class NodeType {
   /** A leaf, or a node the editor should treat as indivisible anyway. */
   get isAtom(): boolean {
     return this.isLeaf || this.spec.atom === true;
+  }
+
+  /** Whether a node selection may hold a node of this type. Never text. */
+  get selectable(): boolean {
+    return !this.isText && this.spec.selectable !== false;
+  }
+
+  /**
+   * Whether a node of `other`'s type can be joined onto one of this type —
+   * the content of both made one node of this type, as deleting across the
+   * boundary between a heading and a paragraph does.
+   */
+  compatibleContent(other: NodeType): boolean {
+    return this === other || this.contentMatch.compatible(other.contentMatch);
   }
 
   get hasRequiredAttrs(): boolean {

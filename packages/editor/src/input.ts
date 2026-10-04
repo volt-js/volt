@@ -16,13 +16,25 @@
  * layer wants to translate at. Shortcuts that are genuinely about keys — a
  * keymap binding for bold — are a different listener, and not this one.
  *
+ * **Undo is the one key read here, because the browser will not report it.**
+ * `historyUndo` and `historyRedo` are what a browser sends when it is about to
+ * undo an edit of its own, and every edit here was cancelled before the
+ * browser made it — so its undo stack is empty, and the platform's undo key
+ * produces no `beforeinput` at all. The history is the editor's, so the key
+ * has to be read as a key. Both roads lead to the same history: the input
+ * types still arrive from an Edit menu or a shake-to-undo, and they are
+ * honoured rather than declined. With no history to hand the keys are left
+ * alone, since whatever undo the host has is then the one they belong to; the
+ * input types are cancelled either way, because a browser undo would take
+ * back DOM the model never saw change.
+ *
  * **Why every non-composition event is prevented.** The model is the truth and
  * the DOM is a rendering of it. If the browser is allowed to perform an edit
  * that the model does not know about, the two diverge, and every position in
  * the document — every selection, every mapped step, every history entry — is
  * then computed against a document that is not what is on screen. That failure
- * is silent and unrecoverable. Refusing an edit we cannot yet express is
- * neither: it is visible, and the person tries something else. So an input type
+ * is silent and unrecoverable. Refusing an edit the model cannot yet express
+ * is neither: it is visible, and the person tries something else. So an input type
  * with no command behind it is cancelled and dropped, not delegated.
  *
  * **Composition is the exception, and has to be.** Between `compositionstart`
@@ -47,10 +59,13 @@ import {
   deleteBackward,
   deleteForward,
   deleteWordBackward,
+  deleteWordForward,
+  insertHardBreak,
   insertParagraph,
   insertPlainText,
   insertText,
 } from './commands.js';
+import type { EditorHistory } from './history.js';
 import type { EditorState, EditorTransaction } from './state.js';
 
 /** What an input layer needs of the editor around it. */
@@ -59,6 +74,13 @@ export interface EditorInputHost {
   state(): EditorState;
   /** Hand back a transaction that did something. Never called for a no-op. */
   dispatch(tr: EditorTransaction): void;
+  /**
+   * The history the undo keys and the `historyUndo` and `historyRedo` input
+   * types act on. The host records every transaction it applies into it,
+   * including the ones an undo hands to `dispatch` — that is what moves the
+   * unit from one stack to the other. Without one, the keys are left alone.
+   */
+  readonly history?: EditorHistory | null;
 }
 
 /**
@@ -89,6 +111,11 @@ function pastedText(event: InputEvent): string {
  *
  * Exported for the sake of being testable without an event loop, and because a
  * keymap will want to reach the same commands by the same names.
+ *
+ * `historyUndo` and `historyRedo` are not here, and this says no to them: an
+ * undo is a transaction the history builds from its own stack, not an edit
+ * written into one that is already open. `EditorInput` takes them to the
+ * history instead.
  */
 export function applyInputType(tr: EditorTransaction, inputType: string, event?: InputEvent): boolean {
   switch (inputType) {
@@ -101,20 +128,68 @@ export function applyInputType(tr: EditorTransaction, inputType: string, event?:
     }
     case 'insertParagraph':
       return insertParagraph(tr);
+    case 'insertLineBreak':
+      return insertHardBreak(tr);
     case 'deleteContentBackward':
       return deleteBackward(tr);
     case 'deleteContentForward':
       return deleteForward(tr);
     case 'deleteWordBackward':
       return deleteWordBackward(tr);
-    case 'insertFromPaste':
+    case 'deleteWordForward':
+      return deleteWordForward(tr);
+    case 'insertFromPaste': {
       // Flattened to text, for the reason `insertPlainText` gives: a paste
       // that preserved structure needs a DOM parser and open slices, and
       // producing half of that would produce documents the schema refuses.
-      return event ? insertPlainText(tr, pastedText(event)) : false;
+      // A paste that carries no text — only an image, or only markup this
+      // layer does not read — declines for the reason `insertText` does:
+      // pasting nothing over a range would delete the range.
+      const text = event ? pastedText(event) : '';
+      return text ? insertPlainText(tr, text) : false;
+    }
     default:
       return false;
   }
+}
+
+type Direction = 'undo' | 'redo';
+
+/**
+ * The letter a shortcut is pressed on, by the platform's reckoning.
+ *
+ * `key` on a Latin layout, so that Z is where Z is printed — on AZERTY the key
+ * in QWERTY's Z place is W, and Ctrl+W is not undo. A layout that is not Latin
+ * reports its own letter there, and the platform still undoes on the key in
+ * Z's place, so a single letter outside ASCII falls back to `code`. A named
+ * key — `Process`, which an input method sends for a key it is taking for
+ * itself — is no letter at all.
+ */
+function shortcutLetter(event: KeyboardEvent): string | null {
+  const key = event.key;
+  if (/^[\x21-\x7e]$/.test(key)) return key.toLowerCase();
+  if ([...key].length !== 1) return null;
+  const physical = /^Key([A-Z])$/.exec(event.code);
+  return physical ? physical[1]!.toLowerCase() : null;
+}
+
+/**
+ * Which way through the history a key asks to go, if it is an undo key at all.
+ *
+ * Ctrl or Cmd with Z undoes, and with Shift as well redoes; Ctrl+Y redoes too,
+ * which is the Windows spelling. Either modifier is taken on every platform
+ * rather than guessing the platform from a user agent: Ctrl+Z on a Mac and
+ * Cmd+Z elsewhere mean nothing else, so accepting both costs nothing. Both
+ * held at once is neither: that chord is some other binding's. Alt rules a
+ * key out, because AltGr arrives as Ctrl+Alt on Windows and types a
+ * character there — AltGr+Z is ż on a Polish keyboard.
+ */
+function historyKey(event: KeyboardEvent): Direction | null {
+  if (event.altKey || event.ctrlKey === event.metaKey) return null;
+  const letter = shortcutLetter(event);
+  if (letter === 'z') return event.shiftKey ? 'redo' : 'undo';
+  if (letter === 'y' && event.ctrlKey && !event.shiftKey) return 'redo';
+  return null;
 }
 
 /**
@@ -133,6 +208,7 @@ export class EditorInput {
     this.dom = dom;
     this.host = host;
     dom.addEventListener('beforeinput', this.onBeforeInput as EventListener);
+    dom.addEventListener('keydown', this.onKeyDown as EventListener);
     dom.addEventListener('compositionstart', this.onCompositionStart as EventListener);
     dom.addEventListener('compositionend', this.onCompositionEnd as EventListener);
   }
@@ -144,6 +220,7 @@ export class EditorInput {
 
   destroy(): void {
     this.dom.removeEventListener('beforeinput', this.onBeforeInput as EventListener);
+    this.dom.removeEventListener('keydown', this.onKeyDown as EventListener);
     this.dom.removeEventListener('compositionstart', this.onCompositionStart as EventListener);
     this.dom.removeEventListener('compositionend', this.onCompositionEnd as EventListener);
   }
@@ -152,7 +229,29 @@ export class EditorInput {
     if (this.composingNow || composed.has(event.inputType)) return;
 
     event.preventDefault();
-    this.run((tr) => applyInputType(tr, event.inputType, event));
+    if (event.inputType === 'historyUndo') this.travel('undo');
+    else if (event.inputType === 'historyRedo') this.travel('redo');
+    else this.run((tr) => applyInputType(tr, event.inputType, event));
+  };
+
+  /**
+   * The undo keys, read as keys for the reason the header gives.
+   *
+   * Left alone mid-composition, when the keys are the input method's; when
+   * something else has already taken the key, which is how a host overrides
+   * the binding; and when there is no history, when the host's own undo is
+   * the one they belong to. Otherwise the key is the editor's even with
+   * nothing to take back, so the browser does not go looking in a stack of
+   * its own.
+   */
+  private readonly onKeyDown = (event: KeyboardEvent): void => {
+    if (!this.host.history || event.defaultPrevented) return;
+    if (this.composingNow || event.isComposing) return;
+
+    const direction = historyKey(event);
+    if (!direction) return;
+    event.preventDefault();
+    this.travel(direction);
   };
 
   private readonly onCompositionStart = (): void => {
@@ -167,6 +266,14 @@ export class EditorInput {
    * still the range the composition started from, which is exactly what the
    * composed text should replace. That is why nothing had to be remembered at
    * `compositionstart`.
+   *
+   * Not handled, and said here so it is not mistaken for handled: an input
+   * method that composes over text it chose itself rather than at the
+   * selection. Android keyboards reopen the word beside the caret to correct
+   * it, and the corrected word arrives here as text for the caret, where it
+   * lands beside the word it was meant to replace. Knowing that range means
+   * reading it off the composition's own events — their target ranges, mapped
+   * back through the view — which nothing here does yet.
    */
   private readonly onCompositionEnd = (event: CompositionEvent): void => {
     this.composingNow = false;
@@ -181,6 +288,21 @@ export class EditorInput {
       return true;
     });
   };
+
+  /**
+   * Take back, or put back, the latest unit.
+   *
+   * The history builds the transaction and the host applies it like any other
+   * — and records it, which is what moves the unit across. Nothing to take
+   * back dispatches nothing.
+   */
+  private travel(direction: Direction): void {
+    const history = this.host.history;
+    if (!history) return;
+    const state = this.host.state();
+    const tr = direction === 'undo' ? history.undo(state) : history.redo(state);
+    if (tr) this.host.dispatch(tr);
+  }
 
   /**
    * Run a command against a fresh transaction, dispatching only if it did

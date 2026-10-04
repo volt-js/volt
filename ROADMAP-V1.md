@@ -396,22 +396,37 @@ here, so it sits beside the code that has to keep it true.
 **Stage three is built too: it listens to a keyboard.** `EditorState` holds a
 document and a selection and advances by applying a transaction, mapping the
 selection through each step as the step is taken rather than recomputing it
-afterwards. Commands cover deletion, insertion, paragraph splitting, backward
-and forward delete by grapheme cluster, delete-word-backward and plain-text
-paste. `beforeinput` translates the input types that matter and calls
+afterwards. Commands cover deletion, insertion, paragraph splitting, hard
+breaks — Shift-Return, an inline leaf that never splits the block and goes in
+one backspace — backward and forward delete by grapheme cluster, word deletion
+in both directions by the segmenter's word boundaries, and plain-text paste.
+`beforeinput` translates the input types that matter and calls
 `preventDefault` so the browser does not also act, and composition is left to
-own the DOM while it runs and reconciled when it ends.
+own the DOM while it runs and reconciled when it ends, in one step and one undo
+unit.
 
-Refused rather than half-done, and stated in the source: a replacement whose
-ends resolve into different parents, which needs slices with open ends the
-model does not build yet. **The undo stack is built too.** It is a stack of inverse steps rather than of
+**Slices have open ends, so edits cross block boundaries.** A replacement
+whose ends resolve into different parents is joined rather than refused:
+deleting from the middle of one paragraph to the middle of the next leaves one
+paragraph, and a slice open at its ends joins each end onto the text it lands
+beside. The join is defined only where the slice's open depths make up the
+difference between the two ends' depths, and is refused with a reason — stated
+in `slice.ts`, and tested — where they do not, where two joined nodes share no
+content, and where the result would break the schema. Fitting is what makes a
+slice line up: it places the slice's content at the deepest open position that
+takes it, closing, wrapping, opening or dropping what does not fit as it is.
+Unlike ProseMirror's, it never pulls the text after the selection up into the
+last pasted block, which would need a step that moves content without
+replacing it; that text stays in a block of its own.
+
+**The undo stack is built too.** It is a stack of inverse steps rather than of
 documents, so history costs what the edits cost and not what the document
 weighs. A run of typing collapses into one unit by time and adjacency — a
 character per undo is not an editor — and `closeHistory` ends a unit whatever
-the clock says, which is the decision a return or a finished composition makes.
-Undo restores the selection the edit *began* from rather than the document
-alone, which is the difference between an undo and a rewind, and a fresh edit
-after an undo discards what was ahead.
+the clock says, which is the decision a return, a line break or a finished
+composition makes. Undo restores the selection the edit *began* from rather
+than the document alone, which is the difference between an undo and a rewind,
+and a fresh edit after an undo discards what was ahead.
 
 **And it renders.** `EditorView` draws a document, maps positions between the
 model and the DOM in both directions, reflects a selection each way — written
@@ -420,10 +435,41 @@ moves the caret — and wires `beforeinput` to the input layer, so typing goes
 through to a transaction and back to the screen. Not built there: decorations,
 node views, collaborative cursors, drag and drop.
 
-Nothing binds undo to a keystroke yet: `beforeinput` still declines the
-`historyUndo` and `historyRedo` input types, so a host calls `record`, `undo`
-and `redo` itself. Not built: hard breaks, delete-word-forward, node
-selections, structure-preserving paste, and the whole view layer.
+**Undo is bound to the keyboard.** The view keeps a history and records every
+state it shows, so a host wires nothing: the platform's undo and redo keys
+reach it — read as keys, since a browser sends no `historyUndo` for edits it
+was never allowed to make — and so do the `historyUndo` and `historyRedo` input
+types. A click that ends a composition keeps its caret whichever event the
+platform sends first, unless it lands in the block being composed in, where
+the caret goes after the composed text. A composition that reopens text beside
+the caret, as Android keyboards do, is not reconciled: the composed text goes
+where the model's selection is rather than over the range the input method
+chose.
+
+**Node selections are built.** An image or a rule can be selected whole: the
+arrow keys step onto one beside the caret or past the end of a textblock and
+off it again, reading left and right by the direction the text runs, and an
+arrow with nowhere to go keeps a rule at the edge of the document selected; a
+click selects one, and a click during a composition selects it once the
+composition ends; the delete keys remove it in one step, and typing replaces
+a selected image. It is mapped through every change like a text selection,
+with text typed at either edge kept outside it, and prints, serialises and
+compares as a text selection does. Up and down step off a selected block but
+not onto one, since that depends on which line of its paragraph the caret is
+on, which the view does not measure, and an undo brings a deleted node back
+with a text range over it rather than the node selected. Typing over a
+selected rule, and deleting a rule that is all its blockquote holds, are
+declined: the commands replace exactly the range selected, and text cannot
+stand where a block was nor a blockquote be left empty. A paste over either
+goes in, since a paste is fitted.
+
+**So is a paste that keeps its structure.** HTML from the clipboard is read
+through the schema into a slice — only what a rule names and the schema
+declares gets in, so scripts, styles and stray attributes never do, and a link
+or image whose address would run script is dropped — and fitted in at the
+selection as one step and one undo unit. A pasted list replaces an empty
+paragraph rather than pouring its text into it. Plain text pastes as it did.
+Copying out as HTML, and loading a whole document from markup, are not built.
 
 Robustness here means schema-constrained documents, collaborative editing,
 input-method support for non-Latin scripts, undo grouping, paste sanitisation,

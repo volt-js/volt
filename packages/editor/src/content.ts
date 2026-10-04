@@ -137,6 +137,50 @@ export class ContentMatch {
   }
 
   /**
+   * The nodes that would have to be opened, outermost first, for a node of
+   * `target` to go here — `[bullet_list]` for a list item at the top of a
+   * document, `[paragraph]` for text there — or null when no chain of them
+   * gets there.
+   *
+   * Where `fillBefore` puts nodes *beside* what is placed, this puts them
+   * *around* it, and that is the other half of fitting a paste: a list item
+   * pasted where only blocks may go is wrapped in a list rather than refused.
+   * Breadth-first, so the shallowest wrapping wins. A wrapper has to be
+   * creatable from nothing, as a filler does, and has to be finished once its
+   * one child is in — a type that needs more after the first child would be
+   * opened and then left invalid.
+   */
+  findWrapping(target: NodeType): NodeType[] | null {
+    const seen: NodeType[] = [];
+    const active: { match: ContentMatch; via: NodeType[] }[] = [{ match: this, via: [] }];
+
+    for (let i = 0; i < active.length; i++) {
+      const { match, via } = active[i]!;
+      if (match.matchType(target)) return via;
+
+      for (const { type, next } of match.next) {
+        if (type.isLeaf || type.hasRequiredAttrs || seen.includes(type)) continue;
+        if (via.length > 0 && !next.validEnd) continue;
+        seen.push(type);
+        active.push({ match: type.contentMatch, via: [...via, type] });
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Whether this content and `other` share any node type that may come first.
+   *
+   * The test for whether two nodes may be joined into one: a paragraph and a
+   * heading both start with inline content and may, a paragraph and a list
+   * may not. The joined node's content is still checked as a whole afterwards;
+   * this only rules out the joins that cannot mean anything.
+   */
+  compatible(other: ContentMatch): boolean {
+    return this.next.some(({ type }) => other.next.some((edge) => edge.type === type));
+  }
+
+  /**
    * Whether a run of nodes can be reached from here at all, ignoring what
    * comes between. Used to decide whether a paste is hopeless before trying to
    * find the exact filler for it.

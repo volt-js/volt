@@ -13,12 +13,14 @@ selection across every change, the commands typing is made of, `beforeinput`
 translated into those commands, an undo history, and a view that renders a
 document, maps positions across the DOM boundary in both directions and keeps
 the two selections in step. Typing, backspace, delete, word deletion in both
-directions, return, Shift-Return and paste as plain text work, and so do the
-platform's undo and redo keys, with nothing wired by the host.
+directions, return, Shift-Return and paste work — a paste of HTML keeps its
+structure, read through the schema — and so do the platform's undo and redo
+keys, with nothing wired by the host. Edits cross block boundaries, and an
+image or a rule can be selected whole.
 
 What does not exist yet is most of what makes it a product: no formatting
-commands, no keymap beyond undo and redo, no rich clipboard, no DOM parser, no serialisation, no node
-selection, and no edit that crosses a block boundary. [What an editor still
+commands, no keymap beyond undo, redo and the arrows onto a node, no copying out
+as HTML, and no serialisation. [What an editor still
 needs](#what-an-editor-still-needs) is the full list. The package is
 `0.1.0-alpha.1`, which is what its exported `VERSION` says, and its view is
 tested against happy-dom with events built by hand: nothing in its suite runs
@@ -58,6 +60,7 @@ new EditorView(place: HTMLElement, options: EditorViewOptions)
 | `dispatchTransaction` | `(tr, view) => void`. The default applies the transaction and redraws |
 | `editable` | Default `true`. `false` sets `contenteditable="false"` and `aria-readonly="true"`: the view still renders and maps positions, and still reads a selection made in it, but binds no undo key |
 | `history` | An `EditorHistory` to record into, or `false` for none. Default: one of the view's own. See [undo and redo](#undo-and-redo) |
+| `parseRules` | How pasted HTML is read into the schema. Default: `basicParseRules`. See [pasting](#pasting) |
 
 | Member | Description |
 |---|---|
@@ -271,7 +274,7 @@ to put input on an element without a view.
 | `deleteContentForward` | `deleteForward(tr)` | Delete |
 | `deleteWordBackward` | `deleteWordBackward(tr)` | Option- or Ctrl-Backspace |
 | `deleteWordForward` | `deleteWordForward(tr)` | Option- or Ctrl-Delete |
-| `insertFromPaste` | `insertPlainText(tr, text)` | Paste, as plain text |
+| `insertFromPaste` | `insertPlainText(tr, text)` | Paste of plain text — one carrying HTML is [taken earlier](#pasting) |
 | `historyUndo`, `historyRedo` | The host's `history.undo` or `redo`, dispatched | Edit menu, shake to undo |
 
 **Every other input type is cancelled and dropped.** The model is the truth and
@@ -290,11 +293,13 @@ instead, and the person tries something else. In practice that means, today:
 - With no history — `history: false`, or an `EditorInput` whose host gives
   none — `historyUndo` and `historyRedo` do nothing.
 
-A paste reads the `text/plain` on the event's `dataTransfer`, falling back to
+A paste that carries HTML the schema can make something of never gets here:
+the view takes it off the `paste` event first — see [pasting](#pasting). What
+does get here reads the `text/plain` on the event's `dataTransfer`, falling back to
 `data`: a real paste puts the text on the transfer, and a synthetic event does
-the opposite. A paste with text in neither — an image copied from a page is
-HTML and the image — declines, for the reason `insertText` does: pasting
-nothing over a selection would delete it.
+the opposite. A paste with text in neither — only an image, or only markup the
+input layer does not read — declines, for the reason `insertText` does:
+pasting nothing over a selection would delete it.
 
 The layer never calls `getTargetRanges()`. Every command acts on the model's
 selection, so an event whose target is somewhere other than the selection —
@@ -476,10 +481,21 @@ it.
 What the commands do at the edges is as much the documentation as what they do
 in the middle:
 
-- **A selection whose ends are in different blocks cannot be deleted, typed
-  over or split.** Every command declines, for [the replace
-  limit](#the-replace-limit). Selecting all of a document of two paragraphs and
-  pressing a key does nothing.
+- **A selection whose ends are in different blocks is deleted or typed over
+  by joining what is left**, under [the join rule](#replacing-across-blocks):
+  the two halves become one block, of the first block's type. Where the ends
+  are at different depths — from a paragraph into a list item — the rule
+  refuses and the command declines. Return over such a selection declines
+  too, since a split needs both ends in one textblock.
+- **A node selection is a range like any other.** Backspace and delete remove
+  the selected image or rule in one step, and typing replaces a selected image;
+  the caret lands where the node was — in the next textblock, for a rule. Each
+  command replaces exactly the range selected, so it declines where that
+  replacement would break the schema: typing, return and Shift-Return over a
+  selected rule, since text cannot stand where a block was, and the delete keys
+  over a rule that is all its parent holds — the only block in a blockquote or
+  in the document — since `block+` needs a block there. A
+  [paste](#pasting) over either goes in, since a paste is fitted.
 - Return keeps the block's type and attributes on both halves, so return at the
   end of a heading makes a second heading. Which type follows which is a policy
   that differs per schema, and belongs to a keymap or a schema rule rather than
@@ -506,6 +522,104 @@ every position inside them collapse to an edge in the map, so these two set the
 selection explicitly, computed from what they built. The only other command
 that sets it is `insertText` over a range, whose mapped ends would otherwise
 select the text it typed; it collapses them to a cursor after that text.
+
+## Pasting
+
+A paste that carries HTML is taken off the `paste` event, before the browser
+turns it into a `beforeinput`: the view reads the `text/html` through the
+schema into a slice, fits the slice in at the selection, and cancels the event.
+A paste with no HTML, or with HTML the schema can make nothing of, is left
+alone and arrives as text through [the input layer](#what-typing-does), as it
+did. A read-only view takes no paste.
+
+```ts
+parseSlice(schema: Schema, html: string | ParentNode, options?: ParseOptions): Slice
+insertSlice(tr: EditorTransaction, slice: Slice): boolean
+pasteHTML(tr: EditorTransaction, html: string, options?: ParseOptions): boolean
+
+interface ParseOptions {
+  rules?: ParseRules;      // default: basicParseRules
+  document?: Document;     // default: the global one; a view passes its own
+}
+```
+
+`pasteHTML` is the two together, and what the view runs. `insertSlice`
+replaces the selection with a slice placed by [`placeSlice`](#fitting-a-slice)
+in one step, puts the caret after what went in — back into the last pasted
+text, or on past a block put in whole — and closes the undo unit on both sides,
+since a paste is one thing to take back and the typing after it another. It
+declines, changing nothing, for an empty slice or one with nothing that fits.
+
+```ts
+import { EditorState, TextSelection, basicSchema, pasteHTML } from '@voltdev/editor';
+
+const s = basicSchema;
+const doc = s.node('doc', null, [s.node('paragraph', null, [s.text('abcd')])]);
+const tr = EditorState.create(doc, TextSelection.create(doc, 3)).tr();
+
+pasteHTML(tr, '<p>one</p><p>two</p>');
+String(tr.doc); // 'doc(paragraph("abone"), paragraph("twocd"))'
+```
+
+**Parsing is a whitelist, and the schema is the whitelist.** An element
+becomes a node or a mark only through a rule naming a type the schema declares,
+and carries only the attributes the rule reads and the type declares;
+everything else gives at most its text. Scripts, styles, `onerror` handlers and
+tracking attributes are never filtered out because they are never let in. The
+HTML is parsed into an inert `template`, so nothing in it runs or loads while it
+is read. Two things a rule still checks, because a schema cannot: a link whose
+address is not `http`, `https`, `mailto`, `tel` or relative, and an image whose
+address is not `http`, `https`, a `data:image/` URI or relative, are read as
+their text — the scheme is read as a browser reads it, with tabs and newlines
+inside it ignored, so `java&#9;script:` is refused too. And a `b` or `strong`
+marked `font-weight: normal` is not bold: a well-known document editor wraps
+everything it copies in one.
+
+What the schema cannot hold where it was put is moved rather than dropped. Text
+directly in a list goes in an item and a paragraph; a block-level element with
+no rule — a `div`, a table cell — starts a paragraph of its own, so text laid
+out as separate blocks is not run together; whitespace collapses as the page
+rendered it, except in a `pre`, where a `<br>` is a newline. A node whose
+content cannot be made valid gives that content up to its parent, marks and
+all. The slice comes out open as far as its first and last blocks go — what
+`Slice.maxOpen` makes — which is what lets the first pasted paragraph join the
+one the caret is in.
+
+| Rule | Reads |
+|---|---|
+| `p`, `h1`–`h6`, `blockquote`, `pre`, `ul`, `ol`, `li`, `hr`, `br`, `img` | `paragraph`, `heading` with its level, `blockquote`, `code_block`, `bullet_list`, `ordered_list` with `start`, `list_item`, `horizontal_rule`, `hard_break` — but not the break a browser adds where a copy ended — and `image` with `src`, `alt` and `title` |
+| `em`, `i`, `strong`, `b`, `code`, `a` | `em`, `strong`, `code`, and `link` with `href` and `title` |
+| `script`, `style`, `template`, `title`, `meta`, `link`, `noscript`, `iframe`, `object`, `embed`, `svg`, `math`, `canvas`, `video`, `audio`, `select`, `button`, `input`, `textarea` | Nothing: the element and everything in it are dropped |
+
+`basicParseRules` is that table. It applies to any schema using the starter
+schema's names, and a rule whose type a schema lacks is skipped, so the same
+paste into a schema with no lists gives paragraphs. A schema of its own takes
+rules of its own, by lower-case tag name, through the view's `parseRules`:
+
+```ts
+import { EditorView, basicParseRules, type ParseRules } from '@voltdev/editor';
+
+const parseRules: ParseRules = {
+  ...basicParseRules,
+  aside: { node: 'callout', attrs: (element) => ({ tone: element.getAttribute('data-tone') ?? 'note' }) },
+};
+
+new EditorView(host, { state, parseRules });
+```
+
+| `ParseRule` field | Description |
+|---|---|
+| `node` | The node type the element becomes, by name |
+| `mark` | The mark it puts on the inline content inside it, by name |
+| `attrs` | `(element) => Attrs \| false \| null`. The attributes, or `false` to read the element as though it had no rule |
+| `ignore` | Drop the element and everything in it |
+| `preserveWhitespace` | Keep whitespace as it is, as `pre` does |
+
+Not built: copying or cutting a selection out as HTML, reading `text/plain`
+with its line breaks into anything richer than paragraphs, cleaning up the
+inline styles a word processor writes instead of elements, and loading a whole
+document from markup — a slice from `parseSlice` is the start of one, not a
+checked document.
 
 ## Rendering
 
@@ -617,9 +731,44 @@ set while writing — is what stops the view answering its own writes, because
 browsers fire `selectionchange` on a later task, long after any flag has been
 cleared.
 
-A selection is always a text selection. An image or a rule cannot be selected as
-one object, and a click that lands in one is snapped to the nearest place a
-cursor can be.
+### Node selections on screen
+
+A [node selection](#node-selections) is written into the DOM as a range around
+the node, so a screen reader and a copy see the thing that is selected, and its
+element gets the class `volt-selected-node`, which is what a style sheet draws
+it by — the package ships no CSS. A read of that same range back from
+`selectionchange` agrees with the model and dispatches nothing; read as a text
+range, it would undo every arrow press a frame later.
+
+| Input | Does |
+|---|---|
+| Left or right arrow, caret beside an image | Selects the image |
+| Right arrow at the end of a textblock with a rule after it, left at the start of one with a rule before | Selects the rule |
+| Left or right arrow on a selected image | A caret on that side of it |
+| Left or right arrow on a selected rule | The next selection that way: a caret in the next textblock, or the next rule |
+| Up or down arrow on a selected rule | The same, up or down |
+| An arrow pointing out of the document from a selected rule at its start or end | Nothing: the rule stays selected |
+| Click on an image or a rule | Selects it |
+
+Left and right are read by the direction the text at the selection runs — the
+computed `direction` — so in right-to-left text the left arrow moves forwards.
+Everywhere else an arrow is left to the browser, which moves the caret natively
+and is the only thing that knows about line wrapping and bidirectional text; an
+arrow with Shift, Alt, Ctrl or Meta held is always left to it. Up and down onto
+a rule from a paragraph are not done: whether the caret is on the paragraph's
+first or last line is a question about layout, which the view does not measure,
+so the browser's own caret goes past the rule. An arrow with nowhere to go
+from a selected rule is kept from the browser, which would collapse the range
+onto the edge of the document — a caret on the rule's far side, the opposite
+way to the key.
+
+The arrows do not act while an input method is composing, and a click on an
+image or a rule then is held until the composition has finished: the composed
+text goes where it was written, and the node is selected after. Left to the
+browser, the range it put round a rule would be read back as a text range
+across two paragraphs, which the next keystroke would join. A node in the
+block composed in is not selected, since the composition's redraw replaced it;
+the caret stays after the composed text.
 
 ## Defining a document
 
@@ -648,8 +797,9 @@ when rendered.
 | `group` | Space-separated groups other content expressions can name |
 | `inline` | The node sits in inline content, like an image or a hard break |
 | `attrs` | `Record<string, AttributeSpec>`, where `AttributeSpec` is `{ default?: unknown }`. An attribute with no `default` is required |
-| `atom` | Treat a node with content as one unit. Read by `NodeType.isAtom` and by nothing else yet |
-| `defining` | A node a paste should keep whole. Recorded for the structured paste that does not exist yet; nothing reads it |
+| `atom` | Treat a node with content as one unit: the arrow keys step onto it rather than into it, and `findSelection` selects it rather than entering it |
+| `selectable` | Whether a node selection may hold it. Default `true` for every type but text |
+| `defining` | A node a paste should keep whole — a pasted list item or heading is put in whole where the selection covers a whole block, rather than its text poured into that block. See [pasting](#pasting) |
 
 | `MarkSpec` field | Description |
 |---|---|
@@ -689,6 +839,8 @@ saved document.
 | `name`, `schema`, `spec`, `groups` | What was declared |
 | `isText`, `isInline`, `isBlock`, `isTextblock`, `isLeaf`, `inlineContent` | What kind of node it makes |
 | `isAtom` | A leaf, or declared `atom` |
+| `selectable` | Whether a node selection may hold one — never for text |
+| `compatibleContent(other)` | Whether a node of `other`'s type can be joined onto one of this type: the same type, or content that can start with the same child |
 | `hasRequiredAttrs`, `defaultAttrs` | Whether some attribute has no default, and the defaults — which throws when one has none |
 | `create(attrs?, content?, marks?)` | Create a node, checked — what `Schema.node` calls |
 | `createAndFill(attrs?, content?, marks?)` | Create a node, filling in what the content requires; `null` when nothing can |
@@ -730,8 +882,9 @@ Content expressions are sequence, `|`, parentheses and the `*`, `+` and `?`
 modifiers; counted repetition (`{2,4}`) is not supported. Each is compiled to a
 deterministic automaton when the schema is built, so matching a child afterwards
 is a lookup with no backtracking. `ContentMatch` and `contentMatchAt(node, index)`
-expose that automaton for code that needs to ask what may come next; nothing in
-the package outside the schema calls them yet.
+expose that automaton for code that needs to ask what may come next — the
+fitting a paste goes through asks it both what may follow and what has to be
+put around a node for it to go somewhere.
 
 | `ContentMatch` member | Description |
 |---|---|
@@ -741,6 +894,8 @@ the package outside the schema calls them yet.
 | `defaultType` | A type that could be created here with no arguments, or `null` |
 | `fillBefore(after, toEnd?, startIndex?)` | The shortest run of default nodes that lets `after` follow legally — ending the content if `toEnd` — or `null` |
 | `matchFragmentOrFill(fragment)` | The state after a run of children, with filling allowed before them |
+| `findWrapping(type)` | The nodes to open, outermost first, for a node of `type` to go here — `[bullet_list]` for a list item where only blocks may go — or `null`. Shallowest first, and only through wrappers one child finishes and nothing has to be invented for |
+| `compatible(other)` | Whether two states share a type that may come next |
 | `ContentMatch.empty` | The state of a type that holds nothing — a leaf |
 
 `contentMatchAt(node, index)` is the state after a node's first `index`
@@ -788,7 +943,7 @@ into it: an attribute left out goes back to its default.
 | `list_item` | `paragraph block*` |
 | `horizontal_rule` | A block leaf |
 | `image` | An inline leaf: `src` required, `alt` and `title` default `null` |
-| `hard_break` | An inline leaf |
+| `hard_break` | An inline leaf, not `selectable` — the arrows pass it as a character |
 
 | Mark | Behaviour |
 |---|---|
@@ -803,7 +958,8 @@ unambiguous to put in an empty one. A code block declares `marks: ''`, which say
 layer. `image` has a required `src`, which makes it impossible to conjure by
 normalisation, deliberately — an image with no source is not a useful thing to
 fill a gap with. `heading`, `blockquote`, `code_block` and `list_item` are
-declared `defining`, which today changes nothing.
+declared `defining`, which is what keeps a pasted heading a heading in an empty
+paragraph.
 
 ## Reading a document
 
@@ -825,6 +981,7 @@ mutates in place can only answer "look again".
 | `textBetween(from, to, separator?)` | The text of a range; `separator` (default `'\n\n'`) goes between blocks |
 | `nodesBetween(from, to, f, startPos?)` | Visit every node overlapping a range; return `false` to skip a node's children |
 | `cut(from, to?)` | The node with its content cut to a range |
+| `slice(from, to?)` | What lies between two positions, as a `Slice` open at each end as far as that end was inside a node |
 | `withAttrs(attrs)` | A checked copy with new attributes |
 | `copy(content?)`, `mark(marks)`, `withText(text)` | Unchecked copies — see [where the check does not reach](#where-the-check-does-not-reach) |
 | `eq(other)`, `sameMarkup(other)` | Structural comparison, and the same without content |
@@ -875,8 +1032,12 @@ new Slice(content: Fragment, openStart: number, openEnd: number)
 A `Slice` is a fragment cut from a document together with `openStart` and
 `openEnd`, how many node boundaries were cut through at each edge; `size` is
 the positions it inserts, and `Slice.empty` inserts nothing. Steps carry slices.
-The model can describe an open slice; it cannot yet apply one, so the only slice
-a step accepts today is a closed one, `new Slice(fragment, 0, 0)`.
+`doc.slice(2, 6)` across the boundary of two paragraphs is the end of one and
+the start of the next — `paragraph("b"), paragraph("c")(1,1)` — and putting it
+back joins each half onto the text it came from, which is what a replacement
+across blocks inverts to. `Slice.maxOpen(fragment)` opens a fragment as far as
+its first and last nodes go, stopping at a leaf; it is what a parsed paste is.
+`eq(other)` compares content and both open depths.
 
 ## Positions
 
@@ -984,22 +1145,108 @@ so does any step, or `addMark` or `removeMark`, whose `from` is after its `to`.
 | `invert(doc)` | The step that undoes it, against the document it applied to |
 | `map(mapping)` | This step rewritten to apply after `mapping`, or `null` if its range is gone |
 
-### The replace limit
+### Replacing across blocks
 
-**Both ends of a replacement must resolve into the same parent.** A replacement
-that starts in one paragraph and ends in the next is refused, and so is any slice
-with open ends. Joining across depths needs open slices the model cannot apply
-yet, and a step that quietly produced a document violating its schema would be
-worse than one that says it cannot.
+**A replacement's ends may sit in different parents, and its slice may be
+open.** What `ReplaceStep` applies is the join rule: the slice's open start is
+joined onto the node `from` is in, its open end onto the node `to` is in, and
+everything between is replaced. Deleting from the middle of one paragraph to
+the middle of the next is the empty slice, and the two halves join into one
+paragraph of the first one's type; a slice open by one at each end splits the
+paragraph it lands in and joins each half onto its own end.
 
-This is the limit everything above works around. Splitting and joining
-paragraphs are done one level up, replacing whole blocks; a selection spanning
-two blocks cannot be deleted; a paste cannot keep its structure.
+```ts
+import { ReplaceStep, Slice, basicSchema } from '@voltdev/editor';
+
+const s = basicSchema;
+// 0 <p> 1 a 2 b 3 </p> 4 <p> 5 c 6 d 7 </p> 8
+const doc = s.node('doc', null, [
+  s.node('paragraph', null, [s.text('ab')]),
+  s.node('paragraph', null, [s.text('cd')]),
+]);
+
+const result = new ReplaceStep(2, 6, Slice.empty).apply(doc);
+String(result.ok && result.doc); // 'doc(paragraph("ad"))'
+
+// What the inverse puts back: the two halves, each open where it was cut.
+String(doc.slice(2, 6)); // 'paragraph("b"), paragraph("c")(1,1)'
+```
+
+The rule is defined only where it can be exact, and refuses — with a reason, as
+every step does — rather than guess:
+
+- **Ends whose depths the slice does not make up.** `$from.depth - openStart`
+  must equal `$to.depth - openEnd`. Deleting from a top-level paragraph into a
+  list item's paragraph with an empty slice is refused; the slice that makes it
+  line up is the one [fitting](#fitting-a-slice) finds.
+- **A slice open deeper than the position it goes into**, or open deeper than
+  its own content goes.
+- **A join between nodes that share no content.** A paragraph and a heading
+  join; a paragraph and a list do not.
+- **A result the schema forbids.** Every node the join rebuilds is checked, so
+  a code block and a paragraph join only while what the paragraph brings is
+  text the code block can hold.
+
+Splitting and joining paragraphs are still done one level up by the commands,
+replacing whole blocks, which is why those two set the selection themselves.
+
+### Fitting a slice
+
+```ts
+fitSlice(doc: Node, from: number, to: number, slice: Slice): FitResult
+placeSlice(doc: Node, from: number, to: number, slice: Slice): FitResult
+joinSlice(doc: Node, from: number, to: number, slice: Slice): StepResult
+
+type FitResult =
+  | { ok: true; from: number; to: number; slice: Slice }
+  | { ok: false; reason: string };
+```
+
+A slice that does not line up is made to by fitting it. `fitSlice` walks the
+slice's content from the left and puts each node at the deepest open position
+that will take it — after nodes the schema can create to go before it, or
+inside wrappers it can only go in, a list item in a list and bare text in a
+paragraph — closing the open nodes it moves out of and filling what their
+types require at their end. A node nothing will take is opened so its content
+can be tried, and dropped when that fails too. What follows `to` is then joined
+back on at the deepest level it can follow what was placed. The result is a
+range and a slice that line up, for a `ReplaceStep`:
+
+```ts
+const fit = fitSlice(doc, from, to, slice);
+if (fit.ok) tr.replace(fit.from, fit.to, fit.slice);
+```
+
+A slice the join rule already accepts comes back untouched. The range can come
+back wider than the one asked for, when what is left after `to` is joined on
+from the end of its block. A slice none of whose content fits anywhere is
+refused, even over a range — a paste of nothing that fits does not quietly
+delete what it was pasted over.
+
+Fitting stops short of ProseMirror's in one place: when the last pasted block is
+left open and the text after the selection sits at a different depth, that text
+stays in a block of its own rather than being pulled up into the pasted one.
+Pulling it up moves content the replacement does not cover, which needs a step
+that moves content while keeping the positions inside it — ProseMirror's
+`ReplaceAroundStep` — and every step here is a replacement. Pasting a two-item
+list into the middle of `x|y` gives `x` and the first item's text, the second
+item as a list, and `y` in a paragraph after it.
+
+`placeSlice` is what a paste asks for. Fitting alone would pour a pasted
+heading's text into the paragraph the caret is in even when that paragraph is
+empty and the heading could replace it, so where the selection covers whole
+blocks the range is widened over them and the slice is tried closed down to
+each of its depths, starting from its first `defining` block. A list pasted into
+an empty paragraph replaces the paragraph; a heading pasted into the middle of
+one gives up its text to it. Every result `placeSlice` returns has been checked
+against the join rule. `joinSlice` is the join rule itself, as `ReplaceStep`
+applies it.
 
 ### Adding and removing marks
 
-A mark step is refused across parents too: bolding a selection that spans two
-paragraphs is one step per paragraph, each a range inside one textblock. Past
+A mark step is refused across parents, unlike a replacement: bolding a
+selection that spans two paragraphs is one step per paragraph, each a range
+inside one textblock. Past
 that, a mark step is held to what a replacement is, and to one thing more:
 
 - **It checks what the parent allows.** `strong` inside a `code_block` is
@@ -1099,7 +1346,7 @@ range closed up becomes an insertion of its slice.
 ## State and selection
 
 ```ts
-EditorState.create(doc: Node, selection?: TextSelection): EditorState
+EditorState.create(doc: Node, selection?: EditorSelection): EditorState
 ```
 
 | `EditorState` member | Description |
@@ -1115,7 +1362,8 @@ entry holds. A transaction that changed nothing gives back the same state.
 positions mean nothing here. `create` holds the selection it is handed to the
 same rule as far as two numbers allow: one that `TextSelection.create` would
 not have made for this document — past its end, or on a block boundary where no
-cursor belongs — was made for another, and throws a `RangeError`.
+cursor belongs — was made for another, and throws a `RangeError`. So does a
+node selection where this document has no equal node.
 
 **A selection is mapped, never recomputed.** Asking the DOM where the caret is,
 or re-deriving it from the new document, is how an editor loses the cursor when
@@ -1124,15 +1372,29 @@ mark added across a range, later a remote edit. The change already says where
 every position went, so `EditorTransaction` maps its selection through each step
 as the step is taken, and that is the only place a selection changes on its own.
 
+A selection is an `EditorSelection`: a `TextSelection`, or a `NodeSelection`
+holding one node whole. Every one has these:
+
+| `EditorSelection` member | Description |
+|---|---|
+| `anchor`, `head` | Ordered by intent: `anchor` stays put while `head` moves |
+| `from`, `to`, `empty` | The same two numbers ordered by position |
+| `map(doc, mapping, from?)` | Carried across a change, into the document it produced |
+| `eq(other)` | Same kind and same ends. A node selection never equals a text range over the same node |
+| `toJSON()` | `{ type: 'text', anchor, head }` or `{ type: 'node', anchor }` — a `SelectionJSON` |
+| `EditorSelection.fromJSON(doc, json)` | The selection JSON describes, in `doc`. A `RangeError` rather than a snapped guess when it describes none there |
+| `EditorSelection.near(doc, pos, bias?)` | The nearest selection to `pos`, looking first the way `bias` says: a caret in inline content, or a selectable block met before any. Where a paste leaves the caret |
+| `toString()` | `cursor(3)`, `selection(2..5)` or `node(image@3)` |
+
+It is named for the editor, as its state and its view are, so a file that
+imports it can still name the DOM's own `Selection`.
+
 | `TextSelection` member | Description |
 |---|---|
 | `TextSelection.create(doc, anchor, head?)` | A selection, both ends snapped to where a cursor can be |
 | `TextSelection.atStart(doc)` | The first cursor position |
-| `anchor`, `head` | Ordered by intent: `anchor` stays put while `head` moves |
-| `from`, `to`, `empty` | The same two numbers ordered by position |
-| `map(doc, mapping, from?)` | Carried across a change; both ends map with `assoc` `1` |
+| `map(doc, mapping, from?)` | Both ends map with `assoc` `1` |
 | `eq(other)` | Both ends equal, so a reversed selection is a different one |
-| `toString()` | `cursor(3)` or `selection(2..5)` |
 
 The constructor is private, so every `TextSelection` has been through
 `create`. Snapping searches outwards for the nearest position in inline
@@ -1140,6 +1402,41 @@ content, and a stray head is snapped towards the anchor, so a selection shrinks
 onto what it covers rather than growing past it. A document with no text
 position at all is legal — `doc(horizontal_rule)` satisfies the starter schema —
 and gets a clamped position rather than an exception.
+
+### Node selections
+
+| `NodeSelection` member | Description |
+|---|---|
+| `NodeSelection.create(doc, pos)` | Select the node starting at `pos`. A `RangeError` where none starts, where text is cut there, or where the type is not `selectable` |
+| `node` | The node selected |
+| `anchor`, `head` | The positions before and after it |
+| `map(doc, mapping, from?)` | Carried across a change: the start leans right and the end left, so text typed against either edge stays outside. A selectable node still filling the mapped range stays selected; otherwise the result is a text selection over whatever replaced it — a caret where it was, when nothing did |
+
+Its constructor is private, as a text selection's is. An image, a rule, and any
+node of a type that does not say `selectable: false` can be selected, a
+paragraph included; the arrow keys and a click only ever select an atom.
+Because `from` and `to` are the node's two edges, every command that replaces
+the selection replaces the node — see [what the commands
+do](#commands) — with nothing written for node selections in particular.
+
+```ts
+findSelection(doc: Node, pos: number, dir: -1 | 1): EditorSelection | null
+selectHorizontally(tr: EditorTransaction, dir: -1 | 1): boolean
+selectVertically(tr: EditorTransaction, dir: -1 | 1): boolean
+```
+
+`findSelection` is the first place a selection can go from `pos` in a
+direction: a caret in the first inline content met, or the first selectable
+atom met before any, entering containers on the way; `null` at the edge of the
+document. `selectHorizontally` and `selectVertically` are the arrow keys as
+commands — `dir` is a direction in the document, which the view works out from
+the key and the direction the text runs — and decline, changing nothing,
+wherever the browser's own caret movement is the right answer. [Node selections
+on screen](#node-selections-on-screen) has the table.
+
+The history does not keep one: it restores the selection an edit began from
+with `TextSelection.create`, so undoing the deletion of a selected node brings
+the node back with a text range over it rather than the node selected.
 
 | `EditorTransaction` member | Description |
 |---|---|
@@ -1154,7 +1451,7 @@ Both ranges are a `ChangedRange`, `{ from, to }`. `new EditorTransaction(state)`
 is what `state.tr()` returns.
 
 `setSelection` is for what mapping cannot answer: moving the caret with no edit
-at all, which is how the view reports a click; putting a remembered selection
+at all, which is how the view reports a click and how the arrows select a node; putting a remembered selection
 back, which is how the history restores one; and a step that replaced a range
 the cursor was strictly inside, so the map's only answer is an edge — splitting
 a paragraph is the common case. The two ranges look redundant and are not — the
@@ -1210,9 +1507,12 @@ something from it — a word count, an enabled undo button — sets a signal fro
 The package is a core, and the distance between it and something to put in
 front of a writer is large. In roughly the order a product meets them:
 
-- **Edits across blocks.** A replacement whose ends are in different parents is
-  refused, so a selection spanning two paragraphs cannot be deleted, typed over
-  or pasted into, and a mark cannot be added across it in one step.
+- **Edits across depths, and steps that move content.** A selection from a
+  paragraph into a list item cannot be deleted, return over a selection that
+  spans blocks does nothing, and a mark across blocks is one step per block.
+  There is no step that wraps or lifts a range while keeping the positions in
+  it, so nothing lifts an item out of its list, and a paste never pulls the
+  text after it up into its last block.
 - **Formatting and a keymap.** Mark steps exist; no command toggles a mark, and
   no key is bound to anything but undo and redo.
 - **Block commands.** Turning a paragraph into a heading, wrapping in a list or a
@@ -1226,11 +1526,16 @@ front of a writer is large. In roughly the order a product meets them:
   rather than assumed.
 - **A read-only mode that can be switched.** `editable` is fixed when the view
   is built.
-- **A rich clipboard and a DOM parser.** A paste is flattened to text, and the
-  view renders a document but cannot read one back out of HTML, so there is no
-  loading from markup either. Both need slices with open ends.
+- **The rest of the clipboard.** A paste keeps its structure; nothing copies or
+  cuts a selection out as HTML, a word processor's inline styles are not
+  cleaned up, and a whole document cannot be loaded from markup.
 - **Serialisation.** There is no JSON form of a document.
-- **Node selection.** An image or a rule cannot be selected as one object.
+- **The rest of node selection.** Up and down arrive at a rule only by the
+  browser's own caret, which goes past it, and an undo puts back a text range
+  over a node it restores rather than the node selected. Typing over a
+  selected rule, and deleting one that is all its parent holds, are declined
+  by commands that replace a range exactly; fitting the replacement, as a
+  paste does, would put a paragraph there.
 - **Decorations, node views, drag handles and collaborative cursors.** None of
   them can be added convincingly before there is something to decorate.
 - **Collaboration.** The model can accept it: documents are immutable, steps

@@ -37,15 +37,31 @@
  *
  * What the view deliberately does not do is decorations, node views,
  * collaborative cursors and drag and drop; none of them can be added
- * convincingly before there is something to decorate. Nothing binds
- * `EditorHistory` to a keystroke either — a host records its transactions and
- * asks for an undo, and the `historyUndo` input type is still declined, since
- * which surface owns that shortcut is the host's decision rather than this
- * package's. There is no rich clipboard: a paste is flattened to text, since a
- * paste that kept its structure needs a DOM parser and slices with open ends,
- * and for the same reason the view renders a document but does not parse one
- * back out of the DOM. A replacement whose ends sit in different parents is
- * refused rather than half-done, for the reason `step.ts` gives.
+ * convincingly before there is something to decorate. It does keep the undo
+ * history: every state shown passes through the view, so the view records
+ * each one, and the platform's undo keys and the `historyUndo` and
+ * `historyRedo` input types reach that history with nothing wired by the host
+ * — a browser never reports an undo of edits it was not allowed to make, so
+ * input.ts reads the keys itself.
+ *
+ * Slices have open ends, so a replacement whose ends sit in different parents
+ * is joined rather than refused — slice.ts has the join rule, the fitting that
+ * makes a slice line up, and what is still refused. On that sits a paste that
+ * keeps its structure: clipboard.ts reads pasted HTML through the schema into a
+ * slice, and the view takes it off the `paste` event and fits it in at the
+ * selection, while a paste of plain text arrives as text as it did. Copying
+ * out as HTML, and loading a whole document from markup, are not built.
+ *
+ * A selection is a text range or one node selected whole — selection.ts. Both
+ * are mapped, never recomputed; the arrow keys step onto an image or a rule and
+ * off it, a click selects one, and the delete keys remove one in one step
+ * wherever the schema lets its place be empty.
+ *
+ * What a toolbar asks for is format.ts: a mark toggled over the selection's
+ * text, a block's type changed, blocks wrapped in a quote or a list and
+ * lifted out again — and, for each, whether its button is down. Those are
+ * commands like the rest, named by a button rather than reached by typing,
+ * and the block ones carry the selection across the nodes they rebuild.
  */
 
 export { Mark, sameAttrs, type Attrs } from './mark.js';
@@ -74,17 +90,25 @@ export {
 } from './step.js';
 export { basicSchema } from './basic.js';
 export { EditorState, EditorTransaction, TextSelection, type ChangedRange } from './state.js';
+export { EditorSelection, NodeSelection, type SelectionJSON } from './selection.js';
+export { findSelection, selectHorizontally, selectVertically } from './selection.js';
+export { fitSlice, joinSlice, placeSlice, type FitResult } from './slice.js';
+export { basicParseRules, insertSlice, parseSlice, pasteHTML } from './clipboard.js';
+export { type ParseOptions, type ParseRule, type ParseRules } from './clipboard.js';
 export { EditorHistory, type HistoryOptions } from './history.js';
 export {
   deleteBackward,
   deleteForward,
   deleteSelection,
   deleteWordBackward,
+  deleteWordForward,
+  insertHardBreak,
   insertParagraph,
   insertPlainText,
   insertText,
 } from './commands.js';
 export { EditorInput, applyInputType, type EditorInputHost } from './input.js';
+export { blockActive, listActive, markActive, setBlockType, toggleList, toggleMark, toggleWrap, wrapActive } from './format.js';
 export {
   EditorView,
   basicMarkRenderers,

@@ -42,6 +42,7 @@
  */
 
 import { Mark, type Attrs } from './mark.js';
+import { resolve } from './position.js';
 import type { NodeType } from './schema.js';
 
 /**
@@ -422,6 +423,27 @@ export class Node {
     return this.copy(this.content.cut(from, end));
   }
 
+  /**
+   * What lies between two positions in this node, as a slice that remembers
+   * how far each end was cut open.
+   *
+   * The content is cut at the deepest node holding both ends, and each end is
+   * open by however far its position sits below that node — so the slice
+   * between the middle of one paragraph and the middle of the next is two
+   * paragraphs open by one at each end, and putting it back joins each half to
+   * the text it came from. That is what lets a replacement across parents be
+   * inverted at all: what it removed is a slice of this shape.
+   */
+  slice(from: number, to: number = this.content.size): Slice {
+    if (from === to) return Slice.empty;
+    const $from = resolve(this, from);
+    const $to = resolve(this, to);
+    const depth = $from.sharedDepth(to);
+    const start = $from.start(depth);
+    const content = $from.node(depth).content.cut($from.pos - start, $to.pos - start);
+    return new Slice(content, $from.depth - depth, $to.depth - depth);
+  }
+
   nodesBetween(
     from: number,
     to: number,
@@ -494,6 +516,22 @@ export class Slice {
   }
 
   static readonly empty: Slice = new Slice(Fragment.empty, 0, 0);
+
+  /**
+   * A fragment as a slice open as far as its first and last nodes go.
+   *
+   * What a parsed paste is: nothing says where it was cut from, so it is taken
+   * to be open all the way to the text at each end, and the fitting in
+   * slice.ts closes whatever the place it lands cannot join. Opening stops at
+   * a leaf, which has no inside to open into.
+   */
+  static maxOpen(fragment: Fragment): Slice {
+    let openStart = 0;
+    let openEnd = 0;
+    for (let node = fragment.firstChild; node && !node.isLeaf; node = node.firstChild) openStart++;
+    for (let node = fragment.lastChild; node && !node.isLeaf; node = node.lastChild) openEnd++;
+    return new Slice(fragment, openStart, openEnd);
+  }
 
   /** Positions this slice inserts, which is what a step map's new size is. */
   get size(): number {

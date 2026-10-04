@@ -195,12 +195,21 @@ describe('replacing content', () => {
     expect(textOf(back.ok ? back.doc : before)).toBe('abcd');
   });
 
-  it('refuses a replacement across two parents rather than half-doing it', () => {
+  it('applies a replacement across two parents, joining what is left of them', () => {
+    // Refused outright before slices had open ends; slice.test.ts holds the
+    // join rule this follows, and the cases it still refuses.
     const before = doc(p(t('ab')), p(t('cd')));
     const result = new ReplaceStep(2, 6, Slice.empty).apply(before);
 
+    expect(result.ok && String(result.doc)).toBe('doc(paragraph("ad"))');
+  });
+
+  it('refuses a replacement whose ends are at depths its slice does not make up', () => {
+    const before = doc(p(t('ab')), s.node('blockquote', null, [p(t('cd'))]));
+    const result = new ReplaceStep(2, 7, Slice.empty).apply(before);
+
     expect(result.ok).toBe(false);
-    expect(result.ok === false && result.reason).toMatch(/different parents/);
+    expect(result.ok === false && result.reason).toMatch(/depths 1 and 2/);
   });
 
   it('refuses content the parent cannot hold', () => {
@@ -212,7 +221,7 @@ describe('replacing content', () => {
   it('leaves the transaction untouched when a step is refused', () => {
     const tr = new Transaction(doc(p(t('ab')), p(t('cd'))));
     const was = tr.doc;
-    expect(tr.replace(2, 6, Slice.empty).ok).toBe(false);
+    expect(tr.replace(2, 2, sliceOf(p(t('x')))).ok).toBe(false);
     expect(tr.doc).toBe(was);
     expect(tr.changed).toBe(false);
   });

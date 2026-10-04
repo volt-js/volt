@@ -22,6 +22,8 @@ import {
   deleteForward,
   deleteSelection,
   deleteWordBackward,
+  deleteWordForward,
+  insertHardBreak,
   insertParagraph,
   insertPlainText,
   insertText,
@@ -38,6 +40,7 @@ const t = (text: string, ...marks: Mark[]) => s.text(text, marks);
 const em = s.mark('em');
 const rule = () => s.node('horizontal_rule');
 const image = () => s.node('image', { src: 'a.png' });
+const br = () => s.node('hard_break');
 
 const textOf = (node: Node) => node.textBetween(0, node.content.size, '|');
 
@@ -62,12 +65,25 @@ describe('deleting a selection', () => {
     expect(tr.doc).toBe(was);
   });
 
-  it('declines a selection whose ends are in different blocks', () => {
-    // The step layer refuses a replacement across parents, and a command that
-    // half-did it would be worse than one that says it cannot.
+  it('deletes a selection whose ends are in different blocks, joining what is left', () => {
+    // The step layer joins a replacement across parents, so the command needs
+    // no case of its own for it: the two halves become one block, and both
+    // ends of the selection map to the join.
     const tr = at(doc(p(t('ab')), p(t('cd'))), 2, 6);
+    expect(deleteSelection(tr)).toBe(true);
+    expect(textOf(tr.doc)).toBe('ad');
+    expect(tr.selection.empty).toBe(true);
+    expect(tr.selection.anchor).toBe(2);
+  });
+
+  it('declines a selection whose ends are at depths a deletion cannot join', () => {
+    // From a paragraph into a list item's paragraph: the join rule refuses
+    // ends at different depths, and a command that half-did it would be worse
+    // than one that says it cannot.
+    const list = s.node('bullet_list', null, [s.node('list_item', null, [p(t('cd'))])]);
+    const tr = at(doc(p(t('ab')), list), 2, 8);
     expect(deleteSelection(tr)).toBe(false);
-    expect(textOf(tr.doc)).toBe('ab|cd');
+    expect(String(tr.doc)).toBe('doc(paragraph("ab"), bullet_list(list_item(paragraph("cd"))))');
   });
 });
 
@@ -425,5 +441,269 @@ describe('inserting plain text', () => {
     expect(insertPlainText(tr, '')).toBe(false);
     expect(tr.changed).toBe(false);
     expect(tr.historyClosed).toBe(false);
+  });
+});
+
+describe('inserting a hard break', () => {
+  it('puts a break at the cursor and leaves the cursor after it, in the same block', () => {
+    const tr = at(doc(p(t('abcd'))), 3);
+    expect(insertHardBreak(tr)).toBe(true);
+    expect(String(tr.doc)).toBe('doc(paragraph("ab", hard_break, "cd"))');
+    // Never a split: one paragraph before, one after.
+    expect(tr.doc.childCount).toBe(1);
+    expect(tr.selection.anchor).toBe(4);
+    expect(tr.selection.empty).toBe(true);
+  });
+
+  it('replaces a selection and collapses after the break, not over it', () => {
+    const tr = at(doc(p(t('abcd'))), 2, 4);
+    expect(insertHardBreak(tr)).toBe(true);
+    expect(String(tr.doc)).toBe('doc(paragraph("a", hard_break, "d"))');
+    expect(tr.selection.empty).toBe(true);
+    expect(tr.selection.anchor).toBe(3);
+  });
+
+  it('carries the marks of the position, so typing after it stays bold', () => {
+    // A break that dropped the marks would end the bold run: the next
+    // character reads its marks from the node before it, which is the break.
+    const tr = at(doc(p(t('ab', em))), 3);
+    expect(insertHardBreak(tr)).toBe(true);
+    expect(tr.doc.child(0).child(1).marks.map((mark) => mark.type.name)).toEqual(['em']);
+    expect(insertText(tr, 'c')).toBe(true);
+    expect(String(tr.doc)).toBe('doc(paragraph(em("ab"), hard_break, em("c")))');
+  });
+
+  it('ends the undo unit, as return does', () => {
+    const tr = at(doc(p(t('ab'))), 3);
+    expect(insertHardBreak(tr)).toBe(true);
+    expect(tr.historyClosed).toBe(true);
+  });
+
+  it('declines in a block whose content is text only, and leaves the transaction unchanged', () => {
+    const tr = at(doc(code(t('ab'))), 3);
+    expect(insertHardBreak(tr)).toBe(false);
+    expect(tr.changed).toBe(false);
+    expect(tr.historyClosed).toBe(false);
+  });
+
+  it('declines in a schema that has no hard break', () => {
+    const plain = new Schema({
+      nodes: { doc: { content: 'paragraph+' }, paragraph: { content: 'text*' }, text: {} },
+    });
+    const document = plain.node('doc', null, [plain.node('paragraph', null, [plain.text('ab')])]);
+    const tr = EditorState.create(document, TextSelection.create(document, 3)).tr();
+    expect(insertHardBreak(tr)).toBe(false);
+    expect(tr.changed).toBe(false);
+  });
+
+  it('declines where there is no inline content', () => {
+    const tr = at(doc(rule()), 0);
+    expect(insertHardBreak(tr)).toBe(false);
+    expect(String(tr.doc)).toBe('doc(horizontal_rule)');
+  });
+});
+
+describe('deleting a hard break', () => {
+  it('is one backspace, like a character', () => {
+    const tr = at(doc(p(t('a'), br(), t('b'))), 3);
+    expect(deleteBackward(tr)).toBe(true);
+    expect(String(tr.doc)).toBe('doc(paragraph("ab"))');
+    expect(tr.selection.anchor).toBe(2);
+  });
+
+  it('is one forward delete, like a character', () => {
+    const tr = at(doc(p(t('a'), br(), t('b'))), 2);
+    expect(deleteForward(tr)).toBe(true);
+    expect(String(tr.doc)).toBe('doc(paragraph("ab"))');
+    expect(tr.selection.anchor).toBe(2);
+  });
+
+  it('is where a word delete stops, in either direction', () => {
+    const backward = at(doc(p(t('ab'), br(), t('cd'))), 6);
+    expect(deleteWordBackward(backward)).toBe(true);
+    expect(String(backward.doc)).toBe('doc(paragraph("ab", hard_break))');
+
+    const forward = at(doc(p(t('ab'), br(), t('cd'))), 1);
+    expect(deleteWordForward(forward)).toBe(true);
+    expect(String(forward.doc)).toBe('doc(paragraph(hard_break, "cd"))');
+  });
+});
+
+describe('deleting a word forwards', () => {
+  it('takes the word after the cursor and leaves the space behind it', () => {
+    const tr = at(doc(p(t('hello world'))), 1);
+    expect(deleteWordForward(tr)).toBe(true);
+    expect(textOf(tr.doc)).toBe(' world');
+    expect(tr.selection.anchor).toBe(1);
+  });
+
+  it('takes the leading space with the word after it, so repeats move a word at a time', () => {
+    const tr = at(doc(p(t('hello world'))), 6);
+    expect(deleteWordForward(tr)).toBe(true);
+    expect(textOf(tr.doc)).toBe('hello');
+    expect(tr.selection.anchor).toBe(6);
+  });
+
+  it('treats a run of punctuation as its own word', () => {
+    const tr = at(doc(p(t('...a'))), 1);
+    expect(deleteWordForward(tr)).toBe(true);
+    expect(textOf(tr.doc)).toBe('a');
+  });
+
+  it('takes a letter with a combining accent as one letter of the word', () => {
+    const tr = at(doc(p(t('cafe\u0301 au'))), 1);
+    expect(deleteWordForward(tr)).toBe(true);
+    expect(textOf(tr.doc)).toBe(' au');
+  });
+
+  it('takes a letter outside the basic plane as one letter of the word', () => {
+    const tr = at(doc(p(t('\u{1D49C}ab x'))), 1);
+    expect(deleteWordForward(tr)).toBe(true);
+    expect(textOf(tr.doc)).toBe(' x');
+  });
+
+  it('walks across a mark boundary, since a styled word is still one word', () => {
+    const tr = at(doc(p(t('fo', em), t('o bar'))), 1);
+    expect(deleteWordForward(tr)).toBe(true);
+    expect(textOf(tr.doc)).toBe(' bar');
+  });
+
+  it('stops at an inline leaf rather than swallowing it as part of the word', () => {
+    const tr = at(doc(p(t('ab'), image(), t('cd'))), 1);
+    expect(deleteWordForward(tr)).toBe(true);
+    expect(String(tr.doc)).toBe('doc(paragraph(image, "cd"))');
+  });
+
+  it('falls back to a plain forward delete when there is no text after the cursor', () => {
+    const tr = at(doc(p(t('ab')), p(t('cd'))), 3);
+    expect(deleteWordForward(tr)).toBe(true);
+    expect(String(tr.doc)).toBe('doc(paragraph("abcd"))');
+    expect(tr.selection.anchor).toBe(3);
+  });
+
+  it('deletes the whole selection when there is one', () => {
+    // Not a word's span, so taking the word after the selection's start
+    // instead would leave a different document.
+    const tr = at(doc(p(t('hello world'))), 2, 9);
+    expect(deleteWordForward(tr)).toBe(true);
+    expect(textOf(tr.doc)).toBe('hrld');
+    expect(tr.selection.anchor).toBe(2);
+  });
+
+  it('declines at the very end of the document', () => {
+    const tr = at(doc(p(t('ab'))), 3);
+    expect(deleteWordForward(tr)).toBe(false);
+    expect(tr.changed).toBe(false);
+  });
+});
+
+describe('where a word ends, in either direction', () => {
+  // The boundaries are the segmenter's word boundaries rather than a class of
+  // characters. A class cannot see that an apostrophe inside a word belongs to
+  // it, and it cannot see a word at all in a script written without spaces:
+  // every kana and ideograph is a letter, so a whole sentence is one "word".
+
+  it('takes a contraction as one word, apostrophe and all', () => {
+    const backward = at(doc(p(t("it don't"))), 9);
+    expect(deleteWordBackward(backward)).toBe(true);
+    expect(textOf(backward.doc)).toBe('it ');
+
+    const forward = at(doc(p(t("don't stop"))), 1);
+    expect(deleteWordForward(forward)).toBe(true);
+    expect(textOf(forward.doc)).toBe(' stop');
+  });
+
+  it('takes one word of a sentence written without spaces, not the sentence', () => {
+    const sentence = '日本語を勉強します';
+
+    const backward = at(doc(p(t(sentence))), 1 + sentence.length);
+    expect(deleteWordBackward(backward)).toBe(true);
+    expect(textOf(backward.doc)).toBe('日本語を勉強し');
+
+    const forward = at(doc(p(t(sentence))), 1);
+    expect(deleteWordForward(forward)).toBe(true);
+    expect(textOf(forward.doc)).toBe('を勉強します');
+  });
+
+  it('takes a number with its decimal point as one word', () => {
+    const backward = at(doc(p(t('pi 3.14'))), 8);
+    expect(deleteWordBackward(backward)).toBe(true);
+    expect(textOf(backward.doc)).toBe('pi ');
+
+    const forward = at(doc(p(t('3.14 pi'))), 1);
+    expect(deleteWordForward(forward)).toBe(true);
+    expect(textOf(forward.doc)).toBe(' pi');
+  });
+
+  it('takes a run of emoji as one run, the way it takes punctuation', () => {
+    const backward = at(doc(p(t('ok 👍👍'))), 8);
+    expect(deleteWordBackward(backward)).toBe(true);
+    expect(textOf(backward.doc)).toBe('ok ');
+
+    const forward = at(doc(p(t('👍👍 ok'))), 1);
+    expect(deleteWordForward(forward)).toBe(true);
+    expect(textOf(forward.doc)).toBe(' ok');
+  });
+
+  it('removes an inline leaf right before the cursor as one unit, as backspace would', () => {
+    const tr = at(doc(p(t('ab'), br(), t('cd'))), 4);
+    expect(deleteWordBackward(tr)).toBe(true);
+    expect(String(tr.doc)).toBe('doc(paragraph("abcd"))');
+    expect(tr.selection.anchor).toBe(3);
+  });
+
+  it('removes an inline leaf right after the cursor as one unit, as delete would', () => {
+    const tr = at(doc(p(t('ab'), br(), t('cd'))), 3);
+    expect(deleteWordForward(tr)).toBe(true);
+    expect(String(tr.doc)).toBe('doc(paragraph("abcd"))');
+    expect(tr.selection.anchor).toBe(3);
+  });
+
+  it('joins the next block at the end of a text block, past whitespace that is not there', () => {
+    // Nothing after the cursor in its own block: delete's answer, a join.
+    const tr = at(doc(p(t('ab')), p(t(' cd'))), 3);
+    expect(deleteWordForward(tr)).toBe(true);
+    expect(String(tr.doc)).toBe('doc(paragraph("ab cd"))');
+    expect(tr.selection.anchor).toBe(3);
+  });
+});
+
+describe('the package entry', () => {
+  it('exports the line break and the forward word delete beside the other commands', async () => {
+    const entry = await import('../src/index.ts');
+    expect(entry.insertHardBreak).toBe(insertHardBreak);
+    expect(entry.deleteWordForward).toBe(deleteWordForward);
+  });
+});
+
+describe('word boundaries in right-to-left text', () => {
+  // Deletion runs in the order text is stored, not the order it is drawn, so
+  // backwards is towards the start of the string whichever way it reads. What
+  // a class of characters gets wrong here is the punctuation that belongs to a
+  // word: the gershayim of a Hebrew acronym is punctuation by category and a
+  // letter by use.
+
+  it('takes a Hebrew acronym with its gershayim as one word, in either direction', () => {
+    const text = 'צבא צה״ל';
+    const backward = at(doc(p(t(text))), 1 + text.length);
+    expect(deleteWordBackward(backward)).toBe(true);
+    expect(textOf(backward.doc)).toBe('צבא ');
+
+    const forward = at(doc(p(t('צה״ל צבא'))), 1);
+    expect(deleteWordForward(forward)).toBe(true);
+    expect(textOf(forward.doc)).toBe(' צבא');
+  });
+
+  it('takes an Arabic word with its vowel marks as one word, and the Arabic comma after it as its own', () => {
+    const text = 'كَتَبَ، الوَلَدُ';
+    const forward = at(doc(p(t(text))), 1);
+    expect(deleteWordForward(forward)).toBe(true);
+    expect(textOf(forward.doc)).toBe('، الوَلَدُ');
+    expect(deleteWordForward(forward)).toBe(true);
+    expect(textOf(forward.doc)).toBe(' الوَلَدُ');
+
+    const backward = at(doc(p(t(text))), 1 + text.length);
+    expect(deleteWordBackward(backward)).toBe(true);
+    expect(textOf(backward.doc)).toBe('كَتَبَ، ');
   });
 });

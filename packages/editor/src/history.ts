@@ -110,6 +110,17 @@ export class EditorHistory {
   private readonly mine = new WeakMap<EditorTransaction, Direction>();
 
   /**
+   * Every transaction already taken note of.
+   *
+   * A view that keeps a history records what it shows, and a host that owns
+   * dispatch may record the same transaction itself. The second report is the
+   * same edit, not a change this history never saw — and treated as one, it
+   * would find the document already moved past the transaction's start and
+   * forget everything.
+   */
+  private readonly seen = new WeakSet<EditorTransaction>();
+
+  /**
    * The document the last recorded transaction produced.
    *
    * The recorded steps are applied at the positions they were written at, not
@@ -149,7 +160,7 @@ export class EditorHistory {
    *
    * Called for every transaction, including the ones `undo` and `redo` handed
    * out — those move a unit from one stack to the other instead of being
-   * recorded as new edits.
+   * recorded as new edits. A transaction handed over a second time is ignored.
    *
    * A transaction that starts from some other document than the last one
    * recorded means something changed in between that this history never saw.
@@ -158,6 +169,8 @@ export class EditorHistory {
    * the wrong text — so it is forgotten, and the history starts again here.
    */
   record(tr: EditorTransaction): void {
+    if (this.seen.has(tr)) return;
+    this.seen.add(tr);
     const at = this.now();
 
     if (this.last && !tr.startDoc.eq(this.last)) this.clear();

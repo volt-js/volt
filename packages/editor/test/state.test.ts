@@ -256,11 +256,14 @@ describe('a transaction carrying its selection', () => {
   });
 
   it('is unchanged by a step it refused', () => {
+    // A paragraph cannot hold a paragraph, so this replacement is refused —
+    // a replacement across the two paragraphs is not, since slices with open
+    // ends exist.
     const d = doc(p(t('ab')), p(t('cd')));
     const state = EditorState.create(d, TextSelection.create(d, 2));
     const tr = state.tr();
 
-    expect(tr.replace(2, 6, Slice.empty).ok).toBe(false);
+    expect(tr.replace(2, 2, sliceOf(p(t('x')))).ok).toBe(false);
     expect(tr.doc).toBe(d);
     expect(tr.selection.anchor).toBe(2);
     expect(tr.changed).toBe(false);

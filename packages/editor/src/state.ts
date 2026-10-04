@@ -19,110 +19,18 @@
  * "an edge of the replacement". Splitting a paragraph is the common case, and
  * commands.ts explains it where it happens.
  *
- * Only text selections exist here. A node selection — the whole image
- * highlighted as one object — is a view-level affordance the view does not
- * offer yet; adding the class before it does would mean a second selection
- * type that nothing constructs and no command handles.
+ * A selection is either kind selection.ts defines — a text range, or one node
+ * selected whole — and both are mapped by the same rule. `TextSelection` is
+ * re-exported from here because this is where it was first defined, and every
+ * caller that imports it from here keeps working.
  */
 
 import type { Node } from './node.js';
-import { resolve } from './position.js';
+import { EditorSelection, NodeSelection, TextSelection } from './selection.js';
 import { AddMarkStep, RemoveMarkStep, ReplaceStep, Transaction } from './step.js';
-import type { Assoc, Mapping, Step, StepResult } from './step.js';
+import type { Step, StepResult } from './step.js';
 
-/** Whether a cursor can sit at `pos` — that is, whether it is in inline content. */
-function isTextPos(doc: Node, pos: number): boolean {
-  if (pos < 0 || pos > doc.content.size) return false;
-  return resolve(doc, pos).parent.inlineContent;
-}
-
-/**
- * The closest position to `pos` a text cursor can occupy, searching outwards
- * and preferring the direction `bias` names.
- *
- * A mapped position can land somewhere no cursor belongs — between two list
- * items, say, after the paragraph that was there is deleted — and the honest
- * answer is the nearest place it can be rather than an exception in the middle
- * of applying a change.
- *
- * A document with no text position at all is legal (`doc(horizontal_rule)`
- * satisfies the basic schema), so this returns the clamped position rather
- * than refusing. Every command checks the parent it landed in before touching
- * it, which it would have to do anyway.
- */
-function nearestTextPos(doc: Node, pos: number, bias: Assoc): number {
-  const size = doc.content.size;
-  const start = Math.max(0, Math.min(size, pos));
-  for (let distance = 0; distance <= size; distance++) {
-    const ahead = start + distance * bias;
-    const behind = start - distance * bias;
-    if (isTextPos(doc, ahead)) return ahead;
-    if (isTextPos(doc, behind)) return behind;
-  }
-  return start;
-}
-
-/**
- * A selection between two positions in inline content.
- *
- * `anchor` is the end that stays put while a selection is extended and `head`
- * is the end that moves, so the pair is ordered by intent rather than by
- * position; `from` and `to` are the same two numbers ordered by position,
- * which is what every command wants.
- */
-export class TextSelection {
-  readonly anchor: number;
-  readonly head: number;
-
-  private constructor(anchor: number, head: number) {
-    this.anchor = anchor;
-    this.head = head;
-    Object.freeze(this);
-  }
-
-  /** A selection in `doc`, with both ends snapped to where a cursor can be. */
-  static create(doc: Node, anchor: number, head: number = anchor): TextSelection {
-    const at = nearestTextPos(doc, anchor, 1);
-    // The head is snapped towards the anchor, so a selection whose head landed
-    // in a gap shrinks onto the content it covers rather than growing past it.
-    return new TextSelection(at, head === anchor ? at : nearestTextPos(doc, head, head < at ? 1 : -1));
-  }
-
-  static atStart(doc: Node): TextSelection {
-    return TextSelection.create(doc, 0);
-  }
-
-  get from(): number {
-    return Math.min(this.anchor, this.head);
-  }
-
-  get to(): number {
-    return Math.max(this.anchor, this.head);
-  }
-
-  get empty(): boolean {
-    return this.anchor === this.head;
-  }
-
-  eq(other: TextSelection): boolean {
-    return this.anchor === other.anchor && this.head === other.head;
-  }
-
-  /**
-   * This selection, carried across a change.
-   *
-   * Both ends map with `assoc` 1 — they belong after content inserted at them,
-   * which is what makes the cursor follow typed text without anyone computing
-   * where the text ended up.
-   */
-  map(doc: Node, mapping: Mapping, from = 0): TextSelection {
-    return TextSelection.create(doc, mapping.map(this.anchor, 1, from), mapping.map(this.head, 1, from));
-  }
-
-  toString(): string {
-    return this.empty ? `cursor(${this.anchor})` : `selection(${this.anchor}..${this.head})`;
-  }
-}
+export { TextSelection };
 
 /** A range of positions a transaction rewrote. */
 export interface ChangedRange {
@@ -147,9 +55,9 @@ export interface ChangedRange {
 export class EditorTransaction extends Transaction {
   /** The document this began from — what `EditorState.apply` checks itself against. */
   readonly startDoc: Node;
-  readonly selectionBefore: TextSelection;
+  readonly selectionBefore: EditorSelection;
 
-  private selectionNow: TextSelection;
+  private selectionNow: EditorSelection;
   private closed = false;
   private first: ChangedRange | null = null;
   private range: ChangedRange | null = null;
@@ -161,7 +69,7 @@ export class EditorTransaction extends Transaction {
     this.selectionNow = state.selection;
   }
 
-  get selection(): TextSelection {
+  get selection(): EditorSelection {
     return this.selectionNow;
   }
 
@@ -169,7 +77,7 @@ export class EditorTransaction extends Transaction {
     return !this.selectionNow.eq(this.selectionBefore);
   }
 
-  setSelection(selection: TextSelection): this {
+  setSelection(selection: EditorSelection): this {
     this.selectionNow = selection;
     return this;
   }
@@ -243,9 +151,9 @@ export class EditorTransaction extends Transaction {
  */
 export class EditorState {
   readonly doc: Node;
-  readonly selection: TextSelection;
+  readonly selection: EditorSelection;
 
-  private constructor(doc: Node, selection: TextSelection) {
+  private constructor(doc: Node, selection: EditorSelection) {
     this.doc = doc;
     this.selection = selection;
     Object.freeze(this);
@@ -259,11 +167,13 @@ export class EditorState {
    * this document was made for another, and is refused for the reason `apply`
    * refuses a transaction. Kept as given, it could point past the end of this
    * document, or sit on a block boundary where no cursor belongs, and the
-   * first command to use it would go wrong far from the mistake.
+   * first command to use it would go wrong far from the mistake. A node
+   * selection is held to the same rule, and to holding the node this document
+   * has at its position.
    */
-  static create(doc: Node, selection?: TextSelection): EditorState {
+  static create(doc: Node, selection?: EditorSelection): EditorState {
     if (!selection) return new EditorState(doc, TextSelection.atStart(doc));
-    if (!TextSelection.create(doc, selection.anchor, selection.head).eq(selection)) {
+    if (!madeFor(doc, selection)) {
       throw new RangeError(`[volt] ${selection} was made for a different document`);
     }
     return new EditorState(doc, selection);
@@ -292,4 +202,17 @@ export class EditorState {
     if (tr.doc === this.doc && !tr.selectionChanged) return this;
     return new EditorState(tr.doc, tr.selection);
   }
+}
+
+/** Whether `doc` would give back this very selection from its own description. */
+function madeFor(doc: Node, selection: EditorSelection): boolean {
+  let again: EditorSelection;
+  try {
+    again = EditorSelection.fromJSON(doc, selection.toJSON());
+  } catch (error) {
+    if (error instanceof RangeError) return false;
+    throw error;
+  }
+  if (!again.eq(selection)) return false;
+  return !(selection instanceof NodeSelection) || (again as NodeSelection).node.eq(selection.node);
 }

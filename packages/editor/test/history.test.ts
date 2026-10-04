@@ -18,6 +18,7 @@
 import { describe, expect, it } from 'vitest';
 import { basicSchema } from '../src/index.ts';
 import { EditorHistory } from '../src/history.ts';
+import { insertHardBreak, insertParagraph, insertText } from '../src/commands.ts';
 import type { HistoryOptions } from '../src/history.ts';
 import { EditorState, TextSelection } from '../src/state.ts';
 import type { EditorTransaction } from '../src/state.ts';
@@ -592,5 +593,88 @@ describe('the stack itself', () => {
     expect(String(editor.state.doc)).toBe('doc(heading("ONE"), paragraph("two"))');
     editor.undo();
     expect(String(editor.state.doc)).toBe('doc(paragraph("one"), paragraph("two"))');
+  });
+});
+
+describe('what the commands close', () => {
+  // Every edit here is one millisecond after the last and adjacent to it, so
+  // nothing but the command's own `closeHistory` separates the units.
+  it('undoes the typing after a return without the typing before it', () => {
+    const editor = session(doc(p()), 1);
+
+    editor.at(0);
+    editor.edit((tr) => void insertText(tr, 'ab'));
+    editor.at(1);
+    editor.edit((tr) => void insertParagraph(tr));
+    editor.at(2);
+    editor.edit((tr) => void insertText(tr, 'cd'));
+
+    expect(String(editor.state.doc)).toBe('doc(paragraph("ab"), paragraph("cd"))');
+    expect(editor.history.undoDepth).toBe(3);
+
+    editor.undo();
+    expect(String(editor.state.doc)).toBe('doc(paragraph("ab"), paragraph)');
+    expect(editor.selection.anchor).toBe(5);
+
+    editor.undo();
+    expect(String(editor.state.doc)).toBe('doc(paragraph("ab"))');
+    expect(editor.selection.anchor).toBe(3);
+  });
+
+  it('undoes the typing after a line break without the typing before it', () => {
+    const editor = session(doc(p()), 1);
+
+    editor.at(0);
+    editor.edit((tr) => void insertText(tr, 'ab'));
+    editor.at(1);
+    editor.edit((tr) => void insertHardBreak(tr));
+    editor.at(2);
+    editor.edit((tr) => void insertText(tr, 'cd'));
+
+    expect(String(editor.state.doc)).toBe('doc(paragraph("ab", hard_break, "cd"))');
+    expect(editor.history.undoDepth).toBe(3);
+
+    editor.undo();
+    expect(String(editor.state.doc)).toBe('doc(paragraph("ab", hard_break))');
+    editor.undo();
+    expect(String(editor.state.doc)).toBe('doc(paragraph("ab"))');
+  });
+});
+
+describe('recording from two places', () => {
+  // A view that keeps a history records what it shows, and a host that owns
+  // dispatch may record the same transaction as well. The second record is
+  // the same edit, not a change the history never saw.
+  it('takes a transaction recorded twice as one edit, and keeps what it held before', () => {
+    const editor = session(doc(p(t('ab'))), 3);
+    editor.at(0);
+    editor.edit((tr) => void tr.insertText(3, 'X'));
+    editor.at(1000);
+    const tr = editor.state.tr();
+    tr.insertText(4, 'Y');
+    editor.apply(tr);
+    editor.history.record(tr);
+
+    expect(editor.history.undoDepth).toBe(2);
+    expect(editor.undo()).toBe(true);
+    expect(editor.text).toBe('abX');
+    expect(editor.undo()).toBe(true);
+    expect(editor.text).toBe('ab');
+  });
+
+  it('moves a unit once for an undo recorded twice', () => {
+    const editor = session(doc(p(t('ab'))), 3);
+    editor.at(0);
+    editor.edit((tr) => void tr.insertText(3, 'X'));
+    editor.at(1000);
+    editor.edit((tr) => void tr.insertText(4, 'Y'));
+
+    const undo = editor.history.undo(editor.state)!;
+    editor.apply(undo);
+    editor.history.record(undo);
+
+    expect(editor.text).toBe('abX');
+    expect(editor.history.undoDepth).toBe(1);
+    expect(editor.history.redoDepth).toBe(1);
   });
 });

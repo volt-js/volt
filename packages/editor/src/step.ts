@@ -26,19 +26,29 @@
  * central authority to order changes. None of those is a change to the
  * document model, which is the thing the roadmap says cannot be retrofitted.
  *
- * **What is deliberately not here.** A replacement whose ends sit in different
- * parents — dragging a selection across a paragraph boundary and dropping
- * structure into it — is refused rather than half-done. Slices with open ends
- * need `Fragment` to join across depths, which the model does not do yet, and a
- * step that silently produced a document violating its schema would be worse
- * than one that says it cannot. `ReplaceStep.apply` returns a failure with a
- * reason, and every caller has to look at it.
+ * **A replacement's ends may sit in different parents.** Deleting from the
+ * middle of one paragraph to the middle of the next joins the two halves; a
+ * slice open at its ends joins each end onto the text it lands beside. That is
+ * the join rule in slice.ts, and it is what `ReplaceStep.apply` is. It is
+ * defined only when the slice's open depths make up the difference between the
+ * depths of the two ends, and a replacement that does not line up is refused
+ * with a reason rather than guessed at — a step that silently produced a
+ * document violating its schema would be worse than one that says it cannot.
+ * Making a slice line up is `fitSlice`'s work, done before a step exists, so
+ * the step itself stays exact: it applies the slice it was given or nothing.
+ *
+ * **What is deliberately not here.** A step that moves content without
+ * replacing it — ProseMirror's `ReplaceAroundStep`, which wraps or lifts a
+ * range and keeps every position inside it — and the steps built on one, such
+ * as lifting a list item out of its list. Every change here is a replacement,
+ * so everything inside what it replaced collapses to an edge when mapped.
  */
 
 import { Fragment, Node, Slice } from './node.js';
 import { Mark } from './mark.js';
 import { resolve } from './position.js';
 import type { ResolvedPos } from './position.js';
+import { joinSlice } from './slice.js';
 
 /**
  * Which side of an insertion a mapped position belongs to.
@@ -247,8 +257,10 @@ export class Mapping {
 /**
  * What applying a step produced, or why it could not be applied.
  *
- * A failure is a step this document refuses: content its schema forbids, ends
- * in different parents, a mark with nothing to change. A position outside the
+ * A failure is a step this document refuses: content its schema forbids, a
+ * slice whose open depths do not line up with the two ends, a join between
+ * nodes that share no content, a mark across parents or with nothing to
+ * change. A position outside the
  * document is not one. `resolve` throws a `RangeError` for it, as it does
  * everywhere else, since the step was not written for this document at all —
  * which a caller trying something else instead would only hide.
@@ -278,12 +290,12 @@ export abstract class Step {
 }
 
 /**
- * Replace the content between two positions.
+ * Replace the content between two positions with a slice.
  *
- * Both ends must resolve into the same parent, for the reason given at the top
- * of this file: joining across depths needs open slices the model cannot build
- * yet, and producing a document that violates the schema would be worse than
- * refusing.
+ * The ends may be in different parents, and the slice may be open: what is
+ * applied is the join rule slice.ts states, which refuses — rather than
+ * guesses at — a slice whose open depths do not make up the difference between
+ * the two ends' depths.
  */
 export class ReplaceStep extends Step {
   readonly from: number;
@@ -300,41 +312,21 @@ export class ReplaceStep extends Step {
   }
 
   apply(doc: Node): StepResult {
-    const $from = resolve(doc, this.from);
-    const $to = resolve(doc, this.to);
-    if (!$from.sameParent($to)) {
-      return {
-        ok: false,
-        reason:
-          'a replacement whose ends are in different parents needs a slice with open ends, ' +
-          'which this model does not build yet',
-      };
-    }
-    if (this.slice.openStart > 0 || this.slice.openEnd > 0) {
-      return { ok: false, reason: 'a slice with open ends cannot be applied yet' };
-    }
-
-    const parent = $from.parent;
-    const replaced = parent.content
-      .cut(0, $from.parentOffset)
-      .append(this.slice.content)
-      .append(parent.content.cut($to.parentOffset));
-
-    if (!parent.type.validContent(replaced)) {
-      return { ok: false, reason: `${parent.type.name} cannot hold that content` };
-    }
-
-    return { ok: true, doc: replaceAt(doc, containerOf($from), parent.copy(replaced)) };
+    return joinSlice(doc, this.from, this.to, this.slice);
   }
 
   getMap(): StepMap {
     return StepMap.replace(this.from, this.to - this.from, this.slice.size);
   }
 
+  /**
+   * The step that puts back what this one removed: a slice of the document it
+   * applied to, open at each end as far as the end was inside a node — which
+   * is exactly what the join rule needs to put each half back onto the text it
+   * was cut from.
+   */
   invert(doc: Node): Step {
-    const $from = resolve(doc, this.from);
-    const removed = $from.parent.content.cut($from.parentOffset, resolve(doc, this.to).parentOffset);
-    return new ReplaceStep(this.from, this.from + this.slice.size, new Slice(removed, 0, 0));
+    return new ReplaceStep(this.from, this.from + this.slice.size, doc.slice(this.from, this.to));
   }
 
   map(mapping: Mapping): Step | null {

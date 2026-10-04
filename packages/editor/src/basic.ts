@@ -15,7 +15,9 @@
  * which is how "no formatting inside code" is expressed structurally rather
  * than by filtering at the input layer. `image` has a required `src`, which
  * makes it un-conjurable by normalisation — deliberately, since an image with
- * no source is not a useful thing to fill a gap with.
+ * no source is not a useful thing to fill a gap with. And `hard_break` is not
+ * `selectable`: an image and a rule are objects the arrow keys stop on, and a
+ * line break is a character they pass.
  */
 
 import { Schema } from './schema.js';
@@ -62,7 +64,7 @@ export const basicSchema: Schema = new Schema({
       attrs: { src: {}, alt: { default: null }, title: { default: null } },
     },
 
-    hard_break: { group: 'inline', inline: true },
+    hard_break: { group: 'inline', inline: true, selectable: false },
   },
 
   marks: {
