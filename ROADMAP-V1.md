@@ -440,8 +440,10 @@ state it shows, so a host wires nothing: the platform's undo and redo keys
 reach it — read as keys, since a browser sends no `historyUndo` for edits it
 was never allowed to make — and so do the `historyUndo` and `historyRedo` input
 types. A click that ends a composition keeps its caret whichever event the
-platform sends first, unless it lands in the block being composed in, where
-the caret goes after the composed text. A composition that reopens text beside
+platform sends first, unless it lands in the block being composed in — over a
+block selected whole, anywhere in the node holding it and the text either side
+of it, which the input method may have written into — where the caret goes
+after the composed text. A composition that reopens text beside
 the caret, as Android keyboards do, is not reconciled: the composed text goes
 where the model's selection is rather than over the range the input method
 chose.
@@ -451,17 +453,23 @@ arrow keys step onto one beside the caret or past the end of a textblock and
 off it again, reading left and right by the direction the text runs, and an
 arrow with nowhere to go keeps a rule at the edge of the document selected; a
 click selects one, and a click during a composition selects it once the
-composition ends; the delete keys remove it in one step, and typing replaces
-a selected image. It is mapped through every change like a text selection,
-with text typed at either edge kept outside it, and prints, serialises and
-compares as a text selection does. Up and down step off a selected block but
-not onto one, since that depends on which line of its paragraph the caret is
-on, which the view does not measure, and an undo brings a deleted node back
-with a text range over it rather than the node selected. Typing over a
-selected rule, and deleting a rule that is all its blockquote holds, are
-declined: the commands replace exactly the range selected, and text cannot
-stand where a block was nor a blockquote be left empty. A paste over either
-goes in, since a paste is fitted.
+composition ends. Typing, return, a line break, a plain-text paste and a
+composition put a paragraph where a selected rule was — the schema's default
+textblock for that place, one for each line of a paste — holding what they
+bring, with the caret at the end of the last; the delete keys
+take the rule away and put the caret in the nearest text, before it for
+backspace and after it for delete, and the other way at the edge of the
+document. A rule that is all its blockquote or the document holds gives way to
+an empty paragraph, since `block+` needs a block there. Each is one step and
+one undo unit, and the undo selects the rule again. Where no textblock can
+stand in a node's place — a list item selected whole, among a list's items —
+typing over it declines, and so does deleting it where the list cannot spare
+it; that is stated in `commands.ts` and tested. It is
+mapped through every change like a text selection, with text typed at either
+edge kept outside it, and prints, serialises and compares as a text selection
+does. Up and down step off a selected block but not onto one, since that
+depends on which line of its paragraph the caret is on, which the view does
+not measure.
 
 **So is a paste that keeps its structure.** HTML from the clipboard is read
 through the schema into a slice — only what a rule names and the schema

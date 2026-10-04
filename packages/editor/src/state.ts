@@ -15,9 +15,10 @@
  * implicitly: it maps its own selection through each step as the step is
  * taken. A command that needs a different answer says so with `setSelection`,
  * and there is exactly one reason for a command to do that — the step replaced
- * a range the cursor was strictly inside, so the map has no better answer than
- * "an edge of the replacement". Splitting a paragraph is the common case, and
- * commands.ts explains it where it happens.
+ * a range the selection was inside or covered, so the map has no better answer
+ * than "an edge of the replacement". Splitting a paragraph is the common case,
+ * and a block selected whole and typed over or deleted is another; commands.ts
+ * explains each where it happens.
  *
  * A selection is either kind selection.ts defines — a text range, or one node
  * selected whole — and both are mapped by the same rule. `TextSelection` is

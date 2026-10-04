@@ -54,8 +54,10 @@
  *
  * A selection is a text range or one node selected whole — selection.ts. Both
  * are mapped, never recomputed; the arrow keys step onto an image or a rule and
- * off it, a click selects one, and the delete keys remove one in one step
- * wherever the schema lets its place be empty.
+ * off it, a click selects one, and typing, return, a paste and the delete keys
+ * replace one in one step — a rule with a paragraph holding what was typed, or
+ * with nothing — wherever the schema has room for the result, and an undo
+ * selects it again.
  *
  * What a toolbar asks for is format.ts: a mark toggled over the selection's
  * text, a block's type changed, blocks wrapped in a quote or a list and

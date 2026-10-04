@@ -16,7 +16,7 @@ the two selections in step. Typing, backspace, delete, word deletion in both
 directions, return, Shift-Return and paste work — a paste of HTML keeps its
 structure, read through the schema — and so do the platform's undo and redo
 keys, with nothing wired by the host. Edits cross block boundaries, and an
-image or a rule can be selected whole.
+image or a rule can be selected whole, then typed over or deleted.
 
 What does not exist yet is most of what makes it a product: no formatting
 commands, no keymap beyond undo, redo and the arrows onto a node, no copying out
@@ -164,8 +164,8 @@ edit rather than the size of the file.
 **An undo is not a rewind.** Restoring the document alone leaves the caret
 wherever the inverse steps happened to put it, which after undoing a paragraph
 three blocks up is nowhere the person was looking. Each unit remembers the
-selection its edit started from and puts it back; a redo returns the caret to
-where the edit left it.
+selection its edit started from and puts it back — a node selected whole comes
+back selected — and a redo returns the caret to where the edit left it.
 
 Typing groups into one unit by time and place. A transaction joins the open
 unit when it arrives within `newGroupDelay` of the unit's last edit and the
@@ -353,7 +353,9 @@ let through — recognised by name as well as by the flag, because several
 engines send the first one before `compositionstart` — and so is every other
 `beforeinput` while a composition runs. When the composition ends its text goes
 through `insertText` in one step, as one undo unit, replacing the selection the
-composition started from; a composition that ends with no text changes nothing.
+composition started from — a rule selected whole gives way to a paragraph
+holding the composed text, as it does to typing; a composition that ends with
+no text changes nothing.
 Undoing it takes back the composed text alone — not the typing before it, and
 not the typing after — and puts back the selection it started from.
 The model is behind the DOM for the length of a composition, on purpose. While
@@ -367,14 +369,24 @@ selection moved ends after. In the second case the view notes where the
 browser's selection is as the composition ends, and once the composed text is
 in, puts the caret there — the text where it was written, the caret where the
 person clicked. Only a click outside the block being composed in is read that
-way. Inside it, the input method's nodes still sit beside the view's own, so a
-click there leaves the caret after the composed text.
+way — over a block selected whole, outside the node that holds the block and
+the text either side of it, since the input method may have written into
+either; for a rule between two of the document's paragraphs that node is the
+document, and no click is read. Inside it, the input method's nodes still sit
+beside the view's own, so a click there leaves the caret after the composed
+text.
 
 **When a composition ends, the view takes back what the input method wrote.**
-Once the model has caught up, the node around the selection has its content
-emptied and drawn again from the model, so a text node the input method made
-for itself — in an empty paragraph there is none to write into, and it has to —
-does not stay beside the view's rendering of the same text. That happens for a
+Once the model has caught up, the node around where the composition began and
+the caret after its text has its content emptied and drawn again from the
+model, so a text node the input method made for itself — in an empty paragraph
+there is none to write into, and it has to — does not stay beside the view's
+rendering of the same text. Over a block selected whole the input method writes
+where the block was, or into the text beside it, and that text need not share
+the block's parent — the paragraph before a quote is beside the quote's first
+block — so that node is the one holding the block and the text either side of
+it: the document itself, for a block between two of its paragraphs. That
+happens for a
 composition that ends with no text as well, where nothing is dispatched and
 nothing else would redraw what was left on the page. The blocks around that node
 keep their elements. The redraw shows the view's state, so a host that owns
@@ -438,7 +450,7 @@ what makes it testable without an event.
 | `insertPlainText(tr, text)` | The same, with line breaks as paragraph breaks — what a paste is reduced to |
 | `insertParagraph(tr)` | Split the textblock at the cursor. A selection goes in the same step: the first half is what came before it, the second what came after |
 | `insertHardBreak(tr)` | Replace the selection with the schema's `hard_break`, carrying the marks of the position, and put the cursor after it. The block stays one block |
-| `deleteSelection(tr)` | Delete the selection, if there is one |
+| `deleteSelection(tr)` | Delete the selection, if there is one — a block selected whole as delete takes it, the caret going to the text after |
 | `deleteBackward(tr)` | The selection, else the grapheme or inline leaf before the cursor, else a join with the textblock before or the removal of a block leaf there |
 | `deleteForward(tr)` | The same, forwards |
 | `deleteWordBackward(tr)` | The selection, else any whitespace before the cursor and then the word or run of punctuation before that, else what backspace would do |
@@ -487,15 +499,33 @@ in the middle:
   are at different depths — from a paragraph into a list item — the rule
   refuses and the command declines. Return over such a selection declines
   too, since a split needs both ends in one textblock.
-- **A node selection is a range like any other.** Backspace and delete remove
-  the selected image or rule in one step, and typing replaces a selected image;
-  the caret lands where the node was — in the next textblock, for a rule. Each
-  command replaces exactly the range selected, so it declines where that
-  replacement would break the schema: typing, return and Shift-Return over a
-  selected rule, since text cannot stand where a block was, and the delete keys
-  over a rule that is all its parent holds — the only block in a blockquote or
-  in the document — since `block+` needs a block there. A
-  [paste](#pasting) over either goes in, since a paste is fitted.
+- **An image selected whole is a range like any other.** Typing replaces it,
+  and backspace or delete leaves the caret where it was.
+- **Typing over a block selected whole puts a paragraph in its place.** Text
+  cannot stand where a rule was, so typing puts a paragraph holding the text
+  there, with the caret after the text; return puts an empty one there with
+  the caret in it; Shift-Return puts one holding the break; a plain-text paste
+  puts one for each line. The paragraph is the schema's default for that
+  place — the first textblock its parent's content expression takes there that
+  can hold what goes in — so a schema whose first block is a title gets a
+  title, and a break goes into the first that can hold one. The text carries no
+  marks, since a block boundary has none to give.
+- **Backspace and delete take a block selected whole away**, and put the caret
+  in the nearest text: before it for backspace, after it for delete, passing
+  over any other rule on the way, and the other way at the edge of the
+  document. With no text left anywhere, the nearest block is selected. A block
+  that is all its parent holds — the only block in a blockquote or in the
+  document — gives way to an empty paragraph with the caret in it instead,
+  since `block+` needs a block there, as emptying a quote's last paragraph
+  leaves one. Typed over or deleted, the block goes in one step and one undo
+  unit, and the undo selects it again.
+- **Where no textblock can stand in a block's place, the commands over it
+  decline** — a list item selected whole, since a list holds only items, or a
+  rule in a node that holds nothing else — though a delete still goes where
+  the parent can spare the block. A plain-text paste chooses each line's
+  textblock in turn without looking ahead, so in a schema where only a later
+  choice of type for one line leaves room for the next, it declines. A
+  [paste](#pasting) of HTML is fitted, as it is anywhere.
 - Return keeps the block's type and attributes on both halves, so return at the
   end of a heading makes a second heading. Which type follows which is a policy
   that differs per schema, and belongs to a keymap or a schema rule rather than
@@ -519,9 +549,12 @@ in the middle:
 A split replaces the whole block with two, and a join replaces both blocks with
 one, because a boundary cannot be inserted or deleted on its own. That makes
 every position inside them collapse to an edge in the map, so these two set the
-selection explicitly, computed from what they built. The only other command
-that sets it is `insertText` over a range, whose mapped ends would otherwise
-select the text it typed; it collapses them to a cursor after that text.
+selection explicitly, computed from what they built. `insertText` over a range
+sets it too, since its mapped ends would select the text it typed, and it
+collapses them to a cursor after that text. So does every command over a block
+selected whole: mapped, the selection would select the paragraph that replaced
+the block, and after a deletion it would land after where the block was
+whichever key was pressed.
 
 ## Pasting
 
@@ -1416,8 +1449,14 @@ Its constructor is private, as a text selection's is. An image, a rule, and any
 node of a type that does not say `selectable: false` can be selected, a
 paragraph included; the arrow keys and a click only ever select an atom.
 Because `from` and `to` are the node's two edges, every command that replaces
-the selection replaces the node — see [what the commands
-do](#commands) — with nothing written for node selections in particular.
+the selection replaces the node — see [what the commands do](#commands). An
+image needs nothing written for it. A block does, since text cannot stand
+where it was: the commands put a paragraph in its place, or take it away and
+send the caret to the nearest text, and that holds for any block selected
+whole, a paragraph or a list among them, wherever a textblock can stand in its
+place. A list item cannot be replaced that way, since its list holds nothing
+else: typing over one declines, and so does deleting one its list cannot
+spare.
 
 ```ts
 findSelection(doc: Node, pos: number, dir: -1 | 1): EditorSelection | null
@@ -1434,9 +1473,10 @@ the key and the direction the text runs — and decline, changing nothing,
 wherever the browser's own caret movement is the right answer. [Node selections
 on screen](#node-selections-on-screen) has the table.
 
-The history does not keep one: it restores the selection an edit began from
-with `TextSelection.create`, so undoing the deletion of a selected node brings
-the node back with a text range over it rather than the node selected.
+The history keeps a node selection as it was. Undoing an edit made over a node
+selected whole brings the node back selected, and the view draws it so: a text
+range over a rule would run from the end of one paragraph to the start of the
+next, and the next keystroke would join them.
 
 | `EditorTransaction` member | Description |
 |---|---|
@@ -1531,11 +1571,8 @@ front of a writer is large. In roughly the order a product meets them:
   cleaned up, and a whole document cannot be loaded from markup.
 - **Serialisation.** There is no JSON form of a document.
 - **The rest of node selection.** Up and down arrive at a rule only by the
-  browser's own caret, which goes past it, and an undo puts back a text range
-  over a node it restores rather than the node selected. Typing over a
-  selected rule, and deleting one that is all its parent holds, are declined
-  by commands that replace a range exactly; fitting the replacement, as a
-  paste does, would put a paragraph there.
+  browser's own caret, which goes past it. Typing over a list item selected
+  whole is declined rather than fitted into an item of its own.
 - **Decorations, node views, drag handles and collaborative cursors.** None of
   them can be added convincingly before there is something to decorate.
 - **Collaboration.** The model can accept it: documents are immutable, steps

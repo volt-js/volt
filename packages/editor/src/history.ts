@@ -11,9 +11,11 @@
  * wherever the inverse steps happened to put it, which after undoing a
  * paragraph three blocks up is nowhere the person was looking. Every unit
  * therefore also remembers the selection the edit *started* from, and undoing
- * puts it back. The forward direction is symmetric: recording an undo captures
- * the selection that was current before it, so redoing returns the caret to
- * where the original edit left it.
+ * puts it back — a node selected whole as a node, since a text range over a
+ * rule runs from the end of one paragraph to the start of the next, and the
+ * next keystroke would join them. The forward direction is symmetric:
+ * recording an undo captures the selection that was current before it, so
+ * redoing returns the caret to where the original edit left it.
  *
  * **Grouping is the whole difficulty.** One character per undo is not an
  * editor, so adjacent typing has to collapse into one unit, and the two tests
@@ -44,6 +46,8 @@
  */
 
 import type { Node } from './node.js';
+import { NodeSelection } from './selection.js';
+import type { EditorSelection } from './selection.js';
 import { TextSelection } from './state.js';
 import type { ChangedRange, EditorState, EditorTransaction } from './state.js';
 import { ReplaceStep } from './step.js';
@@ -69,7 +73,7 @@ export interface HistoryOptions {
  */
 interface HistoryEvent {
   steps: Step[];
-  readonly selection: TextSelection;
+  readonly selection: EditorSelection;
   range: ChangedRange | null;
   time: number;
 }
@@ -262,8 +266,14 @@ export class EditorHistory {
     }
 
     // The recorded selection is in the coordinates of the document these steps
-    // just restored, so it goes back as it was rather than being mapped.
-    tr.setSelection(TextSelection.create(tr.doc, event.selection.anchor, event.selection.head));
+    // just restored, so it goes back as it was rather than being mapped — and
+    // a node it held is there again to be held.
+    const { anchor, head } = event.selection;
+    tr.setSelection(
+      event.selection instanceof NodeSelection
+        ? NodeSelection.create(tr.doc, anchor)
+        : TextSelection.create(tr.doc, anchor, head),
+    );
     this.mine.set(tr, direction);
     return tr;
   }

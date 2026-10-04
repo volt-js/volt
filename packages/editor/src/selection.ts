@@ -28,14 +28,11 @@
  * the paragraph's first or last line is a question about layout, and the view
  * does not measure any.
  *
- * Deleting a node selection needs nothing of its own: it is a range like any
- * other, `deleteSelection` replaces it with nothing, and the selection maps to
- * a caret where the node was. Not everywhere, and said here because nothing in
- * this file can change it: the commands replace exactly the range selected,
- * and the join rule refuses a replacement that breaks the schema. So typing
- * over a selected rule declines — text cannot stand where a block was — and so
- * does deleting a rule that is all its blockquote holds. Fitting the
- * replacement would put a paragraph there, as a paste over either does.
+ * An inline node selected whole needs nothing of its own from the commands:
+ * it is a range like any other, typing replaces it, and deleting it maps the
+ * selection to a caret where it was. A block does, because text cannot stand
+ * where a block was, and commands.ts puts a textblock in its place or takes it
+ * away, sending the caret to the nearest text with `findCaret` below.
  */
 
 import type { Node } from './node.js';
@@ -218,8 +215,8 @@ function nodeStartingAt(doc: Node, pos: number): Node | null {
  *
  * `anchor` is the position before it and `head` the position after, so `from`
  * and `to` are its two edges and every command that replaces a range replaces
- * the node: typing over it, deleting it, pasting over it — where the schema
- * takes the result, which the top of this file says is not everywhere.
+ * the node: typing over it, deleting it, pasting over it — a block with a
+ * textblock where what was typed has to go, as the top of this file says.
  */
 export class NodeSelection extends EditorSelection {
   readonly anchor: number;
@@ -297,6 +294,23 @@ export function findSelection(doc: Node, pos: number, dir: -1 | 1): EditorSelect
     if (found) return found;
   }
   return null;
+}
+
+/**
+ * The first caret from `pos` in direction `dir`, passing over every atom on
+ * the way rather than selecting it; null when the document ends first.
+ *
+ * Where the caret goes once a selected block is deleted. An arrow stops on
+ * the next rule because stepping onto it is the arrow's whole job; a delete
+ * that left the next rule selected instead would have the next character
+ * typed replace that rule too, when it was meant for the text. The view asks
+ * it too, for the text either side of a block an input method composed over,
+ * since a browser may write into either.
+ */
+export function findCaret(doc: Node, pos: number, dir: -1 | 1): TextSelection | null {
+  let found = findSelection(doc, pos, dir);
+  while (found instanceof NodeSelection) found = findSelection(doc, dir > 0 ? found.to : found.from, dir);
+  return found instanceof TextSelection ? found : null;
 }
 
 /**

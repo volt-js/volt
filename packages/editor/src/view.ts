@@ -93,7 +93,7 @@ import { TextSelection } from './state.js';
 import type { ChangedRange, EditorState, EditorTransaction } from './state.js';
 import { insertSlice, parseSlice } from './clipboard.js';
 import type { ParseOptions, ParseRules } from './clipboard.js';
-import { NodeSelection, selectHorizontally, selectVertically } from './selection.js';
+import { NodeSelection, findCaret, selectHorizontally, selectVertically } from './selection.js';
 
 /**
  * What a node renderer produces: the element the node becomes, and the element
@@ -337,6 +337,13 @@ export class EditorView {
   /** Where a click left the browser's selection as a composition ended, if it is to be kept. */
   private clickedDuringComposition: { readonly anchor: DOMBoundaryPoint; readonly head: DOMBoundaryPoint } | null =
     null;
+  /**
+   * Where a composition ending now can have written, noted before the model
+   * catches up: its start, and its end as a distance from the end of the
+   * document. The composed text replaces the selection and nothing either side
+   * of it, so both still name the same places once it is in.
+   */
+  private composed: { readonly from: number; readonly fromEnd: number } | null = null;
 
   constructor(place: HTMLElement, options: EditorViewOptions) {
     this.document = place.ownerDocument;
@@ -624,12 +631,21 @@ export class EditorView {
    * ends with no text changes nothing in the model, so nothing redraws what it
    * left behind at all.
    *
-   * It wrote where the selection is, which the model has kept since the
-   * composition began, so the node around the selection has its content drawn
-   * again from the model, and whatever else is in it goes.
+   * It wrote over the selection the composition began from, which the model
+   * kept until the composed text went in, so the node around what
+   * `compositionRegion` says it can have written and the caret after the text
+   * has its content drawn again from the model, and whatever else is in it
+   * goes. Around the caret alone is not enough: over a block selected whole
+   * the paragraph the text went into reaches neither where the block was nor
+   * the text beside it.
    */
   private readonly onCompositionEnd = (): void => {
-    const desc = this.descAround(this.stateNow.selection.from, this.stateNow.selection.to);
+    const { from, to } = this.stateNow.selection;
+    const composed = this.composed;
+    this.composed = null;
+    const desc = composed
+      ? this.descAround(Math.min(composed.from, from), Math.max(this.stateNow.doc.content.size - composed.fromEnd, to))
+      : this.descAround(from, to);
     desc.contentDOM?.replaceChildren();
     this.replaceChildren(desc, 0, desc.children.length, desc.node, 0, desc.node.childCount);
 
@@ -666,19 +682,24 @@ export class EditorView {
    * does not read the selection while a composition runs, and the model's
    * update would write its own caret over it.
    *
-   * Only a point outside the block being composed in is kept. Inside it, the
-   * input method's nodes sit beside the view's own until the redraw, and a
-   * point among them says nothing reliable about the model, so a click there
-   * leaves the caret after the composed text. A point outside the view is
-   * kept too, and refused where it is read, as `posAtDOM` refuses one.
+   * Only a point outside the node being composed in is kept — the node
+   * around everything `compositionRegion` says the input method can have
+   * written. Inside it, the input method's nodes sit beside the view's own
+   * until the redraw, and a point among them says nothing reliable about the
+   * model, so a click there leaves the caret after the composed text. A point
+   * outside the view is kept too, and refused where it is read, as `posAtDOM`
+   * refuses one.
    */
   private readonly onCompositionCommit = (): void => {
+    const region = this.compositionRegion();
+    this.composed = { from: region.from, fromEnd: this.stateNow.doc.content.size - region.to };
+
     const selection = this.document.getSelection();
     const anchorNode = selection?.anchorNode;
     const focusNode = selection?.focusNode;
     if (!selection || !anchorNode || !focusNode) return;
 
-    const composing = this.descAround(this.stateNow.selection.from, this.stateNow.selection.to).contentDOM;
+    const composing = this.descAround(region.from, region.to).contentDOM;
     if (!composing || composing.contains(anchorNode) || composing.contains(focusNode)) return;
 
     this.clickedDuringComposition = {
@@ -686,6 +707,22 @@ export class EditorView {
       head: { node: focusNode, offset: selection.focusOffset },
     };
   };
+
+  /**
+   * Where an input method composing over the model's selection can have
+   * written: over text or an image, the selection; over a block selected
+   * whole, from the text before it to the text after it. A browser composing
+   * over a block takes the block out and writes where it was, or moves into
+   * the text beside it first, and that text need not share the block's parent
+   * — the paragraph before a quote is beside the quote's first block.
+   */
+  private compositionRegion(): ChangedRange {
+    const selection = this.stateNow.selection;
+    const { from, to } = selection;
+    if (!(selection instanceof NodeSelection) || selection.node.isInline) return { from, to };
+    const doc = this.stateNow.doc;
+    return { from: findCaret(doc, from, -1)?.from ?? from, to: findCaret(doc, to, 1)?.to ?? to };
+  }
 
   /** The deepest rendered node whose content holds the whole of a range. */
   private descAround(from: number, to: number): ViewDesc {

@@ -139,9 +139,9 @@ export function applyInputType(tr: EditorTransaction, inputType: string, event?:
     case 'deleteWordForward':
       return deleteWordForward(tr);
     case 'insertFromPaste': {
-      // Flattened to text, for the reason `insertPlainText` gives: a paste
-      // that preserved structure needs a DOM parser and open slices, and
-      // producing half of that would produce documents the schema refuses.
+      // Flattened to text: a view takes a paste carrying HTML the schema can
+      // read off the `paste` event before it becomes this one, so what
+      // arrives here has only its text to give, as `insertPlainText` says.
       // A paste that carries no text — only an image, or only markup this
       // layer does not read — declines for the reason `insertText` does:
       // pasting nothing over a range would delete the range.

@@ -9,7 +9,7 @@
  * so text typed at either edge stays outside it, and the node it held going
  * away leaves a selection over whatever replaced it rather than a dangling one.
  * The arrow keys step onto a node and off it again, and the delete keys take it
- * away in one step, which is one undo.
+ * away in one step, which is one undo that selects it again.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -215,6 +215,20 @@ describe('a state holding a node selection', () => {
     expect(String(tr.selection)).toBe('cursor(5)');
   });
 
+  it('deletes a selected rule with backspace, and leaves the caret in the block before', () => {
+    const tr = from(nodeAt(withRule, 4));
+    expect(deleteBackward(tr)).toBe(true);
+    expect(String(tr.doc)).toBe('doc(paragraph("ab"), paragraph("cd"))');
+    expect(String(tr.selection)).toBe('cursor(3)');
+  });
+
+  it('types over a selected rule into a paragraph of its own', () => {
+    const tr = from(nodeAt(withRule, 4));
+    expect(insertText(tr, 'XY')).toBe(true);
+    expect(String(tr.doc)).toBe('doc(paragraph("ab"), paragraph("XY"), paragraph("cd"))');
+    expect(String(tr.selection)).toBe('cursor(7)');
+  });
+
   it('types over a selected image, leaving the caret after the text', () => {
     const tr = from(nodeAt(withImage, 3));
     expect(insertText(tr, 'XY')).toBe(true);
@@ -222,7 +236,7 @@ describe('a state holding a node selection', () => {
     expect(String(tr.selection)).toBe('cursor(5)');
   });
 
-  it('is one undo unit, which brings the node back', () => {
+  it('is one undo unit, which brings the node back selected', () => {
     const history = new EditorHistory({ now: () => 0 });
     let state = EditorState.create(withRule, NodeSelection.create(withRule, 4));
     const tr = state.tr();
@@ -235,19 +249,18 @@ describe('a state holding a node selection', () => {
     state = state.apply(undo);
     history.record(undo);
     expect(state.doc.eq(withRule)).toBe(true);
-    // The history puts back a text range over the node rather than the node
-    // selected: it rebuilds what it recorded with `TextSelection.create`.
-    expect(state.selection).toBeInstanceOf(TextSelection);
-    expect(state.selection.from).toBeLessThanOrEqual(4);
-    expect(state.selection.to).toBeGreaterThanOrEqual(5);
+    // The node, not a text range over it, which the next keystroke would read
+    // as text from the end of one paragraph to the start of the next.
+    expect(state.selection).toBeInstanceOf(NodeSelection);
+    expect(String(state.selection)).toBe('node(horizontal_rule@4)');
   });
 
-  it('is not deleted when it is all a document holds, since the schema needs a block there', () => {
+  it('gives way to an empty paragraph when it is all a document holds, since the schema needs a block there', () => {
     const ruleOnly = doc(rule());
     const tr = from(nodeAt(ruleOnly, 0));
-    expect(deleteBackward(tr)).toBe(false);
-    expect(tr.doc).toBe(ruleOnly);
-    expect(tr.changed).toBe(false);
+    expect(deleteBackward(tr)).toBe(true);
+    expect(String(tr.doc)).toBe('doc(paragraph)');
+    expect(String(tr.selection)).toBe('cursor(1)');
   });
 });
 

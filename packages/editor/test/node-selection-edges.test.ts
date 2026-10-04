@@ -5,9 +5,9 @@
  * pins the places they were most likely to be wrong: every replacement fitting
  * produces, applied, undone and mapped through and back; a selected node at
  * either end of the document, where an arrow key has nowhere to go; a click
- * on a node that lands while an input method is composing; and what the
- * commands still decline over a selected block node, which is stated where it
- * is, so lifting it is a decision rather than an accident.
+ * on a node that lands while an input method is composing; and a selected
+ * block node where replacing exactly its range is a replacement the schema
+ * refuses — typed into, or all its blockquote holds.
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -240,28 +240,31 @@ describe('pasted HTML the schema cannot hold', () => {
   });
 });
 
-describe('what the commands still decline over a selected block node', () => {
-  // These go through `deleteSelection` and `insertText`, which replace the
-  // selected range exactly: a range that is the whole of what its parent must
-  // hold, or a block range typed into, is one the join rule refuses. Fitting
-  // would place a paragraph there, and the commands do not fit. Stated in
-  // selection.ts and the reference, and pinned here.
+describe('a selected block node where replacing exactly its range is refused', () => {
+  // Text cannot stand where a block was, and a blockquote cannot be left
+  // empty, so the join rule refuses typing into a rule's own range and
+  // deleting a rule that is all its blockquote holds. The commands put a
+  // textblock there instead; node-selection-commands.test.ts has the rest.
+  // 0 <p> 1 a 2 b 3 </p> 4 [hr] 5 <p> 6 c 7 d 8 </p> 9
   const between = doc(p(t('ab')), rule(), p(t('cd')));
+  // 0 <bq> 1 [hr] 2 </bq> 3 <p> 4 a 5 </p> 6
   const alone = doc(quote(rule()), p(t('a')));
 
-  it('declines typing, return and a line break over a rule between paragraphs, changing nothing', () => {
-    for (const command of [(tr: Parameters<typeof insertText>[0]) => insertText(tr, 'x'), insertParagraph]) {
-      const tr = EditorState.create(between, NodeSelection.create(between, 4)).tr();
-      expect(command(tr)).toBe(false);
-      expect(tr.doc).toBe(between);
-    }
+  it('types, and returns, over a rule between paragraphs into a paragraph in its place', () => {
+    const typed = EditorState.create(between, NodeSelection.create(between, 4)).tr();
+    expect(insertText(typed, 'x')).toBe(true);
+    expect(String(typed.doc)).toBe('doc(paragraph("ab"), paragraph("x"), paragraph("cd"))');
+    const returned = EditorState.create(between, NodeSelection.create(between, 4)).tr();
+    expect(insertParagraph(returned)).toBe(true);
+    expect(String(returned.doc)).toBe('doc(paragraph("ab"), paragraph, paragraph("cd"))');
   });
 
-  it('declines deleting a rule that is all its blockquote holds, since `block+` needs a block there', () => {
+  it('puts an empty paragraph where a rule was that is all its blockquote holds, since `block+` needs a block there', () => {
     for (const command of [deleteBackward, deleteForward]) {
       const tr = EditorState.create(alone, NodeSelection.create(alone, 1)).tr();
-      expect(command(tr)).toBe(false);
-      expect(tr.doc).toBe(alone);
+      expect(command(tr)).toBe(true);
+      expect(String(tr.doc)).toBe('doc(blockquote(paragraph), paragraph("a"))');
+      expect(String(tr.selection)).toBe('cursor(2)');
     }
   });
 
