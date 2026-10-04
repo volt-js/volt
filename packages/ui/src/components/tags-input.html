@@ -1,0 +1,40 @@
+<div class="volt-field" :spread="tags.fieldProps()">
+  <label class="volt-field-label" :ref="labelEl" :spread="tags.labelProps()"><slot name="label">{ label.get() }</slot></label>
+
+  <div :host :ref="box" class="volt-field-control volt-tags-input" :spread="boxProps()" :mousedown="stay($event)" :click="focusInput($event)">
+    <div :ref="row" class="volt-tags-input-list" :spread="tags.listProps()">
+      <span
+        :for="(tag, index) in tags.tags()"
+        :key="keyOf(index)"
+        class="volt-chip volt-tags-input-tag"
+        :spread="tags.tagProps(index)"
+        :keydown="tags.onTagKeyDown($event, index)"
+      >
+        <span class="volt-chip-label"><slot name="tag" :tag="tag" :index="index">{ tag }</slot></span>
+        <button
+          :if="editable()"
+          class="volt-chip-remove"
+          :spread="tags.removeProps(index)"
+          :click="tags.removeAt(index)"
+        >×</button>
+      </span>
+    </div>
+
+    <input
+      :ref="control"
+      class="volt-tags-input-input"
+      :spread="inputProps()"
+      :keydown="tags.onKeyDown($event)"
+      :paste="tags.onPaste($event)"
+      :blur="tags.onBlur()"
+    >
+  </div>
+
+  <input :for="(tag, index) in tags.tags()" :key="keyOf(index)" :spread="hiddenProps(index)">
+
+  <p class="volt-field-description" :ref="descriptionEl" :spread="tags.descriptionProps()"><slot name="description">{ description.get() }</slot></p>
+
+  <p class="volt-field-error" :ref="errorEl" :spread="tags.errorMessageProps()">{ message() }</p>
+
+  <p class="volt-tags-input-status" :spread="tags.statusProps()">{ tags.statusText() }</p>
+</div>

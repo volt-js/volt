@@ -1,0 +1,28 @@
+<form class="form" :submit="send($event)">
+  <v-pin-input
+    :value="code"
+    name="code"
+    label="Verification code"
+    description="Sent by text message. Here it is 246810; paste it, or type it."
+    required
+    :prop-error="problem.get()"
+    :onValueChange="edited"
+    :onComplete="check"
+  ></v-pin-input>
+
+  <v-pin-input
+    name="passcode"
+    label="Passcode"
+    description="Four letters or digits. A secret, so the boxes show dots."
+    length="4"
+    type="alphanumeric"
+    mask
+    required
+    :onValueChange="unsent"
+  ></v-pin-input>
+
+  <div class="row">
+    <v-button type="submit" variant="primary">Continue</v-button>
+    <span class="note">{ result.get() }</span>
+  </div>
+</form>

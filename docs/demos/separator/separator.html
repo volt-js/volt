@@ -1,0 +1,35 @@
+<div class="rows">
+  <div class="sign-in">
+    <v-button variant="primary">Continue with GitHub</v-button>
+    <v-separator label="or"></v-separator>
+    <v-button>Email me a sign-in link</v-button>
+  </div>
+  <span class="note">Decorative, so “or” is read where it stands, as the word it is.</span>
+
+  <div class="toolbar">
+    <v-button variant="ghost" size="sm">Bold</v-button>
+    <v-button variant="ghost" size="sm">Italic</v-button>
+    <v-separator orientation="vertical"></v-separator>
+    <v-button variant="ghost" size="sm">Left</v-button>
+    <v-button variant="ghost" size="sm">Centre</v-button>
+    <v-button variant="ghost" size="sm">Right</v-button>
+  </div>
+
+  <div class="panes">
+    <nav id="demo-sidebar" class="pane" aria-label="Files" :style="width()">Files</nav>
+    <v-separator
+      orientation="vertical"
+      :prop-resize="sidebar"
+      :min="15"
+      :max="60"
+      :step="5"
+      collapsible
+      resizeLabel="Resize sidebar"
+      aria-controls="demo-sidebar"
+    ></v-separator>
+    <div class="pane main">Editor</div>
+  </div>
+  <span class="note">Sidebar at { sidebar.get() }%. Tab to the line between the panes: Left and
+    Right move it, Home and End take it to its ends, and Enter takes it down to its
+    narrowest and back again.</span>
+</div>

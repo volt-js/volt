@@ -1,0 +1,32 @@
+<form class="form" :submit="send($event)">
+  <v-tags-input
+    :value="topics"
+    name="topic"
+    label="Topics"
+    description="Up to five. Enter or a comma adds one; Backspace in an empty box takes the last one back."
+    placeholder="Add a topic"
+    max="5"
+    required
+    :validate="oneWord"
+  ></v-tags-input>
+
+  <v-tags-input
+    name="cc"
+    label="Copy to"
+    description="Ended by a comma, a semicolon or a space. Paste a list to add it all at once."
+    separators=",; "
+    :validate="address"
+  ></v-tags-input>
+
+  <v-tags-input
+    label="Labels on this issue"
+    defaultValue="bug, needs triage"
+    description="Read-only: Tab still reaches the tags, and the arrows still move along them."
+    readOnly
+  ></v-tags-input>
+
+  <div class="row">
+    <v-button type="submit" variant="primary">Save</v-button>
+    <span class="note">{ result.get() }</span>
+  </div>
+</form>

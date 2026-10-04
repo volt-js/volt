@@ -1,0 +1,50 @@
+.rows {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-4);
+  max-inline-size: var(--volt-space-120);
+}
+
+.note {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}
+
+// Two ways in, one above the other, with the rule between them as wide as
+// they are.
+.sign-in {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-3);
+  max-inline-size: var(--volt-space-80);
+}
+
+// A row of controls the vertical rule stands in, and takes the height of.
+.toolbar {
+  display: flex;
+  align-items: center;
+  column-gap: var(--volt-space-1);
+}
+
+// The panes the splitter moves between. The sidebar's width is the
+// splitter's value, written inline; the rest is the editor's.
+.panes {
+  display: flex;
+  block-size: var(--volt-space-20);
+  border: var(--volt-border-width-1) solid var(--volt-color-border);
+  border-radius: var(--volt-radius-2);
+  background-color: var(--volt-color-surface);
+  overflow: hidden;
+}
+
+.pane {
+  box-sizing: border-box;
+  padding: var(--volt-space-3);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.main {
+  flex-grow: 1;
+  min-inline-size: 0;
+}

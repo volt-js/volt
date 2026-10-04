@@ -1,0 +1,30 @@
+.rows {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-4);
+}
+
+// A page of prose on the surface it is usually read on. The frame behind it is
+// the sunken colour, which is also the tint inline code is drawn on.
+.page {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-4);
+  max-inline-size: 36rem;
+  padding: var(--volt-space-4);
+  border: var(--volt-border-width-1) solid var(--volt-color-border);
+  border-radius: var(--volt-radius-2);
+  background-color: var(--volt-color-surface);
+}
+
+.line {
+  margin-block: 0;
+  font-size: var(--volt-font-size-3);
+  line-height: var(--volt-line-height-normal);
+}
+
+.note {
+  max-inline-size: 36rem;
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}

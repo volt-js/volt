@@ -1,0 +1,78 @@
+<div class="volt-file-upload" :spread="upload.rootProps()">
+  <div
+    :host
+    :ref="zone"
+    class="volt-file-upload-zone"
+    :spread="zoneProps()"
+    :click="upload.open()"
+    :keydown="upload.onKeyDown($event)"
+    :dragenter="upload.onDragEnter($event)"
+    :dragover="upload.onDragOver($event)"
+    :dragleave="upload.onDragLeave($event)"
+    :drop="upload.onDrop($event)"
+  >
+    <span :ref="content" class="volt-file-upload-label" :spread="labelProps()"><slot>{ words() }</slot></span>
+  </div>
+
+  <input :ref="input" :spread="inputProps()" :change="upload.onInputChange($event)">
+  <input
+    :for="entry in posted()"
+    :key="entry.id"
+    type="hidden"
+    :name="name.get()"
+    :value="entry.value"
+    :disabled="isDisabled()"
+  >
+
+  <p
+    :if="description.get()"
+    :ref="descriptionEl"
+    class="volt-file-upload-description"
+    :spread="upload.descriptionProps()"
+  >{ description.get() }</p>
+
+  <p :ref="errorEl" class="volt-file-upload-error" :spread="upload.errorMessageProps()">{ message() }</p>
+
+  <ul :if="upload.items().length > 0" class="volt-file-upload-list" role="list">
+    <li
+      :for="item in upload.items()"
+      :key="item.id"
+      class="volt-file-upload-item"
+      :spread="upload.itemProps(item)"
+    >
+      <slot
+        name="file"
+        :file="item.file"
+        :progress="item.progress"
+        :status="item.status"
+        :item="item"
+        :retry="() => retry(item)"
+        :remove="() => remove(item)"
+      >
+        <div class="volt-file-upload-head">
+          <span class="volt-file-upload-name">{ item.path }</span>
+          <span class="volt-file-upload-meta">{ meta(item) }</span>
+          <span class="volt-file-upload-actions">
+            <button
+              :if="carried(item)"
+              class="volt-file-upload-action"
+              :spread="retryProps(item)"
+              :click="retry(item)"
+            >↻</button>
+            <button class="volt-file-upload-action" :spread="removeProps(item)" :click="remove(item)">×</button>
+          </span>
+        </div>
+
+        <div :if="carried(item)" class="volt-progress" :spread="upload.itemProgressProps(item)">
+          <div class="volt-progress-track">
+            <div class="volt-progress-indicator" :spread="indicatorProps(item)" :style="fill(item)"></div>
+          </div>
+        </div>
+
+        <p :if="item.error" class="volt-file-upload-reason">{ reason(item) }</p>
+      </slot>
+    </li>
+  </ul>
+
+  <div :ref="live" class="volt-file-upload-status" :spread="upload.liveRegionProps()">{ upload.announcement() }</div>
+</div>

@@ -1,0 +1,7 @@
+<span :host class="volt-separator" :spread="separatorProps()" :keydown="onKeyDown($event)">
+  <span class="volt-separator-line"></span>
+  <template :if="words()">
+    <span class="volt-separator-label">{ words() }</span>
+    <span class="volt-separator-line"></span>
+  </template>
+</span>

@@ -553,3 +553,15 @@ describe('v-input', () => {
     expect(box(host).value).toBe('');
   });
 });
+
+describe('v-input, as the sheet lays out its message', () => {
+  it('holds a line for the message before there is one, so a refusal moves nothing below it', async () => {
+    // The live region is drawn empty so that the message arriving in it is
+    // announced; the line it holds is the line the message takes. Without a
+    // height of its own the empty region is nothing tall, and every field
+    // under one that fails is pushed down by the words.
+    const { fieldStyles } = await import('../src/index.ts');
+    const rule = fieldStyles.rules.find((each) => each.selector === `.${fieldStyles.classes.error}`);
+    expect(rule?.declarations['min-block-size']).toBe('1lh');
+  });
+});

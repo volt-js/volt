@@ -1,0 +1,38 @@
+<div class="rows">
+  <div class="tools">
+    <v-toggle-group :value="align" label="Alignment">
+      <v-toggle value="start">Left</v-toggle>
+      <v-toggle value="center">Centre</v-toggle>
+      <v-toggle value="end">Right</v-toggle>
+    </v-toggle-group>
+
+    <v-toggle-group :value="marks" type="multiple" label="Formatting">
+      <v-toggle value="bold" label="Bold"><b>B</b></v-toggle>
+      <v-toggle value="italic" label="Italic"><i>I</i></v-toggle>
+      <v-toggle value="underline" label="Underline"><u>U</u></v-toggle>
+    </v-toggle-group>
+
+    <v-toggle :pressed="wrap">Wrap lines</v-toggle>
+  </div>
+
+  <p
+    class="sample"
+    :class="marks.get()"
+    :style="{ textAlign: align.get(), whiteSpace: wrap.get() ? 'normal' : 'nowrap' }"
+  >A toggle is an action that stays applied: press it once and it holds until it is
+    pressed again, which is what a switch or a checkbox would say differently.</p>
+
+  <span class="note">One Tab press reaches each row and the next leaves it; inside, the
+    arrows move. Alignment must keep a value, so it is announced as radios and the arrows
+    choose as they go. The formatting buttons only move, and Space or Enter presses.</span>
+
+  <div class="tools">
+    <v-toggle-group :value="view" deselectable label="Show as">
+      <v-toggle value="list">List</v-toggle>
+      <v-toggle value="grid">Grid</v-toggle>
+      <v-toggle value="map" disabled>Map</v-toggle>
+    </v-toggle-group>
+    <span class="note">Showing { view.get() || 'nothing' }. Press the one that is down to let it
+      up.</span>
+  </div>
+</div>

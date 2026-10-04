@@ -1,0 +1,16 @@
+<div class="rows">
+  <article class="page">
+    <p class="line">
+      Call <v-code language="JavaScript">Array.prototype.at</v-code> with a negative index to
+      count from the end: <v-code language="JavaScript">items.at(-1)</v-code> is the last item.
+    </p>
+
+    <v-code block language="TypeScript" copyable lineNumbers :wrap="wrapped.get()">{ source }</v-code>
+  </article>
+
+  <v-switch :checked="wrapped">Wrap long lines</v-switch>
+  <span class="note">Unwrapped, the fourth line runs past the edge, and the block becomes a tab
+    stop named “Code, TypeScript” so the arrow keys can scroll it. The numbers are drawn by
+    the stylesheet: copy the code, with the button or by selecting it, and none of them come
+    with it.</span>
+</div>

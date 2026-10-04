@@ -4,6 +4,12 @@ What the page says about itself: that something went wrong or went well, how
 far along a piece of work is, that work is happening and nobody knows how much,
 and the shape of what has not arrived yet.
 
+::: warning Not on npm yet
+Part of `@voltdev/ui`, which is not published yet — see
+[the package](./ui). Everything here works from a checkout of the Volt
+repository.
+:::
+
 Each component below is a tag you write, with the primitive that owns its
 behaviour named beside it. See [the package](./ui) for the two entries, the
 stylesheet, the tokens and how to override a rule.

@@ -1,0 +1,38 @@
+<div class="rows">
+  <form class="rows" :submit="claim($event)">
+    <v-file-upload
+      :transport="send"
+      name="receipts"
+      accept="image/*,.pdf"
+      :maxSize="2_000_000"
+      :maxFiles="5"
+      description="Photos or PDFs, up to 2 MB each and five in all. Every third file drops its connection, to show a retry."
+      :onChange="changed"
+      :onComplete="finished"
+    >
+      <span class="icon" aria-hidden="true">⇪</span>
+      <span>Drop receipts here, or press to choose them</span>
+    </v-file-upload>
+
+    <div class="row">
+      <v-button type="submit" variant="primary">Submit claim</v-button>
+      <span class="note">{ result.get() || done.get() }</span>
+    </div>
+  </form>
+
+  <v-file-upload :transport="send" accept="image/*" :multiple="false" label="Drop a profile photo here">
+    <template :slot-file="{ file, progress, status, retry, remove }">
+      <div class="compact">
+        <span class="name">{ named(file) }</span>
+        <span class="note">{ state(status, progress) }</span>
+        <v-button
+          :if="status !== 'rejected'"
+          size="sm"
+          :disabled="!retryable(status)"
+          :onPress="() => retry()"
+        >Retry</v-button>
+        <v-button size="sm" variant="ghost" :onPress="() => remove()">Remove</v-button>
+      </div>
+    </template>
+  </v-file-upload>
+</div>

@@ -1,0 +1,43 @@
+<div
+  :host
+  :ref="root"
+  class="volt-slider"
+  :spread="rootProps()"
+  :attr-data-scale="scaled() ? '' : undefined"
+>
+  <span
+    :if="label.get()"
+    :ref="labelElement"
+    class="volt-slider-label"
+    :spread="slider.labelProps()"
+  ><slot name="label">{ label.get() }</slot></span>
+
+  <span
+    :ref="track"
+    class="volt-slider-track"
+    :spread="slider.trackProps()"
+    :pointerdown="slider.onPointerDown($event)"
+    :keydown="slider.onKeyDown($event)"
+  >
+    <span class="volt-slider-range" :spread="slider.rangeProps()" :style="rangeStyle()"></span>
+
+    <span
+      :for="mark in slider.marks()"
+      :key="mark.value"
+      class="volt-slider-mark"
+      aria-hidden="true"
+      :spread="slider.markProps(mark)"
+      :style="place(slider.percentFor(mark.value))"
+    ><span :if="mark.label !== undefined" class="volt-slider-mark-label">{ mark.label }</span></span>
+
+    <span
+      :for="(each, index) in slider.values()"
+      :key="index"
+      class="volt-slider-thumb"
+      :spread="thumbProps(index)"
+      :style="place(slider.percentAt(index))"
+    ></span>
+  </span>
+
+  <input :for="(each, index) in slider.values()" :key="index" :spread="slider.inputProps(index)">
+</div>

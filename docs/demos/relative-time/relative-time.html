@@ -1,0 +1,40 @@
+<div class="rows">
+  <ol class="thread" aria-label="Activity">
+    <li :for="comment in comments" :key="comment.id" class="comment">
+      <span class="meta"
+        ><b class="author">{ comment.author }</b> <v-relative-time :date="comment.at"></v-relative-time
+      ></span>
+      <span class="body">{ comment.body }</span>
+    </li>
+  </ol>
+  <span class="note">The first stamp counts the seconds as you watch, on the one timer every stamp
+    on the page shares. The last is twelve days old, past the default week, so it is the date.
+    The dotted line says there is more a hover away: the exact date and time.</span>
+
+  <div class="row">
+    <v-button variant="primary" :onPress="save">Save draft</v-button>
+    <span :if="saved.get() !== null" class="status">Draft saved
+      <v-relative-time :date="saved.get()"></v-relative-time></span>
+    <span :else class="status">Not saved yet</span>
+  </div>
+
+  <table class="lengths">
+    <thead>
+      <tr>
+        <td></td>
+        <th :for="language in languages" :key="language.tag" :lang="language.tag" scope="col">{ language.name }</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr :for="length in lengths" :key="length">
+        <th scope="row"><code>{ length }</code></th>
+        <td :for="language in languages" :key="language.tag">
+          <v-relative-time :date="moment" :locale="language.tag" :style="length"></v-relative-time>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <span class="note"><code>style</code> is how long the words are, and <code>locale</code> what
+    language they are in. The stamp marks its words with that language in <code>lang</code>, so a
+    screen reader reads them in the right voice.</span>
+</div>

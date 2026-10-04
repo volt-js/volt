@@ -1,0 +1,23 @@
+<span :host class="volt-image" :spread="image.boxProps()">
+  <img
+    :ref="img"
+    class="volt-image-picture"
+    :attr-data-fit="fit.get()"
+    :spread="imageProps()"
+    :attr-sizes="source('sizes')"
+    :attr-srcset="source('srcset')"
+    :attr-src="source('src')"
+  >
+
+  <span
+    :if="image.isLoading()"
+    class="volt-image-placeholder"
+    aria-hidden="true"
+  ><slot name="placeholder"></slot></span>
+
+  <span
+    :if="image.hasError()"
+    class="volt-image-error"
+    :attr-aria-hidden="image.isDecorative() ? 'true' : undefined"
+  ><slot name="error">{ failure() }</slot></span>
+</span>

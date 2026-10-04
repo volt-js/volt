@@ -1,0 +1,37 @@
+<div class="rows">
+  <div class="row">
+    <!-- The box is this shape from the first render, so nothing beside or
+         below it moves when the picture lands — or when it does not. -->
+    <v-image
+      class="cover"
+      :src="photo.get()"
+      alt="A green valley under a low sun, a path winding down into it"
+      width="1200"
+      height="800"
+    >
+      <v-skeleton-shape :slot-placeholder shape="block" height="100%"></v-skeleton-shape>
+    </v-image>
+    <div class="side">
+      <v-button :onPress="toggle">{ broken() ? 'Mend the picture' : 'Break the picture' }</v-button>
+      <span class="note">A picture that fails says so in words, in the space it
+        would have taken. A broken-picture icon says nothing to anyone.</span>
+    </div>
+  </div>
+
+  <div class="row">
+    <figure class="fit">
+      <v-image :src="valley" alt="The valley, cropped to a square" ratio="1"></v-image>
+      <figcaption class="note">cover</figcaption>
+    </figure>
+    <figure class="fit">
+      <v-image :src="valley" alt="The valley, whole, inside a square" ratio="1" fit="contain"></v-image>
+      <figcaption class="note">contain</figcaption>
+    </figure>
+    <figure class="fit">
+      <v-image :src="missing" alt="The harbour at dawn" ratio="1">
+        <span :slot-error>No harbour today.</span>
+      </v-image>
+      <figcaption class="note">its own words</figcaption>
+    </figure>
+  </div>
+</div>

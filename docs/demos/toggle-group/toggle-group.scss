@@ -1,0 +1,40 @@
+.rows {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-4);
+}
+
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--volt-space-4);
+  row-gap: var(--volt-space-3);
+}
+
+// Clipped rather than overflowing when the lines are not wrapped, so turning
+// wrapping off is something the page can be seen to do.
+.sample {
+  margin-block: 0;
+  max-inline-size: 34rem;
+  overflow-x: hidden;
+  text-overflow: ellipsis;
+}
+
+.bold {
+  font-weight: var(--volt-font-weight-semibold);
+}
+
+.italic {
+  font-style: italic;
+}
+
+.underline {
+  text-decoration-line: underline;
+}
+
+.note {
+  max-inline-size: 34rem;
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}

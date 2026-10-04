@@ -152,6 +152,12 @@ export const fieldStyles = /* @__PURE__ */ ((): ComponentStyles => {
         declarations: {
           'font-size': 'var(--volt-font-size-1)',
           'line-height': 'var(--volt-line-height-normal)',
+          // The line the message will take, held while the region is empty:
+          // the region is drawn before it has anything to say so that what
+          // it says is announced, and without a height of its own every field
+          // below one that fails would move down when the words arrive. A
+          // message longer than a line still grows the region.
+          'min-block-size': '1lh',
           color: 'var(--volt-color-danger)',
         },
       },

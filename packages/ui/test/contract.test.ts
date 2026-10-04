@@ -332,7 +332,7 @@ describe('the registry', () => {
     for (const name of keyframes) expect(name.startsWith('volt-')).toBe(true);
   });
 
-  it('holds the twenty-six components styled so far', () => {
+  it('holds the thirty-eight components styled so far', () => {
     expect(componentStyles.map((component) => component.name)).toEqual([
       'accordion',
       'alert',
@@ -342,23 +342,35 @@ describe('the registry', () => {
       'button',
       'checkbox',
       'chip',
+      'code',
       'collapsible',
       'dialog',
       'field',
+      'file-upload',
+      'image',
       'kbd',
       'menu',
+      'number-input',
       'pagination',
+      'password-input',
+      'pin-input',
       'popover',
       'progress',
       'radio-group',
+      'rating',
+      'relative-time',
       'select',
+      'separator',
       'skeleton',
+      'slider',
       'spinner',
       'stepper',
       'switch',
       'table',
       'tabs',
+      'tags-input',
       'toast',
+      'toggle-group',
       'tooltip',
     ]);
   });

@@ -2,6 +2,12 @@
 
 Rows, and what draws them.
 
+::: warning Not on npm yet
+Part of `@voltdev/ui`, which is not published yet — see
+[the package](./ui). Everything here works from a checkout of the Volt
+repository.
+:::
+
 Each component below is a tag you write, with the primitive that owns its
 behaviour named beside it. What is not a tag yet is the markup to write by
 hand: the same primitive, the same class names, and the same look — which is

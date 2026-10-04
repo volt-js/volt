@@ -1,0 +1,27 @@
+<pre
+  :if="isBlock"
+  :host
+  :ref="pre"
+  class="volt-code-block"
+  :attr-data-wrap="wraps() ? '' : undefined"
+  :attr-data-line-numbers="numbered() ? '' : undefined"
+  :spread="preProps()"
+><code
+  :ref="content"
+  class="volt-code-content"
+  :spread="code.codeProps()"
+><slot></slot></code><span
+  :if="numbered()"
+  class="volt-code-lines"
+  aria-hidden="true"
+><span
+  :for="line in lines()"
+  :key="$index"
+  class="volt-code-line"
+><span class="volt-code-line-text">{ line }</span></span></span><button
+  :if="copies()"
+  class="volt-code-copy"
+  :spread="copyProps()"
+>{ copyWords() }</button></pre>
+
+<code :if="!isBlock" :host class="volt-code" :spread="inlineProps()"><slot></slot></code>

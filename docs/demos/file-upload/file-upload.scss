@@ -1,0 +1,41 @@
+.rows {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-4);
+  max-inline-size: 30rem;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--volt-space-3);
+  row-gap: var(--volt-space-2);
+}
+
+// The glyph above the words, the size of a heading, in the zone's own muted
+// colour so that it reads as part of the box rather than as a second label.
+.icon {
+  font-size: var(--volt-font-size-4);
+  line-height: 1;
+}
+
+// The page's own row: one line, the name taking what is left.
+.compact {
+  display: flex;
+  align-items: center;
+  column-gap: var(--volt-space-2);
+}
+
+.name {
+  flex-grow: 1;
+  min-inline-size: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.note {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}

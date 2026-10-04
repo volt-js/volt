@@ -1,0 +1,42 @@
+.rows {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-6);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  column-gap: var(--volt-space-4);
+  row-gap: var(--volt-space-3);
+}
+
+// A width of the page's choosing, on the box the tag lands its class on. The
+// height is still the picture's own ratio.
+.cover {
+  inline-size: 20rem;
+}
+
+.side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  row-gap: var(--volt-space-2);
+  max-inline-size: 16rem;
+}
+
+// A box with only a ratio is as wide as what holds it, so the figure is what
+// sets the size.
+.fit {
+  inline-size: 8rem;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-1);
+}
+
+.note {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}

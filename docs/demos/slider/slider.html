@@ -1,0 +1,24 @@
+<div class="rows">
+  <v-slider :value="volume" label="Volume" name="volume"></v-slider>
+  <span class="note">Volume at { volume.get()[0] }.</span>
+
+  <v-slider
+    :value="price"
+    label="Price per night"
+    name="price"
+    step="5"
+    :thumbLabels="['From', 'To']"
+    :format="pounds"
+    :marks="marks"
+    :onValueCommit="commit"
+  ></v-slider>
+  <span class="note">
+    Showing { span(price.get()) }; last searched for { span(searched.get()) }. The
+    search waits for the thumb to be let go of, and each thumb is read out in pounds.
+  </span>
+
+  <div class="row">
+    <v-slider :defaultValue="30" label="Warmth" orientation="vertical" :marks="[0, 50, 100]"></v-slider>
+    <span class="note">Stood on end, the value grows upwards and Up is the key that raises it.</span>
+  </div>
+</div>

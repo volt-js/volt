@@ -1,0 +1,69 @@
+.rows {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-4);
+}
+
+// A thread of comments, each a line of metadata over its text: the stamp in
+// the muted colour of the line it sits in, which its underline follows.
+.thread {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-3);
+  max-inline-size: 30rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.comment {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-1);
+}
+
+.meta {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}
+
+.author {
+  color: var(--volt-color-on-surface);
+  font-weight: var(--volt-font-weight-semibold);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--volt-space-4);
+  row-gap: var(--volt-space-2);
+}
+
+.status {
+  color: var(--volt-color-on-surface-muted);
+}
+
+.note {
+  max-inline-size: 30rem;
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}
+
+// One moment, read across languages and down lengths.
+.lengths {
+  border-collapse: collapse;
+}
+
+.lengths th {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+  font-weight: var(--volt-font-weight-medium);
+  text-align: start;
+}
+
+.lengths th,
+.lengths td {
+  padding-block: var(--volt-space-1);
+  padding-inline: 0 var(--volt-space-6);
+}

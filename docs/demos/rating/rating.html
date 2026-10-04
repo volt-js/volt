@@ -1,0 +1,27 @@
+<div class="stack">
+  <h3 class="heading" id="stay-heading">How was your stay?</h3>
+  <v-rating :value="stay" name="stay" aria-labelledby="stay-heading" :format="stars"></v-rating>
+  <p class="note">{ said() } The arrows move and choose in one press, Delete clears it,
+    and the pointer shows what a press would choose before it does.</p>
+
+  <div class="row">
+    <v-rating halves name="food" label="The food" :defaultValue="3.5"></v-rating>
+    <span class="note">Halves: two radios to a star, so a step is half of one.</span>
+  </div>
+
+  <div class="row">
+    <v-rating halves readOnly :defaultValue="average"></v-rating>
+    <span class="note">From 212 reviews. Read-only, it is one image named by its score.</span>
+  </div>
+
+  <div class="row">
+    <v-rating name="staff" label="The staff" :defaultValue="4">
+      <template :slot-icon>
+        <svg viewBox="0 0 24 24" width="100%" height="100%">
+          <path d="M12 20.5s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.6a4.3 4.3 0 0 1 7.5 2.7c0 5.6-7.5 10.2-7.5 10.2z"></path>
+        </svg>
+      </template>
+    </v-rating>
+    <span class="note">A shape of your own, filled and stroked by the sheet.</span>
+  </div>
+</div>

@@ -1,0 +1,40 @@
+<form class="form" :submit="order($event)">
+  <v-number-input
+    :value="quantity"
+    label="Quantity"
+    name="quantity"
+    :min="1"
+    :max="99"
+    description="Up to 99 per order. The arrows step by one, PageUp and PageDown by ten."
+    required
+    :prop-error="refused.get()"
+  ></v-number-input>
+
+  <v-number-input
+    :value="price"
+    label="Unit price"
+    name="price"
+    locale="en-US"
+    :min="0"
+    :step="0.01"
+    :format="dollars"
+    validateOn="blur"
+    description="Type 1234.5 or paste $1,234.50 — it is written as a price either way."
+  ></v-number-input>
+
+  <v-number-input
+    :value="weight"
+    label="Weight in kilograms"
+    name="weight"
+    locale="de-DE"
+    :min="0"
+    :step="0.25"
+  >
+    <template :slot-description>Read and written the German way — <code>1.234,50</code> — whatever the page's locale.</template>
+  </v-number-input>
+
+  <div class="row">
+    <v-button type="submit" variant="primary">Add to order</v-button>
+    <span class="note">{ result.get() || total() }</span>
+  </div>
+</form>

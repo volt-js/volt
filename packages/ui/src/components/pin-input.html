@@ -1,0 +1,23 @@
+<div class="volt-field" :spread="pin.fieldProps()">
+  <label class="volt-field-label" :ref="labelEl" :spread="labelProps()"><slot name="label">{ label.get() }</slot></label>
+
+  <div :host :ref="group" class="volt-pin-input" :spread="groupProps()">
+    <input
+      :for="index in boxes"
+      :key="index"
+      class="volt-pin-input-box"
+      :spread="boxProps(index)"
+      :attr-value="start[index]"
+      :keydown="pin.onKeyDown($event, index)"
+      :input="pin.onInput($event, index)"
+      :paste="pin.onPaste($event, index)"
+      :focus="pin.onFocus(index)"
+    >
+  </div>
+
+  <input :ref="hidden" :spread="pin.hiddenInputProps()" :attr-value="start.join('') || undefined">
+
+  <p class="volt-field-description" :ref="descriptionEl" :spread="pin.descriptionProps()"><slot name="description">{ description.get() }</slot></p>
+
+  <p class="volt-field-error" :ref="errorEl" :spread="pin.errorMessageProps()">{ message() }</p>
+</div>

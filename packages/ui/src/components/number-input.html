@@ -1,0 +1,21 @@
+<div class="volt-field" :spread="number.fieldProps()">
+  <label class="volt-field-label" :ref="labelEl" :spread="number.labelProps()"><slot name="label">{ label.get() }</slot></label>
+
+  <div class="volt-number-input">
+    <input
+      :host
+      class="volt-field-control"
+      :ref="control"
+      :spread="inputProps()"
+      :keydown="keydown($event)"
+      :blur="number.onBlur()"
+    >
+    <input :spread="hiddenProps()">
+    <button class="volt-number-input-button" :spread="number.decrementProps()" :mousedown="stay($event)" :click="number.decrement()">−</button>
+    <button class="volt-number-input-button" :spread="number.incrementProps()" :mousedown="stay($event)" :click="number.increment()">+</button>
+  </div>
+
+  <p class="volt-field-description" :ref="descriptionEl" :spread="number.descriptionProps()"><slot name="description">{ description.get() }</slot></p>
+
+  <p class="volt-field-error" :ref="errorEl" :spread="number.errorMessageProps()">{ message() }</p>
+</div>

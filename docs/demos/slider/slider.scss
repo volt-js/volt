@@ -1,0 +1,17 @@
+.rows {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--volt-space-4);
+  max-inline-size: var(--volt-space-120);
+}
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  column-gap: var(--volt-space-6);
+}
+
+.note {
+  color: var(--volt-color-on-surface-muted);
+  font-size: var(--volt-font-size-1);
+}
