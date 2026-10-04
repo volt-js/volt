@@ -1,0 +1,38 @@
+<section>
+  <v-rows>
+    <template :slot-row="{ row, total, note }">
+      <b>{ row.name }</b>
+      <i>{ row.nmae }</i>
+      <span>{ note }</span>
+      <em>{ total }</em>
+    </template>
+  </v-rows>
+  <v-table>
+    <template :slot-cell="{ cell }"><b>{ cell.label }</b><i>{ cell.lable }</i></template>
+  </v-table>
+  <v-frame :slot-default="{ name }"><b>{ name.toUpperCase() }</b><i>{ name.size }</i></v-frame>
+  <v-mystery>
+    <template :slot-item="{ thing }"><p>{ thing }</p><p>{ thing.name }</p></template>
+  </v-mystery>
+  <p>{ loose }</p>
+  <p>{ vague }</p>
+  <p>{ count }</p>
+  <v-rows><li :for="tag in row.tags" :key="tag" :slot-row="{ row }">{ tag.size }</li></v-rows>
+  <v-frame :for="n in counts" :key="n" :caption="name.toFixed(n)" :slot-default="{ name }">{ name.toUpperCase() }</v-frame>
+  <v-frame :caption="name.toFixed(1)" :slot-default="{ name }">{ name.toUpperCase() }</v-frame>
+  <p :for="none in nothing" :key="none">{ none }</p>
+  <v-frame :slot-default="{ name }"><b :slot-caption>{ name.toFixed(1) }</b>{ name.toUpperCase() }</v-frame>
+  <v-list :items="people">
+    <template :slot-item="{ item, count }"><b>{ item.name }</b><i>{ count.size }</i></template>
+  </v-list>
+  <v-pages>
+    <template :slot-page="{ page }"><b>{ page.number }</b></template>
+    <template :slot-link="{ link }"><b>{ link.href }</b><i>{ link.number }</i></template>
+    <template :slot-error="{ reason }"><b>{ reason.length }</b></template>
+    <template :slot-entry="{ entry }"><b :if="entry.kind === 'page'">{ entry.number }</b><i :else-if="entry.kind === 'link'">{ entry.href }</i><s :else>{ entry.number }</s></template>
+  </v-pages>
+  <v-tile><template :slot-body="{ caption }">{ caption.size }</template></v-tile>
+  <v-rows><b :slot-row="{ row }">{ row.name }</b><i :slot-row>{ row.id }{ row.nmae }</i></v-rows>
+  <v-badge><template :slot-task="{ state, level, tone }">{ labels[state] }{ heading(level) }{ toned(tone) }{ state.size }</template></v-badge>
+  <v-broken><template :slot-row="{ row }">{ row.nmae }</template></v-broken>
+</section>

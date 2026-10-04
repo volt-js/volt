@@ -1,0 +1,3 @@
+<div :for="cell in cells" :key="cell.label">
+  <slot name="cell" :cell="cell">{ cell.label }</slot>
+</div>

@@ -99,11 +99,43 @@ export interface TypeCheckBlock {
   errors: { message: string; loc: SourceLocation }[];
 }
 
+/**
+ * A component the template writes a tag for, as far as its slots go.
+ *
+ * What a scoped slot hands its content is written on the component's own
+ * outlet — `<slot name="row" :row="person">` — and nowhere else, so its type
+ * is the type of those expressions, read against that component's class.
+ */
+export interface ComponentSource {
+  /** The class, spelled so the block's own module can name it. */
+  className: string;
+  /** The component's template, whose outlets say what each slot passes. */
+  root: RootNode;
+  /**
+   * How many type parameters the class takes, when it is generic.
+   *
+   * Each is read as `any`. What they are is decided by the props the tag is
+   * written with, which nothing here follows, and left to TypeScript they
+   * would be their bound, `unknown` — which refuses every use of a name the
+   * caller knows the type of.
+   */
+  typeParameters?: number;
+}
+
 export interface TypeCheckOptions {
   /** The component class the template belongs to, as named in its module. */
   className: string;
   /** What the instance is called inside the block. Defaults to `_ctx`. */
   ctx?: string;
+  /**
+   * The components the template can write tags for, by selector.
+   *
+   * Content filling a scoped slot of a tag found here has its names typed by
+   * that tag's outlet. Any other tag's are `any`: a template on its own does
+   * not say which class a tag is, and an `any` reports nothing it cannot
+   * stand behind.
+   */
+  components?: ReadonlyMap<string, ComponentSource>;
 }
 
 /** Restate every expression in `root` as TypeScript against `className`. */
@@ -124,9 +156,32 @@ const NAME = /^[A-Za-z_$][A-Za-z0-9_$]*/;
 
 type Position = 'expression' | TypeCheckRule;
 
+/** One arm of an `:if` chain, and whether a comment before it asked it be spared. */
+interface Link {
+  node: ElementNode;
+  spared: boolean;
+}
+
+/** The component whose tag a list of children is written directly inside. */
+interface Filling {
+  /** Its selector, which says whose slots a `:slot-*` among them fills. */
+  tag: string;
+  /** The pattern each filled slot binds, by slot name. See `slotPatterns`. */
+  patterns: ReadonlyMap<string, DirectiveNode>;
+}
+
+/**
+ * What a child component's instance is called while its outlet is restated.
+ *
+ * Not the block's own `_ctx`: inside the restatement both are in reach, and a
+ * name that resolved to the wrong one would type a slot by the wrong class.
+ */
+const HOST = '__volt_host';
+
 class BlockEmitter {
   private readonly ctxName: string;
   private readonly className: string;
+  private readonly components: ReadonlyMap<string, ComponentSource> | undefined;
 
   private parts: string[] = [];
   private length = 0;
@@ -136,7 +191,7 @@ class BlockEmitter {
   private errors: { message: string; loc: SourceLocation }[] = [];
 
   /** Which helpers the body reached for, so unused ones are never declared. */
-  private used = { expr: false, read: false, handler: false };
+  private used = { expr: false, read: false, handler: false, pass: false };
 
   /** Depth of `<!-- volt-ignore -->` regions the walk is currently inside. */
   private ignoring = 0;
@@ -146,6 +201,7 @@ class BlockEmitter {
   constructor(options: TypeCheckOptions) {
     this.ctxName = options.ctx ?? '_ctx';
     this.className = options.className;
+    this.components = options.components;
   }
 
   run(root: RootNode): TypeCheckBlock {
@@ -175,8 +231,12 @@ class BlockEmitter {
       lines.push(
         '  type __VoltSignal = { get(): unknown };',
         // Not distributive: a union that is only sometimes a signal is left
-        // alone, because the value that is not one has to render somehow.
-        '  type __VoltRead<T> = [T] extends [__VoltSignal] ? never : 0;',
+        // alone, because the value that is not one has to render somehow. And
+        // `any` and `never` first, because both extend everything: an `any`
+        // is what nobody could type and a `never` is what holds nothing,
+        // and neither is evidence of a signal.
+        '  type __VoltRead<T> = 0 extends 1 & T ? 0 : [T] extends [never] ? 0 :' +
+          ' [T] extends [__VoltSignal] ? never : 0;',
         '  const __volt_read = null! as <T>(value: T, read: __VoltRead<T>) => void;',
       );
     }
@@ -189,6 +249,16 @@ class BlockEmitter {
     }
     if (this.used.expr) {
       lines.push('  const __volt_expr = null! as (value: unknown) => void;');
+    }
+    if (this.used.pass) {
+      lines.push(
+        // What a slot passes reaches its content as the value itself, so
+        // `'done'` is `'done'` there, as a `const` would hold it — where a
+        // function's inferred return widens it to `string`. A parameter whose
+        // bound has primitives in it keeps the literal, and `unknown`, `void`
+        // and everything else still pass through unchanged.
+        '  const __volt_pass = null! as <T extends {} | null | undefined | void>(value: T) => T;',
+      );
     }
     return `${lines.join('\n')}\n`;
   }
@@ -311,12 +381,30 @@ class BlockEmitter {
 
   // -- traversal ------------------------------------------------------------
 
-  private children(nodes: TemplateChildNode[], ctx: PrintContext): void {
+  /**
+   * `host` is the selector of the component whose tag `nodes` are written
+   * directly inside, which is whose slot a `:slot-*` among them fills. `only`
+   * is for a list read in two scopes, and picks this reading's half of it.
+   */
+  private children(
+    nodes: TemplateChildNode[],
+    ctx: PrintContext,
+    host: string | null = null,
+    only?: (node: TemplateChildNode) => boolean,
+  ): void {
+    const filling = host === null ? null : { tag: host, patterns: slotPatterns(nodes) };
     for (let i = 0; i < nodes.length; i++) {
       const node = nodes[i]!;
 
       if (node.type === 'comment') {
         if (isIgnoreComment(node.content)) this.pendingIgnore = true;
+        continue;
+      }
+      if (only !== undefined && !only(node)) {
+        // The other reading visits it, and the comment before it with it.
+        // Text is the exception: no comment spares text, so it passes one on
+        // to whatever follows it, in this reading as in the other.
+        if (node.type !== 'text') this.pendingIgnore = false;
         continue;
       }
       if (node.type === 'interpolation') {
@@ -332,12 +420,13 @@ class BlockEmitter {
       // A `:if` chain is consumed as a unit, exactly as codegen consumes it,
       // so an `:else` branch's own bindings are visited once and in order.
       if (findDirective(node, 'if')) {
+        const links: Link[] = [{ node, spared: this.pendingIgnore }];
+        let pending = false;
         let j = i + 1;
-        this.spared(() => this.element(node, ctx));
         while (j < nodes.length) {
           const next = nodes[j]!;
           if (next.type === 'comment') {
-            if (isIgnoreComment(next.content)) this.pendingIgnore = true;
+            if (isIgnoreComment(next.content)) pending = true;
             j++;
             continue;
           }
@@ -345,18 +434,22 @@ class BlockEmitter {
             next.type === 'element' &&
             (findDirective(next, 'else-if') || findDirective(next, 'else'))
           ) {
-            this.spared(() => this.element(next, ctx));
+            links.push({ node: next, spared: pending });
+            pending = false;
             j++;
             if (findDirective(next, 'else')) break;
             continue;
           }
           break;
         }
+        this.chain(links, ctx, filling);
+        // A comment after the last arm is the next node's to claim.
+        this.pendingIgnore = pending;
         i = j - 1;
         continue;
       }
 
-      this.spared(() => this.element(node, ctx));
+      this.spared(() => this.element(node, ctx, filling));
     }
 
     // An ignore comment written last in a list spares nothing, and must not
@@ -383,32 +476,124 @@ class BlockEmitter {
     }
   }
 
-  private element(node: ElementNode, ctx: PrintContext): void {
+  /**
+   * A chain's arms, each tested where the arms after it can see what it ruled
+   * out: `if (a) { … } else { if (b) { … } else { … } }`.
+   *
+   * A condition is restated twice. Once as the expression the rule reads,
+   * mapped and reported like any other; once more as the test itself, which
+   * is what narrows what its arm reads — `{ entry.number }` under
+   * `:if="entry.kind === 'page'"` is a page's, and a name a scoped slot
+   * passed is no less a union for having come through a slot. The test is
+   * never mapped, so nothing is reported twice.
+   */
+  private chain(links: readonly Link[], ctx: PrintContext, filling: Filling | null): void {
+    // An arm with a `:for`, or filling a slot whose names a pattern binds,
+    // reads its condition inside that scope, and no test around the arm can
+    // see into it.
+    const scoped = links.some(
+      ({ node }) =>
+        findDirective(node, 'for')?.exp || patternFor(node, filling?.patterns) !== undefined,
+    );
+    if (scoped) {
+      for (const link of links) {
+        this.pendingIgnore = link.spared;
+        this.spared(() => this.element(link.node, ctx, filling));
+      }
+      return;
+    }
+
+    let open = 0;
+    links.forEach((link, k) => {
+      if (k > 0) {
+        this.line('else {');
+        this.depth++;
+        open++;
+      }
+      this.pendingIgnore = link.spared;
+      this.spared(() => {
+        const test = findDirective(link.node, 'if') ?? findDirective(link.node, 'else-if');
+        if (test?.exp) {
+          this.expression(test.exp, test.expLoc, ctx, 'condition');
+          this.line(`if (${condition(test.exp, ctx)}) {`);
+        } else {
+          this.line('{');
+        }
+        this.depth++;
+        this.element(withoutConditions(link.node), ctx, filling);
+        this.depth--;
+        this.line('}');
+      });
+    });
+    for (; open > 0; open--) {
+      this.depth--;
+      this.line('}');
+    }
+  }
+
+  private element(node: ElementNode, ctx: PrintContext, filling: Filling | null): void {
+    const pattern = patternFor(node, filling?.patterns);
+    if (filling !== null && pattern !== undefined) {
+      // Inside a component's tag, a `:slot-*` fills that component's slot,
+      // whatever it is written on, and the rest of the element — its `:for`,
+      // its `:if`, its props — is that slot's content. So the pattern is the
+      // scope around all of it, as it is when the content renders, and a
+      // condition on it is an arm of its own inside that scope.
+      const content = withoutSlot(node);
+      this.slotScope(pattern, filling.tag, ctx, () =>
+        content.directives.some((d) => CONDITIONS.has(d.kind))
+          ? this.chain([{ node: content, spared: false }], ctx, null)
+          : this.element(content, ctx, null),
+      );
+      return;
+    }
     const forDir = findDirective(node, 'for');
     if (forDir?.exp) {
       this.forElement(node, forDir, ctx);
       return;
     }
-    const slotDir = findDirective(node, 'slot');
-    if (slotDir?.exp) {
-      this.slotContent(node, slotDir, ctx);
-      return;
-    }
-    this.directives(node.directives, ctx, node.isComponent);
-    this.children(node.children, ctx);
+    this.contents(node, ctx);
   }
 
   /**
-   * `:slot-<name>="pattern"` binds what the slot passes, for its content.
+   * An element's own bindings, then what is written inside it.
+   *
+   * A tag inside no component's tag can name what its own default slot
+   * passes, and those names are the scope of its default content and of
+   * nothing else: its props and its `:for` are read where the tag is written,
+   * and a child filling a slot by name is that slot's content, rendered
+   * without them.
+   */
+  private contents(node: ElementNode, ctx: PrintContext): void {
+    this.directives(node.directives, ctx, node.isComponent);
+    const host = ownHost(node);
+    const own = findDirective(node, 'slot');
+    if (!own?.exp) {
+      this.children(node.children, ctx, host);
+      return;
+    }
+    this.slotScope(own, host, ctx, () =>
+      this.children(node.children, ctx, host, (child) => !fillsSlot(child)),
+    );
+    this.children(node.children, ctx, host, fillsSlot);
+  }
+
+  /**
+   * `:slot-<name>="pattern"` binds what the slot passes, for `body`.
    *
    * The names are declared, so the content is checked against the component
-   * it is written in rather than reported as missing members of it. Their type
-   * is not known here: it belongs to the component being filled, and a
-   * template does not yet type a child component's own slots. Declaring them
-   * as `any` is what keeps the check honest either way — it reports nothing it
-   * cannot stand behind, and reports everything else in the content as usual.
+   * it is written in rather than reported as missing members of it. Their
+   * type is what the filled component's outlet hands over, when the block was
+   * told which component that is. Otherwise it is `any`, which keeps the
+   * check honest: it reports nothing it cannot stand behind, and reports
+   * everything else in the content as usual.
    */
-  private slotContent(node: ElementNode, dir: DirectiveNode, ctx: PrintContext): void {
+  private slotScope(
+    dir: DirectiveNode,
+    host: string | null,
+    ctx: PrintContext,
+    body: () => void,
+  ): void {
     let pattern;
     try {
       pattern = parseForExpression(`${dir.exp} in _`).item;
@@ -419,19 +604,45 @@ class BlockEmitter {
 
     this.line('{');
     this.depth++;
-    this.line(`const ${printPattern(pattern, ctx)}: any = {} as any;`);
-
-    withScope(ctx, patternNames(pattern), () => {
-      this.directives(
-        node.directives.filter((d) => d !== dir),
-        ctx,
-        node.isComponent,
-      );
-      this.children(node.children, ctx);
-    });
-
+    const declared = printPattern(pattern, ctx);
+    const passed = host === null ? null : this.slotPasses(host, dir.name);
+    if (passed === null) {
+      this.line(`const ${declared}: any = {} as any;`);
+    } else {
+      this.line(`const ${declared} = (() => {`);
+      for (const line of passed) this.line(`  ${line}`);
+      this.line('})();');
+    }
+    withScope(ctx, patternNames(pattern), body);
     this.depth--;
     this.line('}');
+  }
+
+  /**
+   * The body of a function returning what `tag`'s slot `name` passes, or null
+   * when nothing says.
+   *
+   * Every outlet of that name is restated where it sits, inside the `:for`
+   * rows around it, as a `return` of the object it builds; the function's
+   * inferred return type is then the union of them all, which is exactly what
+   * the content can be handed. None of it is a span, so nothing in it is ever
+   * reported here: a mistake in an outlet belongs to the component that wrote
+   * it, and is reported when its own template is checked.
+   */
+  private slotPasses(tag: string, name: string): string[] | null {
+    const source = this.components?.get(tag);
+    if (source === undefined) return null;
+    const returns = outletReturns(source.root.children, name, createPrintContext(HOST));
+    if (returns === null) return null;
+    this.used.pass = true;
+    const count = source.typeParameters ?? 0;
+    const args = count > 0 ? `<${Array<string>(count).fill('any').join(', ')}>` : '';
+    return [
+      `const ${HOST} = null! as __VoltInstance<typeof ${source.className}${args}>;`,
+      ...returns,
+      // Reached only past every outlet, and `never` adds nothing to a union.
+      'return null!;',
+    ];
   }
 
   private slotOutlet(node: SlotOutletNode, ctx: PrintContext): void {
@@ -540,8 +751,7 @@ class BlockEmitter {
         this.depth--;
         this.line('}');
       }
-      this.directives(node.directives, ctx, node.isComponent);
-      this.children(node.children, ctx);
+      this.contents(node, ctx);
     });
 
     this.depth--;
@@ -558,6 +768,284 @@ function findDirective(
   kind: string,
 ): DirectiveNode | undefined {
   return node.directives.find((d) => d.kind === kind);
+}
+
+/** The selector whose slots a tag's own content fills, if the tag is a component. */
+function ownHost(node: ElementNode): string | null {
+  return node.isComponent ? node.tag : null;
+}
+
+/** An element as the slot it fills renders it: every `:slot-*` taken off, as codegen takes them. */
+function withoutSlot(node: ElementNode): ElementNode {
+  return { ...node, directives: node.directives.filter((d) => d.kind !== 'slot') };
+}
+
+/** An arm as its chain renders it, once its condition has been tested. */
+function withoutConditions(node: ElementNode): ElementNode {
+  return { ...node, directives: node.directives.filter((d) => !CONDITIONS.has(d.kind)) };
+}
+
+/** Whether a component tag's child is content for a slot it names, rather than the default. */
+function fillsSlot(node: TemplateChildNode): boolean {
+  return node.type === 'element' && findDirective(node, 'slot') !== undefined;
+}
+
+/**
+ * The pattern each slot filled among `nodes` binds, by slot name.
+ *
+ * Codegen gathers a slot's elements before it renders any of them, and binds
+ * the one pattern one of them names for all of them: `<i :slot-row>` beside
+ * `<b :slot-row="{ row }">` reads the same `row`, before it as after. A
+ * pattern that does not parse is left to the element that wrote it to report.
+ */
+function slotPatterns(nodes: readonly TemplateChildNode[]): Map<string, DirectiveNode> {
+  const found = new Map<string, DirectiveNode>();
+  for (const node of nodes) {
+    const dir = node.type === 'element' ? findDirective(node, 'slot') : undefined;
+    if (!dir?.exp || found.has(dir.name)) continue;
+    try {
+      parseForExpression(`${dir.exp} in _`);
+    } catch {
+      continue;
+    }
+    found.set(dir.name, dir);
+  }
+  return found;
+}
+
+/**
+ * The pattern binding the content of the slot `node` fills, its own or a
+ * sibling's, given the patterns of the component tag it is a child of.
+ */
+function patternFor(
+  node: ElementNode,
+  patterns: ReadonlyMap<string, DirectiveNode> | undefined,
+): DirectiveNode | undefined {
+  if (patterns === undefined) return undefined;
+  const dir = findDirective(node, 'slot');
+  if (dir === undefined) return undefined;
+  return dir.exp ? dir : patterns.get(dir.name);
+}
+
+/**
+ * Statements reaching every outlet of slot `name` in `nodes`, each returning
+ * what that outlet passes, or null when `nodes` hold none.
+ *
+ * An outlet with `:from` is skipped: it draws content written inside another
+ * tag, so what it passes says nothing about a slot of the component it is
+ * written in.
+ */
+function outletReturns(
+  nodes: readonly TemplateChildNode[],
+  name: string,
+  ctx: PrintContext,
+  inComponent = false,
+): string[] | null {
+  // Inside a component's tag, the patterns its slots are filled with, shared
+  // as codegen shares them among the elements filling one slot.
+  const patterns = inComponent ? slotPatterns(nodes) : undefined;
+  let found: string[] | null = null;
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i]!;
+    let lines: string[] | null = null;
+    if (node.type === 'slot-outlet') {
+      // A fallback can hold an outlet of its own.
+      lines = outletReturns(node.children, name, ctx);
+      if (node.from === undefined && node.name === name) {
+        lines = [...(lines ?? []), `return ${outletProps(node, ctx)};`];
+      }
+    } else if (node.type === 'element') {
+      const links = chainAt(nodes, i, inComponent);
+      if (links === null) {
+        lines = elementReturns(node, name, ctx, patterns);
+      } else {
+        lines = chainReturns(links.chain, name, ctx);
+        i = links.end - 1;
+      }
+    }
+    if (lines !== null) (found ??= []).push(...lines);
+  }
+  return found;
+}
+
+/**
+ * The same, for one element, in the scopes it renders in — which are the
+ * block's own: a slot it fills is the scope around its condition and its
+ * `:for`, its condition the scope around its `:for`, as codegen tests it, and
+ * its `:for` the scope around a pattern of its own.
+ */
+function elementReturns(
+  node: ElementNode,
+  name: string,
+  ctx: PrintContext,
+  patterns: ReadonlyMap<string, DirectiveNode> | undefined,
+): string[] | null {
+  const pattern = patternFor(node, patterns);
+  if (pattern !== undefined) {
+    const content = withoutSlot(node);
+    return patternReturns(pattern, ctx, () => elementReturns(content, name, ctx, undefined));
+  }
+  // A link read on its own: the start of the content of a slot it fills,
+  // which codegen chains with the rest of that slot rather than its siblings.
+  if (node.directives.some((d) => CONDITIONS.has(d.kind))) {
+    return chainReturns([node], name, ctx);
+  }
+  const forDir = findDirective(node, 'for');
+  if (forDir?.exp) {
+    let loop;
+    try {
+      loop = parseForExpression(forDir.exp);
+    } catch {
+      return null;
+    }
+    const head =
+      `for (const ${printPattern(loop.item, ctx)} of ` +
+      `(${printExpression(loop.source, ctx, 1)}) ?? []) {`;
+    const names = patternNames(loop.item);
+    if (loop.index) names.push(loop.index);
+    const body = withScope(ctx, names, () => contentReturns(node, name, ctx));
+    if (body === null) return null;
+    const index = loop.index ? [`const ${loop.index}: number = 0;`] : [];
+    return [head, ...indented([...index, ...body]), '}'];
+  }
+  return contentReturns(node, name, ctx);
+}
+
+function contentReturns(node: ElementNode, name: string, ctx: PrintContext): string[] | null {
+  const returns = (nodes: TemplateChildNode[]) =>
+    outletReturns(nodes, name, ctx, node.isComponent);
+  const own = findDirective(node, 'slot');
+  if (!own?.exp) return returns(node.children);
+  const inside = patternReturns(own, ctx, () =>
+    returns(node.children.filter((child) => !fillsSlot(child))),
+  );
+  const outside = returns(node.children.filter(fillsSlot));
+  return inside === null && outside === null ? null : [...(inside ?? []), ...(outside ?? [])];
+}
+
+const CONDITIONS = new Set(['if', 'else-if', 'else']);
+
+/**
+ * The chain an `:if` at `start` begins, or null when there is none: it and
+ * the `:else-if`s and `:else` after it, read as codegen reads them, with
+ * comments between links passed over. Inside a component's tag an `:if` that
+ * fills a slot is the start of that slot's content instead, and is read with
+ * the slot.
+ */
+function chainAt(
+  nodes: readonly TemplateChildNode[],
+  start: number,
+  inComponent: boolean,
+): { chain: ElementNode[]; end: number } | null {
+  const first = nodes[start]!;
+  if (first.type !== 'element' || !findDirective(first, 'if')) return null;
+  if (inComponent && findDirective(first, 'slot')) return null;
+  const chain = [first];
+  let end = start + 1;
+  while (end < nodes.length) {
+    const next = nodes[end]!;
+    if (next.type === 'comment') {
+      end++;
+      continue;
+    }
+    if (next.type !== 'element') break;
+    const last = findDirective(next, 'else');
+    if (!last && !findDirective(next, 'else-if')) break;
+    chain.push(next);
+    end++;
+    if (last) break;
+  }
+  return { chain, end };
+}
+
+/**
+ * Statements for the outlets in a chain's arms, each under its arm's own
+ * condition, or null when no arm holds one.
+ *
+ * The condition is what narrows a value a component hands over — a page
+ * passed only from the arm where the entry is one, an error only where there
+ * is one — so an outlet read without it hands the content the whole union,
+ * and content that renders cleanly is reported. An arm with no outlet is kept
+ * for what it rules out of the arms after it.
+ */
+function chainReturns(
+  chain: readonly ElementNode[],
+  name: string,
+  ctx: PrintContext,
+): string[] | null {
+  const arms = chain.map((link) => elementReturns(withoutConditions(link), name, ctx, undefined));
+  if (arms.every((arm) => arm === null)) return null;
+
+  const lines: string[] = [];
+  chain.forEach((link, k) => {
+    const test = findDirective(link, 'if') ?? findDirective(link, 'else-if');
+    let head = test === undefined ? '{' : `if (${condition(test.exp, ctx)}) {`;
+    if (k > 0) head = `else ${head}`;
+    lines.push(head, ...indented(arms[k] ?? []), '}');
+  });
+  return lines;
+}
+
+/**
+ * A condition as the test around its arm, which is never mapped: whatever is
+ * wrong with it is reported where it is read as an expression.
+ */
+function condition(exp: string | null, ctx: PrintContext): string {
+  try {
+    return printExpression(parseExpression(exp ?? ''), ctx, 1);
+  } catch {
+    // One that does not parse narrows nothing, and leaves its arm reachable.
+    return 'null! as boolean';
+  }
+}
+
+/**
+ * `body`'s statements, with what a slot's pattern binds declared around them.
+ *
+ * The component filling a slot of its own child: what that child passes is
+ * another component's business, and `any` here only types the outlet's props
+ * less precisely, never wrongly.
+ */
+function patternReturns(
+  dir: DirectiveNode,
+  ctx: PrintContext,
+  body: () => string[] | null,
+): string[] | null {
+  let pattern;
+  try {
+    pattern = parseForExpression(`${dir.exp} in _`).item;
+  } catch {
+    return null;
+  }
+  const declared = printPattern(pattern, ctx);
+  const inner = withScope(ctx, patternNames(pattern), body);
+  if (inner === null) return null;
+  return ['{', `  const ${declared}: any = {} as any;`, ...indented(inner), '}'];
+}
+
+/**
+ * The object an outlet hands its content, as codegen builds it: a written
+ * attribute as its string, and every `:` prop as its expression — each kept
+ * as the literal it may be, by `__volt_pass`.
+ */
+function outletProps(node: SlotOutletNode, ctx: PrintContext): string {
+  const entry = (name: string, value: string) => `${JSON.stringify(name)}: __volt_pass(${value})`;
+  const entries = node.attrs.map((attr) => entry(attr.name, JSON.stringify(attr.value ?? true)));
+  for (const dir of node.directives) {
+    if (dir.kind !== 'prop' || !dir.exp) continue;
+    let value;
+    try {
+      value = printExpression(parseExpression(dir.exp), ctx, 1);
+    } catch {
+      value = 'null! as any';
+    }
+    entries.push(entry(dir.name, value));
+  }
+  return `{ ${entries.join(', ')} }`;
+}
+
+function indented(lines: readonly string[]): string[] {
+  return lines.map((line) => `  ${line}`);
 }
 
 /** `<!-- volt-ignore -->`, and nothing that merely mentions it. */

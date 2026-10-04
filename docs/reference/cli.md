@@ -73,6 +73,80 @@ read in a terminal and in a CI log, and the log is where it matters most.
 checked, and reporting that as "no errors" — or as the same failure as a typo —
 would make the two indistinguishable in CI.
 
+### What a condition narrows
+
+```html
+<b :if="entry.kind === 'page'">{ entry.number }</b>
+<i :else-if="entry.kind === 'link'">{ entry.href }</i>
+<s :else>{ entry.label }</s>
+```
+
+An `:if` chain is checked as the control flow it is. Under
+`:if="entry.kind === 'page'"`, `entry` is a page, so `{ entry.number }` is read
+against the type a page has, and each arm after it reads what the arms before
+it left: the `:else` here sees only an entry that is neither a page nor a link.
+That is what keeps a union — a row of several kinds, an optional field tested
+before it is read — from being reported in every arm as the whole union.
+
+What TypeScript does not narrow, neither does the check. A condition that calls
+something narrows nothing, because a call is not assumed to return the same
+thing twice: under `:if="selected.get()"`, `{ selected.get().label }` is still
+possibly null. Test a name instead — a `:for` row, a field, something a slot
+passed — or read through it with `?.`.
+
+### What a scoped slot hands its content
+
+```html
+<v-rows>
+  <template :slot-row="{ row, total }">{ row.name } of { total.get() }</template>
+</v-rows>
+```
+
+`row` and `total` are typed by what `<v-rows>` passes: the expressions on its
+own outlet, `<slot name="row" :row="person" :total="total">`, read against its
+class, inside whatever `:for` the outlet sits in and under whatever `:if` it is
+drawn in. So `{ row.nmae }` is reported against the type a row really is, and a
+signal the slot hands over is still caught when it is rendered without
+`.get()`. A component that draws an outlet only where `entry.kind === 'page'`
+hands its content a page, not every kind of entry.
+
+A literal arrives as the literal it is. An outlet written
+`:state="task.done ? 'done' : 'todo'"`, or `tone="calm"`, hands its content
+`'done' | 'todo'` and `'calm'` rather than any string, so a record keyed by
+those states, or a parameter that takes only them, accepts the name. The other
+side of the same coin: a comparison against a value the slot never passes, such
+as `state === 'failed'`, is reported, as it would be against a declared union.
+
+The check finds that outlet by following the tag: to the class your component
+lists in `imports`, to the module that declares it, to the `selector` and
+`templateUrl` there. A class from a package is followed through its
+declaration map to the source beside it, so a package that ships its
+`.d.ts.map` files, its source and its templates — `@voltdev/ui` does — has its
+slots typed like your own components'.
+
+Where that trail ends — a tag no `imports` lists, an `imports` that is not a
+list of names, a package without its maps — the names are `any`. An `any`
+reports nothing, a signal least of all: nothing about it says it is one, so a
+value typed `any` rendered bare is never reported as a signal anywhere in a
+template. Nor is a `never` — a row of a list declared as a bare `[]`, say —
+which holds nothing at all.
+
+A generic component's type parameters are `any` there too. In
+`class List<T> { items: T[] }`, what `T` is depends on the `items` your tag
+passes, and the check does not follow a tag's props. So a row its outlet
+passes as a `T` is `any` to your content, while a count it passes as a
+`number` is still checked as one.
+
+The names are in scope where the content renders, which is not always the
+whole tag they are written on. On an element filling a slot, the pattern is
+the scope of everything else on it, a `:for` included:
+`<li :for="tag in row.tags" :slot-row="{ row }">` loops over the row it was
+handed. Several elements filling one slot share the pattern one of them names,
+so `<i :slot-row>` beside `<b :slot-row="{ row }">` reads the same `row`. On a
+component's own tag, `:slot-default` binds the default content and nothing
+more: the tag's props and its `:for` are read where the tag is written, and a
+child filling another slot by name is rendered without them.
+
 ## Sparing an expression
 
 Some expressions are legitimately beyond a type — a value from an untyped

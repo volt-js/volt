@@ -112,6 +112,7 @@ module's exports. They do not report the same things.
 | `volt check` reports | The editor | Why |
 |---|---|---|
 | `volt/signal-read` — `{ count }` where `{ count.get() }` was meant | Says nothing | The rule is carried by a marker argument no mapping covers. Translating its message needs a Volar service plugin, which does not exist, so the diagnostic is dropped rather than shown as TypeScript's own complaint — that `0` is not assignable to `never` — which describes the trick and not the mistake |
+| Errors in what a scoped slot hands its content — `{ row.nmae }` inside `:slot-row="{ row }"` | Says nothing | `volt check` follows the tag to the component it is and types the names by that component's outlet. The editor is not told which component a tag is, so the names are `any`: nothing about them is reported, and nothing after `row.` completes |
 | `volt/expression-syntax` — an expression that does not parse | Says nothing | The expression is left out of the restatement, so it has no completion, no hover and no error; the rest of the template carries on. A `:for` whose expression does not parse takes its whole row with it: the loop is never written, so nothing inside it is restated either |
 | `volt/template-syntax` — a template that does not parse | Says nothing | See [a template that does not parse](#a-template-that-does-not-parse) |
 | `volt/missing-template` — a `templateUrl` naming no file | Says nothing | The mistake is in the `.ts` file, which the plugin never touches, and there is no template to put it on |
@@ -571,6 +572,9 @@ fresh snapshot on every question regenerates every template on every question.
   Until one ships, this is a library for whoever writes it.
 - **No `volt/signal-read`.** A signal rendered or tested without `.get()` is
   caught by `volt check` and not by the editor.
+- **No types for what a scoped slot passes.** The names a `:slot-*` pattern
+  binds are `any` in the editor; `volt check` types them by the component's
+  outlet.
 - **No syntax errors.** An expression or a template that does not parse goes
   quiet rather than red.
 - **No child component props.** A binding on a child's tag is checked as an

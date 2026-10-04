@@ -1,0 +1,12 @@
+<ul>
+  <li :for="entry in entries" :key="entry">
+    <span :if="entry.kind === 'gap'">…</span>
+    <template :else-if="entry.kind === 'page'"><slot name="page" :page="entry"></slot></template>
+    <template :else><slot name="link" :link="entry"></slot></template>
+    <b :if="entry.kind === 'page'">{ entry.number }</b>
+    <slot name="entry" :entry="entry"></slot>
+  </li>
+  <li :for="upload in uploads" :key="upload.id">
+    <template :if="upload.error"><slot name="error" :reason="upload.error"></slot></template>
+  </li>
+</ul>

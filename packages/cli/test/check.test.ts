@@ -14,7 +14,7 @@
  */
 
 import { describe, expect, it, beforeAll } from 'vitest';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { checkTemplates, formatDiagnostic, main, type CheckResult, type Cli } from '../src/index.js';
 import type { TemplateDiagnostic } from '../src/check.js';
 
@@ -152,6 +152,236 @@ describe('a template with nothing wrong with it', () => {
     expect(result.templates).toBe(1);
     expect(result.unreadable).toBe(0);
     expect(result.ignored).toBe(0);
+  });
+});
+
+/**
+ * What a scoped slot hands its content is written on the component's own
+ * outlet — `<slot name="row" :row="person">` — so that is where its type comes
+ * from: the outlet's expressions, restated against the component that writes
+ * them.
+ */
+describe('content a scoped slot is handed', () => {
+  let result: CheckResult;
+
+  beforeAll(async () => {
+    result = await checkTemplates({ project: project('slots'), cwd: FIXTURES });
+  });
+
+  const lines = (file: string): number[] => inFile(result, 'slots', file).map((d) => d.line);
+
+  it("types each name by what the component's outlet passes", () => {
+    const d = onLine(result, 'slots', 'page.html', 5);
+
+    // `Person` in the message is what says the name was typed from the outlet
+    // rather than declared `any`, which would have accepted the typo.
+    expect(d.message).toBe("Property 'nmae' does not exist on type 'Person'.");
+    expect(pointsAt(d)).toBe('nmae');
+  });
+
+  it('leaves a name rendered bare alone when what it holds is a value', () => {
+    expect(lines('page.html')).not.toContain(4);
+    expect(lines('page.html')).not.toContain(6);
+  });
+
+  it('still catches a signal the slot hands over, rendered without .get()', () => {
+    const d = onLine(result, 'slots', 'page.html', 7);
+
+    expect(d.code).toBe('volt/signal-read');
+    expect(d.message).toContain('`total.get()`');
+    expect(pointsAt(d)).toBe('total');
+  });
+
+  it('follows a declaration map from a package back to the template beside its source', () => {
+    const d = onLine(result, 'slots', 'page.html', 11);
+
+    expect(d.message).toBe("Property 'lable' does not exist on type 'Cell'. Did you mean 'label'?");
+    expect(pointsAt(d)).toBe('lable');
+  });
+
+  it("reads a declaration map's sources under the root it names", () => {
+    // `"sourceRoot": "../src/"`, `"sources": ["tile.ts"]`: the source is the
+    // two together, and either alone names a file that is not there.
+    const d = onLine(result, 'slots', 'page.html', 34);
+
+    expect(d.message).toBe("Property 'size' does not exist on type 'string'.");
+    expect(pointsAt(d)).toBe('size');
+  });
+
+  it('types a slot filled by several elements by the one pattern any of them names', () => {
+    // The `<i>` names no pattern, and renders with the `<b>`'s all the same:
+    // its `row` is the slot's, not a member the page lacks.
+    const d = onLine(result, 'slots', 'page.html', 35);
+
+    expect(d.message).toBe("Property 'nmae' does not exist on type 'Person'.");
+    expect(pointsAt(d)).toBe('nmae');
+  });
+
+  it('types what the default slot passes, named on the tag itself', () => {
+    const d = onLine(result, 'slots', 'page.html', 13);
+
+    expect(d.message).toBe("Property 'size' does not exist on type 'string'.");
+    expect(pointsAt(d)).toBe('size');
+  });
+
+  it('says nothing about names from a component it cannot find', () => {
+    // `<v-mystery>` is in no `imports`, so what its slot passes is unknown and
+    // typed `any` — and an `any` is no evidence of a signal.
+    expect(lines('page.html')).not.toContain(15);
+  });
+
+  it('never reads an any or an unknown as a signal', () => {
+    expect(lines('page.html')).not.toContain(17);
+    expect(lines('page.html')).not.toContain(18);
+  });
+
+  it('still catches a real signal rendered bare beside them', () => {
+    const d = onLine(result, 'slots', 'page.html', 19);
+
+    expect(d.code).toBe('volt/signal-read');
+    expect(pointsAt(d)).toBe('count');
+  });
+
+  it('types a :for on the element filling a slot inside what the slot passed', () => {
+    const d = onLine(result, 'slots', 'page.html', 20);
+
+    // `tag` is a string only because the loop reads the slot's `row`, a
+    // Person; the page has no `row` of its own to read instead.
+    expect(d.message).toBe("Property 'size' does not exist on type 'string'.");
+    expect(pointsAt(d)).toBe('size');
+  });
+
+  it("reads a tag's own props and :for where the tag is written, outside its pattern", () => {
+    // The page's `name` is a number and the slot's a string: each line is
+    // clean only if the props see the one and the content the other.
+    expect(lines('page.html')).not.toContain(21);
+    expect(lines('page.html')).not.toContain(22);
+  });
+
+  it("reads a named slot's content outside the tag's own pattern", () => {
+    // The caption is the page's `name`, a number; only the default content
+    // is handed the frame's string.
+    expect(lines('page.html')).not.toContain(24);
+  });
+
+  it('never reads a never as a signal', () => {
+    // A row of a list declared `[]` is `never`, and `[never]` extends
+    // anything, a signal included.
+    expect(lines('page.html')).not.toContain(23);
+  });
+
+  it("leaves a generic component's own parameters any, and types the rest of what it passes", () => {
+    // `item` is a `T`, which only the tag's `items` decides. Read at its bound,
+    // `unknown`, it would report `item.name` on a row the page knows is a
+    // Person; `count` is a number whatever `T` is, so it is still checked.
+    const d = onLine(result, 'slots', 'page.html', 26);
+
+    expect(d.message).toBe("Property 'size' does not exist on type 'number'.");
+    expect(pointsAt(d)).toBe('size');
+  });
+
+  it('hands over a value as the conditions around the outlet narrowed it', () => {
+    // `<v-pages>` passes a page only from the arm where the entry is one, a
+    // link only from the arm after it, and an error only where there is one.
+    // Read without the conditions, each is the whole union, or possibly
+    // undefined, and content that renders cleanly is reported.
+    expect(lines('page.html')).not.toContain(29);
+    expect(lines('page.html')).not.toContain(31);
+
+    // The link is named as the `:else` left it, which is what says the arms
+    // before it were read.
+    const d = onLine(result, 'slots', 'page.html', 30);
+    expect(d.message).toBe(`Property 'number' does not exist on type '{ kind: "link"; href: string; }'.`);
+    expect(pointsAt(d)).toBe('number');
+  });
+
+  it('narrows what the slot passed by the content’s own :if chain', () => {
+    // A name with a real type is one an `:if` has to narrow, or every arm is
+    // read as the whole union. Only the `:else` arm's page number is wrong:
+    // by then the entry can only be a gap.
+    const d = onLine(result, 'slots', 'page.html', 32);
+
+    expect(d.message).toBe(`Property 'number' does not exist on type '{ kind: "gap"; }'.`);
+    expect(d.column).toBe(d.source!.lastIndexOf('number') + 1);
+  });
+
+  it("narrows a row by an :if in the component's own template the same way", () => {
+    expect(lines('pages.html')).toEqual([]);
+  });
+
+  it('hands over a literal as that literal, not the wider type it would widen to', () => {
+    // `<v-badge>` passes `task.done ? 'done' : 'todo'`, `2` and `tone="calm"`,
+    // and the content renders exactly those. Widened to `string` and `number`,
+    // as a function's inferred return widens them, a record keyed by the two
+    // states and parameters of those literals would each refuse them; the
+    // one mistake left names the states, which says they were kept.
+    const d = onLine(result, 'slots', 'page.html', 36);
+
+    expect(d.message.split('\n')[0]).toBe(`Property 'size' does not exist on type '"done" | "todo"'.`);
+    expect(pointsAt(d)).toBe('size');
+  });
+
+  it('reads the deferred form of imports, under the name the module gave the class', () => {
+    const d = onLine(result, 'slots', 'lazy.html', 2);
+
+    expect(d.message).toBe("Property 'nmae' does not exist on type 'Person'.");
+    expect(pointsAt(d)).toBe('nmae');
+  });
+
+  it('finds a default-exported component by the name its class was declared with', () => {
+    const d = onLine(result, 'slots', 'lazy.html', 5);
+
+    expect(d.message).toBe("Property 'size' does not exist on type 'string'.");
+    expect(pointsAt(d)).toBe('size');
+  });
+
+  it('reads a component whose template does not parse as passing anything, and goes on', () => {
+    // `<v-broken>`'s template is reported once, as its own; a page filling
+    // its slot is still checked, its names `any` rather than the check gone.
+    expect(inFile(result, 'slots', 'broken.html').map((d) => d.code)).toEqual([
+      'volt/template-syntax',
+    ]);
+    expect(lines('page.html')).not.toContain(37);
+  });
+
+  it("types content filling a slot inside an outlet's fallback", () => {
+    // `<v-shelf>` binds what a slot passes nowhere but in what its own outlet
+    // draws when nobody filled it, which is still a template that needs its
+    // component's `imports` read.
+    const d = onLine(result, 'slots', 'shelf.html', 1);
+
+    expect(d.message).toBe("Property 'nmae' does not exist on type 'Person'.");
+    expect(pointsAt(d)).toBe('nmae');
+  });
+
+  it("types a template by its own component's imports, never a neighbour's", () => {
+    // `Bare` lists nothing, and sits in the same module as a component that
+    // lists `<v-rows>`: its names stay `any`, so the same typo says nothing.
+    expect(lines('bare.html')).toEqual([]);
+  });
+
+  it('reports nothing else, in the pages or in the components they fill', () => {
+    expect(
+      result.diagnostics.map((d) => `${basename(d.file)}:${d.line}:${d.code}`),
+    ).toEqual([
+      'broken.html:1:volt/template-syntax',
+      'lazy.html:2:TS2339',
+      'lazy.html:5:TS2339',
+      'page.html:5:TS2339',
+      'page.html:7:volt/signal-read',
+      'page.html:11:TS2551',
+      'page.html:13:TS2339',
+      'page.html:19:volt/signal-read',
+      'page.html:20:TS2339',
+      'page.html:26:TS2339',
+      'page.html:30:TS2339',
+      'page.html:32:TS2339',
+      'page.html:34:TS2339',
+      'page.html:35:TS2339',
+      'page.html:36:TS2339',
+      'shelf.html:1:TS2339',
+    ]);
+    expect(result.templates).toBe(10);
   });
 });
 

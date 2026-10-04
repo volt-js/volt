@@ -57,6 +57,7 @@ export type {
 
 export { generateTypeCheckBlock } from './typecheck.js';
 export type {
+  ComponentSource,
   NameMark,
   TemplateSpan,
   TypeCheckBlock,

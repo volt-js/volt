@@ -24,10 +24,19 @@ import {
   CompilerError,
   generateTypeCheckBlock,
   parse,
+  type ComponentSource,
+  type RootNode,
   type TemplateSpan,
 } from '@voltdev/compiler';
 import { findComponentTemplates } from '@voltdev/vite-plugin/components';
 import { API, DiagnosticCategory, type Diagnostic } from 'typescript/unstable/sync';
+import {
+  bindsSlotProps,
+  childComponents,
+  readImports,
+  type DeclaredCache,
+  type ImportedClass,
+} from './children.js';
 
 export interface CheckOptions {
   /** The tsconfig whose files are checked. */
@@ -80,6 +89,23 @@ interface Overlay {
   templates: Restated[];
 }
 
+/** One template read and parsed, waiting to be restated. */
+interface Parsed {
+  className: string;
+  templateFile: string;
+  lines: string[];
+  root: RootNode;
+  /** What its component lists in `imports`, when the template fills a scoped slot. */
+  imports: ImportedClass[];
+}
+
+/** A module's templates, read before anything is appended to it. */
+interface Module {
+  file: string;
+  code: string;
+  templates: Parsed[];
+}
+
 export async function checkTemplates(options: CheckOptions): Promise<CheckResult> {
   const project = resolve(options.project);
   const root = options.cwd ? resolve(options.cwd) : dirname(project);
@@ -103,6 +129,8 @@ export async function checkTemplates(options: CheckOptions): Promise<CheckResult
 
   try {
     const config = api.parseConfigFile(project);
+    const modules: Module[] = [];
+    let fillsSlots = false;
 
     for (const file of config.fileNames) {
       if (!/\.m?ts$/.test(file)) continue;
@@ -117,11 +145,7 @@ export async function checkTemplates(options: CheckOptions): Promise<CheckResult
       const components = findComponentTemplates(code);
       if (components.length === 0) continue;
       const moduleLines = code.split('\n');
-
-      const restated: Restated[] = [];
-      // A newline first, so a module whose last line is a `//` comment does
-      // not swallow the block.
-      let appended = '\n';
+      const parsed: Parsed[] = [];
 
       for (const component of components) {
         const templateFile = resolve(dirname(file), component.templateUrl);
@@ -146,12 +170,10 @@ export async function checkTemplates(options: CheckOptions): Promise<CheckResult
 
         const lines = source.split('\n');
 
-        let block;
+        let templateRoot: RootNode;
         try {
           // Comments are kept, which is what an ignore comment is written as.
-          block = generateTypeCheckBlock(parse(source, { filename: templateFile, comments: true }), {
-            className: component.className,
-          });
+          templateRoot = parse(source, { filename: templateFile, comments: true });
         } catch (err) {
           // A template that does not parse has no expressions to check. The
           // error is the same one the build would give, said here so a check
@@ -167,6 +189,58 @@ export async function checkTemplates(options: CheckOptions): Promise<CheckResult
           });
           continue;
         }
+
+        // Only content that binds what a slot passes needs to know which
+        // component it fills; every other template is restated as it was.
+        const imports = bindsSlotProps(templateRoot.children) ? readImports(code, component) : [];
+        if (imports.length > 0) fillsSlots = true;
+        parsed.push({
+          className: component.className,
+          templateFile,
+          lines,
+          root: templateRoot,
+          imports,
+        });
+      }
+
+      if (parsed.length > 0) modules.push({ file, code, templates: parsed });
+    }
+
+    // Where an `imports` entry leads is the checker's to say — an import, a
+    // re-export, a package's barrel — so it is asked before anything is
+    // appended, and only when some template has a slot's names to type.
+    const children = new Map<Parsed, ReadonlyMap<string, ComponentSource>>();
+    if (fillsSlots) {
+      const snapshot = api.updateSnapshot({ openProjects: [project] });
+      try {
+        const checked = loaded(snapshot.getProject(project), project);
+        const cache: DeclaredCache = new Map();
+        for (const module of modules) {
+          for (const template of module.templates) {
+            if (template.imports.length === 0) continue;
+            children.set(
+              template,
+              await childComponents(checked.checker, module.file, template.imports, cache),
+            );
+          }
+        }
+      } finally {
+        snapshot.dispose();
+      }
+    }
+
+    for (const { file, code, templates: parsed } of modules) {
+      const restated: Restated[] = [];
+      // A newline first, so a module whose last line is a `//` comment does
+      // not swallow the block.
+      let appended = '\n';
+
+      for (const template of parsed) {
+        const { templateFile, lines } = template;
+        const block = generateTypeCheckBlock(template.root, {
+          className: template.className,
+          components: children.get(template),
+        });
 
         for (const error of block.errors) {
           diagnostics.push({
@@ -186,21 +260,22 @@ export async function checkTemplates(options: CheckOptions): Promise<CheckResult
         templates++;
       }
 
-      if (restated.length === 0) continue;
       sources.set(file, code + appended);
       overlays.set(file, { original: code.length, templates: restated });
     }
 
     if (overlays.size > 0) {
-      const snapshot = api.updateSnapshot({ openProjects: [project] });
+      const snapshot = api.updateSnapshot({
+        openProjects: [project],
+        // A checker that has read the project once already has to be told
+        // which modules are now the ones rewritten here.
+        ...(fillsSlots ? { fileChanges: { changed: [...overlays.keys()] } } : {}),
+      });
       // Released on the way out however that happens: closing the API while a
       // snapshot is still open cancels it from underneath, and the checker
       // says so on its own error channel.
       try {
-        const checked = snapshot.getProject(project);
-        if (!checked) {
-          throw new Error(`[volt:check] ${project} did not load as a TypeScript project.`);
-        }
+        const checked = loaded(snapshot.getProject(project), project);
 
         for (const [file, overlay] of overlays) {
           const raw = [
@@ -220,6 +295,11 @@ export async function checkTemplates(options: CheckOptions): Promise<CheckResult
   }
 
   return { diagnostics: sortDiagnostics(diagnostics, root), templates, unreadable, ignored };
+}
+
+function loaded<P>(checked: P | undefined, project: string): P {
+  if (!checked) throw new Error(`[volt:check] ${project} did not load as a TypeScript project.`);
+  return checked;
 }
 
 /** One line of a file, one-based, or null when the file has no such line. */

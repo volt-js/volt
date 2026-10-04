@@ -1,0 +1,5 @@
+<ul>
+  <li :for="person in people" :key="person.id">
+    <slot name="row" :row="person" :total="total" note="static">{ person.name }</slot>
+  </li>
+</ul>

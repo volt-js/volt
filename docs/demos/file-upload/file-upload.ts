@@ -99,11 +99,6 @@ export class ExpenseClaim {
     return WORDS[status];
   }
 
-  /** The compact row's name for its file. */
-  named(file: File): string {
-    return file.name;
-  }
-
   /**
    * Whether a retry has anything to send. The button stays on the row either
    * way, unavailable when not: one that went the moment it was pressed would

@@ -1,0 +1,5 @@
+<ul>
+  <li :for="item in items" :key="item">
+    <slot name="item" :item="item" :count="items.length"></slot>
+  </li>
+</ul>

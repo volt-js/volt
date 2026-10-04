@@ -23,7 +23,7 @@
   <v-file-upload :transport="send" accept="image/*" :multiple="false" label="Drop a profile photo here">
     <template :slot-file="{ file, progress, status, retry, remove }">
       <div class="compact">
-        <span class="name">{ named(file) }</span>
+        <span class="name">{ file.name }</span>
         <span class="note">{ state(status, progress) }</span>
         <v-button
           :if="status !== 'rejected'"

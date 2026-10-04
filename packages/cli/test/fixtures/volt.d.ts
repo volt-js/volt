@@ -23,4 +23,5 @@ export declare namespace Signal {
 export declare function Component(config: {
   selector?: string;
   templateUrl: string;
+  imports?: readonly unknown[] | (() => readonly unknown[]);
 }): <T extends abstract new (...args: never[]) => unknown>(target: T, context: ClassDecoratorContext) => T;

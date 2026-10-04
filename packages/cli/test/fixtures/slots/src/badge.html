@@ -1,0 +1,3 @@
+<p :for="task in tasks" :key="task.id">
+  <slot name="task" :state="task.done ? 'done' : 'todo'" :level="2" tone="calm"></slot>
+</p>
