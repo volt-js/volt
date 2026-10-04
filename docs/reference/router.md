@@ -89,10 +89,67 @@ and the parameter types are derived from the pattern string itself — so the
 pattern has to stay something a template literal type can take apart. A splat
 may only be last, because anywhere else it makes the split ambiguous.
 
-Matching never backtracks. When two patterns both match, they are compared
-segment by segment and the more specific wins: a literal beats a parameter, a
-parameter beats an optional one, and an optional one beats a splat. Where every
-segment ties, the longer pattern wins.
+### Which route renders
+
+Matching never backtracks. When more than one pattern matches a URL, the most
+specific one renders, decided by this rule:
+
+1. Compare the patterns segment by segment from the left. At the first position
+   where they differ, a literal beats a parameter, a parameter beats an optional
+   one, and an optional one beats a splat.
+2. If every shared position ties and one pattern goes on past the other, look at
+   what the longer one has left. If any of it needs a segment of the path (a
+   literal or a parameter), the longer pattern wins. If all of it can match
+   nothing (optional parameters and a splat), the shorter one wins.
+3. Patterns that tie throughout keep the order they were declared in.
+
+Rule 2 is what lets a catch-all sit beside the routes it does not claim. A
+splat matches an empty rest, so `/*` matches `/` and `/docs/*` matches `/docs`,
+but only by capturing nothing, where `/` and `/docs` name those URLs exactly.
+The shorter pattern renders there, and the splat gets every URL that nothing
+more specific claims:
+
+```ts
+import { defineRoutes } from '@voltdev/router';
+
+export const routes = defineRoutes([
+  {
+    path: '/',
+    component: Shell,
+    children: [
+      { index: true, component: Home },
+      {
+        path: 'docs',
+        component: Docs,
+        children: [
+          { index: true, component: DocsHome },
+          { path: '*', component: DocsMissing },
+        ],
+      },
+      { path: '*', component: NotFound },
+    ],
+  },
+]);
+```
+
+| URL | Renders | Because |
+|---|---|---|
+| `/` | `Home` | `/*` matches only by leaving `*` empty (rule 2) |
+| `/docs` | `DocsHome` | likewise `/docs/*` (rule 2) |
+| `/docs/a/b` | `DocsMissing` | the literal `docs` beats the root splat at the first segment (rule 1) |
+| `/a/b` | `NotFound` | nothing more specific matches |
+
+An optional parameter counts as matching nothing too: at `/`, an index route
+beats `/:lang?`, and `/:lang?` still beats `/*` by rule 1. A literal after the
+optional is something the path has to supply, so `/about` renders
+`/:lang?/about` rather than `/:lang?` with a language called "about". Positions
+are the patterns' own, though, and a left-out optional still takes one: beside
+`/:page`, `/about` renders `/:page`, which has a parameter where
+`/:lang?/about` has an optional one.
+
+The build that [writes the `ssg` pages](./server-render#the-pages-the-build-writes)
+renders each one through the handler, which picks a route by this same rule, so
+the file written for a URL holds the page a request for that URL renders.
 
 ### Layouts and the outlet
 

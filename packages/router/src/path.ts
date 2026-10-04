@@ -104,6 +104,11 @@ function rank(segment: PatternSegment): number {
   return segment.optional ? SPECIFICITY.optional : SPECIFICITY.param;
 }
 
+/** Whether a segment needs a path segment of its own; an optional or a splat can match nothing. */
+function consumesSegment(segment: PatternSegment): boolean {
+  return segment.kind === 'static' || (segment.kind === 'param' && !segment.optional);
+}
+
 /** Split a pattern into segments, dropping the empty ones a `//` or a trailing `/` leaves. */
 export function parsePattern(pattern: string): PatternSegment[] {
   const segments: PatternSegment[] = [];
@@ -143,10 +148,32 @@ export function parsePattern(pattern: string): PatternSegment[] {
 }
 
 /**
- * Order two patterns, most specific first.
+ * Order two patterns, most specific first. This is the precedence rule: of the
+ * patterns that match a URL, the first in this order renders.
  *
- * Where one is a prefix of the other the longer one wins: it says everything
- * the shorter one says and more.
+ *   1. Compare segment by segment from the left. At the first position where
+ *      the kinds differ, the more specific kind wins: a literal, then a
+ *      parameter, then an optional parameter, then a splat.
+ *   2. Where every shared position ties and one pattern goes on past the
+ *      other, what the longer one has left decides. If any of it needs a path
+ *      segment (a literal or a parameter), the longer one wins: it says
+ *      everything the shorter says and more. If all of it can match nothing
+ *      (optional parameters, a splat), the shorter one wins.
+ *   3. Patterns that tie throughout keep their declaration order.
+ *
+ * The second half of rule 2 is the one that matters in practice. A splat
+ * matches the empty rest, so at the shorter pattern's own URL the longer one
+ * matches too, by capturing nothing, and saying nothing about that URL is not
+ * more specific than naming it exactly. Ranked the other way, `/*` answers `/`
+ * and `/docs/*` answers `/docs`, so a not-found page replaces the home page,
+ * and an ssg build writes it to `index.html`.
+ *
+ * The two rules together are still a lexicographic order, which is what makes
+ * the comparator transitive and the sort independent of the order it is
+ * handed. Read the end of a pattern as one more kind of segment, ranked below
+ * a literal and a parameter and above a splat and an optional that only
+ * optionals and a splat follow. An optional that something required follows
+ * ranks just above the end.
  */
 export function compareSpecificity(
   a: readonly PatternSegment[],
@@ -157,7 +184,11 @@ export function compareSpecificity(
     const difference = rank(b[i]!) - rank(a[i]!);
     if (difference !== 0) return difference;
   }
-  return b.length - a.length;
+  if (a.length === b.length) return 0;
+
+  const longer = a.length > b.length ? a : b;
+  const longerWins = longer.slice(shared).some(consumesSegment);
+  return longerWins === (longer === a) ? -1 : 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -195,9 +226,7 @@ export function trimSlashes(value: string): string {
 function minimumAfter(segments: readonly PatternSegment[]): number[] {
   const required = new Array<number>(segments.length + 1).fill(0);
   for (let i = segments.length - 1; i >= 0; i--) {
-    const segment = segments[i]!;
-    const own = segment.kind === 'splat' || (segment.kind === 'param' && segment.optional) ? 0 : 1;
-    required[i] = own + required[i + 1]!;
+    required[i] = (consumesSegment(segments[i]!) ? 1 : 0) + required[i + 1]!;
   }
   return required;
 }

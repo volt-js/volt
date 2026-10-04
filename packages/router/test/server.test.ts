@@ -323,3 +323,47 @@ describe('when a branch asks for its data', () => {
     ]);
   });
 });
+
+describe('a request for the root, beside a catch-all', () => {
+  @Component({ selector: 'v-home', render: compileTemplate(`<p class="home">home</p>`) })
+  class Home {}
+
+  @Component({ selector: 'v-missing', render: compileTemplate(`<p class="missing">missing</p>`) })
+  class Missing {}
+
+  const render = async (url: string): Promise<string> => {
+    const router = createRouter({
+      routes: defineRoutes([
+        {
+          path: '/',
+          component: Shell,
+          children: [
+            { index: true, component: Home },
+            { path: '*', component: Missing },
+          ],
+        },
+      ]),
+    });
+    await router.resolve(url);
+    const { html } = await renderToStaticMarkup(App, {
+      setup: () => {
+        provideRouter(router);
+        provideOutlet(router.outletAt(0));
+      },
+    });
+    return html;
+  };
+
+  it('renders the home page, not the not-found page the splat would make of it', async () => {
+    // A splat matches the empty rest, so `/*` covers `/` as well. Which one a
+    // server writes is the whole of the answer a reader gets.
+    expect(await render('https://example.test/')).toContain('<p class="home">home</p>');
+    expect(await render('https://example.test/')).not.toContain('missing');
+  });
+
+  it('still renders the not-found page for a URL nothing else claims', async () => {
+    expect(await render('https://example.test/no/such/page')).toContain(
+      '<p class="missing">missing</p>',
+    );
+  });
+});

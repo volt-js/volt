@@ -119,7 +119,8 @@ describe('specificity', () => {
         segments
           .map((s) => {
             if (s.kind === 'static') return s.value;
-            return s.kind === 'splat' ? `*${s.name}` : `:${s.name}`;
+            if (s.kind === 'splat') return s.name === '*' ? '*' : `*${s.name}`;
+            return `:${s.name}${s.optional ? '?' : ''}`;
           })
           .join('/'),
       );
@@ -144,6 +145,73 @@ describe('specificity', () => {
 
   it('prefers the longer pattern when one is a prefix of the other', () => {
     expect(order(['users', 'users/:id'])[0]).toBe('users/:id');
+  });
+
+  it('puts the root ahead of a root splat, which would match it with nothing', () => {
+    // A splat matches the empty rest, so ranked first it answers `/` itself
+    // and the home page is never reached. Either declaration order.
+    expect(order(['*', ''])).toEqual(['', '*']);
+    expect(order(['', '*'])).toEqual(['', '*']);
+  });
+
+  it('puts a literal ahead of the splat beneath it, at every depth', () => {
+    expect(order(['docs/*', 'docs'])).toEqual(['docs', 'docs/*']);
+    expect(order(['docs/*', 'docs/api/*rest', 'docs', 'docs/api'])).toEqual([
+      'docs/api',
+      'docs/api/*rest',
+      'docs',
+      'docs/*',
+    ]);
+  });
+
+  it('puts an optional parameter after the pattern without it and before a splat', () => {
+    // `/:lang?` matches `/` by leaving `lang` out, which says less about `/`
+    // than the pattern that is `/` and nothing else.
+    expect(order(['*', ':lang?', ''])).toEqual(['', ':lang?', '*']);
+    expect(order(['docs/*', 'docs/:page?', 'docs'])).toEqual(['docs', 'docs/:page?', 'docs/*']);
+  });
+
+  it('still prefers the longer pattern when what it adds needs a segment', () => {
+    // `/about` is the about page in the default language rather than a
+    // language called "about", because the longer pattern's literal claims it.
+    // Optional segments ahead of that literal do not change the answer.
+    expect(order([':lang?', ':lang?/about'])).toEqual([':lang?/about', ':lang?']);
+    expect(order([':lang?', ':lang?/:region?/about'])).toEqual([
+      ':lang?/:region?/about',
+      ':lang?',
+    ]);
+  });
+
+  it('is a consistent order, so declaration order only ever breaks a tie', () => {
+    // `Array.prototype.sort` with a comparator that is not transitive returns
+    // an order that depends on the input's, and then on the engine's.
+    const patterns = [
+      '',
+      '*',
+      ':lang?',
+      ':lang?/about',
+      ':lang?/:region?/about',
+      'docs',
+      'docs/*',
+      'docs/:page?',
+      'docs/:page',
+      'docs/:page?/edit',
+      'docs/api',
+      'docs/api/*rest',
+      ':section',
+      ':section/*',
+    ].map(parsePattern);
+    const sign = (a: (typeof patterns)[number], b: (typeof patterns)[number]) =>
+      Math.sign(compareSpecificity(a, b)) || 0;
+
+    for (const a of patterns) {
+      for (const b of patterns) {
+        expect(sign(a, b)).toBe(-sign(b, a) || 0);
+        for (const c of patterns) {
+          if (sign(a, b) <= 0 && sign(b, c) <= 0) expect(sign(a, c)).toBeLessThanOrEqual(0);
+        }
+      }
+    }
   });
 });
 
