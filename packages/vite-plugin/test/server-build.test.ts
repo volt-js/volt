@@ -26,7 +26,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { inspect } from 'node:util';
-import { createBuilder, preview, type Plugin } from 'vite';
+import { createBuilder, createLogger, preview, type Logger, type Plugin } from 'vite';
 import { buildPath } from '@voltdev/router';
 import { volt, type VoltPluginOptions } from '../src/index.js';
 import type { ParamsForPattern } from '../src/ssg.js';
@@ -58,7 +58,7 @@ async function copyOfFixture(edit?: (root: string) => Promise<void>): Promise<st
  */
 async function build(
   root: string,
-  options: { plugins?: Plugin[]; volt?: VoltPluginOptions } = {},
+  options: { plugins?: Plugin[]; volt?: VoltPluginOptions; logger?: Logger } = {},
 ): Promise<string> {
   const out = await scratch('dist');
   const builder = await createBuilder(
@@ -66,6 +66,7 @@ async function build(
       root,
       configFile: false,
       logLevel: 'silent',
+      customLogger: options.logger,
       plugins: options.plugins ?? volt(options.volt ?? { serverRender: true }),
       resolve: { alias },
       build: { outDir: out, emptyOutDir: true },
@@ -74,6 +75,21 @@ async function build(
   );
   await builder.buildApp();
   return out;
+}
+
+/** A logger that keeps what the build says of its own, for a test to read. */
+function listening(): { logger: Logger; said: string[] } {
+  const said: string[] = [];
+  const logger = createLogger('silent', { allowClearScreen: false });
+  logger.info = (message) => {
+    if (message.startsWith('[volt]')) said.push(message);
+  };
+  return { logger, said };
+}
+
+/** The pages a build wrote, by their path in its output. */
+async function pagesOf(out: string): Promise<string[]> {
+  return [...(await files(out)).keys()].filter((path) => path.endsWith('.html')).sort();
 }
 
 /** Every file under a directory, by its path inside it. */
@@ -322,6 +338,18 @@ async function staticFixture(edit?: (root: string) => Promise<void>): Promise<st
   });
 }
 
+/** Put routes into a copy of the fixture's table, after the last of its own. */
+async function addRoutes(root: string, ...routes: string[]): Promise<void> {
+  const table = join(root, 'src/routes.ts');
+  await writeFile(
+    table,
+    (await readFile(table, 'utf8')).replace(
+      "{ path: 'broken', component: Broken },",
+      ["{ path: 'broken', component: Broken },", ...routes].join('\n      '),
+    ),
+  );
+}
+
 /** What the documentation pattern is written for; nothing else has a parameter. */
 const docs: ParamsForPattern = ({ pattern }) =>
   pattern === '/docs/:page' ? [{ page: 'intro' }, { page: 'install' }] : undefined;
@@ -457,24 +485,122 @@ describe('the pages a build writes for its `ssg` routes', { timeout: 120_000 }, 
     expect(await asked.text()).toContain('<h1>intro</h1>');
   });
 
-  it('refuses a path `params` names that a route rendered per request answers', async () => {
+  it('leaves a path `params` names to the route rendered per request that answers it, and says so', async () => {
     // `/docs/changelog` is its own route, more specific than `/docs/:page`,
     // and rendered per request. A file written there from the pattern's page
     // would be what a host serves in its place, to every reader.
     const shadowed = await staticFixture(async (root) => {
-      const routes = join(root, 'src/routes.ts');
-      await writeFile(
-        routes,
-        (await readFile(routes, 'utf8')).replace(
-          "{ path: 'broken', component: Broken },",
-          "{ path: 'broken', component: Broken },\n      { path: 'docs/changelog', component: Home },",
-        ),
-      );
+      await addRoutes(root, "{ path: 'docs/changelog', component: Home },");
     });
     const named: ParamsForPattern = () => [{ page: 'intro' }, { page: 'changelog' }];
-    await expect(build(shadowed, { volt: { serverRender: { params: named } } })).rejects.toThrow(
-      /\/docs\/changelog[\s\S]*not render as `ssg`/,
+    const { logger, said } = listening();
+    const out = await build(shadowed, { volt: { serverRender: { params: named } }, logger });
+    expect(await pagesOf(out)).toEqual(['client/docs/intro.html', 'client/index.html']);
+    expect(said.filter((line) => !line.includes(' kB'))).toEqual([
+      '[volt] /docs/changelog is left to the handler rather than written from /docs/:page: ' +
+        '/docs/changelog matches it ahead of /docs/:page, and does not render as `ssg`.',
+    ]);
+    const asked = await (await handlerOf(out))(new Request('http://localhost/docs/changelog'));
+    expect(await asked.text()).toContain('<h1>Home</h1>');
+    expect(asked.headers.get('cache-control')).toBe('private');
+  });
+
+  it('leaves `/` to the home page rendered per request, beside an `ssg` catch-all', async () => {
+    // `/*` matches `/` by leaving `*` empty, and the index route names `/`
+    // exactly, so a request for `/` renders the index, per request. A file
+    // written there from the catch-all would be what a host serves instead.
+    const root = await copyOfFixture((root) =>
+      addRoutes(root, "{ path: '*', component: Home, mode: 'ssg' },"),
     );
+    const { logger, said } = listening();
+    const out = await build(root, { logger });
+    expect(await pagesOf(out)).toEqual([]);
+    expect(said).toEqual([
+      '[volt] / is left to the handler rather than written from /*: / matches it ahead of /*, ' +
+        'and does not render as `ssg`.',
+    ]);
+    const home = await (await handlerOf(out))(new Request('http://localhost/'));
+    expect(home.headers.get('cache-control')).toBe('private');
+  });
+
+  it('still writes every path of a catch-all that nothing more specific answers', async () => {
+    // Left to the handler per path, not per pattern: `/` and `/pricing` are
+    // routes of their own, and `/guides/setup` is one only the built router
+    // can see — `/guides/:slug` names no path until a request does — so the
+    // build asks it, rather than writing a page over a route rendered per
+    // request or failing.
+    const root = await copyOfFixture((root) =>
+      addRoutes(
+        root,
+        "{ path: 'guides/:slug', component: Home },",
+        "{ path: '*', component: Home, mode: 'ssg' },",
+      ),
+    );
+    const rests: ParamsForPattern = ({ pattern }) =>
+      pattern === '/*'
+        ? ['', 'gone', 'a/b', 'pricing', 'guides/setup'].map((rest) => ({ '*': rest }))
+        : undefined;
+    const { logger, said } = listening();
+    const out = await build(root, { volt: { serverRender: { params: rests } }, logger });
+    expect(await pagesOf(out)).toEqual(['client/a/b.html', 'client/gone.html']);
+    expect(said.filter((line) => !line.includes(' kB'))).toEqual([
+      '[volt] / is left to the handler rather than written from /*: / matches it ahead of /*, ' +
+        'and does not render as `ssg`.',
+      '[volt] /guides/setup is left to the handler rather than written from /*: a request for ' +
+        'it renders another route, which does not render as `ssg`.',
+      '[volt] /pricing is left to the handler rather than written from /*: /pricing matches it ' +
+        'ahead of /*, and does not render as `ssg`.',
+    ]);
+    const handler = await handlerOf(out);
+    const gone = await (await handler(new Request('http://localhost/gone'))).text();
+    expect(await readFile(join(out, 'client/gone.html'), 'utf8')).toBe(gone);
+    const setup = await handler(new Request('http://localhost/guides/setup'));
+    expect(setup.headers.get('cache-control')).toBe('private');
+  });
+
+  it('leaves a literal path to its own route, whatever an optional parameter is given', async () => {
+    const root = await copyOfFixture((root) =>
+      addRoutes(
+        root,
+        "{ path: 'about', component: Home },",
+        "{ path: ':lang?', component: Home, mode: 'ssg' },",
+      ),
+    );
+    const langs: ParamsForPattern = ({ pattern }) =>
+      pattern === '/:lang?' ? [{ lang: 'about' }, { lang: 'en' }] : undefined;
+    const { logger, said } = listening();
+    const out = await build(root, { volt: { serverRender: { params: langs } }, logger });
+    expect(await pagesOf(out)).toEqual(['client/en.html']);
+    expect(said.filter((line) => !line.includes(' kB'))).toEqual([
+      '[volt] /about is left to the handler rather than written from /:lang?: /about matches it ' +
+        'ahead of /:lang?, and does not render as `ssg`.',
+    ]);
+  });
+
+  it('leaves an `ssg` route’s own path to it when `params` leaves that path out of its pages', async () => {
+    // `/guides` is `/guides/:slug?` with the parameter left out, so a request
+    // for it renders that route, whose list names `/guides/setup` alone. A
+    // file there from the catch-all is a page that route's own list left out.
+    const root = await copyOfFixture((root) =>
+      addRoutes(
+        root,
+        "{ path: 'guides/:slug?', component: Home, mode: 'ssg' },",
+        "{ path: '*', component: Home, mode: 'ssg' },",
+      ),
+    );
+    const named: ParamsForPattern = ({ pattern }) =>
+      pattern === '/guides/:slug?'
+        ? [{ slug: 'setup' }]
+        : pattern === '/*'
+          ? ['guides', 'gone'].map((rest) => ({ '*': rest }))
+          : undefined;
+    const { logger, said } = listening();
+    const out = await build(root, { volt: { serverRender: { params: named } }, logger });
+    expect(await pagesOf(out)).toEqual(['client/gone.html', 'client/guides/setup.html']);
+    expect(said.filter((line) => !line.includes(' kB'))).toEqual([
+      '[volt] /guides is left to the handler rather than written from /*: /guides/:slug? ' +
+        "matches it ahead of /*, and `params` leaves it out of that route's pages.",
+    ]);
   });
 
   it('fails when a loader’s guard refuses the build’s request, rather than writing the failure', async () => {

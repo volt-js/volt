@@ -22,6 +22,7 @@ import {
   type PrerenderedPage,
   type RenderMode,
   type RouteBranchLike,
+  type WithheldRoute,
 } from './ssg.js';
 
 /**
@@ -221,6 +222,18 @@ export interface StaticPagesOptions {
  * asks, and nobody would know. An empty list is something said — a section
  * with no pages yet — and writes none beyond the path a pattern has with its
  * optional parameters left out.
+ *
+ * A path a request renders another route for, one that is not `ssg`, is left
+ * to the handler, and the build says so. A file there would be what a host
+ * serves in that route's place, to every reader; failing the build instead
+ * would refuse a catch-all beside a home page rendered per request. The table
+ * names the route where it names the path (see `enumerateRoutes`), and there
+ * it also leaves an `ssg` route its own path when `params` left that path out
+ * of its pages. Every other path is the built router's to place as its page
+ * is asked for: the bundle's `render` answers nothing for a path whose route
+ * is not `ssg`, which catches a path a parameter claims too, but does not say
+ * which route it is — nor, for a path another `ssg` route claims through a
+ * parameter, that the route is another, so that path is written as its page.
  */
 export async function writeStaticPages(
   options: StaticPagesOptions,
@@ -287,7 +300,28 @@ export async function writeStaticPages(
   for (const page of written.pages) {
     options.logger.info(`${relative(options.root, page.file)}  ${(page.bytes / 1000).toFixed(2)} kB`);
   }
+  for (const page of written.withheld) options.logger.info(leftToTheHandler(page));
   return written.pages;
+}
+
+/**
+ * The line a build says for a path it did not write, naming the route that
+ * claims it where the table does. Said rather than thrown, because the path is
+ * the handler's to answer and leaving it so is right; said at all, because a
+ * page `params` asked for that never appears would otherwise look lost.
+ */
+function leftToTheHandler(page: WithheldRoute): string {
+  const from = page.pattern;
+  const owner = page.owner;
+  let why = 'a request for it renders another route, which does not render as `ssg`.';
+  if (owner) {
+    why =
+      `${owner.pattern} matches it ahead of ${from}, and ` +
+      (owner.mode === 'ssg'
+        ? "`params` leaves it out of that route's pages."
+        : 'does not render as `ssg`.');
+  }
+  return `[volt] ${page.pathname} is left to the handler rather than written from ${from}: ${why}`;
 }
 
 /** What the server's thread says: first how it started, then each page it was asked for. */
@@ -444,8 +478,14 @@ async function builtPages(
   );
 }
 
-/** One page's bytes, or what stopped them, said for whoever reads the build's output. */
-async function renderPage(pages: BuiltPages, pathname: string): Promise<string> {
+/**
+ * One page's bytes, or what stopped them, said for whoever reads the build's
+ * output — or null where a request for the path renders a route that is not
+ * `ssg`, which the built router says and the table cannot always: a value a
+ * parameter was given can make the path one a route rendered per request
+ * claims. The path is then left to the handler rather than written.
+ */
+async function renderPage(pages: BuiltPages, pathname: string): Promise<string | null> {
   let rendered;
   try {
     rendered = await pages.render(pathname);
@@ -453,16 +493,7 @@ async function renderPage(pages: BuiltPages, pathname: string): Promise<string> 
     const where = error instanceof ThreadError ? error.where : '';
     throw new Error(explainFailure(pathname, messageOf(error), where), { cause: error });
   }
-  if (rendered === null) {
-    // A parameter's value made the path one a more specific route answers,
-    // and that route renders per request or in the browser. A file there
-    // would be what a host serves in its place, to every reader.
-    throw new Error(
-      `[volt] ${pathname} was given as an \`ssg\` page by \`serverRender.params\`, and a request ` +
-        'for it is answered by another route, which does not render as `ssg`. Leave the path out ' +
-        'of what `params` answers, so a host hands it to the handler.',
-    );
-  }
+  if (rendered === null) return null;
   if (rendered.status !== 200) {
     // The handler's not-found page, which is a 404 from the handler and would
     // be a 200 from a host serving it as a file.

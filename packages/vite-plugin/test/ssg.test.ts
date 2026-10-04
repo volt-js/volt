@@ -20,13 +20,14 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
-import { buildPath, defineRoutes, flattenRoutes } from '@voltdev/router';
+import { buildPath, defineRoutes, flattenRoutes, matchRoutes, routeMode } from '@voltdev/router';
 import {
   createRenderCache,
   enumerateRoutes,
   fileForPathname,
   prerender,
   PrerenderError,
+  type Params,
   type RouteBranchLike,
 } from '../src/ssg.js';
 
@@ -498,5 +499,178 @@ describe('a table that says how each route renders', () => {
       expect(enumeration.routes.map((r) => r.pathname)).toEqual(['/about']);
       expect(enumeration.skipped).toEqual([{ pattern: '/', id: '/', reason: 'not-static' }]);
     });
+  });
+});
+
+/** The route a request for `pathname` renders, by the router's own matching. */
+function ownerOf(branches: ReturnType<typeof flattenRoutes>, pathname: string): string | undefined {
+  return matchRoutes(branches, pathname).at(-1)?.id;
+}
+
+describe('a URL a more specific route claims', () => {
+  // `/*` matches `/` by leaving `*` empty, and the index route names `/`
+  // exactly, so a request for `/` renders the index, per request. A file
+  // written there from the catch-all is what a static host serves instead.
+  const beside = flattenRoutes(
+    defineRoutes([
+      {
+        path: '/',
+        children: [
+          { index: true, id: 'home', mode: 'ssr' },
+          { path: '*', id: 'missing', mode: 'ssg' },
+        ],
+      },
+    ]),
+  );
+
+  it('leaves `/` to the home page rendered per request, beside a static catch-all', async () => {
+    const { routes, withheld } = await enumerateRoutes(beside);
+    expect(ownerOf(beside, '/')).toBe('home');
+    expect(routes).toEqual([]);
+    expect(withheld).toEqual([
+      {
+        pathname: '/',
+        pattern: '/*',
+        id: 'missing',
+        params: {},
+        owner: { pattern: '/', id: 'home', mode: 'ssr' },
+      },
+    ]);
+  });
+
+  it('writes no file there, and the catch-all’s other pages as before', async () => {
+    const dir = await outDir();
+    const result = await prerender({
+      branches: beside,
+      outDir: dir,
+      params: (): Params[] => [{}, { '*': 'gone' }],
+      render: (pathname) => `<p>${pathname}</p>`,
+    });
+    expect(result.pages.map((page) => page.pathname)).toEqual(['/gone']);
+    expect(result.withheld.map((page) => page.pathname)).toEqual(['/']);
+    expect(existsSync(join(dir, 'index.html'))).toBe(false);
+  });
+
+  it('leaves a literal route’s address to it, whatever a parameter is given', async () => {
+    const branches = flattenRoutes(
+      defineRoutes([
+        { path: 'about', id: 'about', mode: 'ssr' },
+        { path: ':lang?', id: 'lang' },
+      ]),
+    );
+    const { routes, withheld } = await enumerateRoutes(branches, () => [
+      { lang: 'about' },
+      { lang: 'en' },
+    ]);
+    expect(ownerOf(branches, '/about')).toBe('about');
+    expect(routes.map((route) => route.pathname)).toEqual(['/en']);
+    expect(withheld).toEqual([
+      {
+        pathname: '/about',
+        pattern: '/:lang?',
+        id: 'lang',
+        params: { lang: 'about' },
+        owner: { pattern: '/about', id: 'about', mode: 'ssr' },
+      },
+    ]);
+  });
+
+  it('leaves an `ssg` route’s own address to it when its `params` leave that address out', async () => {
+    // `/docs` is `/docs/:page?` with the parameter left out, so a request for
+    // it renders that route, whose list names `/docs/intro` alone. Written
+    // from the catch-all, it is a page that route's own list left out.
+    const branches = flattenRoutes(
+      defineRoutes([
+        { path: 'docs/:page?', id: 'docs', mode: 'ssg' },
+        { path: '*', id: 'missing', mode: 'ssg' },
+      ]),
+    );
+    const { routes, withheld } = await enumerateRoutes(branches, ({ id }) =>
+      id === 'docs' ? [{ page: 'intro' }] : [{ '*': 'docs' }, { '*': 'gone' }],
+    );
+    expect(ownerOf(branches, '/docs')).toBe('docs');
+    expect(routes.map((route) => `${route.pathname} ${route.id}`)).toEqual([
+      '/docs/intro docs',
+      '/gone missing',
+    ]);
+    expect(withheld).toEqual([
+      {
+        pathname: '/docs',
+        pattern: '/*',
+        id: 'missing',
+        params: { '*': 'docs' },
+        owner: { pattern: '/docs/:page?', id: 'docs', mode: 'ssg' },
+      },
+    ]);
+  });
+
+  it('still writes every URL of a catch-all that nothing more specific claims', async () => {
+    // Reserved per URL, not per branch: each skipped route keeps the address
+    // it names with nothing supplied — its literal one, with an optional
+    // parameter left out and a splat matching nothing — and the catch-all
+    // keeps everything else it was given.
+    const branches = flattenRoutes(
+      defineRoutes([
+        {
+          path: '/',
+          children: [
+            { index: true, id: 'home', mode: 'ssr' },
+            { path: 'pricing', id: 'pricing', mode: 'ssr' },
+            { path: 'docs/:page?', id: 'docs', mode: 'csr' },
+            { path: 'files/*', id: 'files', mode: 'ssr' },
+            { path: ':lang?/about', id: 'about', mode: 'ssr' },
+            { path: '*', id: 'missing', mode: 'ssg' },
+          ],
+        },
+      ]),
+    );
+    const rests = ['', 'pricing', 'docs', 'files', 'about', 'gone', 'a/b/c', 'pricing/plans'];
+    const { routes, withheld } = await enumerateRoutes(branches, () =>
+      rests.map((rest) => ({ '*': rest })),
+    );
+    expect(routes.map((route) => route.pathname)).toEqual(['/gone', '/a/b/c', '/pricing/plans']);
+    expect(withheld.map((page) => `${page.pathname} ${page.owner?.id}`)).toEqual([
+      '/ home',
+      '/pricing pricing',
+      '/docs docs',
+      '/files files',
+      '/about about',
+    ]);
+    for (const route of routes) expect(ownerOf(branches, route.pathname)).toBe(route.id);
+    for (const page of withheld) expect(ownerOf(branches, page.pathname)).toBe(page.owner!.id);
+  });
+
+  it('cannot see a URL a parameter claims, and withholds it when the renderer declines it', async () => {
+    // `/:lang` names no URL until it is given one, and a route that is not
+    // `ssg` is never asked for its parameters, so the table alone cannot say
+    // that `/en` is its. A renderer that holds the router can, and answering
+    // null leaves the URL unwritten rather than writing a page over it.
+    const branches = flattenRoutes(
+      defineRoutes([
+        { path: ':lang', id: 'lang', mode: 'ssr' },
+        { path: '*', id: 'missing', mode: 'ssg' },
+      ]),
+    );
+    const params = () => [{ '*': 'en' }, { '*': 'a/b' }];
+    const enumerated = await enumerateRoutes(branches, params);
+    expect(enumerated.routes.map((route) => route.pathname)).toEqual(['/en', '/a/b']);
+    expect(ownerOf(branches, '/en')).toBe('lang');
+
+    const dir = await outDir();
+    const result = await prerender({
+      branches,
+      outDir: dir,
+      params,
+      render: (pathname) =>
+        routeMode(matchRoutes(branches, pathname), 'ssg') === 'ssg' ? `<p>${pathname}</p>` : null,
+    });
+    expect(result.pages.map((page) => page.pathname)).toEqual(['/a/b']);
+    expect(result.withheld).toEqual([
+      { pathname: '/en', pattern: '/*', id: 'missing', params: { '*': 'en' } },
+    ]);
+    expect(existsSync(join(dir, 'en/index.html'))).toBe(false);
+    // Nothing is held for it either, so a server started from the cache
+    // renders it as the route a request for it reaches.
+    expect(result.cache.peek('/en')).toBeUndefined();
   });
 });

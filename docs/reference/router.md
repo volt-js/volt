@@ -149,7 +149,12 @@ are the patterns' own, though, and a left-out optional still takes one: beside
 
 The build that [writes the `ssg` pages](./server-render#the-pages-the-build-writes)
 renders each one through the handler, which picks a route by this same rule, so
-the file written for a URL holds the page a request for that URL renders.
+the file written for a URL holds the page a request for that URL renders. Where
+that route is not `ssg`, it writes no file at all, and says so. Under
+`serverRender`, whose routes render per request unless they say otherwise, a
+`mode: 'ssg'` on the table above's `NotFound` writes each not-found page it is
+given except where a request renders another route: `/` stays `Home`'s, and
+`/docs/a/b` stays `DocsMissing`'s.
 
 ### Layouts and the outlet
 

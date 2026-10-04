@@ -501,8 +501,46 @@ reach. It is the same function [`prerender`](#static-generation) takes as
 - **A path it does not name** is the handler's too, rendered when asked from
   the build's request, like any `ssg` path.
 - **A path it names that a more specific route answers**, where that route is
-  not `ssg`, fails the build: the file would be what a host serves in that
-  route's place, to every reader.
+  not `ssg`, is left to the handler rather than written, and the build says
+  so. See below.
+
+**A file is written only where a request renders an `ssg` route.** The
+pattern a path comes from and the route a request for the path renders can
+differ: `/*` matches `/` by leaving `*` empty, but a request for `/` renders
+the index route ([which route renders](./router#which-route-renders)). Where
+the route a request renders is not `ssg`, a file would be what a host serves
+in that route's place, to every reader, so the build writes none and says
+which path it left and why:
+
+```text
+[volt] / is left to the handler rather than written from /*: / matches it ahead of /*, and does not render as `ssg`.
+```
+
+A catch-all marked `ssg` beside a home page rendered per request therefore
+writes every page it is given except `/`, and the build succeeds. The line
+names the route where the table names the path: a route that is not `ssg`
+claims the path it has with nothing supplied (its literal one, an optional
+parameter left out, a splat matching nothing). A path such a route claims
+only through a parameter, such as `/en` beside a `/:lang` rendered per
+request, is one only the built router can place. The build asks it as each
+page is rendered, leaves the path to the handler all the same, and the line
+says that another route renders it rather than which one.
+
+An `ssg` route keeps its own path the same way where `params` leaves that path
+out of its pages. Answered with `{ page: 'intro' }`, `/docs/:page?` keeps
+`/docs` from a catch-all given it, since a request for `/docs` renders
+`/docs/:page?`, and the line says so:
+
+```text
+[volt] /docs is left to the handler rather than written from /*: /docs/:page? matches it ahead of /*, and `params` leaves it out of that route's pages.
+```
+
+That holds for the path such a route has with nothing supplied. The build
+cannot see a path another `ssg` route claims only through a parameter, such
+as `/docs/setup` given to the catch-all. It writes that path, and the file
+is that route's page, because every page is the handler's answer for its
+path. A loader on that route runs for a value its own `params` never named,
+so give the catch-all only paths nothing more specific claims.
 
 ## Partial hydration
 
@@ -548,7 +586,7 @@ import { enumerateRoutes, prerender } from '@voltdev/vite-plugin/ssg';
 import { flattenRoutes } from '@voltdev/router';
 import { routes } from './src/routes.js';
 
-const { pages, skipped } = await prerender({
+const { pages, skipped, withheld } = await prerender({
   branches: flattenRoutes(routes),
   outDir: 'dist',
   render: (pathname) => renderPage(pathname),
@@ -557,7 +595,7 @@ const { pages, skipped } = await prerender({
 
 | Function | What it does |
 |---|---|
-| `enumerateRoutes(branches, params?, defaultMode?)` | Every URL the table can produce, and what it could not |
+| `enumerateRoutes(branches, params?, defaultMode?)` | Every URL the table can produce, what it could not, and what another route claims |
 | `prerender(options)` | Renders each and writes the files |
 | `createRenderCache(options)` | A staleness policy over one renderer |
 | `fileForPathname(outDir, pathname, layout?)` | Where a URL's file goes |
@@ -669,3 +707,43 @@ It cannot yet be generated into a standalone project until the packages it
 needs are published — a project outside the repository installs from npm — so
 read it in the repository, under `packages/create-volt/templates/server-render/`.
 See [`create-volt`](./create-volt) for why that refusal is deliberate.
+
+A URL that a more specific route which is not `ssg` claims is not written from
+a less specific pattern. It comes back in `withheld`, with that route
+as `owner`, while the pattern's other URLs are written as usual. A `/*` beside
+an index route rendered per request writes everything it is given except `/`.
+The table can say this wherever the skipped route names the URL with nothing
+supplied: `/` for an index route, `/pricing` for a literal, `/docs` for
+`/docs/:page?` or `/docs/*`. It cannot say it for a URL the route claims only
+through a parameter, because nothing asks for the values of a route the build
+does not write. A `/:lang` rendered per request beside a `/*` given
+`{ '*': 'en' }` still has `/en` written from the catch-all. Give the catch-all
+only values nothing more specific claims, or mark it `ssr` and let the server
+render what it catches. A more specific `ssg` route skipped with `no-params`
+claims its URLs just as unseen; give it its `params`, and each is written from
+it rather than from the catch-all.
+
+An `ssg` route whose `params` leave out the URL it has with nothing supplied
+keeps that URL as well: `/docs/:page?` answered with `{ page: 'intro' }`
+keeps `/docs` from a `/*` given it, and the URL comes back in `withheld` with
+`/docs/:page?` as `owner`. `owner.mode` tells the two cases apart: `ssg`
+here, and `ssr` or `csr` for a route rendered per request or in the browser.
+
+A renderer that resolves the route itself can catch every URL a route that is
+not `ssg` claims: answering `null` withholds the URL rather than writing it,
+and the cache keeps nothing for it. `serverRender` does this through the
+server it built.
+
+```ts
+import { prerender } from '@voltdev/vite-plugin/ssg';
+import { flattenRoutes, matchRoutes, routeMode } from '@voltdev/router';
+
+const branches = flattenRoutes(routes);
+await prerender({
+  branches,
+  outDir: 'dist',
+  render: (pathname) =>
+    routeMode(matchRoutes(branches, pathname), 'ssg') === 'ssg' ? renderPage(pathname) : null,
+});
+```
+

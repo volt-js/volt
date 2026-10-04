@@ -97,9 +97,33 @@ export interface SkippedRoute {
   readonly reason: 'no-params' | 'not-static';
 }
 
+/**
+ * A URL a branch produced that is not written, because a more specific route
+ * claims it and the build writes no page of that route's there: the route is
+ * not `ssg`, or it is and its `params` left the URL out. A request for the URL
+ * never reaches the branch, and a file there would be served in that route's
+ * place.
+ *
+ * Per URL rather than per pattern: the branch writes every other URL it was
+ * given, and a catch-all beside a home page rendered per request still has
+ * every page nothing more specific claims.
+ */
+export interface WithheldRoute extends PrerenderRoute {
+  /**
+   * The route that claims the URL ahead of this branch, where the table says:
+   * a more specific one, at the URL it names with nothing supplied, and how it
+   * renders — `ssg` only where its `params` left that URL out. Absent where
+   * the renderer declined the URL instead, which says only that a request for
+   * it renders some other route.
+   */
+  readonly owner?: { readonly pattern: string; readonly id: string; readonly mode: RenderMode };
+}
+
 export interface Enumeration {
   readonly routes: readonly PrerenderRoute[];
   readonly skipped: readonly SkippedRoute[];
+  /** URLs a branch produced that a more specific route claims, which writes no page there. */
+  readonly withheld: readonly WithheldRoute[];
 }
 
 /**
@@ -229,11 +253,25 @@ function effectiveMode(
 }
 
 /**
- * Every URL a build can write, and every pattern it had to leave alone.
+ * Every URL a build can write, every pattern it had to leave alone, and every
+ * URL it produced that a request renders another route for.
  *
- * The branches arrive most specific first, so where two of them can produce
- * the same URL the more specific one is the page that gets written — the same
- * precedence `matchRoutes` would apply to a request for it.
+ * The branches arrive most specific first, the order `matchRoutes` tries them
+ * in, so where two of them can produce the same URL the more specific one is
+ * the page that gets written. A branch that writes no page at a URL of its
+ * own keeps it from the ones after it just the same — one that is skipped,
+ * and an `ssg` one whose `params` left it out: a request for it renders that
+ * branch, and a page written there from a less specific one would be what a
+ * static host serves in its place, to every reader. Such a URL comes back in
+ * `withheld`, with the route that claims it.
+ *
+ * Kept only where that branch names the URL with nothing supplied: its
+ * literal one, with each optional parameter left out and a splat matching
+ * nothing. A URL it names only with a parameter's value is not known here,
+ * because nothing is asked for the values of a route the build does not write,
+ * and an `ssg` route's list says only which of its URLs to write, so a less
+ * specific `ssg` branch given that URL still writes it. A renderer that holds
+ * the router can tell, and decline it; see `prerender`.
  *
  * `defaultMode` is what a branch that declares no mode anywhere renders as.
  * `ssg` unless the caller says: a table with no modes in it is a site with no
@@ -248,12 +286,29 @@ export async function enumerateRoutes(
 ): Promise<Enumeration> {
   const routes: PrerenderRoute[] = [];
   const skipped: SkippedRoute[] = [];
-  const seen = new Set<string>();
+  const withheld: WithheldRoute[] = [];
+  // Each URL to the first branch that named it, which is ahead of every later
+  // one for a request too; `written` is false where that branch writes no
+  // page there.
+  type Claim = { pattern: string; id: string; mode: RenderMode; written: boolean };
+  const claimed = new Map<string, Claim>();
 
   const add = (route: PrerenderRoute): void => {
-    if (seen.has(route.pathname)) return;
-    seen.add(route.pathname);
-    routes.push(route);
+    const claim = claimed.get(route.pathname);
+    if (claim === undefined) {
+      const { pattern, id } = route;
+      claimed.set(route.pathname, { pattern, id, mode: 'ssg', written: true });
+      routes.push(route);
+    } else if (!claim.written) {
+      const { pattern, id, mode } = claim;
+      withheld.push({ ...route, owner: { pattern, id, mode } });
+    }
+  };
+
+  const reserve = (branch: RouteBranchLike, pattern: string, id: string, mode: RenderMode) => {
+    if (needsParams(branch.segments)) return;
+    const pathname = buildPathname(branch.segments, {}, pattern);
+    if (!claimed.has(pathname)) claimed.set(pathname, { pattern, id, mode, written: false });
   };
 
   for (const branch of branches) {
@@ -263,8 +318,10 @@ export async function enumerateRoutes(
     // Leaf to root: a layout says what its section does by default and the
     // page inside it is the one that knows better. A branch that declares
     // nothing anywhere renders as `defaultMode`.
-    if (branch.routes && effectiveMode(branch.routes, defaultMode) !== 'ssg') {
+    const mode = branch.routes ? effectiveMode(branch.routes, defaultMode) : 'ssg';
+    if (mode !== 'ssg') {
       skipped.push({ pattern, id, reason: 'not-static' });
+      reserve(branch, pattern, id, mode);
       continue;
     }
 
@@ -287,9 +344,13 @@ export async function enumerateRoutes(
     for (const values of supplied) {
       add({ pathname: buildPathname(branch.segments, values, pattern), pattern, id, params: values });
     }
+    // A list is the whole of what the pattern writes, and one that leaves out
+    // the URL the pattern has with nothing supplied leaves it to a request —
+    // which still renders this route there, not a less specific one.
+    reserve(branch, pattern, id, mode);
   }
 
-  return { routes, skipped };
+  return { routes, skipped, withheld };
 }
 
 // ---------------------------------------------------------------------------
@@ -465,8 +526,13 @@ export interface PrerenderOptions {
    * The renderer, if the caller has no cache of its own. Given one, the build
    * populates it, so a server started from the same process serves the pages
    * the build produced instead of rendering them again.
+   *
+   * Null for a URL a request renders a route that is not `ssg` for, which a
+   * renderer holding the router can tell where the table alone cannot (see
+   * `enumerateRoutes`). The URL is then withheld rather than written, and the
+   * cache holds nothing for it.
    */
-  render?: (pathname: string) => string | Promise<string>;
+  render?: (pathname: string) => string | null | Promise<string | null>;
   cache?: RenderCache;
   /** Seconds a page stays fresh, if the build is seeding a cache that revalidates. */
   revalidate?: number | ((pathname: string) => number | undefined);
@@ -499,6 +565,11 @@ export interface PrerenderedPage {
 export interface PrerenderResult {
   readonly pages: readonly PrerenderedPage[];
   readonly skipped: readonly SkippedRoute[];
+  /**
+   * URLs not written because a more specific route claims them, which writes
+   * no page there: those the table says so of, and those the renderer declined.
+   */
+  readonly withheld: readonly WithheldRoute[];
   /** The cache the build rendered through, seeded with every page it wrote. */
   readonly cache: RenderCache;
 }
@@ -578,21 +649,27 @@ async function pool<T>(items: readonly T[], limit: number, run: (item: T) => Pro
  * first — but it does fail the build once they have all been attempted.
  */
 export async function prerender(options: PrerenderOptions): Promise<PrerenderResult> {
+  const render = options.render;
   const cache =
     options.cache ??
-    (options.render
-      ? createRenderCache({ render: options.render, revalidate: options.revalidate })
+    (render
+      ? createRenderCache({
+          render: async (pathname) => {
+            const html = await render(pathname);
+            if (html === null) throw new Declined(pathname);
+            return html;
+          },
+          revalidate: options.revalidate,
+        })
       : null);
 
   if (!cache) {
     throw new PrerenderError('[volt] prerender needs a `render` function or a `cache` to use one.');
   }
 
-  const { routes, skipped } = await enumerateRoutes(
-    options.branches,
-    options.params,
-    options.defaultMode,
-  );
+  const enumeration = await enumerateRoutes(options.branches, options.params, options.defaultMode);
+  const { routes, skipped } = enumeration;
+  const withheld = [...enumeration.withheld];
   const layout = options.layout ?? 'directory';
 
   const pages: PrerenderedPage[] = [];
@@ -618,7 +695,8 @@ export async function prerender(options: PrerenderOptions): Promise<PrerenderRes
         cached: page.hit,
       });
     } catch (error) {
-      failures.push({ pathname: route.pathname, cause: error });
+      if (error instanceof Declined) withheld.push(route);
+      else failures.push({ pathname: route.pathname, cause: error });
     }
   });
 
@@ -631,6 +709,23 @@ export async function prerender(options: PrerenderOptions): Promise<PrerenderRes
     );
   }
 
-  pages.sort((a, b) => (a.pathname < b.pathname ? -1 : a.pathname > b.pathname ? 1 : 0));
-  return { pages, skipped, cache };
+  const byPathname = (a: { pathname: string }, b: { pathname: string }): number =>
+    a.pathname < b.pathname ? -1 : a.pathname > b.pathname ? 1 : 0;
+  pages.sort(byPathname);
+  withheld.sort(byPathname);
+  return { pages, skipped, withheld, cache };
+}
+
+/**
+ * A renderer's null, on its way through the cache: a miss that keeps nothing,
+ * where a page of nothing would be kept and served to the next reader.
+ */
+class Declined extends Error {
+  constructor(pathname: string) {
+    super(
+      `[volt] A request for ${pathname} renders a route that is not \`ssg\`, and the renderer ` +
+        'gave no page for it.',
+    );
+    this.name = 'Declined';
+  }
 }
