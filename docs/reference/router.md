@@ -4,9 +4,9 @@
 before a route paints, typed parameters, and links that are real anchors.
 
 ::: warning Not on npm yet
-`@voltdev/router` is not published. It works from a checkout of the Volt repository;
-the packages on npm today are `@voltdev/core`, `@voltdev/reactivity`,
-`@voltdev/compiler` and `@voltdev/vite-plugin`.
+`@voltdev/router` is not published — see
+[what is on npm](../guide/getting-started#what-is-on-npm). It works from a
+checkout of the Volt repository.
 :::
 
 ```ts

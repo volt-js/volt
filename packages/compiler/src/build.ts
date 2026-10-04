@@ -20,7 +20,7 @@
  * asserts it, because a hash that keeps saying "same build" across a compiler
  * upgrade is worse than no hash.
  */
-export const COMPILER_VERSION = '0.1.0-alpha.1';
+export const COMPILER_VERSION = '0.1.0-alpha.2';
 
 export interface BuildOptions {
   whitespace?: 'condense' | 'preserve';

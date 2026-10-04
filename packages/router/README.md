@@ -13,12 +13,13 @@ pnpm add @voltdev/router@alpha
 > see [what is on npm](https://voltjs.dev/guide/getting-started#what-is-on-npm).
 
 ```ts
-import { createRouter, defineRoutes, routeData, type LoaderArgs } from '@voltdev/router';
+// router.ts
+import { createRouter, defineRoutes, type LoaderArgs } from '@voltdev/router';
+import { Home } from './home.js';
 
-const routes = defineRoutes([
+export const routes = defineRoutes([
   {
     path: '/',
-    component: Shell,
     children: [
       { index: true, component: Home },
       {
@@ -32,24 +33,48 @@ const routes = defineRoutes([
 ]);
 
 export const router = createRouter({ routes });
-await router.start(document.querySelector('#app')!);
 ```
 
-A layout renders its child wherever it puts an outlet, and keeps its instance,
+The application mounts its own root, and the router fills the outlet in it:
+
+```ts
+// main.ts
+import { mount, provideOutlet } from '@voltdev/core';
+import { provideRouter } from '@voltdev/router';
+import { router } from './router.js';
+import { Shell } from './shell.js';
+
+mount(Shell, '#app', {
+  setup: () => {
+    provideRouter(router);
+    provideOutlet(router.outletAt(0));
+  },
+});
+
+await router.start();
+```
+
+A layout marks where its child goes with `:outlet`, and keeps its instance,
 its state and its DOM while the child changes:
 
 ```html
 <nav>…</nav>
-<div data-volt-outlet></div>
+<main :outlet></main>
 ```
 
 A route reads its own loader's result and its own parameters, each on its own
-signal — a component showing `:tab` is not woken when `:id` changes:
+signal — a component showing `:id` is not woken when only another parameter
+changes:
 
 ```ts
-class UserPage {
-  user = routeData<User>();
-  tab = () => router.param('tab');
+import { Component } from '@voltdev/core';
+import { routeData } from '@voltdev/router';
+import { router } from './router.js';
+
+@Component({ selector: 'v-user', templateUrl: './user.html' })
+export class User {
+  user = routeData<{ name: string }>();
+  id = () => router.param('id');
 }
 ```
 
@@ -59,4 +84,4 @@ intercepts only the plain left-click that would otherwise reload the page.
 
 > **Pre-alpha.** Published under the `alpha` tag; the API is still moving.
 
-Documentation: [voltjs.dev](https://voltjs.dev)
+Documentation: [voltjs.dev/reference/router](https://voltjs.dev/reference/router)

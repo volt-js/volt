@@ -12,22 +12,24 @@ against a schema, steps that invert and map positions, a state that carries its
 selection across every change, the commands typing is made of, `beforeinput`
 translated into those commands, an undo history, and a view that renders a
 document, maps positions across the DOM boundary in both directions and keeps
-the two selections in step. Typing, backspace, delete, return and paste as
-plain text work, and so does undo once a host binds it to a key.
+the two selections in step. Typing, backspace, delete, word deletion in both
+directions, return, Shift-Return and paste as plain text work, and so do the
+platform's undo and redo keys, with nothing wired by the host.
 
 What does not exist yet is most of what makes it a product: no formatting
-commands, no keymap, no rich clipboard, no DOM parser, no serialisation, no node
+commands, no keymap beyond undo and redo, no rich clipboard, no DOM parser, no serialisation, no node
 selection, and no edit that crosses a block boundary. [What an editor still
 needs](#what-an-editor-still-needs) is the full list. The package is
 `0.1.0-alpha.1`, which is what its exported `VERSION` says, and its view is
 tested against happy-dom with events built by hand: nothing in its suite runs
 in a real browser.
 
-::: warning Not on npm yet
-`@voltdev/editor` has not been released — see
-[what is on npm](../guide/getting-started#what-is-on-npm). Everything on this
-page works from a checkout of the Volt repository.
-:::
+`@voltdev/editor` is on npm as `alpha`. It depends on nothing, not even the
+rest of Volt:
+
+```bash
+pnpm add @voltdev/editor@alpha
+```
 
 ```ts
 import { EditorState, EditorView, basicSchema } from '@voltdev/editor';
@@ -54,12 +56,14 @@ new EditorView(place: HTMLElement, options: EditorViewOptions)
 | `state` | The `EditorState` to show. Required |
 | `renderers` | `{ nodes?, marks? }`, merged over the starter renderers. See [rendering](#rendering) |
 | `dispatchTransaction` | `(tr, view) => void`. The default applies the transaction and redraws |
-| `editable` | Default `true`. `false` sets `contenteditable="false"` and `aria-readonly="true"`: the view still renders and maps positions, and still reads a selection made in it |
+| `editable` | Default `true`. `false` sets `contenteditable="false"` and `aria-readonly="true"`: the view still renders and maps positions, and still reads a selection made in it, but binds no undo key |
+| `history` | An `EditorHistory` to record into, or `false` for none. Default: one of the view's own. See [undo and redo](#undo-and-redo) |
 
 | Member | Description |
 |---|---|
 | `dom` | The editable element — the document node's own rendering, not a wrapper |
 | `input` | The [`EditorInput`](#what-typing-does) listening on `dom` |
+| `history` | The `EditorHistory` this view records into and the undo keys act on, or `null` when built with `history: false` |
 | `state` | The state on screen |
 | `dispatch(tr)` | Hand a transaction to whoever owns state |
 | `update(state, tr?)` | Show a new state |
@@ -103,7 +107,12 @@ const view = new EditorView(host, {
 
 **Pass the transaction to `update`.** The view has no virtual DOM and never
 compares one document with another; the transaction is what tells it which part
-moved, and without one the whole document is drawn again. A transaction that did
+moved, and without one the whole document is drawn again. It is also what the
+view's history records: a different document that arrives without the
+transaction that made it is one the history never saw, so the history starts
+again from it, and undo has nothing to take back. A document equal to the one
+on screen — the same content rebuilt, by a host that round-trips its value —
+keeps the history. A transaction that did
 not produce the state being shown — one from a different starting document —
 gets the full redraw too, rather than a range that means nothing here. The same
 full redraw is how a host loads a different document into an existing view:
@@ -159,8 +168,9 @@ Typing groups into one unit by time and place. A transaction joins the open
 unit when it arrives within `newGroupDelay` of the unit's last edit and the
 range it first replaced touches the range the unit last wrote. Moving the caret
 ends the unit, so two runs of typing in different places are two undos. Return,
-a paste and a finished composition each close the unit before them and refuse
-to be joined by what follows. A transaction that replaced nothing — a mark
+a line break, a paste and a finished composition each close the unit before them
+and refuse to be joined by what follows — so typing a line, pressing return and
+typing another is two undos however fast it was typed. A transaction that replaced nothing — a mark
 added across a range — takes a unit of its own rather than being merged on a
 guess, and nothing typed after it joins it either.
 
@@ -181,7 +191,9 @@ marks](#adding-and-removing-marks).
 
 The stacks move only in `record`. A transaction `undo` handed out that the
 caller then did not apply changes nothing, and an undo cannot be recorded as a
-fresh edit and empty the redo stack it was meant to fill.
+fresh edit and empty the redo stack it was meant to fill. A transaction recorded
+a second time is ignored, so a host that records what it applies into the
+history its view also records into does no harm.
 
 **Every applied transaction has to be recorded.** The recorded steps are
 applied at the positions they were written at, not mapped through anything that
@@ -195,31 +207,51 @@ transaction that starts from some other document, forgets both stacks and
 starts again from that transaction, which is also what happens when a host
 loads a different document into the view and carries on recording.
 
-**Nothing binds it to a key.** The `historyUndo` and `historyRedo` input types
-are cancelled like any other the input layer has no command for, because which
-surface owns that shortcut is the host's decision. Wiring it is a
-`dispatchTransaction` and a listener:
+**The view keeps one and binds it to the keys.** Every state a view shows
+passes through `update`, so that is where it records: a transaction it applied
+itself, or one a host that owns dispatch hands back with `update(state, tr)`.
+The platform's undo and redo keys and the `historyUndo` and `historyRedo` input
+types reach that history with nothing wired — see [the undo
+keys](#the-undo-keys). An undo restores the selection its unit began from, on
+screen as well as in the model.
 
 ```ts
 import { EditorHistory, EditorState, EditorView } from '@voltdev/editor';
 
-const history = new EditorHistory();
+// The view's own history would do; one passed in is one the host can read.
+const history = new EditorHistory({ newGroupDelay: 800 });
 
 const view = new EditorView(host, {
   state: EditorState.create(doc),
+  history,
   dispatchTransaction(tr, view) {
     view.update(view.state.apply(tr), tr);
-    history.record(tr);
+    undoButton.disabled = history.undoDepth === 0;
   },
 });
 
-view.dom.addEventListener('keydown', (event) => {
-  if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'z') return;
-  event.preventDefault();
-  const tr = event.shiftKey ? history.redo(view.state) : history.undo(view.state);
+undoButton.onclick = () => {
+  const tr = history.undo(view.state);
   if (tr) view.dispatch(tr);
-});
+};
 ```
+
+An undo button goes through `dispatch` like any other change, and the view
+records it on the way back, which is what moves the unit to the redo stack. A
+history belongs to one view: two views recording into one each hand it
+documents the other never showed, and it starts again on every edit. It can
+outlive one, though. A view built with a history that last recorded the
+document it is built on keeps everything, which is how a host keeps undo across
+a remount; built on any other document, the history starts again there rather
+than keeping steps the undo key would hand to a document they do not describe.
+
+`history: false` keeps none. The keys are then left to the host, and
+`historyUndo` and `historyRedo` are still cancelled, since a browser undo would
+take back DOM the model never saw change. That is the setting for a host whose
+own undo — a collaborative one, say — owns the keys; a host that had wired its
+own `keydown` listener to an `EditorHistory` before the view kept one either
+passes that history as `history` and drops the listener, or passes `false`.
+Passing the history and keeping the listener undoes twice on one key.
 
 Rebasing an undo over someone else's change is not here. It is the
 collaborative case, and a separate piece of work.
@@ -234,10 +266,13 @@ to put input on an element without a view.
 |---|---|---|
 | `insertText` | `insertText(tr, event.data)` | A character |
 | `insertParagraph` | `insertParagraph(tr)` | Return |
+| `insertLineBreak` | `insertHardBreak(tr)` | Shift-Return |
 | `deleteContentBackward` | `deleteBackward(tr)` | Backspace |
 | `deleteContentForward` | `deleteForward(tr)` | Delete |
 | `deleteWordBackward` | `deleteWordBackward(tr)` | Option- or Ctrl-Backspace |
+| `deleteWordForward` | `deleteWordForward(tr)` | Option- or Ctrl-Delete |
 | `insertFromPaste` | `insertPlainText(tr, text)` | Paste, as plain text |
+| `historyUndo`, `historyRedo` | The host's `history.undo` or `redo`, dispatched | Edit menu, shake to undo |
 
 **Every other input type is cancelled and dropped.** The model is the truth and
 the DOM is a rendering of it. An edit the browser performs that the model never
@@ -245,18 +280,21 @@ saw puts every position, selection and history entry out of step with what is on
 screen, silently and for good; refusing an edit it cannot express yet is visible
 instead, and the person tries something else. In practice that means, today:
 
-- Shift-Return (`insertLineBreak`) does nothing, although the starter schema
-  has a `hard_break`.
 - Cut (`deleteByCut`) leaves the selection in the document.
 - Dropping text or dragging a selection does nothing.
 - Accepting a spelling suggestion (`insertReplacementText`) does nothing.
-- Deleting a word forwards, or to either end of a line, does nothing.
+- Deleting to either end of a line (`deleteSoftLineBackward` and its kin) does
+  nothing.
 - The browser's own bold and italic shortcuts (`formatBold`, `formatItalic`)
-  and its undo (`historyUndo`) do nothing — see [undo](#undo-and-redo).
+  do nothing.
+- With no history — `history: false`, or an `EditorInput` whose host gives
+  none — `historyUndo` and `historyRedo` do nothing.
 
 A paste reads the `text/plain` on the event's `dataTransfer`, falling back to
 `data`: a real paste puts the text on the transfer, and a synthetic event does
-the opposite.
+the opposite. A paste with text in neither — an image copied from a page is
+HTML and the image — declines, for the reason `insertText` does: pasting
+nothing over a selection would delete it.
 
 The layer never calls `getTargetRanges()`. Every command acts on the model's
 selection, so an event whose target is somewhere other than the selection —
@@ -268,7 +306,37 @@ key means different things under different layouts, input methods, autocorrect
 and dictation, and on a phone there is often no key event at all. `beforeinput`
 is defined in terms of the edit about to happen, which is the level this layer
 translates at. Shortcuts that really are about keys — a binding for bold — belong
-in a separate `keydown` listener, which is the host's today.
+in a separate `keydown` listener, which is the host's today. The undo keys are
+the one exception, for the reason the next section gives.
+
+### The undo keys
+
+| Keys | Does |
+|---|---|
+| Ctrl-Z, Cmd-Z | Undo |
+| Ctrl-Shift-Z, Cmd-Shift-Z, Ctrl-Y | Redo |
+
+`historyUndo` and `historyRedo` are what a browser sends when it is about to
+undo an edit of its own. Every edit here was cancelled before the browser made
+it, so its own undo stack is empty and the platform's undo key sends no
+`beforeinput` at all — the key has to be read as a key. The input layer listens
+for `keydown` on the editable element for these and nothing else, and both
+roads lead to the same history.
+
+Either modifier is taken on every platform rather than guessing the platform
+from a user agent; Ctrl-Z on a Mac and Cmd-Z elsewhere mean nothing else. A key
+with Alt held is not an undo key, because AltGr arrives as Ctrl-Alt on Windows
+and types a character there. The letter is read from `key` on a Latin layout,
+so Z is where Z is printed — on AZERTY, Ctrl-W in QWERTY's Z place is not undo
+— and from `code` when `key` is a letter of another script, so Ctrl-Я on a
+Russian layout undoes as the platform's own fields do.
+
+The keys are left alone, not prevented, while an input method is composing;
+when another listener has already called `preventDefault` on the event — which
+is how a host takes a key back, with a capturing listener on an ancestor; when
+there is no history; and in a read-only view. Otherwise an undo key is the
+editor's even with nothing to take back, so the browser does not go looking in
+a stack of its own.
 
 ### Composition
 
@@ -281,9 +349,21 @@ engines send the first one before `compositionstart` — and so is every other
 `beforeinput` while a composition runs. When the composition ends its text goes
 through `insertText` in one step, as one undo unit, replacing the selection the
 composition started from; a composition that ends with no text changes nothing.
+Undoing it takes back the composed text alone — not the typing before it, and
+not the typing after — and puts back the selection it started from.
 The model is behind the DOM for the length of a composition, on purpose. While
 it runs, the view neither writes the selection nor reads it back, since moving
 it abandons the composition.
+
+**A click that ends a composition keeps its caret.** Whether `compositionend`
+arrives before or after the selection moves is the platform's to decide: an
+input method committed on the press ends first, and one committed because the
+selection moved ends after. In the second case the view notes where the
+browser's selection is as the composition ends, and once the composed text is
+in, puts the caret there — the text where it was written, the caret where the
+person clicked. Only a click outside the block being composed in is read that
+way. Inside it, the input method's nodes still sit beside the view's own, so a
+click there leaves the caret after the composed text.
 
 **When a composition ends, the view takes back what the input method wrote.**
 Once the model has caught up, the node around the selection has its content
@@ -297,13 +377,22 @@ dispatch and has not yet called `update` sees the composed text go and come
 back with the update. Composition has only been exercised with hand-built
 events, never with a real input method.
 
+The composed text is taken from `compositionend` and put where the model's
+selection is; nothing reads back what the input method wrote. That is right for
+an input method that composes at the caret or over a selection, and wrong for
+one that reopens text beside the caret to compose over it — Android keyboards do
+this to correct a word already typed — where the composed word lands beside the
+word it was meant to replace. Reading that range off the composition's own
+events is not built.
+
 ```ts
 applyInputType(tr: EditorTransaction, inputType: string, event?: InputEvent): boolean
 ```
 
 The translation without the listener, exported so it can be tested without an
 event loop and so a keymap can reach the same commands by the same names. It
-returns `false` for every type not in the table. Two in the table read their
+returns `false` for `historyUndo` and `historyRedo`, which go to a history
+rather than into a transaction, and for every type not in the table. Two in the table read their
 event, `insertText` and `insertFromPaste`, and both decline without one.
 `insertText` declines for an event carrying no text as well, since typing
 nothing over a range would delete the range.
@@ -314,6 +403,7 @@ new EditorInput(dom: HTMLElement, host: EditorInputHost)
 interface EditorInputHost {
   state(): EditorState;                   // read fresh for every event
   dispatch(tr: EditorTransaction): void;  // never called for a no-op
+  history?: EditorHistory | null;         // what the undo keys act on
 }
 ```
 
@@ -325,7 +415,9 @@ interface EditorInputHost {
 It holds no document of its own and asks for the state as each event arrives,
 which is what keeps it right when an undo or another change moved the document
 between two keystrokes. It never asks the DOM where the selection is; that
-comes from the state.
+comes from the state. A host that gives it a history records into that history
+every transaction it applies, the ones an undo dispatches included; that is
+what moves a unit from one stack to the other.
 
 ### Commands
 
@@ -340,10 +432,12 @@ what makes it testable without an event.
 | `insertText(tr, text)` | Replace the selection with text carrying the marks of the position |
 | `insertPlainText(tr, text)` | The same, with line breaks as paragraph breaks — what a paste is reduced to |
 | `insertParagraph(tr)` | Split the textblock at the cursor. A selection goes in the same step: the first half is what came before it, the second what came after |
+| `insertHardBreak(tr)` | Replace the selection with the schema's `hard_break`, carrying the marks of the position, and put the cursor after it. The block stays one block |
 | `deleteSelection(tr)` | Delete the selection, if there is one |
 | `deleteBackward(tr)` | The selection, else the grapheme or inline leaf before the cursor, else a join with the textblock before or the removal of a block leaf there |
 | `deleteForward(tr)` | The same, forwards |
 | `deleteWordBackward(tr)` | The selection, else any whitespace before the cursor and then the word or run of punctuation before that, else what backspace would do |
+| `deleteWordForward(tr)` | The same, forwards: whitespace after the cursor and then a word or run of punctuation, else what delete would do |
 
 Every command declines rather than taking a step that changes nothing, and a
 command that declines has taken no step at all, so the return value is the
@@ -367,9 +461,14 @@ String(state.doc); // 'doc(paragraph("Hello"), paragraph("world"))'
 
 Backspace deletes a grapheme cluster rather than a code unit, so a family emoji
 goes in one press rather than leaving half a surrogate pair on screen. A word
-delete walks the same clusters, classing each by the character it starts with
-as a letter, digit or `_`, or not — so the accent of a decomposed `café` and a
-letter outside the basic plane are part of their word. Typed text takes its
+delete takes its boundaries from `Intl.Segmenter`'s words: the apostrophe of
+`don't` and the point of `3.14` belong to their word, the accent of a
+decomposed `café` and a letter outside the basic plane are part of theirs, and
+a sentence written without spaces — `日本語を勉強します` — loses one word, `ます`,
+rather than all of it. It takes one word, not a run of them, since in such a
+script the words sit directly beside each other; where there is no word it
+takes a run of whatever is neither word nor space, so `...` and a row of emoji
+each go in one press. Typed text takes its
 marks from `ResolvedPos.marks()`, filtered by what the block allows: typing at
 the end of a bold run stays bold, typing at the end of a link does not extend
 it.
@@ -388,7 +487,12 @@ in the middle:
 - Return inside a list item splits the item's paragraph and leaves both halves
   in the same item. There is no command that starts a new item or leaves a list.
 - Return inside a code block splits it into two code blocks; there is no
-  newline in one. A pasted line break does the same.
+  newline in one. A pasted line break does the same, and Shift-Return does
+  nothing there, since a code block's content is `text*`.
+- A hard break is an inline leaf one position wide: backspace or delete beside
+  it removes it in one press, a word delete stops at it and takes it alone on
+  the next press, and Shift-Return never splits a block. `insertHardBreak` finds
+  the type by the name `hard_break`, and declines in a schema without one.
 - Backspace at the start of a block joins it to the textblock before, which
   keeps the first block's type, and removes a block-level leaf such as a rule.
   At the start of the first block in a list item or a blockquote, or after a
@@ -452,8 +556,11 @@ new EditorView(host, {
 });
 ```
 
-An empty textblock gets a `<br>` so it has a line box to click and type into.
-It owns no position, and goes again when the block gets content.
+An empty textblock gets a `<br>` so it has a line box to click and type into,
+and so does one whose last child is drawn as a `<br>` — a hard break at the end
+of a paragraph ends its line, and with nothing after it there is no next line
+drawn to put the caret on. The prop owns no position, and goes again when the
+block gets content after the break.
 
 ### What an update redraws
 
@@ -1106,16 +1213,17 @@ front of a writer is large. In roughly the order a product meets them:
 - **Edits across blocks.** A replacement whose ends are in different parents is
   refused, so a selection spanning two paragraphs cannot be deleted, typed over
   or pasted into, and a mark cannot be added across it in one step.
-- **Formatting and a keymap.** Mark steps exist; no command toggles a mark, no
-  key is bound to anything, and undo is wired by the host.
+- **Formatting and a keymap.** Mark steps exist; no command toggles a mark, and
+  no key is bound to anything but undo and redo.
 - **Block commands.** Turning a paragraph into a heading, wrapping in a list or a
-  blockquote, starting a new list item, lifting out of one, a line break inside
-  a block — none exist.
-- **The rest of `beforeinput`.** Line breaks, cut, drag and drop, spelling
-  replacements, forward and line-wise deletion are all cancelled today, and no
-  event's target ranges are read.
+  blockquote, starting a new list item, lifting out of one — none exist.
+- **The rest of `beforeinput`.** Cut, drag and drop, spelling replacements and
+  line-wise deletion are all cancelled today, and no event's target ranges are
+  read.
 - **Input-method composition, proven.** It has only met hand-built events, and
-  needs testing in real browsers with real input methods.
+  needs testing in real browsers with real input methods. A composition that
+  reopens text beside the caret, as Android keyboards do, needs its range read
+  rather than assumed.
 - **A read-only mode that can be switched.** `editable` is fixed when the view
   is built.
 - **A rich clipboard and a DOM parser.** A paste is flattened to text, and the

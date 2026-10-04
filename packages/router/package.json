@@ -16,12 +16,16 @@
   },
   "files": [
     "dist",
+    "!dist/.tsbuildinfo",
     "README.md"
   ],
   "scripts": {
     "build": "vite build && tsc -p tsconfig.build.json"
   },
-  "dependencies": {
+  "peerDependencies": {
+    "@voltdev/core": "workspace:^"
+  },
+  "devDependencies": {
     "@voltdev/core": "workspace:*"
   },
   "keywords": [

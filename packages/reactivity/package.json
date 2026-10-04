@@ -1,6 +1,6 @@
 {
   "name": "@voltdev/reactivity",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "description": "TC39-conformant signals with Volt's effect scheduling and disposal scopes.",
   "type": "module",
   "license": "MIT",
@@ -20,6 +20,7 @@
   },
   "files": [
     "dist",
+    "!dist/.tsbuildinfo",
     "README.md"
   ],
   "scripts": {

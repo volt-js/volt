@@ -16,14 +16,20 @@
   },
   "files": [
     "dist",
+    "!dist/.tsbuildinfo",
     "README.md"
   ],
   "scripts": {
     "build": "vite build && tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@voltdev/core": "workspace:*",
-    "@voltdev/primitives": "workspace:*"
+    "@voltdev/primitives": "workspace:^"
+  },
+  "peerDependencies": {
+    "@voltdev/core": "workspace:^"
+  },
+  "devDependencies": {
+    "@voltdev/core": "workspace:*"
   },
   "keywords": [
     "volt",

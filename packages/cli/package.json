@@ -4,6 +4,10 @@
   "description": "Volt's command line \u2014 type-check the expressions in your templates.",
   "type": "module",
   "license": "MIT",
+  "sideEffects": [
+    "./bin/volt.js",
+    "./dist/cli.js"
+  ],
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -19,6 +23,7 @@
   "files": [
     "bin",
     "dist",
+    "!dist/.tsbuildinfo",
     "README.md"
   ],
   "scripts": {
@@ -32,7 +37,7 @@
     "@types/node": "^26.2.0"
   },
   "peerDependencies": {
-    "typescript": "^7.0.0"
+    "typescript": "^7.0.2"
   },
   "keywords": [
     "cli",

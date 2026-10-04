@@ -2,19 +2,15 @@
 
 `create-volt` generates a new project from one of three templates.
 
-::: warning Not on npm yet
-`@voltdev/create-volt` is not published, so `pnpm create volt` does not work
-yet. From a checkout of the Volt repository it runs as below, and it can
-generate the `minimal` template today. The other two are built and tested but
-refused, for the reason given [under availability](#availability).
-:::
-
 ```bash
-# from a checkout of the Volt repository, after `pnpm build`
-node packages/create-volt/bin/create-volt.js my-app --template minimal
+pnpm create @voltdev/volt@alpha my-app
 ```
 
-Once it is published this becomes `pnpm create volt my-app`.
+`@voltdev/create-volt` is on npm as `alpha`. The scope is part of the command:
+`pnpm create volt` resolves the unscoped `create-volt` package, which is a
+different project. It can generate the `minimal` template today; the other two
+are built and tested but refused, for the reason given
+[under availability](#availability).
 
 ## Options
 
@@ -105,7 +101,8 @@ the pricing page.
 ## Availability
 
 A template can only be generated if every Volt package it depends on is on npm.
-Today that is `@voltdev/core` and `@voltdev/vite-plugin`, so:
+Of the packages a template names, today that is `@voltdev/core` and
+`@voltdev/vite-plugin`, so:
 
 | Template | Needs | Generated today |
 |---|---|---|
@@ -120,11 +117,10 @@ the reader has already chosen it. So `--help` marks the unavailable templates,
 the interactive chooser leaves them out, and naming one with `--template` is
 refused with the packages it is waiting for.
 
-The list is `PUBLISHED_PACKAGES` in `src/versions.ts`: the packages a template
-can name that the release workflow publishes. (The release also publishes
-`@voltdev/reactivity` and `@voltdev/compiler`, which no template names — they
-arrive with core and the plugin.) When a package is released, adding it there is
-the whole change, and the templates that needed it become available.
+The list is `PUBLISHED_PACKAGES` in `src/versions.ts`: every package the release
+workflow publishes, and a test fails when the two lists differ. A package is
+released by adding it to both, and the templates that needed it become
+available.
 
 Until then, `router-query` and `server-render` are best read in the repository, under
 `packages/create-volt/templates/`, and tried from inside it, where every package

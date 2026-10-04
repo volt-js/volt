@@ -4,9 +4,9 @@
 question, so two components asking the same thing make one request between them.
 
 ::: warning Not on npm yet
-`@voltdev/query` is not published. It works from a checkout of the Volt repository;
-the packages on npm today are `@voltdev/core`, `@voltdev/reactivity`,
-`@voltdev/compiler` and `@voltdev/vite-plugin`.
+`@voltdev/query` is not published — see
+[what is on npm](../guide/getting-started#what-is-on-npm). It works from a
+checkout of the Volt repository.
 :::
 
 ```ts

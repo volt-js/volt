@@ -1,18 +1,17 @@
-# create-volt
+# @voltdev/create-volt
 
 Scaffold a [Volt](https://voltjs.dev) project: the Vite plugin configured, a
 component, its template, a stylesheet, and a test that passes.
 
 ```bash
-pnpm create @voltdev/volt my-app
+pnpm create @voltdev/volt@alpha my-app
 cd my-app
 pnpm install
 pnpm dev
 ```
 
-> **Not on npm yet.** The command above is what runs it once it is released.
-> Until then, from a checkout of the [Volt repository](https://github.com/volt-js/volt),
-> after `pnpm build`: `node packages/create-volt/bin/create-volt.js my-app`.
+The scope is part of the command: `pnpm create volt` runs the unscoped
+`create-volt` package, which is a different project.
 
 ## Templates
 
@@ -25,11 +24,11 @@ pnpm dev
 Pick one up front with `--template`, or answer the prompt.
 
 ```bash
-pnpm create @voltdev/volt my-app --template minimal
+pnpm create @voltdev/volt@alpha my-app --template minimal
 ```
 
 A template is only offered when everything it installs is on npm. `router-query`
-needs `@voltdev/router` and `@voltdev/query`, and `start` needs those and
+needs `@voltdev/router` and `@voltdev/query`, and `server-render` needs those and
 `@voltdev/server`, none of which have shipped yet — the CLI says so rather than
 generating a project that cannot install.
 
@@ -58,3 +57,7 @@ The generated `package.json` is not checked in anywhere; it is built from a
 single table that restates what the Volt workspace itself is on, and a test
 fails the moment the two disagree. A project scaffolded today is on the same
 versions as the framework that scaffolded it.
+
+> **Pre-alpha.** Published under the `alpha` tag; the API is still moving.
+
+Documentation: [voltjs.dev/reference/create-volt](https://voltjs.dev/reference/create-volt)

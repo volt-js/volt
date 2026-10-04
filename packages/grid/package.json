@@ -1,7 +1,7 @@
 {
   "name": "@voltdev/grid",
   "version": "0.1.0-alpha.1",
-  "description": "Virtualized data grid for Volt.",
+  "description": "Virtualized, keyboard-navigable headless data grid for Volt.",
   "type": "module",
   "license": "MIT",
   "sideEffects": false,
@@ -16,12 +16,17 @@
   },
   "files": [
     "dist",
+    "!dist/.tsbuildinfo",
     "README.md"
   ],
   "scripts": {
     "build": "vite build && tsc -p tsconfig.build.json"
   },
-  "dependencies": {
+  "peerDependencies": {
+    "@voltdev/core": "workspace:^",
+    "@voltdev/primitives": "workspace:^"
+  },
+  "devDependencies": {
     "@voltdev/core": "workspace:*",
     "@voltdev/primitives": "workspace:*"
   },

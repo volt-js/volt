@@ -16,18 +16,22 @@
   },
   "files": [
     "dist",
+    "!dist/.tsbuildinfo",
     "README.md"
   ],
   "scripts": {
     "build": "vite build && tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@volar/language-core": "^2.4.28",
     "@voltdev/compiler": "workspace:*",
     "@voltdev/vite-plugin": "workspace:*"
   },
+  "peerDependencies": {
+    "@volar/language-core": "^2.4.28"
+  },
   "devDependencies": {
-    "@types/node": "^26.2.0"
+    "@types/node": "^26.2.0",
+    "@volar/language-core": "^2.4.28"
   },
   "keywords": [
     "volar",

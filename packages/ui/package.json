@@ -20,15 +20,32 @@
   },
   "files": [
     "dist",
+    "!dist/.tsbuildinfo",
     "src",
+    "!src/*.ts",
+    "!src/sheet",
     "README.md"
   ],
   "scripts": {
     "build": "vite build && tsc -p tsconfig.build.json"
   },
   "dependencies": {
+    "@voltdev/reactivity": "workspace:^"
+  },
+  "peerDependencies": {
+    "@voltdev/core": "workspace:^",
+    "@voltdev/primitives": "workspace:^",
+    "@voltdev/vite-plugin": "workspace:^"
+  },
+  "peerDependenciesMeta": {
+    "@voltdev/vite-plugin": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
     "@voltdev/core": "workspace:*",
-    "@voltdev/primitives": "workspace:*"
+    "@voltdev/primitives": "workspace:*",
+    "@voltdev/vite-plugin": "workspace:*"
   },
   "keywords": [
     "volt",

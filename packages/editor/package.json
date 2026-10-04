@@ -1,7 +1,7 @@
 {
   "name": "@voltdev/editor",
   "version": "0.1.0-alpha.1",
-  "description": "Rich text editor for Volt.",
+  "description": "Rich-text editor engine: document model, schema, steps, history and a DOM view. No framework dependency.",
   "type": "module",
   "license": "MIT",
   "sideEffects": false,
@@ -16,6 +16,7 @@
   },
   "files": [
     "dist",
+    "!dist/.tsbuildinfo",
     "README.md"
   ],
   "scripts": {

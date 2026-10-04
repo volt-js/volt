@@ -80,4 +80,4 @@ browser rather than a DOM emulation.
 
 > **Pre-alpha.** Published under the `alpha` tag; the API is still moving.
 
-Documentation: [voltjs.dev](https://voltjs.dev)
+Documentation: [voltjs.dev/reference/testing](https://voltjs.dev/reference/testing)

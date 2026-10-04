@@ -1,6 +1,6 @@
 {
   "name": "@voltdev/core",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "description": "Volt core \u2014 class components, lifecycle, and the fine-grained DOM runtime.",
   "type": "module",
   "license": "MIT",
@@ -36,6 +36,7 @@
   },
   "files": [
     "dist",
+    "!dist/.tsbuildinfo",
     "README.md"
   ],
   "scripts": {

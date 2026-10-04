@@ -14,9 +14,11 @@ pnpm add @voltdev/query@alpha
 > see [what is on npm](https://voltjs.dev/guide/getting-started#what-is-on-npm).
 
 ```ts
+import { Component, Signal } from '@voltdev/core';
 import { createQuery } from '@voltdev/query';
 
-class UserCard {
+@Component({ selector: 'v-user-card', templateUrl: './user-card.html' })
+export class UserCard {
   id = new Signal.State(1);
   user = createQuery({
     key: () => ['users', this.id.get()],
@@ -46,8 +48,12 @@ exactly what they took away if it throws — skipping any value something newer
 has already replaced:
 
 ```ts
-await queryClient.mutate(() => api.rename(id, name), {
-  optimistic: [optimistic(['users', id], (u: User) => ({ ...u, name }))],
+import { createQueryClient, optimistic } from '@voltdev/query';
+
+const client = createQueryClient();
+
+await client.mutate(() => api.rename(id, name), {
+  optimistic: [optimistic<User>(['users', id], (user) => user && { ...user, name })],
   invalidate: [['users']],
 });
 ```
@@ -58,9 +64,11 @@ makes the last component out cancel the request nobody is waiting for. Pass
 `keepPreviousData` and a paginated list keeps its rows on screen while the next
 page loads.
 
-The cache lives beside [`createResource`](https://voltjs.dev), not inside it: a
-resource is one request's lifecycle, a cache is the application's.
+The cache lives beside
+[`createResource`](https://voltjs.dev/reference/primitives-data#createresource),
+not inside it: a resource is one request's lifecycle, a cache is the
+application's.
 
 > **Pre-alpha.** Published under the `alpha` tag; the API is still moving.
 
-Documentation: [voltjs.dev](https://voltjs.dev)
+Documentation: [voltjs.dev/reference/query](https://voltjs.dev/reference/query)

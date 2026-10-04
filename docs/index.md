@@ -85,7 +85,8 @@ its own so an application carries only what it imports:
 
 Volt is pre-alpha, and two things follow from that. Several of these are partly
 built, and each page says which parts — a reader who finds out from an exception
-is worse off than one who read it first. And only the core is on npm: `core`,
-`reactivity`, `compiler` and the Vite plugin. The rest are in the repository and
-not yet released, and each of their pages says so at the top. This site
-documents the repository, which is ahead of the published alpha.
+is worse off than one who read it first. And only some of it is on npm:
+`core`, `reactivity`, `compiler`, the Vite plugin, the editor and `create-volt`.
+The rest are in the repository and not yet released, and each of their pages
+says so at the top. This site documents the repository, which is
+ahead of the published alpha.

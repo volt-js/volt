@@ -18,11 +18,11 @@
  *                the stylesheets, so the app should be on the same Sass
  */
 export const VERSIONS = {
-  '@voltdev/core': '^0.1.0-alpha.1',
+  '@voltdev/core': '^0.1.0-alpha.2',
   '@voltdev/query': '^0.1.0-alpha.1',
   '@voltdev/router': '^0.1.0-alpha.1',
   '@voltdev/server': '^0.1.0-alpha.1',
-  '@voltdev/vite-plugin': '^0.1.0-alpha.1',
+  '@voltdev/vite-plugin': '^0.1.0-alpha.2',
   'happy-dom': '^20.11.2',
   sass: '^1.102.0',
   typescript: '^7.0.2',
@@ -33,18 +33,24 @@ export const VERSIONS = {
 export type DependencyName = keyof typeof VERSIONS;
 
 /**
- * The Volt packages an install can actually reach.
+ * The Volt packages an install can actually reach: exactly the list
+ * `.github/workflows/release.yml` publishes, which `test/versions.test.ts`
+ * reads and compares with this one.
  *
- * `.github/workflows/release.yml` decides this, and deliberately holds some
- * back — a package published at 0.1.0 is permanent, so nothing ships until
- * its shape is meant to be. A template that needs one of the others is still
- * built and still tested; the CLI just will not offer it, because the project
- * it produced could not `pnpm install`. Adding a package to the workflow is
- * the whole change: `test/versions.test.ts` reads the same list.
+ * The workflow deliberately holds some back — a package published at 0.1.0 is
+ * permanent, so nothing ships until its shape is meant to be. A template that
+ * needs one of the others is still built and still tested; the CLI just will
+ * not offer it, because the project it produced could not `pnpm install`.
+ * Publishing a package is an edit to both lists, made together, and the
+ * templates that were waiting for it become available.
  */
-export const PUBLISHED_PACKAGES: readonly DependencyName[] = [
+export const PUBLISHED_PACKAGES: readonly `@voltdev/${string}`[] = [
+  '@voltdev/reactivity',
+  '@voltdev/compiler',
   '@voltdev/core',
   '@voltdev/vite-plugin',
+  '@voltdev/editor',
+  '@voltdev/create-volt',
 ];
 
 /** Whether this is one of Volt's own packages rather than a tool. */

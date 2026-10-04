@@ -116,7 +116,7 @@ importers:
         specifier: workspace:*
         version: link:../vite-plugin
       typescript:
-        specifier: ^7.0.0
+        specifier: ^7.0.2
         version: 7.0.2
     devDependencies:
       '@types/node':
@@ -143,7 +143,7 @@ importers:
   packages/editor: {}
 
   packages/grid:
-    dependencies:
+    devDependencies:
       '@voltdev/core':
         specifier: workspace:*
         version: link:../core
@@ -152,24 +152,25 @@ importers:
         version: link:../primitives
 
   packages/primitives:
-    dependencies:
+    devDependencies:
       '@voltdev/core':
         specifier: workspace:*
         version: link:../core
 
   packages/query:
     dependencies:
+      '@voltdev/primitives':
+        specifier: workspace:^
+        version: link:../primitives
+    devDependencies:
       '@voltdev/core':
         specifier: workspace:*
         version: link:../core
-      '@voltdev/primitives':
-        specifier: workspace:*
-        version: link:../primitives
 
   packages/reactivity: {}
 
   packages/router:
-    dependencies:
+    devDependencies:
       '@voltdev/core':
         specifier: workspace:*
         version: link:../core
@@ -177,23 +178,29 @@ importers:
   packages/server: {}
 
   packages/testing:
-    dependencies:
+    devDependencies:
       '@voltdev/core':
         specifier: workspace:*
         version: link:../core
-    devDependencies:
       '@voltdev/primitives':
         specifier: workspace:*
         version: link:../primitives
 
   packages/ui:
     dependencies:
+      '@voltdev/reactivity':
+        specifier: workspace:^
+        version: link:../reactivity
+    devDependencies:
       '@voltdev/core':
         specifier: workspace:*
         version: link:../core
       '@voltdev/primitives':
         specifier: workspace:*
         version: link:../primitives
+      '@voltdev/vite-plugin':
+        specifier: workspace:*
+        version: link:../vite-plugin
 
   packages/vite-plugin:
     dependencies:
@@ -215,9 +222,6 @@ importers:
 
   packages/volar:
     dependencies:
-      '@volar/language-core':
-        specifier: ^2.4.28
-        version: 2.4.28
       '@voltdev/compiler':
         specifier: workspace:*
         version: link:../compiler
@@ -228,6 +232,9 @@ importers:
       '@types/node':
         specifier: ^26.2.0
         version: 26.2.0
+      '@volar/language-core':
+        specifier: ^2.4.28
+        version: 2.4.28
 
 packages:
 

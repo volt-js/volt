@@ -26,9 +26,8 @@ and spread its props onto. Styled components over a subset of these are
 `@voltdev/primitives` is not published, and the release deliberately leaves it
 out: a version on npm cannot be taken back, so a package goes there when its
 shape is meant to be permanent. Everything on this page works from a checkout of
-the Volt repository, where it resolves from the workspace. The packages on npm
-today are `@voltdev/core`, `@voltdev/reactivity`, `@voltdev/compiler` and
-`@voltdev/vite-plugin`.
+the Volt repository, where it resolves from the workspace. See
+[what is on npm](../guide/getting-started#what-is-on-npm) for what is.
 :::
 
 There is one entry point, and everything on this page and the category pages is

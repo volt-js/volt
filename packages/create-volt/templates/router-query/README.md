@@ -45,6 +45,6 @@ src/app.test.ts   navigates between routes and asserts on the DOM
 
 ## Next
 
-- [Routing](https://voltjs.dev/guide/routing) — nested routes, loaders, guards
-- [Server state](https://voltjs.dev/guide/query) — staleness, mutations, optimistic writes
+- [Routing](https://voltjs.dev/reference/router) — nested routes, loaders, guards
+- [Server state](https://voltjs.dev/reference/query) — staleness, mutations, optimistic writes
 - [Templates](https://voltjs.dev/reference/template-syntax) — the `:` syntax in full

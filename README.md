@@ -100,6 +100,8 @@ outputs and custom events), `:prop-*` and `:attr-*` force the other direction.
 | `@voltdev/compiler` | Template source → fine-grained DOM code. Pure `string → string`, no DOM needed |
 | `@voltdev/core` | The DOM runtime and the component layer |
 | `@voltdev/vite-plugin` | Lowers standard decorators and compiles templates at build time |
+| `@voltdev/editor` | A rich-text editor engine: document model, schema, steps, history and a DOM view, with no dependencies |
+| `@voltdev/create-volt` | Scaffolds a project: `pnpm create @voltdev/volt@alpha my-app` |
 
 ## Getting started
 

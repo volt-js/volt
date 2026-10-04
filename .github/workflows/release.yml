@@ -84,32 +84,102 @@ jobs:
             echo "== no token; publishing as a trusted publisher over OIDC"
           fi
 
-          # Dependency order. reactivity and compiler stand alone, core needs
-          # both, and vite-plugin needs compiler — a package must exist on the
-          # registry before something that depends on it is published.
-          PACKAGES="reactivity compiler core vite-plugin"
+          # Dependency order: a package must be on the registry before anything
+          # that depends on it is published. reactivity and compiler stand
+          # alone, core needs both, and vite-plugin needs compiler. editor
+          # depends on nothing, not even the rest of Volt. create-volt installs
+          # nothing itself, but the project it generates installs core and
+          # vite-plugin, so it goes after them.
+          PACKAGES="reactivity compiler core vite-plugin editor create-volt"
+
+          # The Summary step reads the list from here rather than restating it.
+          echo "RELEASE_PACKAGES=$PACKAGES" >> "$GITHUB_ENV"
 
           # Deliberately absent: every other package. Each is built and tested
           # by CI, but a version cannot be taken back (see above), so a package
           # joins this list when it is decided to ship rather than when it
           # compiles. Adding one here means adding it to PUBLISHED_PACKAGES in
-          # packages/create-volt/src/versions.ts as well: that list decides which
-          # templates create-volt will generate, and a template naming a package
-          # npm does not have produces a project that cannot install.
+          # packages/create-volt/src/versions.ts as well, and a test fails until
+          # the two lists match: that list decides which templates create-volt
+          # will generate, and a template naming a package npm does not have
+          # produces a project that cannot install.
+          #
+          # Held back today. reactivity, compiler, core and vite-plugin are at
+          # 0.1.0-alpha.2, which carries everything they gained since
+          # 0.1.0-alpha.1 (2026-08-16): the exports primitives, router, query
+          # and testing import, `__VOLT_SERVER__`, @Server() lowering, and the
+          # type-check block and ./components cli and volar need. So what holds
+          # the rest back now is that nobody has decided to ship them, except:
+          #   ui  `vite dev` pre-bundles its component source past the plugin
+          #     until the plugin excludes `volt.source` packages from
+          #     optimizeDeps, and its components are still being added.
+          #   grid  its core features are still being built.
+          #   grid, ui, query  need primitives on npm first, so primitives
+          #     goes ahead of them whenever they ship.
+          # The Summary step lists each one with its reason.
+
+          # What happened to each package, for the Summary step.
+          outcome="$RUNNER_TEMP/release-outcome.md"
+          : > "$outcome"
+          # Packages skipped although what would ship differs from npm's copy.
+          stale="$RUNNER_TEMP/release-stale.txt"
+          : > "$stale"
+
+          # A package's first version cannot go out over OIDC: npm lets a
+          # trusted publisher be configured only on a package that already
+          # exists. Find that out before anything is published, rather than
+          # with half the list on the registry and a bare 404 in the log.
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            first=""
+            for pkg in $PACKAGES; do
+              name=$(node -p "require('$GITHUB_WORKSPACE/packages/$pkg/package.json').name")
+              npm view "$name" name >/dev/null 2>&1 || first="$first $name"
+            done
+            if [ -n "$first" ]; then
+              message="never published before, so their first publish needs the NPM_TOKEN secret:$first"
+              if [ "${DRY_RUN:-false}" = "true" ]; then
+                echo "::warning title=First publish needs a token::$message"
+              else
+                echo "::error title=First publish needs a token::$message"
+                exit 1
+              fi
+            fi
+          fi
 
           for pkg in $PACKAGES; do
             cd "$GITHUB_WORKSPACE/packages/$pkg"
             name=$(node -p "require('./package.json').name")
             version=$(node -p "require('./package.json').version")
 
-            if npm view "$name@$version" version >/dev/null 2>&1; then
-              echo "== $name@$version is already on the registry, skipping"
-              continue
-            fi
-
             rm -f ./*.tgz
             pnpm pack >/dev/null
             tarball=$(ls ./*.tgz)
+
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              # Never published twice, so a change made without a version bump
+              # never reaches npm. Compare what would ship with what is there,
+              # so that is said rather than skipped in silence.
+              compare="$RUNNER_TEMP/compare/$pkg"
+              rm -rf "$compare"
+              mkdir -p "$compare/registry" "$compare/here"
+              if npm pack "$name@$version" --pack-destination "$compare" >/dev/null 2>&1 \
+                && tar -xzf "$compare"/*.tgz -C "$compare/registry" \
+                && tar -xzf "$tarball" -C "$compare/here"; then
+                if diff -rq --exclude=.tsbuildinfo "$compare/registry/package" "$compare/here/package" >/dev/null; then
+                  echo "== $name@$version is already on the registry, skipping"
+                  echo "- \`$name@$version\`: already on the registry, skipped" >> "$outcome"
+                else
+                  echo "::warning title=$name@$version not republished::the registry already has $name@$version, and this commit packs different contents under that version. They stay off npm until the version is raised."
+                  echo "- \`$name@$version\`: already on the registry, skipped, **but this commit packs different contents under that version**; they stay off npm until the version is raised" >> "$outcome"
+                  echo "$name" >> "$stale"
+                fi
+              else
+                echo "== $name@$version is already on the registry, skipping (could not fetch it to compare)"
+                echo "- \`$name@$version\`: already on the registry, skipped (not compared: the registry's copy could not be fetched)" >> "$outcome"
+              fi
+              rm -f "$tarball"
+              continue
+            fi
 
             # The tag is what `npm install @voltdev/core@alpha` resolves.
             # It does not keep a package off `latest` on its first publish —
@@ -118,9 +188,11 @@ jobs:
             if [ "${DRY_RUN:-false}" = "true" ]; then
               echo "== would publish $name@$version under tag ${DIST_TAG}"
               npm publish "$tarball" --provenance --access public --tag "$DIST_TAG" --dry-run
+              echo "- \`$name@$version\`: would publish under \`$DIST_TAG\` (dry run)" >> "$outcome"
             else
               echo "== publishing $name@$version under tag ${DIST_TAG}"
               npm publish "$tarball" --provenance --access public --tag "$DIST_TAG"
+              echo "- \`$name@$version\`: published under \`$DIST_TAG\`" >> "$outcome"
             fi
             rm -f "$tarball"
           done
@@ -128,15 +200,49 @@ jobs:
       - name: Summary
         if: always()
         run: |
+          # RELEASE_PACKAGES is the publish step's list, handed on rather than
+          # restated so the two cannot drift. It is empty when the run stopped
+          # before that step.
+          if [ -z "${RELEASE_PACKAGES:-}" ]; then
+            echo "Stopped before the publish step: nothing was packed or published." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          outcome="$RUNNER_TEMP/release-outcome.md"
           {
             echo "### Packages"
-            for pkg in reactivity compiler core vite-plugin; do
+            for pkg in $RELEASE_PACKAGES; do
               name=$(node -p "require('$GITHUB_WORKSPACE/packages/$pkg/package.json').name")
               version=$(node -p "require('$GITHUB_WORKSPACE/packages/$pkg/package.json').version")
-              echo "- \`$name@$version\`"
+              # The publish step records each package it finishes, so one it
+              # did not record failed or was never reached.
+              line=$(grep -F "\`$name@$version\`" "$outcome" 2>/dev/null || true)
+              if [ -n "$line" ]; then
+                echo "$line"
+              else
+                echo "- \`$name@$version\`: not published, the publish step stopped first"
+              fi
             done
             echo ""
-            echo "Published under tag \`${DIST_TAG:-alpha}\`. Install with \`@alpha\`."
+            echo "### Held back"
+            # Every other directory under packages/, listed from the disk so a
+            # new package cannot be left off, with what it is waiting for.
+            for dir in "$GITHUB_WORKSPACE"/packages/*/; do
+              pkg=$(basename "$dir")
+              case " $RELEASE_PACKAGES " in *" $pkg "*) continue ;; esac
+              case "$pkg" in
+                ui) why='`vite dev` pre-bundles its component source past the plugin until the plugin excludes `volt.source` packages from optimizeDeps, and components are still being added; needs primitives on npm first' ;;
+                grid) why='core features still being built; needs primitives on npm first' ;;
+                query) why='not decided to ship yet; needs primitives on npm first' ;;
+                *) why='not decided to ship yet' ;;
+              esac
+              echo "- \`$pkg\`: $why"
+            done
             echo ""
-            echo "Held back: primitives, ui, grid, editor."
+            # Written by the publish step: skipped packages whose contents here
+            # differ from the registry's copy of the same version.
+            stale=$(cat "$RUNNER_TEMP/release-stale.txt" 2>/dev/null | xargs || true)
+            if [ -n "$stale" ]; then
+              echo ""
+              echo "**Changed but not released:** $stale. Each has a version the registry already has, and that version is never published again, so these changes reach npm only when the version is raised."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"

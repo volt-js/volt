@@ -45,9 +45,9 @@ is listed [at the end](#what-is-not-here).
 ## Setting up
 
 ::: warning Not on npm yet
-The release publishes `@voltdev/reactivity`, `@voltdev/compiler`,
-`@voltdev/core` and `@voltdev/vite-plugin`, and this package is not among them,
-so `pnpm add @voltdev/testing` fails today. Until it is published it is
+`@voltdev/testing` is not among the packages the release publishes — see
+[what is on npm](../guide/getting-started#what-is-on-npm) — so
+`pnpm add @voltdev/testing` fails today. Until it is published it is
 available from a checkout of the Volt repository, as a workspace dependency.
 :::
 

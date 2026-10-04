@@ -64,15 +64,17 @@ describe('what a template may depend on', () => {
   /**
    * The CLI offers a template only when everything it needs is on npm, and the
    * release workflow is what decides that. Read from the workflow rather than
-   * restated here, so that publishing a package is one edit and not two.
+   * restated here, and compared both ways: a package claimed but not published
+   * hands out projects that cannot install, and one published but not claimed
+   * keeps refusing a template that would work.
    */
-  it('claims nothing is published that the release workflow does not publish', async () => {
+  it('claims exactly what the release workflow publishes', async () => {
     const workflow = await readFile(resolve(REPO, '.github/workflows/release.yml'), 'utf8');
     const line = /PACKAGES="([^"]+)"/.exec(workflow);
     expect(line, 'release.yml no longer declares PACKAGES').not.toBeNull();
 
     const shipped = line![1]!.split(/\s+/).map((name) => `@voltdev/${name}`);
-    expect(shipped).toEqual(expect.arrayContaining([...PUBLISHED_PACKAGES]));
+    expect([...PUBLISHED_PACKAGES].sort()).toEqual(shipped.sort());
   });
 
   it('offers at least one template that could actually be installed', () => {

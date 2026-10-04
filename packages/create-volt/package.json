@@ -4,6 +4,13 @@
   "description": "Scaffold a Volt project \u2014 the Vite plugin configured, a component, a stylesheet and a test that passes.",
   "type": "module",
   "license": "MIT",
+  "sideEffects": [
+    "./bin/create-volt.js",
+    "./dist/cli.js"
+  ],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": {
     "create-volt": "./bin/create-volt.js"
   },
@@ -16,6 +23,7 @@
   "files": [
     "bin",
     "dist",
+    "!dist/.tsbuildinfo",
     "templates",
     "README.md"
   ],

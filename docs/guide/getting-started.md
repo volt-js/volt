@@ -20,18 +20,20 @@ pnpm add -D @voltdev/vite-plugin@alpha vite
 
 ### What is on npm
 
-The published alpha is the core. This site documents the repository, which is
-ahead of it, so a page describing something newer than the alpha — or a package
-that has not been released — says so at the top.
+The published alpha is the core, the rich-text editor and the project
+scaffolder. This site documents the repository, which is ahead of it, so a page
+describing something newer than the alpha — or a package that has not been
+released — says so at the top.
 
 | Package | On npm |
 |---|---|
 | `@voltdev/core`, `@voltdev/reactivity`, `@voltdev/compiler`, `@voltdev/vite-plugin` | Yes, as `alpha` |
+| [`@voltdev/editor`](../reference/editor), [`@voltdev/create-volt`](../reference/create-volt) | Yes, as `alpha` |
 | [`router`](../reference/router), [`query`](../reference/query), [`server`](../reference/server-functions) | Not yet |
-| [`primitives`](../reference/primitives), [`ui`](../reference/ui), [`grid`](../reference/grid), [`editor`](../reference/editor) | Not yet |
-| [`testing`](../reference/testing), [`cli`](../reference/cli), [`create-volt`](../reference/create-volt), [`volar`](../reference/volar) | Not yet |
+| [`primitives`](../reference/primitives), [`ui`](../reference/ui), [`grid`](../reference/grid) | Not yet |
+| [`testing`](../reference/testing), [`cli`](../reference/cli), [`volar`](../reference/volar) | Not yet |
 
-Everything in the second half works from a checkout of the Volt repository,
+Everything marked *Not yet* works from a checkout of the Volt repository,
 where the packages resolve from the workspace. A package reaches npm when its
 shape is meant to be permanent — a version published at `0.1.0` cannot be taken
 back, so nothing is released before that.
@@ -176,13 +178,15 @@ export class App {}
 ## Starting from a template
 
 `create-volt` generates a project with the toolchain, a component and a passing
-test. It is not on npm yet; from a checkout of the repository:
+test:
 
 ```bash
-node packages/create-volt/bin/create-volt.js my-app --template minimal
+pnpm create @voltdev/volt@alpha my-app --template minimal
 ```
 
-`minimal` is the one template it can generate today. `router-query` and `start` —
+The scope is part of the command: `pnpm create volt` would run the unscoped
+`create-volt` package, which is a different project. `minimal` is the one
+template it can generate today. `router-query` and `server-render` —
 the second wiring server rendering, per-route modes and server functions through
 [`serverRender`](../reference/server-render) — need packages that are not published yet, and a
 generated project installs from npm, so it refuses them rather than producing a

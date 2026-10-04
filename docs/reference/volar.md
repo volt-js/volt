@@ -143,13 +143,12 @@ const plugin = createVoltLanguagePlugin<string>({
 
 The package is built for Node — ESM only, Node 22 or later — and reads the
 disk and resolves paths with `node:fs` and `node:path`. The build keeps every
-dependency external, `@volar/language-core` (`^2.4.28`) included, so the
-plugin imports the copy installed beside it rather than carrying one of its
-own: the point is that the integration loading it and the plugin can share one
-copy of Volar. Nothing enforces that. It is a `dependency`, not a
-`peerDependency`, so whether the host ends up with one copy or two is the
-package manager's decision, and a host should check that its lockfile resolves
-one.
+dependency external, and `@volar/language-core` (`^2.4.28`) is a
+`peerDependency` rather than a dependency of its own: the integration loading
+the plugin already has a copy, and the point is that the two share it. A host
+installs it beside the plugin — its integration depends on it already — and a
+package manager that installs peers itself supplies one when nothing else
+does.
 
 `T` is whatever the integration identifies a script by — a plain path in
 tsserver, a URI in a language server — and the two functions translate between
