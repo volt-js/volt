@@ -280,17 +280,53 @@ const content: string = classes.dialog.content; // 'volt-dialog-content'
 | Component | Parts |
 |---|---|
 | `accordion` | `root`, `item`, `header`, `trigger`, `panel` |
+| `alert` | `root`, `message`, `icon`, `content`, `title`, `description`, `actions` |
+| `avatar` | `root`, `image`, `fallback` |
+| `badge` | `root`, `anchor` |
+| `breadcrumb` | `root`, `list`, `item`, `link`, `separator`, `trigger`, `menuLink` |
 | `button` | `root` |
 | `checkbox` | `root`, `indicator`, `field` |
+| `chip` | `root`, `label`, `remove` |
+| `code` | `root`, `block`, `content`, `lines`, `line`, `lineText`, `copy` |
+| `collapsible` | `root`, `trigger`, `indicator`, `panel` |
 | `dialog` | `overlay`, `content`, `title`, `description`, `footer` |
+| `editor` | `toolbar`, `body`, `placeholder`, `surface`, `selectedNode` |
+| `field` | `root`, `label`, `control`, `description`, `error` |
+| `file-upload` | `root`, `zone`, `label`, `description`, `error`, `list`, `item`, `head`, `name`, `meta`, `actions`, `action`, `reason`, `status` |
+| `image` | `root`, `picture`, `placeholder`, `error` |
+| `kbd` | `root`, `key`, `separator` |
 | `menu` | `content`, `item`, `separator` |
+| `number-input` | `root`, `button` |
+| `pagination` | `root`, `list`, `item`, `page`, `control`, `ellipsis`, `status` |
+| `password-input` | `root`, `toggle`, `status` |
+| `pin-input` | `root`, `box` |
 | `popover` | `content`, `title`, `description`, `arrow` |
+| `progress` | `root`, `track`, `indicator`, `label` |
+| `radio-group` | `root`, `field`, `radio`, `indicator`, `dot` |
+| `rating` | `root`, `star`, `item`, `icon` |
+| `relative-time` | `root` |
+| `select` | `root`, `trigger`, `value`, `arrow`, `listbox`, `option`, `empty`, `status` |
+| `separator` | `root`, `line`, `label` |
+| `skeleton` | `root`, `placeholder`, `shape`, `status` |
+| `slider` | `root`, `label`, `track`, `range`, `thumb`, `mark`, `markLabel` |
+| `spinner` | `root`, `indicator`, `label` |
+| `stepper` | `root`, `list`, `item`, `step`, `marker`, `number`, `check`, `text`, `label`, `description`, `status`, `separator`, `panel` |
+| `switch` | `root`, `track`, `thumb`, `field` |
+| `table` | `root`, `header`, `headerCell`, `body`, `row`, `cell`, `empty` |
 | `tabs` | `list`, `tab`, `panel` |
+| `tags-input` | `root`, `list`, `tag`, `input`, `status` |
 | `toast` | `region`, `root`, `title`, `description`, `actions` |
+| `toggle-group` | `root`, `toggle` |
 | `tooltip` | `content` |
 
 A `root` part is `volt-<component>`; every other part is
-`volt-<component>-<part>`.
+`volt-<component>-<part>`, the part in kebab case: `headerCell` is
+`volt-table-header-cell`. A part that is a control of its own keeps its own
+name inside a group: a radio's parts are `volt-radio`, `volt-radio-field`,
+`volt-radio-indicator` and `volt-radio-dot`, and a toggle is `volt-toggle`. The
+editor's `surface`, the element the engine edits, is `volt-editor`, and its
+`selectedNode` is `volt-selected-node`, the class the engine itself puts on a
+node selected whole.
 
 A misspelt component or part is a compile error, and
 `classes.dialog.content` compiles as it is under `noUncheckedIndexedAccess`,
@@ -589,7 +625,7 @@ The rules keep to a few constraints, each checked by the tests:
 | Export | Description |
 |---|---|
 | `componentStyles` | Every component, alphabetical |
-| `accordionStyles`, `buttonStyles`, `checkboxStyles`, `dialogStyles`, `menuStyles`, `popoverStyles`, `tabsStyles`, `toastStyles`, `tooltipStyles` | One component each |
+| `accordionStyles`, `alertStyles`, `avatarStyles`, `badgeStyles`, `breadcrumbStyles`, `buttonStyles`, `checkboxStyles`, `chipStyles`, `codeStyles`, `collapsibleStyles`, `dialogStyles`, `editorStyles`, `fieldStyles`, `fileUploadStyles`, `imageStyles`, `kbdStyles`, `menuStyles`, `numberInputStyles`, `paginationStyles`, `passwordInputStyles`, `pinInputStyles`, `popoverStyles`, `progressStyles`, `radioGroupStyles`, `ratingStyles`, `relativeTimeStyles`, `selectStyles`, `separatorStyles`, `skeletonStyles`, `sliderStyles`, `spinnerStyles`, `stepperStyles`, `switchStyles`, `tableStyles`, `tabsStyles`, `tagsInputStyles`, `toastStyles`, `toggleGroupStyles`, `tooltipStyles` | One sheet entry each |
 | `componentCss(component, indent?)` | One component's CSS, in no layer |
 | `rulesToCss(rules, indent?)` | Serialise rules, a blank line between each |
 | `keyframesToCss(frames, indent?)` | Serialise `@keyframes` blocks |
