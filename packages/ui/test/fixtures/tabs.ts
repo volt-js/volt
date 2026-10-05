@@ -13,6 +13,7 @@ const tab = (attributes: Record<string, string>, focus = false): Fixture => ({
   classes: ['volt-tabs-tab'],
   attributes,
   focus,
+  text: 'Account',
 });
 
 export const fixtures: ComponentFixtures = {
@@ -43,7 +44,12 @@ export const fixtures: ComponentFixtures = {
       tab({ 'data-state': 'inactive', 'data-orientation': 'vertical' }),
       { classes: ['volt-tabs-list'], attributes: { 'data-orientation': 'horizontal' } },
       { classes: ['volt-tabs-list'], attributes: { 'data-orientation': 'vertical' } },
-      { classes: ['volt-tabs-panel'], attributes: { tabindex: '0' } },
-      { classes: ['volt-tabs-panel'], attributes: { tabindex: '0' }, focus: true },
+      { classes: ['volt-tabs-panel'], attributes: { tabindex: '0' }, text: 'Your name and email.' },
+      {
+        classes: ['volt-tabs-panel'],
+        attributes: { tabindex: '0' },
+        focus: true,
+        text: 'Your name and email.',
+      },
     ],
 };

@@ -13,6 +13,7 @@ const button = (attributes: Record<string, string> = {}, focus = false): Fixture
   classes: ['volt-button'],
   attributes,
   focus,
+  text: 'Save',
 });
 
 export const fixtures: ComponentFixtures = {
@@ -33,5 +34,14 @@ export const fixtures: ComponentFixtures = {
       button({ 'data-variant': 'ghost' }),
       button({ 'data-size': 'sm' }),
       button({ 'data-size': 'lg' }),
+      // A filled button is out from under the forced palette, where a colour
+      // the forced rules do not name is drawn as the sheet wrote it, so each
+      // state it can be in is measured filled as well.
+      ...['primary', 'danger'].flatMap((variant) => [
+        button({ 'data-variant': variant, 'data-hover': '' }),
+        button({ 'data-variant': variant }, true),
+        button({ 'data-variant': variant, 'aria-disabled': 'true' }),
+        button({ 'data-variant': variant, disabled: '' }),
+      ]),
     ],
 };

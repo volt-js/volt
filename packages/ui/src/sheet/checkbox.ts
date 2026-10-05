@@ -128,6 +128,14 @@ export const checkboxStyles = /* @__PURE__ */ ((): ComponentStyles => ({
     // survives whatever the user's palette turns the fill into; the mark
     // inside is the other half, and it is `HighlightText` so it stays legible
     // against the fill it sits on.
+    //
+    // Left under the palette, the mark — a glyph, and so a run of text — gets
+    // the backplate of `Canvas` Chrome paints behind every one, and
+    // `HighlightText` is that same colour in the dark scheme and the light: a
+    // `Highlight` box with a blank where the tick was, the same box for
+    // checked and for mixed. Out from under it, the fill, the edge and the
+    // mark are the three named here and the edge's grey below, every one the
+    // palette's own, and a mark drawn as an SVG in `currentColor` follows.
     {
       selector: checkedBox(),
       declarations: {
@@ -135,6 +143,7 @@ export const checkboxStyles = /* @__PURE__ */ ((): ComponentStyles => ({
         'border-color': 'Highlight',
         color: 'HighlightText',
         'border-width': 'var(--volt-border-width-2)',
+        'forced-color-adjust': 'none',
       },
     },
 

@@ -27,7 +27,7 @@ const table = (
         {
           tag: 'tr',
           classes: ['volt-table-row'],
-          children: [{ tag: 'th', classes: ['volt-table-header-cell'] }],
+          children: [{ tag: 'th', classes: ['volt-table-header-cell'], text: 'Name' }],
         },
       ],
     },
@@ -39,7 +39,7 @@ const table = (
           tag: 'tr',
           classes: ['volt-table-row'],
           attributes: rowAttributes,
-          children: [{ tag: 'td', classes: ['volt-table-cell'] }],
+          children: [{ tag: 'td', classes: ['volt-table-cell'], text: 'Ada Lovelace' }],
         },
       ],
     },
@@ -59,6 +59,60 @@ export const fixtures: ComponentFixtures = {
     extra: [
       table({ 'data-hover': '' }),
       table({}, { 'data-striped': 'true' }),
+      table({ 'data-selected': 'true', 'aria-selected': 'true', 'data-hover': '' }),
+      // A cell holds whatever a caller writes in it, which is other
+      // components as often as words: a selected row has to leave theirs as
+      // legible as an unselected one does. Here, a button under the pointer,
+      // as the docs' own table has in every row, and a shortcut whose `+`
+      // is words in the palette's text colour with no fill of its own.
+      {
+        tag: 'table',
+        classes: ['volt-table'],
+        children: [
+          {
+            tag: 'tbody',
+            classes: ['volt-table-body'],
+            children: [
+              {
+                tag: 'tr',
+                classes: ['volt-table-row'],
+                attributes: { 'data-selected': 'true', 'aria-selected': 'true' },
+                children: [
+                  {
+                    tag: 'td',
+                    classes: ['volt-table-cell'],
+                    children: [
+                      {
+                        tag: 'kbd',
+                        classes: ['volt-kbd'],
+                        attributes: { 'data-platform': 'other', 'data-size': 'md' },
+                        children: [
+                          { tag: 'kbd', classes: ['volt-kbd-key'], text: 'Ctrl' },
+                          { tag: 'span', classes: ['volt-kbd-separator'], text: '+' },
+                          { tag: 'kbd', classes: ['volt-kbd-key'], text: 'K' },
+                        ],
+                      },
+                    ],
+                  },
+                  {
+                    tag: 'td',
+                    classes: ['volt-table-cell'],
+                    attributes: { 'data-align': 'end' },
+                    children: [
+                      {
+                        tag: 'button',
+                        classes: ['volt-button'],
+                        attributes: { 'data-size': 'sm', 'data-hover': '' },
+                        text: 'Deselect',
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
       {
         tag: 'table',
         classes: ['volt-table'],
@@ -71,8 +125,18 @@ export const fixtures: ComponentFixtures = {
                 tag: 'tr',
                 classes: ['volt-table-row'],
                 children: [
-                  { tag: 'td', classes: ['volt-table-cell'], attributes: { 'data-align': 'end' } },
-                  { tag: 'td', classes: ['volt-table-empty'], attributes: { colspan: '2' } },
+                  {
+                    tag: 'td',
+                    classes: ['volt-table-cell'],
+                    attributes: { 'data-align': 'end' },
+                    text: '42',
+                  },
+                  {
+                    tag: 'td',
+                    classes: ['volt-table-empty'],
+                    attributes: { colspan: '2' },
+                    text: 'Nothing here yet',
+                  },
                 ],
               },
             ],

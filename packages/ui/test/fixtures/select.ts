@@ -21,7 +21,11 @@ const select = (
       attributes: { role: 'combobox', 'aria-expanded': 'false', ...triggerAttributes },
       focus,
       children: [
-        { tag: 'span', classes: ['volt-select-value'] },
+        {
+          tag: 'span',
+          classes: ['volt-select-value'],
+          text: 'data-placeholder' in triggerAttributes ? 'Choose a fruit' : 'Apple',
+        },
         { tag: 'span', classes: ['volt-select-arrow'] },
       ],
     },
@@ -35,6 +39,7 @@ const selectOption = (attributes: Record<string, string> = {}): Fixture => ({
     {
       classes: ['volt-select-option'],
       attributes: { role: 'option', 'data-state': 'unchecked', ...attributes },
+      text: 'Apple',
     },
   ],
 });
@@ -66,11 +71,11 @@ export const fixtures: ComponentFixtures = {
     extra: [
       select({ 'data-hover': '' }),
       select({ 'data-placeholder': '' }),
-      { tag: 'p', classes: ['volt-select-status'], attributes: { role: 'status' } },
+      { tag: 'p', classes: ['volt-select-status'], attributes: { role: 'status' }, text: 'Apple, chosen' },
       {
         classes: ['volt-select-listbox'],
         attributes: { role: 'listbox', 'data-state': 'closed' },
-        children: [{ classes: ['volt-select-empty'] }],
+        children: [{ classes: ['volt-select-empty'], text: 'Nothing to choose' }],
       },
       {
         classes: ['volt-select-listbox'],
@@ -79,8 +84,13 @@ export const fixtures: ComponentFixtures = {
           {
             classes: ['volt-select-option'],
             attributes: { role: 'option', 'data-state': 'checked', 'data-highlighted': '' },
+            text: 'Apple',
           },
         ],
       },
+      // The pointer highlights the option it moves onto, so an option under it
+      // is a highlighted one, chosen or not, and has to keep the pair.
+      selectOption({ 'data-highlighted': '', 'data-hover': '' }),
+      selectOption({ 'data-state': 'checked', 'data-highlighted': '', 'data-hover': '' }),
     ],
 };

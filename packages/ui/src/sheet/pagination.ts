@@ -228,11 +228,19 @@ export const paginationStyles = /* @__PURE__ */ ((): ComponentStyles => {
         // Where the reader is. The pair of colours the palette keeps for
         // exactly this, and an edge in the same colour, so the fill has a
         // boundary even against a `Highlight` that happens to be near `Canvas`.
+        //
+        // Out from under the palette, because left under it Chrome paints a
+        // backplate of `Canvas` behind every run of text, and `HighlightText`
+        // is that same colour in the dark scheme and the light: the row would
+        // say which page is current and not which number it is. The pointer
+        // has no rule of its own here and focus only rings it, so the three
+        // named here are every colour it paints.
         selector: CURRENT,
         declarations: {
           'background-color': 'Highlight',
           color: 'HighlightText',
           ...edges('Highlight'),
+          'forced-color-adjust': 'none',
         },
       },
       {

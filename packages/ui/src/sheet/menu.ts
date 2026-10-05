@@ -170,9 +170,20 @@ export const menuStyles = /* @__PURE__ */ ((): ComponentStyles => ({
     // Hover is the only thing telling a pointer user which item they are on,
     // and the forced palette flattens the background it was drawn with.
     // `Highlight` is the pair the palette guarantees for exactly this.
+    //
+    // Out from under the palette, because left under it Chrome paints a
+    // backplate of `Canvas` behind every run of text, and `HighlightText` is
+    // that same colour in the dark scheme and the light: the item the pointer
+    // is on would be the one item that cannot be read. An item has no edge
+    // and its ring is drawn outside it, so the fill and the words are every
+    // colour it paints, and a mark or an icon in `currentColor` follows them.
     {
       selector: `.${item}${ENABLED_ITEM}:hover`,
-      declarations: { 'background-color': 'Highlight', color: 'HighlightText' },
+      declarations: {
+        'background-color': 'Highlight',
+        color: 'HighlightText',
+        'forced-color-adjust': 'none',
+      },
     },
     { selector: `.${item}:focus-visible`, declarations: { ...forcedFocusRing } },
     // Grey is the one thing a forced palette says about unavailability, and

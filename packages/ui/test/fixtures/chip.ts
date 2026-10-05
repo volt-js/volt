@@ -41,7 +41,7 @@ const chip = ({
   },
   focus,
   children: [
-    { tag: 'span', classes: ['volt-chip-label'] },
+    { tag: 'span', classes: ['volt-chip-label'], text: 'Design' },
     ...(removable
       ? [
           {
@@ -53,6 +53,7 @@ const chip = ({
               'aria-label': 'Remove',
               ...(hover ? { 'data-hover': '' } : {}),
             },
+            text: '×',
           },
         ]
       : []),

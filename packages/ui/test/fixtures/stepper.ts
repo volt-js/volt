@@ -23,7 +23,11 @@ const step = (attributes: Record<string, string> = {}, focus = false): Fixture =
       classes: ['volt-stepper-marker'],
       attributes: { 'aria-hidden': 'true' },
       children: [
-        { tag: 'span', classes: ['volt-stepper-number'] },
+        {
+          tag: 'span',
+          classes: ['volt-stepper-number'],
+          text: attributes['data-status'] === 'error' ? '!' : '2',
+        },
         { tag: 'span', classes: ['volt-stepper-check'] },
       ],
     },
@@ -31,11 +35,11 @@ const step = (attributes: Record<string, string> = {}, focus = false): Fixture =
       tag: 'span',
       classes: ['volt-stepper-text'],
       children: [
-        { tag: 'span', classes: ['volt-stepper-label'] },
-        { tag: 'span', classes: ['volt-stepper-description'] },
+        { tag: 'span', classes: ['volt-stepper-label'], text: 'Shipping' },
+        { tag: 'span', classes: ['volt-stepper-description'], text: 'Where it goes' },
       ],
     },
-    { tag: 'span', classes: ['volt-stepper-status'] },
+    { tag: 'span', classes: ['volt-stepper-status'], text: 'Not started' },
   ],
 });
 
@@ -130,6 +134,7 @@ export const fixtures: ComponentFixtures = {
     {
       classes: ['volt-stepper-panel'],
       attributes: { role: 'group', 'data-status': 'current' },
+      text: 'Where should it go?',
     },
   ],
 };

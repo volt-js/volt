@@ -164,12 +164,21 @@ export const buttonStyles = /* @__PURE__ */ ((): ComponentStyles => ({
     // Emphasis is a fill in both palettes; in this one the fill has to be a
     // system colour, or it is flattened back to `ButtonFace` and primary and
     // secondary become the same button.
+    //
+    // A filled button is taken out from under the palette. Left under it,
+    // Chrome paints a backplate of `Canvas` behind every run of text, and
+    // `HighlightText` is that same colour in the dark scheme and the light:
+    // the button would be a `Highlight` box with a blank where its label was.
+    // Out from under it, nothing replaces a colour the rules here forget, so
+    // every state below names its fill, its edge and its words from the
+    // palette, and an icon drawn in `currentColor` follows the words.
     {
       selector: `.${root}[data-variant='primary']`,
       declarations: {
         'background-color': 'Highlight',
         'border-color': 'Highlight',
         color: 'HighlightText',
+        'forced-color-adjust': 'none',
       },
     },
 
@@ -184,6 +193,7 @@ export const buttonStyles = /* @__PURE__ */ ((): ComponentStyles => ({
         color: 'HighlightText',
         'border-style': 'double',
         'border-width': 'var(--volt-border-width-4)',
+        'forced-color-adjust': 'none',
       },
     },
 
@@ -209,6 +219,13 @@ export const buttonStyles = /* @__PURE__ */ ((): ComponentStyles => ({
     },
 
     { selector: `.${root}:focus-visible`, declarations: { ...forcedFocusRing } },
-    { selector: disabledSelector(`.${root}`), declarations: { ...forcedDisabled } },
+    // The fill goes back with the rest: `GrayText` on `Highlight` is a pairing
+    // the palette promises nothing about, and a filled button has no backplate
+    // to stand its words on. Out of use is out of use, primary or not; danger
+    // keeps its double edge, which is geometry, in grey.
+    {
+      selector: disabledSelector(`.${root}`),
+      declarations: { ...forcedDisabled, 'background-color': 'ButtonFace' },
+    },
   ],
 }))();

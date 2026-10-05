@@ -12,6 +12,11 @@
  * `test/forced-colors.test.ts` requires an entry here for every component in
  * the registry, so a seventh component cannot arrive without one.
  *
+ * Each element carries the words the component writes in it, as `text`. A
+ * forced palette paints a backplate behind words and behind nothing else, so a
+ * fixture without them passes the check for words that vanish by having none.
+ * The words are stand-ins; where they are is what matters.
+ *
  * The pointer is `data-hover`, which the harness's copy of the sheet reads in
  * place of `:hover` — happy-dom never matches the real thing.
  */

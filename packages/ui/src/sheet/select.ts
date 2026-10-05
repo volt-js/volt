@@ -331,8 +331,18 @@ export const selectStyles = /* @__PURE__ */ ((): ComponentStyles => {
         // palette has for exactly this: where the keyboard is, and what is
         // already chosen. The hover is handed back — a pointer user can see
         // their own pointer.
+        //
+        // Out from under the palette, because left under it Chrome paints a
+        // backplate of `Canvas` behind every run of text, and `HighlightText`
+        // is that same colour in the dark scheme and the light: the one
+        // option the keyboard is on would be the one with no name. An option
+        // has no edge, so the fill and the words are every colour it paints.
         selector: HIGHLIGHTED,
-        declarations: { 'background-color': 'Highlight', color: 'HighlightText' },
+        declarations: {
+          'background-color': 'Highlight',
+          color: 'HighlightText',
+          'forced-color-adjust': 'none',
+        },
       },
       {
         selector: CHOSEN,
@@ -343,6 +353,15 @@ export const selectStyles = /* @__PURE__ */ ((): ComponentStyles => {
         declarations: { 'background-color': 'Highlight', color: 'HighlightText' },
       },
       { selector: `${ENABLED}:hover`, declarations: { 'background-color': 'Canvas' } },
+      // The pointer highlights the option it moves onto, so the option under
+      // it is nearly always the highlighted one, and the rule above outranks
+      // both of theirs: it would hand back the fill and leave `HighlightText`
+      // on `Canvas`, words in the colour of what is behind them. The pair is
+      // put back together, chosen or not.
+      {
+        selector: `${ENABLED}[data-highlighted]:hover`,
+        declarations: { 'background-color': 'Highlight', color: 'HighlightText' },
+      },
       { selector: `.${option}[data-disabled]`, declarations: { ...forcedDisabled } },
       { selector: `.${empty}`, declarations: { color: 'GrayText' } },
     ],

@@ -24,6 +24,7 @@ const page = (
     ...attributes,
   },
   focus,
+  text: attributes['data-volt-page'] ?? '2',
 });
 
 /** Previous, next, first or last. */
@@ -36,6 +37,7 @@ const control = (attributes: Record<string, string> = {}, tag = 'button'): Fixtu
     tabindex: '-1',
     ...attributes,
   },
+  text: attributes['data-volt-page'] === 'previous' ? '‹' : '›',
 });
 
 const current = { 'data-state': 'active', 'aria-current': 'page', tabindex: '0' };
@@ -61,6 +63,7 @@ const row = (children: readonly Fixture[]): Fixture => ({
       tag: 'p',
       classes: ['volt-pagination-status'],
       attributes: { role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true' },
+      text: 'Page 1 of 9',
     },
   ],
 });
@@ -95,11 +98,20 @@ export const fixtures: ComponentFixtures = {
     page({ 'data-hover': '' }),
     control({ 'data-hover': '' }),
     page(current, true),
+    // The current page is out from under the forced palette, where a colour
+    // the forced rules do not name is drawn as the sheet wrote it.
+    page({ ...current, 'data-hover': '' }),
+    page({ ...current, href: '#page-2', 'data-hover': '' }, true, 'a'),
     row([
       control({ 'data-volt-page': 'previous', 'aria-label': 'Previous page', ...disabled }),
       page({ ...current, 'data-volt-page': '1', 'aria-label': 'Page 1' }),
       page(),
-      { tag: 'span', classes: ['volt-pagination-ellipsis'], attributes: { 'aria-hidden': 'true' } },
+      {
+        tag: 'span',
+        classes: ['volt-pagination-ellipsis'],
+        attributes: { 'aria-hidden': 'true' },
+        text: '…',
+      },
       page({ 'data-volt-page': '9', 'aria-label': 'Page 9' }),
       control(),
     ]),

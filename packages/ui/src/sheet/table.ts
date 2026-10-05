@@ -11,8 +11,8 @@
  * a way to follow a row across a wide table — and are allowed to disappear
  * when the user brings their own palette. Selection is not: which rows are
  * about to be acted on is the whole point of a selection, so it is drawn in
- * `Highlight` and `HighlightText` when the palette is forced, and marked with
- * `aria-selected` besides.
+ * `Highlight` when the palette is forced, and marked with `aria-selected`
+ * besides.
  *
  * The lines are on the cells rather than the rows, because a row's border is
  * not painted when the table collapses its borders — the cell's is.
@@ -173,9 +173,18 @@ export const tableStyles = /* @__PURE__ */ ((): ComponentStyles => {
     // second row" would leave none for the row that is selected.
     { selector: STRIPED, declarations: { 'background-color': 'Canvas' } },
     { selector: HOVERED, declarations: { 'background-color': 'Canvas' } },
+    // The words stay under the palette, in its text colour, on the backplate
+    // of `Canvas` Chrome paints behind every run of text there — so a selected
+    // row is a band of `Highlight` with its words on the page's own colour.
+    // `HighlightText` would be painted over: in the dark scheme and the light
+    // it is the backplate's colour. And the row is not taken out from under
+    // the palette instead, because a cell holds whatever a caller writes in
+    // it: out from under it, a link would sit on `Highlight` in `LinkText`,
+    // too faint to read, and a button or a keycap would be drawn in whatever
+    // colours its own sheet left the palette to choose.
     {
       selector: SELECTED,
-      declarations: { 'background-color': 'Highlight', color: 'HighlightText' },
+      declarations: { 'background-color': 'Highlight', color: 'CanvasText' },
     },
     { selector: `.${empty}`, declarations: { color: 'GrayText' } },
   ],

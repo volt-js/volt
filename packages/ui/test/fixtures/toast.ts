@@ -18,8 +18,8 @@ const toast = (attributes: Record<string, string>): Fixture => ({
   classes: ['volt-toast'],
   attributes,
   children: [
-    { tag: 'p', classes: ['volt-toast-title'] },
-    { tag: 'p', classes: ['volt-toast-description'] },
+    { tag: 'p', classes: ['volt-toast-title'], text: 'Saved' },
+    { tag: 'p', classes: ['volt-toast-description'], text: 'Your changes are live.' },
     { classes: ['volt-toast-actions'] },
   ],
 });

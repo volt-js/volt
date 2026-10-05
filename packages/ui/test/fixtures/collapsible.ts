@@ -28,6 +28,7 @@ const collapsible = (
       children: [
         { tag: 'span', classes: ['volt-collapsible-indicator'], attributes: { 'aria-hidden': 'true' } },
       ],
+      text: 'Details',
     },
     {
       classes: ['volt-collapsible-panel'],
@@ -36,6 +37,7 @@ const collapsible = (
       // by the primitive and written on the element, so the fixture has to
       // carry one for the keyframes to resolve to anything.
       attributes: { 'data-state': state, style: '--volt-collapsible-height: 80px' },
+      text: 'Returns are free for thirty days.',
     },
   ],
 });

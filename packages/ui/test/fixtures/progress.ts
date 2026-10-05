@@ -22,7 +22,7 @@ const bar = (state: string): Fixture => ({
         { classes: ['volt-progress-indicator'], attributes: { 'data-state': state } },
       ],
     },
-    { tag: 'span', classes: ['volt-progress-label'] },
+    { tag: 'span', classes: ['volt-progress-label'], text: '40%' },
   ],
 });
 

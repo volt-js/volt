@@ -28,7 +28,7 @@ const crumb = (
           classes: ['volt-breadcrumb-item'],
           attributes: { 'data-volt-crumb': '0' },
           children: [
-            { tag: 'a', classes: ['volt-breadcrumb-link'], attributes, focus },
+            { tag: 'a', classes: ['volt-breadcrumb-link'], attributes, focus, text: 'Docs' },
             ...(last
               ? []
               : [
@@ -36,6 +36,7 @@ const crumb = (
                     tag: 'span',
                     classes: ['volt-breadcrumb-separator'],
                     attributes: { 'aria-hidden': 'true' },
+                    text: '/',
                   },
                 ]),
           ],
@@ -54,6 +55,7 @@ const menuLink = (attributes: Record<string, string>): Fixture => ({
   tag: 'a',
   classes: ['volt-menu-item', 'volt-breadcrumb-menu-link'],
   attributes: { role: 'menuitem', tabindex: '-1', 'data-value': '1', ...attributes },
+  text: 'Guides',
 });
 
 /** The slot holding the overflow menu's trigger, where the collapse is. */
@@ -81,11 +83,13 @@ const overflow = (
             ...triggerAttributes,
           },
           focus,
+          text: '…',
         },
         {
           tag: 'span',
           classes: ['volt-breadcrumb-separator'],
           attributes: { 'aria-hidden': 'true' },
+          text: '/',
         },
       ],
     },
@@ -125,6 +129,11 @@ export const fixtures: ComponentFixtures = {
     crumb({}),
     crumb({ href: '/docs', 'data-hover': '' }),
     overflow({ 'data-hover': '' }),
+    // Open, the button is out from under the forced palette, where a colour
+    // the forced rules do not name is drawn as the sheet wrote it.
+    overflow({ 'aria-expanded': 'true', 'data-hover': '' }),
+    overflow({ 'aria-expanded': 'true' }, true),
     menuLink({ href: '/docs', 'data-hover': '' }),
+    menuLink({ 'data-hover': '' }),
   ],
 };

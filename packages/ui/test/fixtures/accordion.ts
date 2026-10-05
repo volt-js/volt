@@ -25,6 +25,7 @@ const accordion = (state: string, attributes: Record<string, string> = {}, focus
               classes: ['volt-accordion-trigger'],
               attributes: { 'data-state': state, ...attributes },
               focus,
+              text: 'Shipping',
             },
           ],
         },
@@ -34,6 +35,7 @@ const accordion = (state: string, attributes: Record<string, string> = {}, focus
           // written on the element, so the fixture has to carry one for the
           // keyframes to resolve to anything.
           attributes: { 'data-state': state, style: '--volt-collapsible-height: 80px' },
+          text: 'Orders ship within two days.',
         },
       ],
     },

@@ -33,7 +33,13 @@ export const fixtures: ComponentFixtures = {
     placeholder('visible', [shape({ 'data-shape': 'circle' })]),
     placeholder('visible', [shape(), shape({ 'data-trailing': '' })]),
     { classes: ['volt-skeleton'], attributes: { 'data-state': 'visible', 'aria-busy': 'true' } },
-    { classes: ['volt-skeleton'], attributes: { 'data-state': 'idle' } },
-    { tag: 'p', classes: ['volt-skeleton-status'], attributes: { role: 'status' } },
+    // Arrived: the caller's own content, in place of the shapes.
+    { classes: ['volt-skeleton'], attributes: { 'data-state': 'idle' }, text: 'Ada Lovelace' },
+    {
+      tag: 'p',
+      classes: ['volt-skeleton-status'],
+      attributes: { role: 'status' },
+      children: [{ tag: 'span', text: 'Loading' }],
+    },
   ],
 };

@@ -125,7 +125,15 @@ export const kbdStyles = /* @__PURE__ */ ((): ComponentStyles => {
     ],
 
     forcedColors: [
-      { selector: `.${root}`, declarations: { color: 'CanvasText' } },
+      // The chord's own words, the `+` between two keys, are the line's: drawn
+      // in whatever the text around them is, which the palette has already
+      // chosen. Named `CanvasText`, they were right only on the page. A menu
+      // item under the pointer, or a primary button, is drawn on `Highlight`
+      // and taken out from under the palette so its words keep their pair, and
+      // a shortcut inside it would put its `+` on that fill in `CanvasText`,
+      // too faint there to read; in an item that is unavailable, it kept the
+      // page's text colour while the item's words went grey.
+      { selector: `.${root}`, declarations: { color: 'inherit' } },
       {
         // Every edge the one colour, and the lower one no longer darker: the
         // depth was a shade, and the palette has none to spare. The width
@@ -138,7 +146,7 @@ export const kbdStyles = /* @__PURE__ */ ((): ComponentStyles => {
           color: 'CanvasText',
         },
       },
-      { selector: `.${separator}`, declarations: { color: 'CanvasText' } },
+      { selector: `.${separator}`, declarations: { color: 'inherit' } },
     ],
   };
 })();

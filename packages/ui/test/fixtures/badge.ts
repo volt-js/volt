@@ -16,13 +16,27 @@
 import type { ComponentFixtures } from '../fixtures.ts';
 import type { Fixture } from '../harness.ts';
 
+/**
+ * What the badge writes: its count, capped, unless it is a dot or there is
+ * nothing to count.
+ */
+const written = (attributes: Record<string, string>): string | undefined => {
+  if ('data-dot' in attributes || 'data-empty' in attributes) return undefined;
+  return 'data-overflow' in attributes ? '99+' : attributes['data-count'];
+};
+
 /** A button with a badge on its corner, carrying what the component writes. */
 const anchored = (attributes: Record<string, string>): Fixture => ({
   tag: 'span',
   classes: ['volt-badge-anchor'],
   children: [
-    { tag: 'button' },
-    { tag: 'span', classes: ['volt-badge'], attributes: { 'data-tone': 'danger', ...attributes } },
+    { tag: 'button', text: 'Inbox' },
+    {
+      tag: 'span',
+      classes: ['volt-badge'],
+      attributes: { 'data-tone': 'danger', ...attributes },
+      text: written(attributes),
+    },
   ],
 });
 
@@ -62,6 +76,7 @@ export const fixtures: ComponentFixtures = {
           tag: 'span',
           classes: ['volt-badge'],
           attributes: { ...counting, 'data-tone': 'neutral' },
+          text: '3',
         },
       ],
     },

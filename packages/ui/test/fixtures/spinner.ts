@@ -18,7 +18,7 @@ const spinner = (state: string, mark: Record<string, string> = {}): Fixture => (
       classes: ['volt-spinner-indicator'],
       attributes: { 'aria-hidden': 'true', 'data-state': state, ...mark },
     },
-    { tag: 'span', classes: ['volt-spinner-label'] },
+    { tag: 'span', classes: ['volt-spinner-label'], text: 'Loading' },
   ],
 });
 

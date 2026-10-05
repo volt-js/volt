@@ -18,6 +18,7 @@ const initials = (status: string): Fixture => ({
   tag: 'span',
   classes: ['volt-avatar-fallback'],
   attributes: { role: 'img', 'aria-label': 'Ada Lovelace', 'data-status': status },
+  text: 'AL',
 });
 
 /** The box, with the parts the primitive has on the page in that status. */

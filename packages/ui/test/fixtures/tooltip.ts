@@ -11,6 +11,7 @@ import type { Fixture } from '../harness.ts';
 const tooltip = (state: string): Fixture => ({
   classes: ['volt-tooltip-content'],
   attributes: { 'data-state': state },
+  text: 'Copy the link',
 });
 
 export const fixtures: ComponentFixtures = {

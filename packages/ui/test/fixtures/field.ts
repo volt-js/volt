@@ -11,14 +11,15 @@ import type { Fixture } from '../harness.ts';
 const field = (controlAttributes: Record<string, string> = {}, focus = false): Fixture => ({
   classes: ['volt-field'],
   children: [
-    { tag: 'label', classes: ['volt-field-label'] },
+    { tag: 'label', classes: ['volt-field-label'], text: 'Email' },
     {
       tag: 'input',
       classes: ['volt-field-control'],
       attributes: { 'data-state': 'valid', ...controlAttributes },
       focus,
+      text: 'ada@example.com',
     },
-    { tag: 'p', classes: ['volt-field-description'] },
+    { tag: 'p', classes: ['volt-field-description'], text: 'Never shared.' },
   ],
 });
 
@@ -48,9 +49,14 @@ export const fixtures: ComponentFixtures = {
     {
       classes: ['volt-field'],
       children: [
-        { tag: 'label', classes: ['volt-field-label'] },
-        { tag: 'textarea', classes: ['volt-field-control'], attributes: { 'data-state': 'invalid' } },
-        { tag: 'p', classes: ['volt-field-error'], attributes: { role: 'alert' } },
+        { tag: 'label', classes: ['volt-field-label'], text: 'Message' },
+        {
+          tag: 'textarea',
+          classes: ['volt-field-control'],
+          attributes: { 'data-state': 'invalid' },
+          text: 'Hi',
+        },
+        { tag: 'p', classes: ['volt-field-error'], attributes: { role: 'alert' }, text: 'Too short.' },
       ],
     },
   ],

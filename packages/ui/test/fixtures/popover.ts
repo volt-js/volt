@@ -13,8 +13,8 @@ const popover = (state: string, focus = false): Fixture => ({
   attributes: { 'data-state': state, 'data-placement': 'bottom', tabindex: '-1' },
   focus,
   children: [
-    { tag: 'h2', classes: ['volt-popover-title'] },
-    { tag: 'p', classes: ['volt-popover-description'] },
+    { tag: 'h2', classes: ['volt-popover-title'], text: 'Share' },
+    { tag: 'p', classes: ['volt-popover-description'], text: 'Anyone with the link can see it.' },
     { classes: ['volt-popover-arrow'], attributes: { 'data-placement': 'bottom' } },
   ],
 });

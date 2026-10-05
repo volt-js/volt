@@ -178,7 +178,20 @@ export const switchStyles = /* @__PURE__ */ ((): ComponentStyles => {
         selector: `.${track}`,
         declarations: { 'background-color': 'Field', ...border('FieldText') },
       },
-      { selector: `.${thumb}`, declarations: { 'background-color': 'FieldText', color: 'Field' } },
+      // The thumb's slot takes a caller's mark, which is drawn in the thumb's
+      // colour on the thumb's fill. Left under the palette, a glyph there gets
+      // the backplate of `Canvas` Chrome paints behind every run of text, and
+      // `Field` is that same colour: a blank on the thumb of a switch that is
+      // off. Out from under it, every colour the thumb paints is one of the
+      // pairs named here and below, and an SVG in `currentColor` follows.
+      {
+        selector: `.${thumb}`,
+        declarations: {
+          'background-color': 'FieldText',
+          color: 'Field',
+          'forced-color-adjust': 'none',
+        },
+      },
 
       // A switch that is on differs from one that is off by its fill, and fill
       // is what this mode flattens. The ring round the track doubles — a
@@ -204,7 +217,14 @@ export const switchStyles = /* @__PURE__ */ ((): ComponentStyles => {
       // written is the one that wins.
       { selector: OFF_CONTROL, declarations: { color: 'GrayText', opacity: '1' } },
       { selector: `${OFF_CONTROL} .${track}`, declarations: { ...border('GrayText') } },
-      { selector: `${OFF_CONTROL} .${thumb}`, declarations: { 'background-color': 'GrayText' } },
+      // A mark on a grey thumb is written in `Field`, on or off: `Highlight` on
+      // `GrayText` is a pairing the palette makes no promise about, and with
+      // no backplate behind it the mark of a switch on and unavailable would
+      // be the faintest thing in the control.
+      {
+        selector: `${OFF_CONTROL} .${thumb}`,
+        declarations: { 'background-color': 'GrayText', color: 'Field' },
+      },
 
       { selector: `.${root}:focus-visible`, declarations: { ...forcedFocusRing } },
     ],

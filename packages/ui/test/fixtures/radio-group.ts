@@ -19,6 +19,7 @@ const radio = (
   children: [
     { classes: ['volt-radio-indicator'], children: [{ classes: ['volt-radio-dot'] }] },
   ],
+  text: 'By email',
 });
 
 /** One radio in the row the group lays out, which is a `<label>`. */

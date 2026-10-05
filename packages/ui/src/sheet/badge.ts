@@ -183,11 +183,17 @@ export const badgeStyles = /* @__PURE__ */ ((): ComponentStyles => {
         // Filled in the palette's text colour, with a ring in its page colour:
         // the same picture as the ordinary palette's, in the two colours a
         // forced palette guarantees apart. A dot is this fill and nothing else.
+        //
+        // Out from under the palette, because the count is written in
+        // `Canvas`, and left under it Chrome paints a backplate of `Canvas`
+        // behind every run of text: a filled pill with a blank where its
+        // number was. Every colour the badge paints is named here and below.
         selector: `.${root}`,
         declarations: {
           color: 'Canvas',
           'background-color': 'CanvasText',
           ...edge('Canvas'),
+          'forced-color-adjust': 'none',
         },
       },
       // Restated at the depth each tone was written at, since a rule naming the

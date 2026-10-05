@@ -15,8 +15,8 @@ const dialog = (state: string): Fixture => ({
       classes: ['volt-dialog-content'],
       attributes: { 'data-state': state, tabindex: '-1' },
       children: [
-        { tag: 'h2', classes: ['volt-dialog-title'] },
-        { tag: 'p', classes: ['volt-dialog-description'] },
+        { tag: 'h2', classes: ['volt-dialog-title'], text: 'Delete the file?' },
+        { tag: 'p', classes: ['volt-dialog-description'], text: 'This cannot be undone.' },
         { classes: ['volt-dialog-footer'] },
       ],
     },

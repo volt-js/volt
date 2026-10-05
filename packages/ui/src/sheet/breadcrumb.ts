@@ -250,11 +250,29 @@ export const breadcrumbStyles = /* @__PURE__ */ ((): ComponentStyles => {
       },
       // The button under the pointer and the button whose menu is open, in the
       // pair the palette keeps for exactly this.
+      //
+      // Both out from under the palette, because left under it Chrome paints
+      // a backplate of `Canvas` behind every run of text, and `HighlightText`
+      // is that same colour in the dark scheme and the light: a `Highlight`
+      // box with a blank where the ellipsis was, and nothing left to say the
+      // crumbs are folded into it. The button has no edge and its ring is
+      // drawn outside it, so the fill and the words are every colour it paints.
       {
         selector: `.${trigger}:hover`,
-        declarations: { color: 'HighlightText', 'background-color': 'Highlight' },
+        declarations: {
+          color: 'HighlightText',
+          'background-color': 'Highlight',
+          'forced-color-adjust': 'none',
+        },
       },
-      { selector: OPEN, declarations: { color: 'HighlightText', 'background-color': 'Highlight' } },
+      {
+        selector: OPEN,
+        declarations: {
+          color: 'HighlightText',
+          'background-color': 'Highlight',
+          'forced-color-adjust': 'none',
+        },
+      },
       { selector: `.${trigger}:focus-visible`, declarations: { ...forcedFocusRing } },
       // The menu draws every item in the palette's text, and the muted colour
       // above is gone, so grey is what is left to say this one leads nowhere.

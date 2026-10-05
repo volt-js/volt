@@ -57,6 +57,9 @@ export const fixtures: ComponentFixtures = {
     { state: 'focus', off: row(), on: row({}, true) },
   ],
   extra: [
+    // Revealed, the toggle is out from under the forced palette, where its
+    // ring would be drawn in the brand's colour unless a forced rule names one.
+    row(SHOWN, true),
     {
       tag: 'p',
       classes: ['volt-password-input-status'],

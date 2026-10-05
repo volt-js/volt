@@ -20,12 +20,12 @@ const alert = (severity: string, state = 'open'): Fixture => ({
       classes: ['volt-alert-message'],
       attributes: { 'data-state': state },
       children: [
-        { tag: 'span', classes: ['volt-alert-icon'] },
+        { tag: 'span', classes: ['volt-alert-icon'], text: '!' },
         {
           classes: ['volt-alert-content'],
           children: [
-            { tag: 'p', classes: ['volt-alert-title'] },
-            { classes: ['volt-alert-description'] },
+            { tag: 'p', classes: ['volt-alert-title'], text: 'Saved' },
+            { classes: ['volt-alert-description'], text: 'Your changes are live.' },
             { classes: ['volt-alert-actions'] },
           ],
         },

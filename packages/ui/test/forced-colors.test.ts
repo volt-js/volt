@@ -11,6 +11,12 @@
  * keeps (a border, an outline, a weight, a system colour with its own name) is
  * what makes that true, and this is the check that it was written.
  *
+ * A palette that keeps two states apart can still lose the words on them:
+ * Chrome paints a backplate of `Canvas` behind every run of text left under
+ * it. So every fixture's words are read as Chrome would draw them, too, and
+ * the harness that reads them is held to what Chrome was seen to do at the
+ * end of this file.
+ *
  * `fixtures.ts` has said since it was written that this file requires an entry
  * for every component in the registry "so a seventh component cannot arrive
  * without one". The file did not exist, so nothing did. It does now, and the
@@ -18,13 +24,15 @@
  */
 
 import { afterAll, describe, expect, it } from 'vitest';
-import { componentStyles } from '../src/index.ts';
+import { componentStyles, type ComponentStyles } from '../src/index.ts';
 import { allFixtures, fixtures } from './fixtures.ts';
 import {
   differences,
   REPLACED,
   standIn,
   styledDocument,
+  SYSTEM_COLORS,
+  unreadableOn,
   type Fixture,
   type StyledDocument,
 } from './harness.ts';
@@ -189,6 +197,45 @@ describe('nothing hidden with `transparent` shows once the palette is the user�
   }
 });
 
+describe('no words are lost to the backplate once the palette is the user’s', () => {
+  // Chrome paints `Canvas` behind every run of text left under the palette,
+  // whatever fill is behind it, and its `HighlightText` is that same colour: a
+  // filled control with its words in `HighlightText` shows the fill with a box
+  // in the page's colour where the words were. Taking the control out from
+  // under the palette is the fix, and that is the other half asked here — that
+  // what is out paints nothing but the palette's own colours.
+  for (const component of componentStyles) {
+    it(component.name, () => {
+      const faults = new Set<string>();
+      for (const fixture of allFixtures(component.name)) {
+        const root = forced.mount(fixture);
+        for (const fault of forced.unreadableWords(root)) faults.add(fault);
+        for (const fault of forced.unforcedColours(root)) faults.add(fault);
+        // Every element left in the document is one more for each later
+        // computed style to cascade through.
+        root.remove();
+      }
+      expect([...faults]).toEqual([]);
+    });
+  }
+
+  /** Whether a fixture, or anything inside it, carries words. */
+  const worded = (fixture: Fixture): boolean =>
+    (fixture.text ?? '') !== '' || (fixture.children ?? []).some(worded);
+
+  it('has words to read in the fixtures of every component that writes any', () => {
+    // Without them the sweep above reads nothing and passes, which is how a
+    // primary button whose label Chrome painted over shipped with every test
+    // green. A rating draws its stars and writes nothing. The other three
+    // write words their fixtures do not carry yet; each leaves this list when
+    // its fixtures are given the words its template writes.
+    const wordless = componentStyles
+      .map((component) => component.name)
+      .filter((name) => !allFixtures(name).some(worded));
+    expect(wordless).toEqual(['code', 'image', 'number-input', 'rating']);
+  });
+});
+
 describe('a floating panel keeps an edge once the palette is the user’s', () => {
   it('draws one round every element that casts a shadow, in a colour apart from its fill', () => {
     const panels = new Set<string>();
@@ -294,5 +341,325 @@ describe('the switch, once the palette is the user’s', () => {
       px(thumb.getPropertyValue('inline-size')) +
         px(thumb.getPropertyValue('margin-inline-start')),
     );
+  });
+});
+
+/**
+ * A sheet written the way the package's are, for holding the harness to what
+ * Chrome does. Each shape the tests below mount was drawn in Chrome, with this
+ * sheet, forced colours emulated and the light scheme preferred and then the
+ * dark: whether each run of words left any ink in the screenshot — for words
+ * nobody is shown, whether words drawn beneath them did — and the colours
+ * Chrome computed, are what these tests say.
+ */
+const modelStyles: ComponentStyles = {
+  name: 'model',
+  classes: {},
+  keyframes: [],
+  rules: [
+    {
+      selector: '.model-brand',
+      declarations: {
+        'background-color': 'var(--volt-color-accent)',
+        color: 'var(--volt-color-on-accent)',
+      },
+    },
+    { selector: '.model-hidden', declarations: { display: 'none' } },
+    { selector: '.model-unseen', declarations: { visibility: 'hidden' } },
+    {
+      selector: '.model-edged',
+      declarations: {
+        'border-block-start-style': 'solid',
+        'border-block-start-width': 'var(--volt-border-width-1)',
+        'border-block-start-color': 'var(--volt-color-border)',
+      },
+    },
+    {
+      selector: '.model-unedged',
+      declarations: { 'border-block-start-color': 'var(--volt-color-border)' },
+    },
+    { selector: '.model-shadowed', declarations: { 'box-shadow': 'var(--volt-elevation-overlay)' } },
+    { selector: '.model-row', declarations: { display: 'flex' } },
+    { selector: '.model-inline-row', declarations: { display: 'inline-flex' } },
+    { selector: '.model-atom', declarations: { display: 'inline-block' } },
+  ],
+  forcedColors: [
+    {
+      selector: '.model-selected',
+      declarations: { 'background-color': 'Highlight', color: 'HighlightText' },
+    },
+    {
+      selector: '.model-inverse',
+      declarations: { 'background-color': 'CanvasText', color: 'Canvas' },
+    },
+    {
+      selector: '.model-legible',
+      declarations: { 'background-color': 'Highlight', color: 'CanvasText' },
+    },
+    // An unchecked box's mark: there, and meant not to show.
+    { selector: '.model-blank', declarations: { 'background-color': 'Field', color: 'Field' } },
+    { selector: '.model-out', declarations: { 'forced-color-adjust': 'none' } },
+    // Put back under the palette, inside something that was taken out.
+    { selector: '.model-back', declarations: { 'forced-color-adjust': 'auto' } },
+    // A shortcut's `+`, which takes the colour of the line it sits in.
+    { selector: '.model-inherit', declarations: { color: 'inherit' } },
+    // Words in each system colour in turn, on no fill of their own.
+    ...SYSTEM_COLORS.map((name) => ({
+      selector: `.model-in-${name}`,
+      declarations: { color: name },
+    })),
+  ],
+};
+
+describe('the palette as Chrome paints it', () => {
+  const model = styledDocument({ forcedColors: true, extraSheets: [modelStyles] });
+  afterAll(() => model.close());
+
+  const unreadable = (fixture: Fixture): string[] => model.unreadableWords(model.mount(fixture));
+  const unforced = (fixture: Fixture): string[] => model.unforcedColours(model.mount(fixture));
+  /** Words taken out from under the palette, inside an element that is not. */
+  const outInside = (outer: string): Fixture => ({
+    classes: [outer],
+    children: [{ classes: ['model-out'], text: 'Save' }],
+  });
+
+  it('loses words in just the system colours its palettes make the colour of the backplate', () => {
+    // Chrome's backplate is `Canvas`, and in its palettes four colours are
+    // `Canvas` itself in both schemes; `MarkText` is too in the dark, and
+    // `SelectedItemText` in the light, where `Mark` is yellow on white.
+    const lost = SYSTEM_COLORS.filter(
+      (name) => unreadable({ classes: [`model-in-${name}`], text: 'Aa' }).length > 0,
+    );
+    expect(lost).toEqual([
+      'ButtonFace',
+      'Canvas',
+      'Field',
+      'HighlightText',
+      'Mark',
+      'MarkText',
+      'SelectedItemText',
+    ]);
+    expect(unreadableOn('HighlightText')).toEqual(['light', 'dark']);
+    expect(unreadableOn('MarkText')).toEqual(['dark']);
+    expect(unreadableOn('Highlight')).toEqual([]);
+  });
+
+  it('hides words in the colour of the backplate it paints behind them, whatever the fill', () => {
+    // On a `Highlight` fill, the words become a box in the page's colour.
+    expect(unreadable({ classes: ['model-selected'], text: 'Save' })).toHaveLength(1);
+    expect(unreadable({ classes: ['model-inverse'], text: '3' })).toHaveLength(1);
+    // Inherited is no different: the words are where the colour lands.
+    expect(
+      unreadable({ classes: ['model-selected'], children: [{ tag: 'span', text: 'Save' }] }),
+    ).toHaveLength(1);
+    // An input's value is a run of text like any other.
+    expect(unreadable({ tag: 'input', classes: ['model-selected'], text: 'Save' })).toHaveLength(1);
+    // A fill with nothing written on it loses nothing.
+    expect(unreadable({ classes: ['model-selected'] })).toEqual([]);
+  });
+
+  it('reads words in a colour drawn for `Canvas` on any fill', () => {
+    expect(unreadable({ classes: ['model-legible'], text: 'Save' })).toEqual([]);
+    // A colour of the sheet's own is the palette's to replace, and it
+    // replaces it with one drawn for the backplate.
+    expect(unreadable({ classes: ['model-brand'], text: 'Save' })).toEqual([]);
+  });
+
+  it('paints no backplate behind words taken out from under the palette', () => {
+    expect(unreadable({ classes: ['model-selected', 'model-out'], text: 'Save' })).toEqual([]);
+    expect(
+      unreadable({ tag: 'input', classes: ['model-selected', 'model-out'], text: 'Save' }),
+    ).toEqual([]);
+    // The property is inherited, by everything inside.
+    expect(
+      unreadable({
+        classes: ['model-out'],
+        children: [{ classes: ['model-selected'], children: [{ tag: 'b', text: 'B' }] }],
+      }),
+    ).toEqual([]);
+  });
+
+  it('reads words out from under the palette against the fill behind them', () => {
+    // No backplate there: the words sit on whatever is drawn behind them, and
+    // only the pair the palette keeps for that fill is sure to stand apart.
+    expect(unreadable({ classes: ['model-selected', 'model-out'], text: 'Save' })).toEqual([]);
+    // `CanvasText` on `Highlight` is 1.86:1 in the light palette and 2.41:1
+    // in the dark.
+    expect(unreadable(outInside('model-legible'))).toHaveLength(1);
+    // With no fill, the page's `Canvas` is behind them.
+    expect(
+      unreadable({ classes: ['model-out', 'model-in-HighlightText'], text: 'Save' }),
+    ).toHaveLength(1);
+    const [fault] = unreadable(outInside('model-legible'));
+    expect(fault).toContain('model: `.model-legible`');
+    expect(fault).toContain('CanvasText on Highlight');
+  });
+
+  it('reads only the words somebody is shown', () => {
+    expect(
+      unreadable({
+        classes: ['model-hidden'],
+        children: [{ classes: ['model-selected'], text: 'Save' }],
+      }),
+    ).toEqual([]);
+    expect(unreadable({ classes: ['model-selected', 'model-unseen'], text: 'Save' })).toEqual([]);
+    // Words in the colour of their own fill were hidden by the sheet before
+    // the backplate hid them again.
+    expect(unreadable({ classes: ['model-blank'], text: '✓' })).toEqual([]);
+  });
+
+  it('lets the box that lays a line out decide whether the line has a backplate', () => {
+    // The backplate is painted for a line, by the box that lays the line out:
+    // words in an inline element taken out from under the palette are on it
+    // all the same when the block round them is not.
+    const inline = (classes: string[]): Fixture => ({ tag: 'span', classes, text: 'Save' });
+    expect(
+      unreadable({ classes: ['model-selected'], children: [inline(['model-out'])] }),
+    ).toHaveLength(1);
+    // Put back under it, inside a block that is out, they get none.
+    expect(
+      unreadable({ classes: ['model-selected', 'model-out'], children: [inline(['model-back'])] }),
+    ).toEqual([]);
+    // A flex item lays out lines of its own, whatever the row round it says.
+    expect(
+      unreadable({ classes: ['model-selected', 'model-row'], children: [inline(['model-out'])] }),
+    ).toEqual([]);
+    expect(
+      unreadable({
+        tag: 'span',
+        classes: ['model-selected', 'model-out', 'model-inline-row'],
+        children: [inline(['model-back'])],
+      }),
+    ).toHaveLength(1);
+  });
+
+  it('shows the backplate of the line an inline box sits in through it, unless it is filled', () => {
+    // An inline-block lays out lines of its own and sits in a line of its
+    // parent's as well, whose backplate runs from the first words in it to
+    // the last. Between words, the box is behind it: out from under the
+    // palette and filled, it covers the backplate; unfilled, its words are
+    // on it.
+    const atom = (classes: string[]): Fixture => ({
+      tag: 'span',
+      classes: ['model-atom', 'model-out', ...classes],
+      text: 'Save',
+    });
+    const press: Fixture = { tag: 'span', text: 'Press' };
+    const now: Fixture = { tag: 'span', text: 'now' };
+    const unfilled = atom(['model-in-HighlightText']);
+    expect(unreadable({ classes: ['model-legible'], children: [press, unfilled, now] })).toHaveLength(1);
+    expect(unreadable({ children: [press, atom(['model-selected']), now] })).toEqual([]);
+    // At the end of the line, or alone in it, the backplate stops short of it.
+    expect(unreadable({ classes: ['model-legible'], children: [press, unfilled] })).toEqual([]);
+    expect(unreadable({ classes: ['model-legible'], children: [unfilled] })).toEqual([]);
+  });
+
+  it('paints a backplate for a line whose words nobody is shown, over what is beneath it', () => {
+    // Words hidden with `visibility` still make the line they are laid out
+    // on, and Chrome still paints that line's backplate: a box of `Canvas`
+    // over whatever shares the room, as code does beneath a gutter whose
+    // rows hold its lines unseen so that each number lands beside its line.
+    const unseen: Fixture = { tag: 'span', classes: ['model-unseen'], text: 'let a = 1;' };
+    expect(unreadable({ children: [unseen] })).toHaveLength(1);
+    expect(unreadable({ tag: 'ol', children: [{ tag: 'li', children: [unseen] }] })).toHaveLength(1);
+    // The line is the block's, so taking the words alone out changes nothing.
+    expect(
+      unreadable({ children: [{ ...unseen, classes: ['model-unseen', 'model-out'] }] }),
+    ).toHaveLength(1);
+    // Taking the block out does, and so does hiding the block itself.
+    expect(unreadable({ classes: ['model-out'], children: [unseen] })).toEqual([]);
+    expect(
+      unreadable({
+        tag: 'ol',
+        classes: ['model-out'],
+        children: [{ tag: 'li', children: [unseen] }],
+      }),
+    ).toEqual([]);
+    expect(
+      unreadable({ classes: ['model-unseen'], children: [{ tag: 'span', text: 'let a = 1;' }] }),
+    ).toEqual([]);
+    const [fault] = unreadable({ children: [unseen] });
+    expect(fault).toContain('model: `.model-unseen`');
+    expect(fault).toContain('“let a = 1;”');
+    expect(fault).toContain('forced-color-adjust: none');
+  });
+
+  it('reads words in `inherit` in the colour they inherit', () => {
+    // happy-dom computes the keyword as the value, and hands the keyword down;
+    // Chrome computes the parent's colour, so these are `HighlightText`.
+    const plus: Fixture = { classes: ['model-inherit'], text: '+' };
+    expect(unreadable({ classes: ['model-selected'], children: [plus] })).toHaveLength(1);
+    expect(
+      unreadable({
+        classes: ['model-selected'],
+        children: [{ classes: ['model-inherit'], children: [{ tag: 'span', text: '+' }] }],
+      }),
+    ).toHaveLength(1);
+    // Out from under the palette, the pair is whole, and the palette's own.
+    expect(unreadable({ classes: ['model-selected', 'model-out'], children: [plus] })).toEqual([]);
+    expect(unforced({ classes: ['model-selected', 'model-out'], children: [plus] })).toEqual([]);
+  });
+
+  it('names the sheet, the rule and the fix', () => {
+    const [fault] = unreadable({
+      classes: ['model-selected'],
+      children: [{ tag: 'span', text: 'Save' }],
+    });
+    expect(fault).toContain('model: `.model-selected`');
+    expect(fault).toContain('“Save”');
+    expect(fault).toContain('HighlightText');
+    expect(fault).toContain('forced-color-adjust: none');
+  });
+
+  it('keeps the colours of an element out from under the palette', () => {
+    const snapshot = (fixture: Fixture): Map<string, string> =>
+      model.snapshot(model.mount(fixture), ['color', 'background-color']);
+    expect([...snapshot({ classes: ['model-brand'] }).values()]).toEqual([REPLACED, REPLACED]);
+    // Chrome draws these as the sheet wrote them, not as the reader's palette.
+    for (const value of snapshot({ classes: ['model-brand', 'model-out'] }).values()) {
+      expect(value).not.toBe(REPLACED);
+    }
+    const inside = snapshot({ classes: ['model-out'], children: [{ classes: ['model-brand'] }] });
+    for (const value of inside.values()) expect(value).not.toBe(REPLACED);
+  });
+
+  it('holds an element out from under the palette, and all inside it, to the palette’s colours', () => {
+    expect(unforced({ classes: ['model-selected', 'model-out'], text: 'Save' })).toEqual([]);
+    expect(unforced({ classes: ['model-brand', 'model-out'], text: 'Save' })).toHaveLength(2);
+    expect(
+      unforced({ classes: ['model-selected', 'model-out'], children: [{ classes: ['model-edged'] }] }),
+    ).toHaveLength(1);
+    // An edge with no style is not drawn, so its colour is not painted.
+    expect(
+      unforced({ classes: ['model-selected', 'model-out'], children: [{ classes: ['model-unedged'] }] }),
+    ).toEqual([]);
+    // The palette takes every shadow away, except from what has left it.
+    expect(unforced({ classes: ['model-selected', 'model-out', 'model-shadowed'] })).toHaveLength(1);
+    // Under the palette, a colour of the sheet's own is the palette's problem.
+    expect(unforced({ classes: ['model-brand'], text: 'Save' })).toEqual([]);
+  });
+
+  it('holds words out from under the palette to the colour they inherit from outside', () => {
+    // An element under the palette hands down the colour the sheet gave it,
+    // not the one the palette drew it in: a system colour stays one, and the
+    // brand's comes through as the brand's.
+    expect(unforced(outInside('model-legible'))).toEqual([]);
+    expect(unforced(outInside('model-brand'))).toHaveLength(1);
+    // Words in no colour of anybody's get the page's initial one: in Chrome's
+    // dark palette, black words on a black page.
+    expect(unforced({ classes: ['model-out'], text: 'Save' })).toHaveLength(1);
+  });
+
+  it('names the rule that took it out, and the fix', () => {
+    const [fault] = unforced({ classes: ['model-brand', 'model-out'] });
+    expect(fault).toContain('model: `.model-out`');
+    expect(fault).toContain('background-color');
+    expect(fault).toContain('system colour');
+  });
+
+  it('asks only a document with the palette on', () => {
+    const element = plain.mount({ classes: ['volt-button'], text: 'Save' });
+    expect(() => plain.unreadableWords(element)).toThrow(/palette/);
+    expect(() => plain.unforcedColours(element)).toThrow(/palette/);
   });
 });

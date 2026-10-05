@@ -13,6 +13,7 @@ const key = (name: string, attributes: Record<string, string> = {}): Fixture => 
   tag: 'kbd',
   classes: ['volt-kbd-key'],
   attributes: { 'data-key': name, ...attributes },
+  text: name,
 });
 
 /** What is drawn between two keys where the platform draws anything. */
@@ -20,6 +21,7 @@ const separator: Fixture = {
   tag: 'span',
   classes: ['volt-kbd-separator'],
   attributes: { 'aria-hidden': 'true' },
+  text: '+',
 };
 
 /** The chord around its parts, named the way the primitive names it. */
