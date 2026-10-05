@@ -17,16 +17,22 @@
 export {
   createGrid,
   GRID_CELL_ATTRIBUTE,
+  GRID_COLUMN_GROUP_RESIZER_ATTRIBUTE,
   GRID_RESIZER_ATTRIBUTE,
   HEADER_ROW,
   type Grid,
   type GridCell,
   type GridColumn,
+  type GridColumnGroup,
+  type GridColumnPin,
   type GridColumnView,
+  type GridHeaderCell,
+  type GridHeaderRow,
   type GridOptions,
   type GridProps,
   type GridPropValue,
   type GridRow,
+  type GridRowPin,
   type GridSortDescriptor,
 } from './grid.js';
 

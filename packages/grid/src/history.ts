@@ -163,8 +163,8 @@ export interface GridEditHistoryOptions<T> {
    *
    * A function for the reason every layer takes one: the grid is usually a
    * field declared alongside this one. Used for where a row sits in the view
-   * and to move the cursor for a keyboard undo — never to find a row, which
-   * `rows` does.
+   * and to move the cursor for a keyboard undo, and to find a row the grid
+   * pins — never a row of the data, which `rows` finds.
    */
   grid: () => Grid<T> | null | undefined;
   /**
@@ -173,7 +173,8 @@ export interface GridEditHistoryOptions<T> {
    * Every row, and not the view: a row a filter hides still exists and its
    * change is still undone, where the grid's view would call it gone. Read
    * once per change to the data, into an index by key, so an undo costs a
-   * lookup and not a scan.
+   * lookup and not a scan. The rows the grid pins to its edges need not be
+   * among them: those are asked of the grid.
    */
   rows: () => readonly T[];
   /**
@@ -354,6 +355,28 @@ export function createEditHistory<T>(options: GridEditHistoryOptions<T>): GridEd
   });
 
   /**
+   * The rows the grid pins to its edges, by key.
+   *
+   * Not among `rows`, which are the data — a row of totals, a row held up for
+   * comparison, is the page's own — and edited as any row is, so a step that
+   * changed one is undone through them. Asked of the grid, the one place that
+   * holds them, but keyed by this layer's `getRowKey` as `rows` are: the
+   * grid's key may be a place. Held apart from `byKey`, so that what moves a
+   * pinned row — a filter changing the rows above the bottom ones — does not
+   * index every row again.
+   */
+  const pinnedByKey = new Signal.Computed<ReadonlyMap<GridRowKey, T>>(() => {
+    const table = grid();
+    const index = new Map<GridRowKey, T>();
+    if (table === null) return index;
+    for (const row of [...table.pinnedTopRows(), ...table.pinnedBottomRows()]) {
+      const key = options.getRowKey(row.item);
+      if (!index.has(key)) index.set(key, row.item);
+    }
+    return index;
+  });
+
+  /**
    * Where each row sits in the view, by the row itself.
    *
    * By identity and not by the grid's key, because the grid's key may be its
@@ -390,11 +413,13 @@ export function createEditHistory<T>(options: GridEditHistoryOptions<T>): GridEd
     const skipped: GridHistoryRecord[] = [];
     const backwards = kind === 'undo';
     for (const record of entry) {
-      if (!rows.has(record.rowKey)) {
+      // The data first, and the pinned rows only for a key it does not hold.
+      const holder = rows.has(record.rowKey) ? rows : pinnedByKey.get();
+      if (!holder.has(record.rowKey)) {
         skipped.push(record);
         continue;
       }
-      const item = rows.get(record.rowKey) as T;
+      const item = holder.get(record.rowKey) as T;
       applied.push(record);
       changes.push({
         item,
@@ -611,9 +636,9 @@ export function createEditHistory<T>(options: GridEditHistoryOptions<T>): GridEd
    * the window, and focus with it, without the reader going anywhere — the
    * grid judges its own cursor the same way.
    *
-   * The first cell is the one nearest the top of the view and then the left,
-   * which for a paste is its corner; a step whose rows a filter hides leaves
-   * the cursor alone, since there is no cell to put it on.
+   * The first cell is the one nearest the top of the view and then the inline
+   * start, which for a paste is its corner; a step whose rows a filter hides
+   * leaves the cursor alone, since there is no cell to put it on.
    */
   const follow = (origin: Origin | null, changes: readonly GridEditChange<T>[]): void => {
     const table = grid();

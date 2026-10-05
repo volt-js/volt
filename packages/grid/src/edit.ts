@@ -395,13 +395,20 @@ export function createCellEditing<T>(options: GridCellEditingOptions<T>): GridCe
     return true;
   };
 
-  /** The rendered row and column at a position, if the window holds them. */
+  /**
+   * The rendered row and column at a position, if the window holds them. A
+   * pinned row is rendered outside the window, so it is looked for too.
+   */
   const viewsAt = (
     cell: GridCell,
   ): { row: GridRow<T>; column: GridColumnView<T> } | null => {
     const table = grid();
     if (table === null) return null;
-    const row = untrack(() => table.rows()).find((candidate) => candidate.index === cell.row);
+    const at = (candidate: GridRow<T>): boolean => candidate.index === cell.row;
+    const row = untrack(
+      () =>
+        table.rows().find(at) ?? table.pinnedTopRows().find(at) ?? table.pinnedBottomRows().find(at),
+    );
     const column = untrack(() => table.columns()).find(
       (candidate) => candidate.index === cell.column,
     );

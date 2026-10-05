@@ -1090,3 +1090,79 @@ describe('a cell still owns its own binding', () => {
     expect(columnText(1)).toEqual(['', 'london', 'paris', '', 'london', 'london']);
   });
 });
+
+describe('group headers of a height of their own', () => {
+  /** Where each rendered row is, as `[kind, start, size]`. */
+  function layout(harness: Harness): [string, number, number][] {
+    return harness.g.rows().map(({ item, start, size }) => [item.kind, start, size]);
+  }
+
+  it('takes one height for a header and another for a row, and moves both when a group shuts', () => {
+    gridOptions = { rowHeight: (row) => (row.kind === 'group' ? 32 : ROW_HEIGHT) };
+    const harness = setup();
+
+    expect(layout(harness)).toEqual([
+      ['group', 0, 32], ['data', 32, 20], ['data', 52, 20],
+      ['group', 72, 32], ['data', 104, 20], ['data', 124, 20],
+    ]);
+    expect(host.querySelector<HTMLElement>('.sizer')!.style.height).toBe('144px');
+    expect(rows().map((row) => row.style.height)).toEqual([
+      '32px', '20px', '20px', '32px', '20px', '20px',
+    ]);
+
+    harness.grouping.collapse('east');
+    flushSync();
+
+    // West's header is second now, and still a header's height.
+    expect(layout(harness)).toEqual([
+      ['group', 0, 32], ['group', 32, 32], ['data', 64, 20], ['data', 84, 20],
+    ]);
+  });
+
+  it('measures a header apart from its rows, and keeps what it measured when a group shuts', () => {
+    gridOptions = { rowHeight: 'auto' };
+    const harness = setup();
+
+    FakeResizeObserver.deliver(
+      rows().map((row) => ({
+        target: row,
+        block: row.hasAttribute(GRID_GROUP_ATTRIBUTE) ? 40 : 24,
+        inline: VIEWPORT_WIDTH,
+      })),
+    );
+    expect(layout(harness)).toEqual([
+      ['group', 0, 40], ['data', 40, 24], ['data', 64, 24],
+      ['group', 88, 40], ['data', 128, 24], ['data', 152, 24],
+    ]);
+
+    harness.grouping.collapse('east');
+    flushSync();
+
+    // Held by key, so west's header took its own height to its new place.
+    expect(layout(harness)).toEqual([
+      ['group', 0, 40], ['group', 40, 40], ['data', 80, 24], ['data', 104, 24],
+    ]);
+  });
+});
+
+describe('group rows measured from the page, as a group shuts', () => {
+  it('watches the rows a group shut brings into a window that has not moved', () => {
+    people.set(manyRows());
+    gridOptions = { rowHeight: 'auto' };
+    const harness = setup();
+    // g0's heading and its first five rows fill the window.
+    expect(harness.g.rows().map((row) => row.index)).toEqual([0, 1, 2, 3, 4, 5]);
+
+    harness.grouping.collapse('g0');
+    flushSync();
+
+    // The same six places, holding g0's heading, g1's, and g1's first rows.
+    expect(harness.g.rows().map((row) => row.index)).toEqual([0, 1, 2, 3, 4, 5]);
+    const watched = (el: Element): boolean =>
+      FakeResizeObserver.live.some((observer) => observer.targets.has(el));
+    expect(rows().every(watched)).toBe(true);
+
+    FakeResizeObserver.deliver([{ target: rows()[1]!, block: 40, inline: VIEWPORT_WIDTH }]);
+    expect(harness.g.rows()[2]).toMatchObject({ start: 72 });
+  });
+});

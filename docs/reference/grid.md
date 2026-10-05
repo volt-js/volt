@@ -174,7 +174,10 @@ it changes, by different amounts, and the rows drift when both do.
 | `container` | required | The element `containerProps()` goes on |
 | `rows` | required | The rows, in order |
 | `columns` | required | The columns, in order |
-| `rowHeight` | `32` | Every row is exactly this tall, in px |
+| `rowHeight` | `32` | How tall a row is: a number of px for every row, `(row, index) => number` for each row, or `'auto'` to measure each rendered row — see [Row heights](#row-heights) |
+| `estimatedRowHeight` | `32` | What a row is taken to be before it has been measured, in px. Read only under `rowHeight: 'auto'` |
+| `height` | the stylesheet's | `'auto'` makes the scroller as tall as its rows, up to `maxHeight` — see [A grid as tall as its rows](#a-grid-as-tall-as-its-rows) |
+| `maxHeight` | — | The most the scroller may be, in px, with or without `height` |
 | `getRowKey` | the row's index in the view | `(row, index) => string \| number` — what identifies a row |
 | `overscan` | `2` each way | Rows and columns rendered outside the viewport: a number, or `{ before, after }` with either left out — the same for both axes |
 | `label` | — | The grid's accessible name |
@@ -182,6 +185,7 @@ it changes, by different amounts, and the rows drift when both do.
 | `onActiveCellChange` | — | Told every time the cursor moves |
 | `onColumnResize` | — | Told the clamped width a resize settled on |
 | `resizeAnnouncement` | the catalogue's, else `'Name, 180 pixels'` | What a keyboard resize says aloud: `(column, width) => string` |
+| `groupResizeAnnouncement` | the catalogue's, else `'Work, 480 pixels'` | What a keyboard resize of a [column group](#column-groups) says aloud: `(group, width) => string`, `width` being every column under its cell |
 | `resizeStep` | `16` | Pixels per Alt+Arrow press |
 | `sort` | owned | A `Signal.State<readonly GridSort[]>` |
 | `onSortChange` | — | Told when the grid changes the sort |
@@ -197,6 +201,10 @@ it changes, by different amounts, and the rows drift when both do.
 | `cellSelection` | `'none'` | A `GridCellSelectionMode`: `'range'` turns on the rectangle of cells |
 | `cellRange` | owned | A `Signal.State<GridCellRange \| null>` |
 | `onCellRangeChange` | — | Told when the grid changes the rectangle |
+| `columnPins` | owned | A `Signal.State<ReadonlyMap<string, GridColumnPin>>` of the pins `pinColumn` made, by column id — see [Pinned columns and rows](#pinned-columns-and-rows) |
+| `onColumnPinChange` | — | Told when `pinColumn` changes the pins |
+| `pinnedTop` | — | `() => readonly T[]` — rows held above the scrolling ones, neither sorted nor filtered |
+| `pinnedBottom` | — | `() => readonly T[]` — rows held below them |
 
 Every piece of state has the same shape. Supply a `Signal.State` and the grid
 reads and writes yours, which is how a saved view, a URL or a server that
@@ -204,7 +212,7 @@ already knows gets in; leave it out and the grid owns one. The `on…Change`
 callbacks fire when the grid changes the state — a click, a key, a method — and
 not when you write the signal yourself, since you already know.
 
-The three announcements are defaulted rather than left out, because the failure
+The announcements are defaulted rather than left out, because the failure
 of a missing one is silence, not a visible gap. Each default is read from the
 locale's [message catalogue](./primitives-data#messages) where it has the key,
 and is English where it does not; none of these keys is in the default
@@ -217,7 +225,7 @@ it as a plain number.
 |---|---|---|
 | `gridRowsLeft` | `{n}` shown, `{m}` in all | `3 of 40 rows` |
 | `gridAllRows` | the same, where the two are equal | `All 40 rows` |
-| `gridColumnWidth` | `{column}`, the header; `{n}`, the width | `Name, 180 pixels` |
+| `gridColumnWidth` | `{column}`, the header — a column's or a group's; `{n}`, the width | `Name, 180 pixels` |
 | `gridAscending`, `gridDescending` | `{column}` | `Name ascending`, `Name descending` |
 | `gridThen` | `{terms}`, the ones before; `{term}`, the next | `Department ascending, then Name descending` |
 | `gridSortedBy` | `{terms}`, the whole order | `Sorted by …` |
@@ -229,10 +237,10 @@ your own replaces the whole sentence. A sort's is handed `GridSortDescriptor<T>`
 terms — `{ column, direction }`, the term with its column already looked up —
 so it can read each column's `header` rather than its id.
 
-**`rowHeight` is one number, not a measurement.** Every row is exactly that
-tall, which makes the vertical geometry arithmetic: nothing is measured,
-nothing is observed, and a million rows cost what ten do. The cost is that a row
-cannot grow to fit wrapped text. Variable row height is not built.
+**`rowHeight` is one number unless it has to be more.** One height makes the
+vertical geometry arithmetic: nothing is measured, nothing is observed, and a
+million rows cost what ten do. A function or `'auto'` lets rows differ, at the
+price [Row heights](#row-heights) sets out.
 
 **`getRowKey` defaults to the index**, which is right for a list that only ever
 grows at the end and wrong for nearly everything else on this page. A keyed
@@ -245,6 +253,131 @@ before turning on selection or sorting, and to any grid that can be edited;
 build the key from the row itself:
 the `index` it is handed is the row's place in the sorted, filtered view, not in
 your array, so a key made from it is the default again.
+
+### Row heights
+
+`rowHeight` takes one of three things, and which one decides what the grid has
+to learn about a row before it can place it.
+
+| `rowHeight` | Each row is | Measured | Height stated on the row |
+|---|---|---|---|
+| A number — `32` when left out | That tall | No | Yes |
+| `(row, index) => number` | The height the function gives it | No | Yes |
+| `'auto'` | Whatever it lays out at | Yes, once rendered | No |
+
+**A number is a promise** that every row is that tall. It is the right choice
+whenever it is true, because nothing about a row then costs anything.
+
+**A function declares each row's height**, for heights known before anything
+renders — a group header taller than the rows under it, a row opened to show
+more:
+
+```ts
+table = createGrid<GridGroupedRow<Person>>({
+  // ...the grouped grid from Grouping
+  rowHeight: (row) => (row.kind === 'group' ? 40 : 28),
+});
+```
+
+It is handed the row and its `index` in the sorted, filtered view, and asked
+about every row whenever the view changes — a sort, a filter, a group shut —
+so each height travels with its row: it is the row that is asked, not the
+place. It is asked again whenever anything it read changes, so a height held in
+a signal, such as a set of opened rows, is followed, and of the rows on screen
+only the ones that moved are rebuilt. Each change is one call per row in the
+view, so keep it cheap. The height is stated back on its row, as a single
+height is, because the offsets are only true while each row is the height they
+were worked out from. A change to one is the caller's, and is not corrected for
+as a measurement is below: a declared height that changes above the viewport
+moves the rows on screen by the difference, as a group shut above them does.
+
+**`'auto'` measures**, for heights only layout knows: text that wraps, an edit
+control that grows. Every rendered row is handed to a `ResizeObserver`, found by
+the attribute `rowProps` already puts on it, and nothing tells the row how tall
+to be — so the stylesheet must not either. That attribute,
+`data-volt-virtual-index`, is looked for anywhere in the container, so a list
+virtualized inside a cell, whose items carry it too, has its items measured as
+rows. Render such a list outside the element `containerProps()` goes on. A row not yet rendered is taken to be
+`estimatedRowHeight`; set it near a typical row, since the sizer, and so the
+scrollbar, is built from it. As measurements land, the rows' `start` and
+`size`, the sizer and the window are corrected, and a row is handed out as a
+new object only where a measurement moved it — one that matches the estimate
+rebuilds nothing. Measurements are held by row key, so they travel with their
+rows through a sort, a filter or a collapse; on the default key, which is the
+index, a sort leaves each height on the place rather than the row. A row a
+sort, a filter or a collapse brings into the window is watched as one a scroll
+brings in is, even where the window holds the same places it did.
+
+A row is measured as it is rendered, and with the columns windowed that is
+with the columns on screen: a column whose cells wrap holds its rows open while
+it is in the window, and lets them close when a horizontal scroll takes it out.
+Where that matters, pin the column — a pinned column is always rendered — or
+give it the width its text needs.
+
+A correction never moves what the reader is looking at. A row above the
+viewport that turns out taller pushes the rows under it down, and the scroller
+follows by the same amount, so the rows on screen stay where they were. A
+jump — Ctrl+End, a page key, `scrollToCell` — is aimed with estimates and
+corrected for the few frames it takes the rows it landed on to be measured, so
+the row it was aimed at ends up wholly in view; a scroll of the reader's own in
+that time ends the correcting, as does the time running out, and so does the
+cursor moving on to another row already on screen — the jump's row coming in
+taller would otherwise carry the reader's row off it. After that, a row
+changing size below the top of the viewport scrolls nothing: the rows under it
+move, as they would on any page. The one exception is the row the cursor is
+on, holding focus: pushed past the rows rendered below the viewport, it would
+leave the document and take focus with it, so it is scrolled back into view
+and focused again, as a row a sort moves is. A row the reader scrolled away
+from is left where it is, whatever is measured after. The same holds for a
+declared height that changes.
+
+A row taller than the viewport is never wholly in view, so the cursor arriving
+on one brings it in by its start, where its cells begin, rather than turning the
+scroll to its foot; and while such a row fills the viewport it is left where it
+is, so a reader part way down a long row can move along it without being thrown
+to either end. That holds for heights a function declares as well as measured
+ones; a single `rowHeight` number keeps the scrolling it always had.
+
+An edit control is inside its cell, so it is wherever its row is: a control
+that wraps onto a second line grows the row, the rows below move out of its
+way, and the session stays open with the reader's text and focus where they
+were.
+
+Group headers are rows of the same collection, so either way gives them a
+height of their own: a function can tell `row.kind` apart, and `'auto'`
+measures a header as it measures any row.
+
+Paging follows the heights. Where every row is one height, PageDown and PageUp
+move by the rows on screen, a row cut off at the foot included, as they always
+have. Where heights differ, a count taken on this screen is wrong on the next,
+so a page is the viewport's height in pixels: the cursor goes to the furthest
+row that starts within that distance of the top of the row it is on, down or
+up, and never less than one row. The same rule both ways is what brings a page
+down and a page up back to the row they started from. From the header,
+PageDown goes to the last row the first screen shows; PageUp from the first
+screen goes to the header. A Shift+Page extends a cell range by the same.
+
+### A grid as tall as its rows
+
+`height: 'auto'` writes `height: auto` on the scroller, so it is as tall as its
+sizer — every row — and `maxHeight` writes `max-height`, which caps it. Both are
+written inline, so they win over a stylesheet's bounded height:
+
+```ts
+table = createGrid<Person>({
+  // ...
+  height: 'auto',
+  maxHeight: 480,
+});
+```
+
+The rows are still windowed: the window is whatever the scroller shows. Under
+the cap the scroller is as tall as its rows and every row renders; past it, the
+scroller stops at the cap and scrolls, and a screenful renders. Without
+`maxHeight` every row renders, however many there are — right for twenty rows,
+and not for twenty thousand. Under `rowHeight: 'auto'` the scroller grows as
+rows are measured, and the window follows it. `maxHeight` without `height` caps
+a scroller whose height the stylesheet sets.
 
 ## Columns
 
@@ -262,6 +395,8 @@ interface GridColumn<T> {
   compare?: (a: T, b: T) => number;
   filterValue?: (row: T) => unknown;
   filterable?: boolean;   // default true
+  pin?: GridColumnPin;    // 'start' | 'end' | null, default null
+  group?: GridColumnGroup; // default none
 }
 ```
 
@@ -278,6 +413,8 @@ interface GridColumn<T> {
 | `compare` | A comparator over whole rows, written ascending. Used instead of `sortValue` |
 | `filterValue` | What this column's filter and the quick filter test. Defaults to `value` |
 | `filterable` | `false` refuses a filter on the column and leaves it out of the quick filter. Every column of a [grouped grid](#what-a-layer-above-the-grid-means) says it |
+| `pin` | Hold the column at the inline start or end, outside the horizontal scroll — see [Pinned columns and rows](#pinned-columns-and-rows) |
+| `group` | The innermost group the column sits under, drawn as a header over it — see [Column groups](#column-groups) |
 
 `value` is a function rather than a field name for two reasons: a field name
 reaches one level of a plain object, and this is where a cell's binding gets its
@@ -302,14 +439,19 @@ nothing the grid can see.
 | `rows()` | The rows to render — the window, not the collection |
 | `columns()` | The columns to render — also windowed |
 | `cellValue(row, col)` | What this column shows for this row. Call it inside the cell's own binding |
-| `rowCount()` | Rows after filtering, rendered or not — what `aria-rowcount` is built from |
+| `rowCount()` | Rows after filtering, rendered or not, and any pinned rows — what `aria-rowcount` is built from |
 | `sourceRowCount()` | Rows handed in, before any filter |
 | `columnCount()` | Every column, rendered or not |
+| `headerRows()` | The header's rows, top to bottom: one for each level of [column group](#column-groups), then the columns' own. Just the columns' own where no column names a group |
+| `pinnedTopRows()`, `pinnedBottomRows()` | The rows pinned to each edge — every one, outside the window. See [Pinned columns and rows](#pinned-columns-and-rows) |
 
-A rendered row is a `GridRow<T>`: `index` in the view, `key`, the `item`
-itself, and its `start` and `size` in pixels. A rendered column is a
-`GridColumnView<T>`: `index`, `key`, the `column` definition, `start`, and the
-`width` the geometry is actually using, after any resize and clamp.
+A rendered row is a `GridRow<T>`: `index`, its place in the view after any
+rows pinned above it, `key`, the `item` itself, and its `start` and `size` in
+pixels. A rendered column is a `GridColumnView<T>`: `index`, `key`, the
+`column` definition, `start` from the inline start of its region, the `width`
+the geometry is actually using, after any resize and clamp, and on a pinned
+column `pin`. With nothing pinned there is one region, so `start` is from the
+start of the collection.
 
 Rendered rows are cached by key and handed back as the *same objects* whenever
 their key, item, index and offset have not changed. `:for` writes each item into
@@ -324,14 +466,15 @@ rows that genuinely moved are rebuilt.
 |---|---|---|
 | `gridProps()` | The outer element | `role="grid"`, `aria-rowcount`, `aria-colcount`, `aria-label`, `aria-multiselectable` |
 | `headerProps()` | The header's wrapper, outside the scroller | `role="rowgroup"`, `overflow: hidden` |
-| `headerRowProps()` | The header row | `role="row"`, `aria-rowindex="1"`, the horizontal transform |
-| `headerCellProps(col)` | Each header cell | `role="columnheader"`, `aria-colindex`, `aria-sort`, `tabindex`, width |
-| `resizerProps(col)` | A column's resize handle | `aria-hidden`, `touch-action: none` |
-| `bodyProps()` | The scroller | `role="rowgroup"`, `overflow-anchor: none` |
+| `headerRowProps(row?)` | The header row, or each of `headerRows()` | `role="row"`, `aria-rowindex` — `"1"` for the top row — the horizontal transform — or, where a column is pinned, a margin |
+| `headerCellProps(cell)` | Each header cell: a column from `columns()`, or a cell of a header row | `role="columnheader"`, `aria-colindex`, `aria-sort`, `tabindex`, width, and a pinned column's sticky offset. A group's cell carries `aria-colspan` and no `aria-sort`; a gap is `role="none"` |
+| `resizerProps(cell)` | A column's resize handle, or a group's | `aria-hidden`, `touch-action: none` |
+| `bodyProps()` | The scroller | `role="rowgroup"`, `overflow-anchor: none`, `height` and `max-height` where `height` and `maxHeight` ask for them, and `scroll-padding` as wide as any pinned columns |
 | `sizerProps()` | The empty element sized to the whole collection | `role="none"`, height and width |
-| `containerProps()` | The element holding the rendered window | `role="none"`, the two-axis transform |
-| `rowProps(row)` | Each rendered row | `role="row"`, `aria-rowindex`, `aria-selected`, height |
-| `cellProps(row, col)` | Each rendered cell | `role="gridcell"`, `aria-colindex`, `aria-selected`, `tabindex`, width |
+| `containerProps()` | The element holding the rendered window | `role="none"`, the two-axis transform — or, where a column is pinned, the vertical one and a padding |
+| `footerProps()` | The rowgroup below the scroller holding the rows pinned to the bottom | `role="rowgroup"`, `overflow: hidden` |
+| `rowProps(row)` | Each rendered row | `role="row"`, `aria-rowindex`, `aria-selected`, height — except under `rowHeight: 'auto'`, where the row is measured instead |
+| `cellProps(row, col)` | Each rendered cell | `role="gridcell"`, `aria-colindex`, `aria-selected`, `tabindex`, width, and a pinned column's sticky offset |
 
 Each returns a `GridProps` — attribute name to `GridPropValue`, which is a
 string, a number, a boolean, `undefined` for an attribute left off, or a record
@@ -377,7 +520,10 @@ wiring of its own. A click that ends a resize drag is not taken as a sort.
 | `data-sort-index` | header cell | Its 1-based place in a sort of two or more columns |
 | `data-filtered` | header cell | The column has a filter that runs — an unfinished one, or one held for a column that is not `filterable`, filters nothing and marks nothing |
 | `data-resizing` | resize handle | A drag is in progress |
-| `data-disabled` | resize handle | The column is not resizable |
+| `data-disabled` | resize handle | The column is not resizable; on a group's handle, no column under its cell is |
+| `data-column-group` | header cell | A column group's cell — the group's `id` |
+| `data-column-group-gap` | header cell | The gap on a row of groups over a column no group at that level covers |
+| `data-pinned` | cell, header cell, row | It is pinned: `start` or `end` on a cell, `top` or `bottom` on a row |
 | `data-group`, `data-count` | row, from `grouping.rowProps` | It is a group header; how many rows it holds |
 | `data-depth` | row, from `grouping.rowProps` | Always — how many groups it sits inside |
 | `data-editing` | cell, from `editing.cellProps` | Its edit session is open |
@@ -389,6 +535,7 @@ wiring of its own. A click that ends a resize drag is not taken as a sort.
 |---|---|---|
 | `GRID_CELL_ATTRIBUTE` | `'data-volt-grid-cell'` | On every cell, carrying `row,column` |
 | `GRID_RESIZER_ATTRIBUTE` | `'data-volt-grid-resizer'` | On a resize handle, carrying the column id |
+| `GRID_COLUMN_GROUP_RESIZER_ATTRIBUTE` | `'data-volt-grid-column-group-resizer'` | On a column group's resize handle, carrying the group id |
 | `HEADER_ROW` | `-1` | The row index of the column header |
 | `GRID_GROUP_ATTRIBUTE` | `'data-volt-grid-group'` | On a group header row, carrying its path |
 | `GRID_EDITOR_ATTRIBUTE` | `'data-volt-grid-editor'` | On the control an edit is typed into |
@@ -434,10 +581,11 @@ selection:
 | Arrow keys | One cell along the row, or one row up or down the column |
 | Home, End | First, last cell of the row |
 | Ctrl + Home, Ctrl + End | First cell of the first data row, last cell of the last |
-| PageDown, PageUp | By as many rows as are on screen |
+| PageDown, PageUp | By as many rows as are on screen; where row heights differ, by the viewport's height in pixels |
 | Enter, Space on a header | Sort the column: ascending, descending, none |
 | Shift + Enter or Space on a header | Add the column to the order instead of replacing it |
-| Alt + ArrowRight, ArrowLeft on a header | Widen or narrow the column by `resizeStep` |
+| Alt + ArrowRight, ArrowLeft on a header | Widen or narrow the column by `resizeStep` — on a group's cell, the columns under it |
+| ArrowUp on a column header | To the innermost [column group](#the-keyboard-among-the-groups) over the column, where it has one |
 | Space on a data cell | Toggle the row's selection, where row selection is on |
 | Ctrl + A | Select every row the filter left, in `'multiple'` mode |
 | Shift + Arrow, Home, End, PageUp, PageDown | Extend the cell range, in `'range'` mode |
@@ -462,7 +610,8 @@ exist.
 lands on the column header, which is where `aria-rowindex="1"` says it is; data
 rows are numbered from two. A header a keyboard user cannot reach is a column
 they cannot sort or resize. `HEADER_ROW` is the index it navigates under —
-negative, so every comparison in the keyboard map stays plain arithmetic.
+negative, so every comparison in the keyboard map stays plain arithmetic. Rows
+of [column groups](#column-groups) go above it, and are counted before it.
 
 **There is one tab stop**, and it is on the cursor's cell when that is rendered.
 When the reader has scrolled the cursor out of the window, the tab stop moves to
@@ -842,6 +991,7 @@ construction. `'single'` does not. In `'range'` mode every cell carries
 | Member | Description |
 |---|---|
 | `resizeColumn(id, width)` | Resize from code, clamped to the column's bounds |
+| `resizeGroup(id, width)` | Resize every column under a [column group](#resizing-a-group), the width shared among them in proportion |
 | `columnWidth(id)` | The width, in px, the column with this id is laid out at — rendered or not — or `undefined` where the list does not hold it |
 | `onResizePointerDown(event)` | Starts a drag. Primary button only, one drag at a time |
 
@@ -875,6 +1025,738 @@ arithmetic the geometry uses — the width a resize left, else the declared
 `width`, else 150, held to the column's bounds — so a column the reader resized
 and then scrolled away from still reports the width they left it at. It is what
 the export sizes a worksheet's columns by.
+
+## Pinned columns and rows
+
+A column can be held at the inline start or end, outside the horizontal scroll,
+and rows can be held above and below the scrolling ones, outside the vertical
+scroll — as AG Grid has them.
+
+```ts
+const COLUMNS: GridColumn<Person>[] = [
+  { id: 'name', header: 'Name', value: (p) => p.name, pin: 'start' },
+  { id: 'department', header: 'Department', value: (p) => p.department },
+  { id: 'salary', header: 'Salary', value: (p) => p.salary, width: 120 },
+  { id: 'status', header: 'Status', value: (p) => p.status, pin: 'end' },
+];
+
+table = createGrid<Person>({
+  // ...the elements, the rows and getRowKey, as for any grid
+  columns: () => COLUMNS,
+  // A row of totals, recomputed from the people as they change.
+  pinnedTop: () => [this.totals.get()],
+});
+
+// Later — from a column menu, say:
+this.table.pinColumn('salary', 'end');
+```
+
+| Member | Description |
+|---|---|
+| `pin` on a column | `'start'`, `'end'` or `null` — the model's own pin. Default `null` |
+| `pinColumn(id, side)` | Pin a column to `'start'` or `'end'`, or with `null` unpin it — overruling its own `pin` |
+| `columnPin(id)` | Which edge a column is held at: `'start'`, `'end'`, `null`, or `undefined` for an id the list does not hold |
+| `columnPins` option | A `Signal.State<ReadonlyMap<string, GridColumnPin>>` of the pins `pinColumn` made, by column id. Owned unless supplied |
+| `onColumnPinChange` option | Told the whole map when `pinColumn` changes it |
+| `pinnedTop`, `pinnedBottom` options | `() => readonly T[]` — the rows held above and below the scrolling ones |
+| `pinnedTopRows()`, `pinnedBottomRows()` | Those rows to render: every one, in order |
+| `footerProps()` | The rowgroup below the scroller that holds the rows pinned to the bottom |
+
+A pin made with `pinColumn` overrules the column's own `pin` for as long as the
+grid lives, as a resize overrules `width`, and `null` unpins a column the model
+pins. Within each edge, and among the scrolling columns, the columns keep the
+order you handed them over in. `pinColumn` is silent: a column menu that pins
+says what it did.
+
+### One list, in the order drawn
+
+The columns are one list in the order they are drawn: the start-pinned ones,
+then the scrolling ones, then the end-pinned ones. Every position the grid
+gives or takes counts in it — `columnAt`, `columnIndex`, `aria-colindex`, the
+cursor, a cell range, Home and End, an [export](#exporting) and a
+[copy](#copy-and-paste) — so the column the reader sees third is column three
+to all of them. Pinning a column changes that list, and the grid follows it as
+it follows any new list: the cursor stays on its column, and a range is carried
+where its columns still sit side by side and dropped where they do not.
+
+The rows are one list the same way. The rows pinned to the top are positions
+`0` onwards, the sorted, filtered view comes after them, and the rows pinned to
+the bottom come last. `rowCount()`, `rowAt` and `rowIndex` count in that list,
+and so do `aria-rowcount` and each row's `aria-rowindex`, the cursor and a
+range. ArrowUp from the first scrolling row is the last row pinned above it,
+and goes on up through the others to the header; Ctrl+End is the last row
+pinned to the bottom. With nothing pinned, the list is the view, as it always
+was.
+
+### Rendering them
+
+A pinned column is drawn in the same row as every other cell, held at its edge
+with `position: sticky`. The alternative — three regions, each with rows of its
+own — splits every row into three elements, and a row whose cells live in three
+places is three rows to a screen reader. So `columns()` is every pinned column,
+whatever the window holds, and the scrolling columns the window holds between
+them, and each `GridColumnView` says where it goes:
+
+| Field | Description |
+|---|---|
+| `pin` | `'start'` or `'end'` on a pinned column. Absent on a scrolling one |
+| `start` | The offset from the inline start of the column's own region: of the start-pinned columns, of the scrolling ones, or of the end-pinned ones |
+
+`cellProps` and `headerCellProps` turn that into the sticky style — `position:
+sticky` and `inset-inline-start`, or `inset-inline-end` measured back from the
+end of the end region — and mark the cell `data-pinned`. The insets are logical
+properties, so [right to left](#right-to-left) the browser puts a column pinned
+to `'start'` on the right by itself.
+
+Sticky positioning is worked out from layout and knows nothing of a transform,
+so a horizontal transform anywhere between a pinned cell and the scroller would
+carry the cell off its edge. Where any column is pinned, then,
+`containerProps()` moves the window across with `padding-inline-start` and
+keeps only the vertical half of its translate, and `headerRowProps()` moves the
+header row with `margin-inline-start`. Where nothing is pinned, both keep the
+transforms they always had. `bodyProps()` also gives the scroller
+`scroll-padding-inline-start` and `-end` as wide as the pinned columns, so
+focus the browser moves itself — Tab into the grid — lands clear of them.
+
+Pinned rows are rendered outside the scroller, so a vertical scroll never moves
+them and the row virtualizer never sees them: the top ones after the header row
+in the header's rowgroup, the bottom ones in a rowgroup of their own below the
+scroller. They are rows like any other — spread `rowProps(row)` and
+`cellProps(row, col)` — and `rowProps` moves each one across with the columns,
+as the header row is moved.
+
+```html
+<div class="people" :ref="grid" :spread="table.gridProps()"
+     :keydown="table.onKeyDown($event)"
+     :focusin="table.onFocusIn($event)">
+  <div class="people-header" :spread="table.headerProps()">
+    <div :spread="table.headerRowProps()">
+      <div :for="col in table.columns()" :key="col.key"
+           :spread="table.headerCellProps(col)"
+           :click="table.onHeaderClick($event)">{ col.column.header }
+        <span :spread="table.resizerProps(col)"
+              :pointerdown="table.onResizePointerDown($event)"></span>
+      </div>
+    </div>
+    <div :for="row in table.pinnedTopRows()" :key="row.key" :spread="table.rowProps(row)">
+      <div :for="col in table.columns()" :key="col.key"
+           :spread="table.cellProps(row, col)">{ table.cellValue(row, col) }</div>
+    </div>
+  </div>
+  <div class="people-body" :ref="scroller" :spread="table.bodyProps()">
+    <!-- the sizer, the container and the rows, as before -->
+  </div>
+  <div class="people-footer" :spread="table.footerProps()">
+    <div :for="row in table.pinnedBottomRows()" :key="row.key" :spread="table.rowProps(row)">
+      <div :for="col in table.columns()" :key="col.key"
+           :spread="table.cellProps(row, col)">{ table.cellValue(row, col) }</div>
+    </div>
+  </div>
+</div>
+```
+
+```css
+.people [data-pinned] { z-index: 1; background: var(--surface); }
+.people-body { overflow-y: scroll; }
+.people-header, .people-footer { overflow-y: scroll !important; }
+```
+
+Every line is load-bearing. A pinned cell sits over the scrolling cells that
+pass under it, so it needs a background to hide them and a stacking order above
+them — a header cell positioned for its resize handle is painted in document
+order otherwise, over the pinned one before it. And an end-pinned cell is held
+at the inline end of its own rowgroup: where scrollbars take room, the body's
+scrollport is narrower than the header by the width of its scrollbar, so the
+end-pinned cells of the header and the pinned rows sit a scrollbar's width
+beyond the body's unless all three have the same scrollbar. A track in each,
+always, is what does that — the header's and the footer's empty, beside the
+body's, and `!important` over the `overflow: hidden` their props set inline.
+`scrollbar-gutter: stable` is not enough: Chrome, at least, holds a sticky cell
+over the room it keeps, as though no scrollbar would ever be there.
+
+A pinned row's `GridRow` carries `pin: 'top'` or `'bottom'`, its position as
+`index`, and a `start` from the top of its own edge's rows. It is as tall as
+`rowHeight` makes it: a number, or the function asked of the row with its place
+among its edge's rows. Under `'auto'` it is not measured — it lies in the flow
+of its rowgroup and is whatever height it lays out at — so its `size` is
+`estimatedRowHeight`.
+
+### Scrolling
+
+A key that moves the cursor to a scrolling column scrolls it clear of the
+pinned ones: the visible part of the scrolling region is the band between the
+two pinned edges, and a column scrolled merely into the viewport could be
+underneath one. A move to a pinned column scrolls nothing across, and a move to
+a pinned row nothing down, because each is in view wherever that scroll is —
+and the tab stop stays on it when the scrolling columns or rows it was among
+have scrolled out of the window. A page key counts rows across the pinned ones
+as across any; where rows are of different heights, a page is measured in the
+view — from its first row when the cursor is on a row pinned to the top, and
+from its last when it is on a row pinned to the bottom.
+
+The header and the footer clip their rows and are never scrolled themselves:
+the grid moves their rows. A browser bringing a focused cell into view scrolls
+whatever box clips it, though, and a cell along the header row or a pinned row
+can be rendered past the edge, so the grid puts back any scroll a rowgroup
+outside the scroller is given before it is painted.
+
+### Pinned rows are not data
+
+The rows pinned to an edge are neither sorted nor filtered, and nothing about
+the view moves them. A filter's announcement counts the rows the filter left —
+"3 of 40 rows" — not the pinned ones, and `sourceRowCount()` is still the rows
+handed in. `selectAllRows` selects the rows the filter left; a pinned row is
+selected by a gesture on it, as any row is, where `selectable` allows. It is
+edited, copied, pasted into and undone as any row is, by its position or its
+key: [`createEditHistory`](#undo-and-redo) asks the grid for the rows it pins,
+so its `rows` need hold only the data.
+
+They are keyed by `getRowKey`, handed the row and its place among the rows
+pinned to its edge, so a key made from the index is the same for the first row
+pinned to the top, the first pinned to the bottom and the first of the view.
+Give pinned rows keys of their own that no row of the view has: `rowIndex`
+looks a key up among the rows pinned to the top first, then the view, then the
+rows pinned to the bottom. [`createGridClipboard`](#copy-and-paste) hands its
+`getRowKey` the same place, so a pasted change names its row by the key the
+grid draws it with.
+
+On a grouped grid the rows pinned above the grouping's are not its own: it
+finds a group header by the row a key was pressed in, not by the row's place,
+so Enter and the arrows open and shut a group from its header and nothing from
+a pinned row.
+
+### What it costs
+
+A horizontal scroll hands back every pinned column as the same object, so no
+pinned cell reads its value again, and a vertical scroll touches no pinned row;
+both are asserted by counting accessor runs. The header row's props are
+rewritten on every horizontal scroll, as they always were, and so are each
+pinned row's; with a column pinned, each is moved by a margin rather than a
+transform, which the browser lays out rather than composites. The container's
+padding changes when the window moves by a column, not on every scroll.
+
+A row pinned to the bottom is counted after the view, so a filter that changes
+how many rows the view holds moves it, and its cells read their values again.
+
+A grid with nothing pinned is what it was: the caller's own column list, the
+same transforms, and props byte for byte the same — which a test pins.
+
+### What it does not do
+
+- **No gestures.** There is no drag across a pinned edge and no column menu:
+  `pinColumn` and [`moveColumn`](#gridstatelayer) are the model, and the menu
+  and the drag are yours.
+- **No region edge.** Nothing marks the last start-pinned or first end-pinned
+  column; style `[data-pinned]` to draw one.
+
+## Right to left
+
+The grid lays its columns out from the inline start, whichever way the page
+runs. In a page that runs right to left — `dir="rtl"` on the grid's element or
+anywhere above it, or a stylesheet's `direction: rtl` — column 0 is on the
+right, the window moves leftward as the reader scrolls toward the last column,
+and ArrowRight goes to the cell on the right. There is no option to turn it on:
+the grid asks the browser which way its element is laid out.
+
+| Member | Description |
+|---|---|
+| `direction()` | `'ltr'` or `'rtl'`: which way the grid's element is laid out, as the grid last read it. A signal read, so a template can follow it |
+
+### What turns round, and what does not
+
+What is physical turns round. What is a place in the data does not.
+
+| Turns round | Stays as it is |
+|---|---|
+| The horizontal transform on the container, on every header row, and on each pinned row | Every position: the cursor, a cell range, `columnAt`, `columnIndex`, `aria-colindex` |
+| The arrow keys: ArrowRight is column − 1, ArrowLeft column + 1 | A column's `start`, measured from the inline start — the same numbers both ways |
+| Alt + Arrow on a header: the arrow pointing away from the column widens it | Home and End, which go to the inline start and end — column 0 and the last |
+| A drag of a resize handle, which sits at the column's inline end — right to left, its left edge | The order of an [export](#exporting)'s columns and of a [copy](#copy-and-paste)'s |
+| On a [grouped](#grouping) grid, the arrow pointing into the row opens a group, and the one pointing out shuts it | Every prop a pinned column carries |
+| | Tab and Shift + Tab in an [editing](#editing) grid: the next and previous cell in the order of the data, as Tab goes through any page — right to left, the next is on the left |
+
+ArrowRight goes to the cell on the right because that is what the browser's
+own controls do right to left, and AG Grid with them: an arrow points at the
+screen, not at the data. Every arrow in the [keyboard map](#moving-around) is
+read that way — toward the inline end or the start — before anything acts on
+it, so Shift + ArrowLeft in a right-to-left grid extends a range by the column
+after the cursor, and Shift + Ctrl + ArrowLeft extends it to the last column.
+Home and End name ends, not sides, and do not turn round.
+
+A reader of a right-to-left language usually types on a layout of its script,
+where the key marked A types ש or ش. Ctrl with that key still selects every
+row, as the [undo](#undo-and-redo) and [clipboard](#copy-and-paste) shortcuts
+still hear the keys a Latin layout calls Z and C: a Latin letter decides for
+itself, and a letter of another script by the key it is typed on.
+
+[Pinned columns](#pinned-columns-and-rows) need nothing. Their sticky insets,
+the container's padding and the header row's margin that move a pinned grid are
+logical properties, measured from the inline start already, and the browser
+puts that on the right by itself: a column pinned to `'start'` is held at the
+right edge, with the same props that hold it at the left one left to right.
+
+The scroller's `scrollLeft` runs from 0 down to negative right to left, as
+every current engine reports it. The column axis is a
+[`createVirtualizer`](./primitives-collections#long-lists), which reads the
+distance either way and writes a scroll back in the sign the scroller uses, so a
+key that moves the cursor to a column out of view scrolls it in.
+
+What is copied and exported is the data, in the order of its columns: a range
+from column 0 to column 1 is copied as `column 0 <tab> column 1` whichever side
+of the screen column 0 was drawn on. A spreadsheet or a page that takes it is
+what decides which way to draw it.
+
+The rest of this page is written as a page that runs left to right reads.
+Where it says left or right of a place in the grid — a paste starting at a
+range's top-left corner, say — read the inline start or end: right to left, a
+paste starts at the range's top right.
+
+### The stylesheet
+
+The grid's own styles are either logical or turned round for you; yours have
+to be logical too. Position each resize handle at the inline end of its cell,
+not its right edge, or right to left it sits at the edge the drag does not
+move — a group's handle too, which carries an attribute of its own:
+
+```css
+.people [role='columnheader'] { position: relative; }
+.people [data-volt-grid-resizer],
+.people [data-volt-grid-column-group-resizer] {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;   /* not right: 0 */
+  inline-size: 6px;
+  cursor: col-resize;
+}
+.people [role='gridcell'] { border-inline-end: 1px solid var(--line); }
+.people [data-column='salary'] { text-align: end; }   /* not right */
+```
+
+Anything that places the sizer or the container — a `left: 0` on an absolutely
+positioned container, say — is the same: `inset-inline-start`, never `left`.
+
+### When the direction is read
+
+The answer is the browser's own: the `direction` computed at the grid's
+element. A `dir` attribute is one way a page says it, a stylesheet another, an
+ancestor a third, and the computed value is the only one that hears all of
+them — and it is what the geometry is laid out by. Asking for a computed style
+has the browser bring its styles up to date, so the grid asks in the measure
+lane, beside the reads its axes make there, and only when the answer may have
+changed:
+
+- when the grid's element arrives — or, for a grid built before the page
+  attaches its element, when it is first laid out, since an element out of
+  the document has no style to ask;
+- when a `dir` is written on the grid's element itself;
+- when the direction of the nearest locale changes — a
+  [`createLocaleProvider`](./primitives-data#createlocaleprovider)'s
+  `providerProps` carry its `dir` onto the region it governs, and the grid
+  reads its element again.
+
+Nothing else is heard. A `dir` written on an element above the grid, with no
+locale provider to say so, would need an observer over every element above
+the grid, or over the whole document, woken by every attribute any part of the
+page writes — paid by every grid, for a change a page almost never makes. A
+`direction` that a class or a `style` turns round is not heard either, on the
+grid's element as above it: those attributes change for everything else a page
+styles, and each change would cost a style read. A page that turns its
+direction round in any of those ways mounts the grid again, which reads it
+afresh; one that writes `dir` on the grid's element, or turns it with a locale
+provider's `setDirection`, needs to do nothing.
+
+A browser puts a scroller whose direction turns back at its inline start, and
+the window follows that scroll. A reader on a cell past the first screen would
+be left on nothing as the cell left the document, so the grid scrolls the
+cursor's cell back into view and focuses it again. Focus the reader has taken
+out of the grid stays where they put it, and a grid with nothing focused does
+nothing beyond the scroll the browser made.
+
+Until its element is first measured a grid is `'ltr'`, and that is all a server
+render sees. The first window a server writes is at the inline start, where a
+mirrored transform and an unmirrored one are both `0px`.
+
+### What it costs
+
+The grid reads the computed style once as it mounts and once for each change
+it is told of, never for a scroll or a key, nor for a locale that changes its
+language and not its direction — asserted by counting the reads. A locale that
+governs the grid's own element tells it twice, once by its direction and again
+by the `dir` it writes there, and the grid reads once. It reads the
+direction before its axes first look at the scroller, so mounting right to left
+asks for the scroller's style no more often than mounting left to right.
+The grouping, which opens a group with an arrow, asks the grid it is in for the
+direction rather than the page, so a keypress there reads no style either; and
+a label in a cell marked with a `dir` of its own does not turn those arrows
+against the ones that walk the row.
+
+No cell reads its value more often right to left than left to right, through
+mounting, a scroll across, the keyboard and a scroll down; and a change of
+direction reads no cell's value at all, since nothing but a transform changes.
+Both are asserted by counting accessor runs.
+
+A grid laid out left to right is what it was: the same transforms, the same
+keys, and props byte for byte the same — which a test pins.
+
+### What it does not do
+
+- **No `direction` option.** The grid takes its direction from the page and
+  nowhere else. To lay one grid out right to left in a page that runs left to
+  right, write `dir="rtl"` on its element.
+- **The attribute and the stylesheet must agree.** The scroller's scroll is
+  written by `createVirtualizer`, which takes its direction from the nearest
+  `dir` attribute before any stylesheet, and reads `dir="auto"` as left to
+  right. Where that is not the way the page is laid out — a table a stylesheet
+  keeps `direction: ltr` in a page marked `dir="rtl"`, the other way round, or
+  a `dir="auto"` whose text runs right to left — the grid's transforms follow
+  the layout and a scroll to a column is written the other way, which the
+  browser refuses. A key that moves the cursor to a column out of view then
+  moves the cursor and nothing else: the column is not scrolled in, and focus
+  stays on the cell it left. Say the direction with `dir="rtl"` or `dir="ltr"`
+  on the grid's element or above it — on the grid's own element, where a
+  stylesheet turns it round.
+- **No vertical writing modes.** Rows scroll vertically and columns
+  horizontally; under a `writing-mode` that runs vertically the grid does not
+  turn its axes.
+- **Bidirectional text inside a cell is the page's.** The grid turns its row
+  round, not the text in it. A value that runs the other way — a name in Latin
+  script in a right-to-left grid — wants an element of its own inside the cell,
+  a `<bdi>` or a `<span dir="auto">`, rather than a `dir` on the cell: the
+  cell's own logical borders and padding would turn round with it, out of line
+  with its neighbours'. The grid's arrows follow the grid either way.
+
+## Column groups
+
+A column can name a group, and a group a parent, so that the header has a row
+for each level of group above the columns' own, and a group's heading spans the
+columns under it — as AG Grid's column groups do. Not to be confused with
+[grouping](#grouping), which groups rows.
+
+```ts
+import { Component, Signal } from '@voltdev/core';
+import {
+  createGrid,
+  createGridState,
+  type GridColumn,
+  type GridColumnGroup,
+  type GridHeaderCell,
+  type GridStateLayer,
+} from '@voltdev/grid';
+
+interface Person {
+  id: number;
+  first: string;
+  last: string;
+  title: string;
+  team: string;
+  salary: number;
+  bonus: number;
+  notes: string;
+}
+
+const NAME: GridColumnGroup = { id: 'name', header: 'Name' };
+const WORK: GridColumnGroup = { id: 'work', header: 'Work' };
+const ROLE: GridColumnGroup = { id: 'role', header: 'Role', parent: WORK };
+const PAY: GridColumnGroup = { id: 'pay', header: 'Pay', parent: WORK };
+
+const COLUMNS: GridColumn<Person>[] = [
+  { id: 'first', header: 'First', value: (p) => p.first, group: NAME },
+  { id: 'last', header: 'Last', value: (p) => p.last, group: NAME },
+  { id: 'title', header: 'Title', value: (p) => p.title, group: ROLE },
+  { id: 'team', header: 'Team', value: (p) => p.team, group: ROLE },
+  { id: 'salary', header: 'Salary', value: (p) => p.salary, group: PAY },
+  { id: 'bonus', header: 'Bonus', value: (p) => p.bonus, group: PAY },
+  { id: 'notes', header: 'Notes', value: (p) => p.notes },
+];
+
+@Component({ selector: 'v-people', templateUrl: './people.html' })
+export class People {
+  grid = new Signal.State<Element | null>(null);
+  scroller = new Signal.State<Element | null>(null);
+  container = new Signal.State<Element | null>(null);
+  people = new Signal.State<Person[]>([]);
+
+  // Shutting and moving a group are the view's: they hide and reorder columns.
+  view: GridStateLayer<Person> = createGridState<Person>({
+    grid: () => this.table,
+    columns: () => COLUMNS,
+  });
+
+  table = createGrid<Person>({
+    grid: () => this.grid.get(),
+    scroller: () => this.scroller.get(),
+    container: () => this.container.get(),
+    rows: () => this.people.get(),
+    columns: () => this.view.columns(),
+    onColumnResize: this.view.onColumnResize,
+    getRowKey: (person) => person.id,
+    label: 'People',
+  });
+
+  /** Enter or Space on a group's cell, which the grid leaves to the page. */
+  onHeaderKey(event: KeyboardEvent, cell: GridHeaderCell<Person>): void {
+    if (cell.group === null || (event.key !== 'Enter' && event.key !== ' ')) return;
+    event.preventDefault();
+    if (this.view.isGroupCollapsed(cell.group.id)) this.view.expandGroup(cell.group.id);
+    else this.view.collapseGroup(cell.group.id);
+  }
+}
+```
+
+```text
+ Name           │ Work                              │
+                │ Role            │ Pay             │
+ First │ Last   │ Title  │ Team   │ Salary │ Bonus  │ Notes
+```
+
+A column under fewer groups than the deepest has its groups at the top and a
+gap under the innermost one, down to its own header: there is a gap under Name,
+and two over Notes.
+
+| Member | Description |
+|---|---|
+| `group` on a column | The innermost `GridColumnGroup` it sits under. Default none |
+| `headerRows()` | The header's rows, top to bottom: one for each level of group, the outermost first, then the columns' own |
+| `headerRowProps(row)`, `headerCellProps(cell)`, `resizerProps(cell)` | Each row's, each cell's and each cell's handle's props — a column's, a group's or a gap's |
+| `resizeGroup(id, width)` | Resize every column under a group — see [Resizing a group](#resizing-a-group) |
+| `groupResizeAnnouncement` option | What Alt and an arrow on a group's cell say aloud: `(group, width) => string` |
+| `moveGroup(id, index)`, `collapseGroup(id)`, `expandGroup(id)`, `isGroupCollapsed(id)` | On [`createGridState`](#gridstatelayer) — see [Shutting a group, and keeping one together](#shutting-a-group-and-keeping-one-together) |
+
+```ts
+interface GridColumnGroup {
+  readonly id: string;               // stable: a group is found, moved and shut by it
+  readonly header: string;           // its heading, and its name in announcements
+  readonly parent?: GridColumnGroup; // the group it sits under
+}
+
+interface GridHeaderRow<T> {
+  readonly index: number;            // HEADER_ROW for the columns' own, one less for each row above
+  readonly key: string | number;     // a row of groups by its level, 0 at the top; the columns' own 'columns'
+  readonly cells: readonly GridHeaderCell<T>[];
+}
+
+interface GridHeaderCell<T> {
+  readonly key: string | number;
+  readonly row: number;              // its row's index
+  readonly index: number;            // the first column it spans
+  readonly colspan: number;          // every column it spans, rendered or not
+  readonly start: number;            // where its first rendered column starts
+  readonly width: number;            // the width of the columns under it the window holds
+  readonly pin?: 'start' | 'end';
+  readonly header: string;           // the column's, the group's, or '' for a gap
+  readonly column: GridColumnView<T> | null; // on the columns' own row
+  readonly group: GridColumnGroup | null;    // on a row of groups; null for a gap
+}
+```
+
+**A group is named on its columns, not handed over as a tree.** A tree beside
+the column list would be a second list to keep in step with the first, and
+every move, hide and pin would have to be made to both. Named on the column, a
+group goes where its columns go, and is drawn over each run of them that sits
+side by side. Groups are known by `id`, so a column list handed over again with
+fresh group objects names the same groups; a group whose parent chain comes
+back on itself stops at the first group it meets twice.
+
+### Rendering the header rows
+
+The header renders `headerRows()` rather than one row from `columns()`, and
+each row its `cells`:
+
+```html
+<div :spread="table.headerProps()">
+  <div :for="hr in table.headerRows()" :key="hr.key" :spread="table.headerRowProps(hr)">
+    <div :for="cell in hr.cells" :key="cell.key"
+         :spread="table.headerCellProps(cell)"
+         :click="table.onHeaderClick($event)"
+         :keydown="onHeaderKey($event, cell)">{ cell.header }
+      <span :spread="table.resizerProps(cell)"
+            :pointerdown="table.onResizePointerDown($event)"></span>
+    </div>
+  </div>
+</div>
+```
+
+The bottom row's cells are the columns `columns()` hands out, one each, so
+`cell.column` is the `GridColumnView` the body's cells use. A row of groups
+holds a cell over each run of columns under one group, and a gap over each run
+under none; render the gaps too, since they hold the groups' places in the row.
+Every cell is only over columns the window holds, and is drawn as wide as
+those: a group scrolled half out of the window is drawn over the half still in
+it, so every header row lines up with the body by the one transform the
+columns' own row always had, which `headerRowProps` puts on each. The page does
+no arithmetic of its own.
+
+A grid whose columns name no group hands out one header row, its cells the
+columns, and the props of each are byte for byte those `headerCellProps(col)`
+and `resizerProps(col)` give the same column — so the template above renders
+such a grid's header exactly as the one in [Setting one up](#setting-one-up)
+does.
+
+### What a screen reader is told
+
+The rows of groups are rows of the grid. A group's cell is a `columnheader`
+with `aria-colspan` as wide as its run, rendered or not, and an `aria-colindex`
+of its first column, because that is how a reader learns which columns a
+heading is over. A gap is `role="none"`: an empty header would be read out as
+one. A row of groups the window holds nothing but gaps of — scrolled along to
+columns under no group at that level — is `role="none"` too, with no
+`aria-rowindex`, since a row has to hold a cell; it is still drawn, its gaps
+keeping the rows above and below it in line, and still counted, as a row the
+window has left is.
+
+The rows are counted, or the row a reader is told they are on would not be the
+row they are on. `aria-rowcount` is the rows the filter left, plus any pinned
+rows, plus one for the columns' header row, plus one for each row of groups.
+The top row of groups is `aria-rowindex="1"`, the columns' own is one more than
+the number of rows of groups, and every row after them counts on from there —
+under two rows of groups the columns' header is row three and the first data row
+row four. `aria-colcount` is the columns, as it always was.
+
+### The keyboard among the groups
+
+A position on a row of groups is above `HEADER_ROW`, one less for each row up:
+under two rows of groups the top row is `HEADER_ROW - 2`. It names the group's
+first column, where its one cell carries it, so `activeCell()` on a group is
+always its first column, and `focusCell` puts a position anywhere inside a
+group there, a position over a gap on the columns' header below, and one above
+the top row on the top row.
+
+| Keys | On a row of groups |
+|---|---|
+| ArrowUp on a column header | To the innermost group over the column, past any gap; nowhere where it has none |
+| ArrowUp | To the group above, where there is one |
+| ArrowDown | To the group under the first column, or past a gap to that column's header |
+| ArrowLeft, ArrowRight | To the next group along the row, past the gaps; nowhere at either end |
+| Home, End | To the first, last group on the row |
+| PageDown | As a PageDown from the columns' header |
+| PageUp | Nowhere: a page up from the data stops at the columns' header, and never lands among the groups |
+| Alt + ArrowLeft, ArrowRight | Narrow or widen the part of the group under the cursor, and say its new width |
+| Enter, Space | Not consumed: a group neither sorts nor selects, and shutting one is the page's |
+
+Ctrl + Home and Ctrl + End go where they go from any cell, and Shift is the
+page's, as on the columns' header. A click on a group's cell sorts nothing;
+sorting and filtering are per column, and a group has neither.
+
+The tab stop is on the group's cell while the window draws any of the group. A
+group the window has scrolled away from altogether has no cell to hold it, and
+the tab stop goes to the columns' header below, without moving the cursor.
+
+The cursor stays on its group when the columns change, found again by id over
+the column it follows: a group moved, or a row of groups added or taken away
+above or below it — by a column hidden or shown, say — moves the row it is
+drawn on, and the cursor goes with it, in one move, never by way of whatever
+was drawn where it had been. Where the group is no longer over that column —
+every column of it hidden, say — the cursor goes down to the header of the
+column it follows, which is the nearest one left where its own has gone. A
+column pinned or let go at either end of the list moves no column, but cuts
+its group's run at the pinned edge or joins it up again: the cursor stays on
+the part it was on, or goes to the part that one was joined into, and focus
+goes with it.
+
+Focus that follows a group the reader can still see any of moves onto its cell
+where the window draws it, and the window stays where the reader scrolled it;
+a group followed out of sight is scrolled into view, as a column is.
+
+### Resizing a group
+
+`resizeGroup(id, width)` shares the width among every column under the group, at
+any depth, in proportion to the widths they have now — or evenly, where none of
+them has any width to be in proportion to. A column marked
+`resizable: false` keeps its width; each of the others is held to its
+`minWidth` and `maxWidth`, and what a bound refuses one column is shared among
+the rest. The pixels rounding leaves over go one each to the columns with the
+most of a pixel left, the first in line where they tie, so the columns add up to
+the width asked for wherever their bounds allow. `onColumnResize` hears each
+column that changed, so a [saved view](#widths) keeps every width.
+
+The handle on a group's cell drags the same way, shared from the widths the
+drag started at — so a drag that comes back comes back to where it began — and
+Escape puts every column back. Alt and an arrow on a group's cell resize by
+`resizeStep` and say the new width, `'Work, 480 pixels'` by default from the
+`gridColumnWidth` key, or what `groupResizeAnnouncement` says. Both resize the
+columns under the cell they start on, which is the whole group unless it has
+been parted. The columns a drag takes hold of are held by id, so a list
+reordered under the drag keeps resizing them. A group's handle is
+`data-disabled` where no column under its cell can be resized.
+
+### Pins, reorders and parted groups
+
+A cell can only span columns that sit next to each other, so a group whose
+columns a pin or a reorder has parted is drawn once over each part. A run is
+also cut at a pinned edge — the pinned part is held there with its columns and
+the rest scrolls — and wherever the run above it is cut, so no group is drawn
+wider than the group it is in. Each part is a cell of its own, keyed apart,
+with its own `colspan`, and a pinned part carries `pin` and the same sticky
+offset as the columns under it. A drag or Alt and an arrow on a part resize
+that part; `resizeGroup` resizes the whole group.
+
+### Shutting a group, and keeping one together
+
+These are on [`createGridState`](#saving-and-restoring-a-view), because hiding
+and ordering columns is: the grid draws the list it is handed.
+
+`collapseGroup(id)` shuts a group to its first column: every other column under
+it is hidden, as `setColumnHidden` hides one, and the first is shown. The group's
+cell stays, over the one column. That is everything the saved state needs to
+say about it — the columns it hid — so there is no field for it and no new
+version for older code to refuse; a restored state shuts the group again, and
+`isGroupCollapsed(id)` is true wherever the first column is shown and every
+other hidden. `expandGroup(id)` shows every column under the group, including
+any hidden one at a time, since the saved state cannot tell those apart from
+the ones the shut group hid. A group of one column, or one no column names, is
+never shut.
+
+`moveColumn` keeps every group whole. A column in a group moves only among the
+columns of its innermost group, and no column is put between two columns of a
+group it is not in: a place that would part a group is moved to the nearest
+place that does not, the side the column came from where two are as near.
+`moveGroup(id, index)` moves every column under a group, in order, so that its
+first is at `index` among the columns outside it — inside the group it is part
+of, and never inside another. Both count the hidden columns, as `moveColumn`
+always has, so a shut group opens where it was; and both pin by the region the
+place is in, `moveGroup` pinning or unpinning every column of the group. With
+no group named, `moveColumn` moves a column anywhere, as it always did.
+
+Among the columns of a group means beside one of them in the region the moved
+columns land in. A group a pin has parted has a gap between its parts — the
+place straight after the pinned columns is the first among the scrolling ones,
+under some other group — and a column dropped there would be a part of its
+own, so it goes to the nearest place beside its group instead: before the
+pinned part, pinned with it, or beside the scrolling part. A move to where a
+column already is never moves it.
+
+### What it costs
+
+Groups are worked out from the column list alone: no row is read, and nothing
+about the groups is asked of the pins or the widths where no column names one.
+A grouped grid reads each cell's value exactly as often, and in the same order,
+as the same grid without groups — mounting, moving among the groups, scrolling
+both ways, resizing, sorting, filtering and editing a value — which a test
+asserts by counting accessor runs. A vertical scroll hands back the same header
+rows and cells; a horizontal one hands back every cell whose span, place and
+drawn width it left alone, and a new object only for the cells it changed. A
+change to how many rows of groups there are renumbers every rendered row.
+
+A grid whose columns name no group is what it was: the same header row, the
+same props byte for byte, the same counts and the same accessor runs. The tests
+that pinned it before groups pin it still, unchanged, and others compare the
+header drawn from `headerRows()` with the one drawn from `columns()`.
+
+### What it does not do
+
+- **No control to shut a group.** `collapseGroup` and `expandGroup` are the
+  model; the button, or the Enter and Space the grid leaves on a group's cell,
+  is yours, as in the example above.
+- **No group headings in an export.** The CSV and the workbook write the
+  columns' own header row and no row of groups above it. A copy writes no
+  header row at all, as it never has.
+- **No drag to reorder.** `moveGroup` and `moveColumn` are the model, and the
+  drag is yours.
+- **Shut is the first column.** There is no column that shows only while its
+  group is open or only while it is shut.
+- **No heading held in view.** A group scrolled partly out of the viewport is
+  drawn over the part the window holds, and its text sits at that cell's start,
+  which may be off screen.
 
 ## Grouping
 
@@ -2666,6 +3548,7 @@ import {
   GRID_STATE_VERSION,
   createGrid,
   createGridState,
+  type GridColumnPin,
   type GridFilter,
   type GridSort,
   type GridStateLayer,
@@ -2693,6 +3576,7 @@ export class People {
   sort = new Signal.State<readonly GridSort[]>([]);
   filters = new Signal.State<ReadonlyMap<string, GridFilter>>(new Map());
   quickFilter = new Signal.State('');
+  columnPins = new Signal.State<ReadonlyMap<string, GridColumnPin>>(new Map());
 
   // Typed, because the view and the grid each read the other.
   view: GridStateLayer<Person> = createGridState<Person>({
@@ -2701,6 +3585,7 @@ export class People {
     sort: this.sort,
     filters: this.filters,
     quickFilter: this.quickFilter,
+    columnPins: this.columnPins,
   });
 
   table = createGrid<Person>({
@@ -2713,6 +3598,7 @@ export class People {
     sort: this.sort,
     filters: this.filters,
     quickFilter: this.quickFilter,
+    columnPins: this.columnPins,
     onColumnResize: this.view.onColumnResize,
     label: 'People',
   });
@@ -2846,6 +3732,7 @@ table = createGrid<GridGroupedRow<Person>>({
 | `columns` | required | Every column, in its default order, hidden or not — the list a grid would be given if nothing were arranged |
 | `order` | owned | A `Signal.State<readonly string[]>` of column ids in the reader's order |
 | `hidden` | owned | A `Signal.State<ReadonlySet<string>>` of the hidden columns' ids |
+| `columnPins` | owned | The pins signal the grid is handed as its own `columnPins` — see [Pins](#pins) |
 | `sort` | not saved | The sort signal the grid is handed |
 | `filters` | not saved | The filters signal — the grid's, or on a grouped grid the grouping's |
 | `quickFilter` | not saved | The quick-filter signal, from the same place |
@@ -2875,10 +3762,14 @@ list its id at both levels and pick each level's spec by its position.
 | Member | Description |
 |---|---|
 | `columns()` | The columns to render: the reader's order, no hidden ones, restored widths in place. For the grid's `columns`, or the grouping's |
-| `allColumns()` | Every column in the reader's order, hidden ones included — what a column chooser lists |
+| `allColumns()` | Every column in the reader's order, hidden ones included — what a column chooser lists. Start-pinned first and end-pinned last, as the grid draws them |
 | `isColumnHidden(id)` | Whether a column is hidden |
 | `setColumnHidden(id, hidden)` | Hide or show one. An id not in `columns` is ignored |
-| `moveColumn(id, index)` | Move one to a place in `allColumns()`, clamped to the ends |
+| `moveColumn(id, index)` | Move one to a place in `allColumns()`, clamped to the ends. A place in a pinned region pins it there; a place among the scrolling columns unpins it. A column in a [group](#column-groups) moves only within it, and none is put inside a group it is not in |
+| `moveGroup(id, index)` | Move every column under a group, in order, so its first is at a place in `allColumns()` counted among the columns outside it — kept inside the group it is part of and out of any other, pinning as `moveColumn` does |
+| `collapseGroup(id)` | Shut a group to its first column: hide every other column under it and show the first |
+| `expandGroup(id)` | Open a group: show every column under it |
+| `isGroupCollapsed(id)` | Whether a group is shut: its first column shown and every other hidden |
 | `onColumnResize` | For the grid's `onColumnResize`. How a width the reader chose reaches the state |
 | `state()` | The arrangement now, as a `GridState`. A signal: read it in an effect to persist it |
 | `apply(state)` | Restore one. Returns a `GridStateApplyResult` |
@@ -2892,6 +3783,17 @@ sorted grid re-sort every row. With nothing arranged it is your own array.
 keeps its place: hide Team, move Notes to the front, show Team, and Team is back
 where it was. A drag across the visible headers has to turn its drop position
 into a place in `allColumns()`.
+
+`allColumns()` is in the order the grid draws, so a place in it is a place the
+reader sees, and moving a column across a pinned edge changes its pin. Dropped
+among the start-pinned columns, it is pinned to the start; dropped among the
+scrolling ones, it is unpinned; dropped among the end-pinned ones, it is pinned
+to the end. Anything else would draw the column somewhere other than where it
+was dropped. A place on the boundary between two regions — straight after the
+last start-pinned column — is in both, and the column keeps whichever it was
+in, so moving a column to the front of a grid that pins nothing at the start
+pins nothing. The pin goes into `columnPins`, where the grid and `state()` read
+it.
 
 `state()` is a new object only when the arrangement changed. A signal written
 with an equal value, a column list handed over again, a row selected, a cell
@@ -2915,16 +3817,18 @@ interface GridColumnState {
   readonly id: string;
   readonly width?: number;                             // only where the reader resized it
   readonly hidden?: true;                              // only where the reader hid it
+  readonly pin?: GridColumnPin;                        // only where the reader pinned or unpinned it
 }
 ```
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "columns": [
     { "id": "salary" },
     { "id": "name", "width": 180 },
     { "id": "department", "hidden": true },
+    { "id": "status", "pin": "end" },
     { "id": "notes" }
   ],
   "sort": [{ "columnId": "salary", "direction": "descending" }],
@@ -3001,6 +3905,12 @@ broken page. So nothing it is handed throws:
   sorted by date, with its notes column hidden, resets to that and not to an
   unsorted grid showing everything.
 
+**It reads the past as the past said it.** Version 2 added pins, and version 1
+could not say a column was pinned: a version-1 state is read as one that pins
+nothing — any `pin` in one was put there by hand — and restores every column
+unpinned but for its own `pin`. That is the one migration, and it is all
+`apply` does differently by version; every other piece is read alike.
+
 **It refuses the future.** A state written by a newer version than this one
 reads — `GRID_STATE_VERSION` — is refused whole, and nothing is written. This
 code cannot know what the fields it does not recognise meant, and restoring the
@@ -3051,6 +3961,21 @@ width. The state keeps the number it was given until the reader resizes the
 column again, so a width saved before a column's `minWidth` was raised reads as
 the old number while the grid shows the new bound.
 
+### Pins
+
+Pins are held by the grid's `columnPins` signal, and saved by sharing it: hand
+the grid and this layer the same one, as the example above does, and a pin
+made with the grid's `pinColumn` is in the next `state()`, and a restore pins
+the grid. A column's state carries `pin` only where the reader pinned it, or
+unpinned a column whose own `pin` is set — `null` — so a column whose own `pin`
+changes in a later release is held where that release says for every reader
+who never touched it.
+
+Each pin is also baked into the column `columns()` hands out, as a restored
+width is, so a grid that was not handed the signal still draws what was
+restored or moved. It cannot save a pin made at the grid, though, which writes
+the grid's own signal: share it.
+
 ### Hidden columns
 
 A hidden column is out of the list the grid is given, and the grid sorts,
@@ -3074,9 +3999,6 @@ asserted by counting accessor runs.
 
 ### What it does not do
 
-- **No pinning.** The grid has no pinned columns yet. When it does, they join
-  the saved state under a new version, which is what the version is for: this
-  version refuses a state that pins, rather than restoring it unpinned.
 - **No gestures for arranging.** There is no header drag to reorder and no
   column menu: `moveColumn` and `setColumnHidden` are the model, and the
   chooser, the drag and the menu are yours.
@@ -3085,9 +4007,9 @@ asserted by counting accessor runs.
   goes for the debounce.
 - **No row selection, cursor, cell range or scroll position**, for the reasons
   under [The saved state](#the-saved-state).
-- **No migration of older versions.** There is one version so far. When there
-  is a second, a version-1 state is read as version 1; a state newer than the
-  code is refused, never guessed at.
+- **No migration but one.** A version-1 state is read as pinning nothing, as
+  under [Restoring](#restoring); a state newer than the code is refused, never
+  guessed at.
 - **No partial restore.** `apply` restores the whole arrangement, putting back
   to default whatever the state leaves out. To restore some pieces and keep the
   rest as they are, fill the rest in from `state()`:
@@ -3097,10 +4019,7 @@ asserted by counting accessor runs.
 
 On the roadmap, and not started:
 
-- **Rendering** — variable row height, auto-height, pinned rows and columns,
-  right-to-left. The grid composes its own transforms and lays columns out left
-  to right only, and ArrowRight is column + 1 whatever the page's direction.
-- **Columns** — reorder, hide, auto-size, column groups, multi-row headers.
+- **Columns** — reorder, hide, auto-size.
 - **Data** — a date filter type, an external filter, pivoting, tree data,
   master/detail.
 - **Editing** — typed editors, full-row editing, fill handle.

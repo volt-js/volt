@@ -331,7 +331,8 @@ export interface GridClipboard<T> {
   copy(): Promise<GridCopyResult | null>;
   /**
    * Read the clipboard and lay it over the grid from the cursor — or from the
-   * top-left corner of the cell range, where there is one.
+   * cell range's top corner at the inline start, where there is one: its top
+   * left, left to right, and its top right, right to left.
    *
    * Resolves to what happened, or to null where there is nowhere to paste: the
    * cursor on the column header, a grid with no rows, or an editor open.
@@ -387,7 +388,15 @@ export function createGridClipboard<T>(options: GridClipboardOptions<T>): GridCl
   }
 
   const grid = (): Grid<T> | null => options.grid() ?? null;
-  const rowKeyOf = (row: T, index: number): GridRowKey => options.getRowKey?.(row, index) ?? index;
+  /**
+   * The key the grid draws the row at a position with. `getRowKey` is handed
+   * the row's place in its own list — the view, or the rows pinned to its
+   * edge — and a position counts every row drawn above it, pinned or not.
+   */
+  const rowKeyAt = (table: Grid<T>, row: T, position: number): GridRowKey => {
+    const index = placeInList(table, position);
+    return options.getRowKey?.(row, index) ?? index;
+  };
 
   const editorOpen = (): boolean => untrack(() => options.editing?.()?.session() ?? null) !== null;
 
@@ -479,11 +488,12 @@ export function createGridClipboard<T>(options: GridClipboardOptions<T>): GridCl
    * The cell a paste starts from, named by what finds it again — or null where
    * there is nowhere to paste.
    *
-   * The top-left corner of the range rather than the cursor wherever there is
-   * a range, because the cursor sits at whichever corner the range was dragged
-   * to — and a paste that landed somewhere different depending on which way
-   * the reader had selected would be a paste nobody could aim. A column
-   * `columns` does not define has no id to be found again by, and is nowhere.
+   * The range's top corner at the inline start rather than the cursor wherever
+   * there is a range, because the cursor sits at whichever corner the range
+   * was dragged to — and a paste that landed somewhere different depending on
+   * which way the reader had selected would be a paste nobody could aim. A
+   * column `columns` does not define has no id to be found again by, and is
+   * nowhere.
    */
   const aimAt = (
     table: Grid<T>,
@@ -496,7 +506,7 @@ export function createGridClipboard<T>(options: GridClipboardOptions<T>): GridCl
     const column = columns[origin.column];
     if (column === undefined) return null;
     const item = table.rowAt(origin.row)!;
-    return { item, rowKey: rowKeyOf(item, origin.row), row: origin.row, columnId: column.id };
+    return { item, rowKey: rowKeyAt(table, item, origin.row), row: origin.row, columnId: column.id };
   };
 
   /**
@@ -517,7 +527,7 @@ export function createGridClipboard<T>(options: GridClipboardOptions<T>): GridCl
     if (row < 0) return null;
     const item = table.rowAt(row)!;
     const same =
-      options.getRowKey === undefined ? item === aim.item : rowKeyOf(item, row) === aim.rowKey;
+      options.getRowKey === undefined ? item === aim.item : rowKeyAt(table, item, row) === aim.rowKey;
     if (!same) return null;
     const column = table.columnIndex(aim.columnId);
     if (column < 0) return null;
@@ -564,7 +574,7 @@ export function createGridClipboard<T>(options: GridClipboardOptions<T>): GridCl
       }
       width = Math.max(width, texts.length);
       const item = table.rowAt(row)!;
-      const rowKey = rowKeyOf(item, row);
+      const rowKey = rowKeyAt(table, item, row);
 
       for (let dx = 0; dx < texts.length; dx++) {
         const index = origin.column + dx;
@@ -748,6 +758,18 @@ export function createGridClipboard<T>(options: GridClipboardOptions<T>): GridCl
       return true;
     },
   };
+}
+
+/**
+ * Where the row at a position sits in its own list: among the rows pinned
+ * above the view, in the view, or among the rows pinned below it. In a grid
+ * that pins no rows, the position itself.
+ */
+function placeInList<T>(table: Grid<T>, position: number): number {
+  const top = table.pinnedTopRows().length;
+  if (position < top) return position;
+  const view = table.rowCount() - top - table.pinnedBottomRows().length;
+  return position - top < view ? position - top : position - top - view;
 }
 
 // --- The system clipboard ----------------------------------------------------

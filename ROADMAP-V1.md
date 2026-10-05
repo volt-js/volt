@@ -339,9 +339,16 @@ under mutation: defeating the reuse fails exactly those three tests.
 Built since, as layers over the grid rather than options of it: grouping with
 aggregates (`createGrouping`), cell editing (`createCellEditing`), export,
 the clipboard, undo and redo, and a saved view (`createGridState`), each with
-its own suite. Still untouched: pivoting, tree data, master/detail, typed
-editors and full-row editing, pinning, variable row height, RTL, drag and drop,
-and any data source but the client-side one. Known
+its own suite. Built into the grid itself since: pinned columns at either inline
+edge and pinned rows at the top and bottom, held in their row by sticky
+positioning so a screen reader still hears one row; variable row height,
+declared per row or measured (`rowHeight: 'auto'`), and a grid as tall as its
+rows up to a `maxHeight`; column groups, with a header row per level, a group
+collapsed to its first column and moved whole; and right to left, read from
+the computed direction, with transforms, pointer distances and the arrows
+mirrored. Still untouched: pivoting, tree data, master/detail, typed editors
+and full-row editing, drag and drop, and any data source but the client-side
+one. Known
 footguns rather than guards: `getRowKey` defaults to the index, and a selection
 held by an index cannot survive a sort — documented, with a test pinning the
 degraded behaviour. `aria-sort` is set on every sorted column, which ARIA says

@@ -83,6 +83,23 @@
  *   [role='row'] { display: flex; }
  *   [role='gridcell'], [role='columnheader'] { box-sizing: border-box; flex: none; }
  *
+ * **Rows may each be a height of their own**, declared by a function of the
+ * row or measured from the page, and the grid keeps no geometry of its own for
+ * either: the row virtualizer already holds sizes by key in a tree, measures
+ * what it renders, corrects as measurements land, and holds the view still
+ * while it does. What the grid owns is the choosing. A declared height is
+ * asked of the row at each place in the view, never of the index, so a sort
+ * carries heights with the rows; it is stated back on the row, as a single
+ * height is, since a declared height is not an estimate and nothing may
+ * overrule it. A measured row is stated nothing, so it can be the height it
+ * lays out at — and that is the one place where the promise above is the
+ * page's rather than the grid's. The virtualizer looks for rows to measure
+ * only when its window moves, and a sort can put other rows in a window that
+ * did not, so the grid has it look again then. A row holding focus that rows
+ * growing above it push out of the window is brought back, as one a sort
+ * moves is. A grid of one height takes none of these paths: its geometry, its
+ * props and its paging are what they were.
+ *
  * The keyboard map, which is the WAI-ARIA grid pattern:
  *
  *   ArrowRight, ArrowLeft      next, previous cell in the row
@@ -107,6 +124,23 @@
  * element is focused once the window has rendered it. That is the same
  * divergence `createListbox` documents, for the same reason, and it is the
  * only part of the primitives family a grid cannot reuse as it stands.
+ *
+ * **Right to left, the row runs from the right, and the data does not turn
+ * round.** Column 0 is at the inline start whichever way the page runs, and
+ * every position here — the cursor, a range, a column's `start`, a copy, an
+ * export — is a place in the data. What turns round is what is physical: the
+ * transforms that move the header's rows, a pinned row and the window, which
+ * right to left carry them leftward; a drag's `clientX`, which grows to the
+ * right, into a column whose handle is at its left edge; and the arrows, so
+ * ArrowRight goes to the cell on the right, column − 1, as it does in the
+ * browser's own controls. The map above is written as it reads left to right,
+ * and every arrow in it is read toward the inline end or the start before
+ * anything acts on it. The pinned columns' insets, and the margin and padding
+ * a pinned grid moves by, are logical properties: the browser swaps their
+ * sides by itself. The direction is the one the browser computes at the grid's
+ * element, read in the measure lane — `direction.ts` says when, what it does
+ * not hear, and how a layer over the grid asks for it. Left to right, every
+ * one of those paths hands back what it always did.
  *
  * **The header row is row one, and it is navigable.** ArrowUp from the first
  * data row lands on the column header, which is where `aria-rowindex="1"` says
@@ -162,6 +196,59 @@
  * covered move. A change to the columns alone carries it, when the columns it
  * covered still sit side by side in the order they were — the same rectangle,
  * somewhere else — and drops it when they do not.
+ *
+ * **A pinned column is drawn in its row, held at the edge by `position:
+ * sticky`.** Three regions — a start, a scrolling and an end container, each
+ * with its own rows — would split every row into three elements, and a row
+ * whose cells live in three places is three rows to a screen reader. So a
+ * pinned column stays in the one row, and the grid hands it the sticky offset
+ * that holds it: from the inline start of the start-pinned columns, or from the
+ * inline end of the end-pinned ones, which is what `GridColumnView.start` says
+ * along with the region. Sticky positioning is worked out from layout and
+ * knows nothing of a transform, so a horizontal transform anywhere between a
+ * pinned cell and the scroller would carry the cell off its edge. Where any
+ * column is pinned, then, the window is moved across by the container's
+ * padding, and the header row by its margin; where none is, both keep the
+ * transforms they always had.
+ *
+ * **The columns are one list in the order they are drawn,** start-pinned,
+ * scrolling, end-pinned, and every position counts in it — the cursor, a
+ * range, `columnAt`, an export, a copy. Pinned columns are outside the
+ * scrolling window, never windowed away, and a scroll to a scrolling column
+ * stops short of the pinned ones rather than leaving it underneath them.
+ *
+ * **Pinned rows are outside the scroller,** in the header's rowgroup and a
+ * footer's, so a vertical scroll never moves them and the row virtualizer
+ * never sees them. They are counted in the same one list as the columns are:
+ * the rows pinned to the top from position 0, the view after them, the rows
+ * pinned to the bottom last — so ArrowUp from the first scrolling row is the
+ * pinned row above it, and a position past the pinned rows is turned into the
+ * row axis's own index wherever the axis is asked.
+ *
+ * **A column group is named on its columns, not handed over as a tree.** A
+ * tree beside the column list would be a second list to keep in step with the
+ * first, and every move, hide and pin would have to be made to both. Named on
+ * the column, a group goes where its columns go, and is drawn over each run of
+ * them that sits side by side — once over each part where a pin or a reorder
+ * has parted them, since a cell can only span columns that are next to each
+ * other. `headerRows()` hands out a row for each level of group above the
+ * columns' own, each cell with the columns it spans, so the page draws what it
+ * is given and does no arithmetic of its own; a cell over a run the window
+ * holds part of is drawn as wide as that part, which keeps every header row in
+ * line with the columns by the same transform.
+ *
+ * The rows of groups are rows of the grid, to a screen reader as to the
+ * keyboard. A group's cell is a `columnheader` with `aria-colspan`, numbered by
+ * its first column, because that is how a reader learns which columns a
+ * heading is over; a column under no group at some level has a gap there that
+ * is no cell at all, since an empty header would be read out as one, and a row
+ * the window holds only gaps of is no row, since a row must hold a cell. The rows
+ * are counted in `aria-rowcount` and number every row after them, or the row a
+ * reader is told they are on would not be the row they are on. A position on a
+ * row of groups is above `HEADER_ROW`, one less for each level up, and names
+ * the group's first column, where its one cell carries it. A grid whose columns
+ * name no group has the one header row it always had, and its props, its counts
+ * and its keyboard are what they were.
  */
 
 import { Signal, effect, onCleanup } from '@voltdev/core';
@@ -169,9 +256,11 @@ import {
   announce,
   createVirtualizer,
   useLocale,
+  type Direction,
   type Locale,
   type MessageValues,
   type VirtualOverscan,
+  type Virtualizer,
 } from '@voltdev/primitives';
 import {
   nextDirection,
@@ -198,6 +287,7 @@ import {
   type GridRowKey,
   type GridRowSelectionMode,
 } from './selection.js';
+import { inlineKey, watchDirection } from './direction.js';
 
 // The proposal's own name for reading without subscribing; Volt adds no second
 // spelling for it.
@@ -218,6 +308,15 @@ export const GRID_CELL_ATTRIBUTE = 'data-volt-grid-cell';
 export const GRID_RESIZER_ATTRIBUTE = 'data-volt-grid-resizer';
 
 /**
+ * Marks a column group's resize handle, carrying the group's id.
+ *
+ * An attribute of its own rather than `GRID_RESIZER_ATTRIBUTE`, which carries a
+ * column id: a group and a column may share an id, and a handle naming one
+ * must never be read as naming the other.
+ */
+export const GRID_COLUMN_GROUP_RESIZER_ATTRIBUTE = 'data-volt-grid-column-group-resizer';
+
+/**
  * The row index the column header navigates under.
  *
  * Data rows are 0-based, so the header needs a row of its own that is not one
@@ -227,7 +326,7 @@ export const GRID_RESIZER_ATTRIBUTE = 'data-volt-grid-resizer';
  */
 export const HEADER_ROW = -1;
 
-/** Row height when none is given, in px. */
+/** Row height when none is given, and the estimate for a row not yet measured, in px. */
 const DEFAULT_ROW_HEIGHT = 32;
 /** Column width for a column that declares none, in px. */
 const DEFAULT_COLUMN_WIDTH = 150;
@@ -321,7 +420,52 @@ export interface GridColumn<T> {
    * instead, before it groups.
    */
   filterable?: boolean;
+  /**
+   * Hold the column at an inline edge, outside the horizontal scroll. Default
+   * null: it scrolls.
+   *
+   * The model's own pin, which `pinColumn` overrules for as long as the grid
+   * lives — as a resize overrules `width` — so a column that starts pinned
+   * can be unpinned and one that does not can be pinned.
+   */
+  pin?: GridColumnPin;
+  /**
+   * The innermost group the column sits under; that group's `parent`, and its
+   * parent's, are the groups above it. Default none.
+   *
+   * Named on the column rather than given as a tree of groups, because the
+   * column list is the one list everything here reads in order: a group is a
+   * run of side-by-side columns that name it, and a list that moves or hides a
+   * column moves or hides it out of its group with nothing else to keep in
+   * step.
+   */
+  group?: GridColumnGroup;
 }
+
+/**
+ * A heading over a run of columns, drawn in a header row of its own above
+ * them — as AG Grid's column groups are.
+ *
+ * Known by `id`, never by identity, so a column list handed over again with
+ * fresh group objects is the same groups.
+ */
+export interface GridColumnGroup {
+  /** Stable across re-fetches: a group is found, moved and shut by it. */
+  readonly id: string;
+  /** The group header's text, and the group's name in announcements. */
+  readonly header: string;
+  /** The group this one sits under, for a header of three rows or more. */
+  readonly parent?: GridColumnGroup;
+}
+
+/**
+ * Which inline edge a column is held at: the start (the left, in a language
+ * written left to right), the end, or null for neither.
+ */
+export type GridColumnPin = 'start' | 'end' | null;
+
+/** Which edge a pinned row is held at. */
+export type GridRowPin = 'top' | 'bottom';
 
 /** A sort entry paired with the column it names, for an announcement to read. */
 export interface GridSortDescriptor<T> {
@@ -335,7 +479,13 @@ export interface GridCell {
   readonly column: number;
 }
 
-/** One rendered row. Offsets are from the top of the collection, in px. */
+/**
+ * One rendered row. Offsets are from the top of the collection, in px.
+ *
+ * Where rows are measured, `start` and `size` are the estimate until the row
+ * has rendered, and the measurement after: a row is handed out again, as a
+ * new object, whenever a measurement moves it.
+ */
 export interface GridRow<T> {
   readonly index: number;
   readonly key: string | number;
@@ -343,9 +493,18 @@ export interface GridRow<T> {
   readonly item: T;
   readonly start: number;
   readonly size: number;
+  /**
+   * Present only on a row from `pinnedTopRows()` or `pinnedBottomRows()`, whose
+   * `start` is then from the top of its own edge's rows.
+   */
+  readonly pin?: GridRowPin;
 }
 
-/** One rendered column. Offsets are from the left of the collection, in px. */
+/**
+ * One rendered column. `start` is from the inline start of the column's
+ * region, in px: of the start-pinned columns, of the scrolling ones, or of the
+ * end-pinned ones. With nothing pinned there is one region, the collection.
+ */
 export interface GridColumnView<T> {
   readonly index: number;
   readonly key: string | number;
@@ -353,6 +512,64 @@ export interface GridColumnView<T> {
   readonly start: number;
   /** The width the geometry is using, which a resize has already clamped. */
   readonly width: number;
+  /** Present only on a pinned column: the region it is in. */
+  readonly pin?: 'start' | 'end';
+}
+
+/**
+ * One row of the header: a row of group headings, or the columns' own.
+ *
+ * A grid whose columns name no group has one, the columns' own, and its cells
+ * stand for exactly the columns `columns()` hands out.
+ */
+export interface GridHeaderRow<T> {
+  /**
+   * The row the cursor goes by: `HEADER_ROW` for the columns' own, and one
+   * less for each row of groups above it, so the top row of a header of three
+   * is `HEADER_ROW - 2`.
+   */
+  readonly index: number;
+  /** A row of groups is keyed by its level, the outermost 0; the columns' own by `'columns'`. */
+  readonly key: string | number;
+  /** The cells to render, from the inline start: only those over a column the window holds. */
+  readonly cells: readonly GridHeaderCell<T>[];
+}
+
+/**
+ * One cell of a header row: a column's header, a group's, or the gap over a
+ * column that has no group at that row.
+ */
+export interface GridHeaderCell<T> {
+  readonly key: string | number;
+  /** The header row it is in, as `GridHeaderRow.index`. */
+  readonly row: number;
+  /** The first column it spans, as a place in the column list. */
+  readonly index: number;
+  /**
+   * How many columns it spans — every one of the run, rendered or not, which
+   * is what `aria-colspan` says. One on the columns' own row.
+   */
+  readonly colspan: number;
+  /**
+   * Where its first rendered column starts, from the inline start of its
+   * region, as `GridColumnView.start` is.
+   */
+  readonly start: number;
+  /**
+   * The width of the columns under it that the window holds, which is the
+   * width it is drawn at. A group partly scrolled out of the window is drawn
+   * over the part still in it, so every header row lines up with the columns
+   * by the same arithmetic the columns' own row does.
+   */
+  readonly width: number;
+  /** Present only over pinned columns: the region they are in. */
+  readonly pin?: 'start' | 'end';
+  /** The text to show: the column's header, the group's, or empty for a gap. */
+  readonly header: string;
+  /** The column it stands for, on the columns' own row; null above it. */
+  readonly column: GridColumnView<T> | null;
+  /** The group it stands for, on a row of groups; null on the columns' own row, and for a gap. */
+  readonly group: GridColumnGroup | null;
 }
 
 export type GridPropValue =
@@ -380,11 +597,45 @@ export interface GridOptions<T> {
   columns: () => readonly GridColumn<T>[];
 
   /**
-   * Every row is exactly this tall, which makes the vertical geometry
-   * arithmetic: nothing is measured, nothing is observed, and a million rows
-   * cost what ten do. Default 32.
+   * How tall a row is, in px. Default 32.
+   *
+   * A number is a promise that every row is exactly this tall, which makes the
+   * vertical geometry arithmetic: nothing is measured, nothing is observed, and
+   * a million rows cost what ten do.
+   *
+   * A function gives each row a height of its own, for heights known before
+   * anything renders — a group header taller than the rows under it, a row
+   * opened to show more. It is handed the row and its place in the view, and
+   * asked again for every row whenever the view changes or anything it read
+   * does: a sort carries each height with its row, and a height held in a
+   * signal is followed. Each row is stated back at its height, as a number is.
+   *
+   * `'auto'` measures each rendered row instead, for heights only layout knows
+   * — wrapped text, an editor that grows. A row is `estimatedRowHeight` until
+   * it has rendered, and the offsets, the sizer and the window are corrected
+   * as measurements land, without moving what the reader is looking at.
    */
-  rowHeight?: number;
+  rowHeight?: number | ((row: T, index: number) => number) | 'auto';
+  /**
+   * What a row is taken to be before it has been measured, in px. Read only
+   * where `rowHeight` is `'auto'`. Default 32.
+   *
+   * Worth setting near a typical row: every row not yet rendered is this tall
+   * as far as the sizer knows, so an estimate far out is a scrollbar thumb
+   * that drifts under the reader as the real heights arrive.
+   */
+  estimatedRowHeight?: number;
+  /**
+   * `'auto'` makes the scroller as tall as its rows, up to `maxHeight`. Left
+   * out, the scroller is whatever height the stylesheet gives it.
+   *
+   * The rows are still windowed: the window is whatever the scroller shows, so
+   * below the cap every row renders and above it the grid scrolls as it does at
+   * a fixed height. Without a cap, every row renders, however many there are.
+   */
+  height?: 'auto';
+  /** The most the scroller may be, in px, whether or not `height` is `'auto'`. */
+  maxHeight?: number;
 
   /**
    * What identifies a row, so that a keyed `:for` reuses a row's elements
@@ -421,6 +672,14 @@ export interface GridOptions<T> {
    * where the catalogue has none, English.
    */
   resizeAnnouncement?: (column: GridColumn<T>, width: number) => string;
+  /**
+   * The sentence announced when a column group is resized from the keyboard,
+   * `width` being that of every column under the cell the cursor is on: the
+   * whole group's, or one part's where a pin or a reorder has parted it.
+   * Default the same `gridColumnWidth` sentence, with the group's header as
+   * `{column}`.
+   */
+  groupResizeAnnouncement?: (group: GridColumnGroup, width: number) => string;
   /** How much one Alt+Arrow press resizes by, in px. Default 16. */
   resizeStep?: number;
 
@@ -491,6 +750,25 @@ export interface GridOptions<T> {
   cellSelection?: GridCellSelectionMode;
   cellRange?: Signal.State<GridCellRange | null>;
   onCellRangeChange?: (range: GridCellRange | null) => void;
+
+  // --- Pinning -------------------------------------------------------------
+
+  /**
+   * The pins `pinColumn` has made, by column id, each overruling the column's
+   * own `pin`; a column it does not name keeps its own. Supply a signal to
+   * drive them from outside — `createGridState` takes the same one, which is
+   * how a pin is saved.
+   */
+  columnPins?: Signal.State<ReadonlyMap<string, GridColumnPin>>;
+  onColumnPinChange?: (pins: ReadonlyMap<string, GridColumnPin>) => void;
+  /**
+   * Rows held above the scrolling ones, outside the window: a total, a row
+   * being compared against. Neither sorted nor filtered, and keyed by
+   * `getRowKey` with their place among the rows pinned to that edge.
+   */
+  pinnedTop?: () => readonly T[];
+  /** Rows held below the scrolling ones, as `pinnedTop` holds rows above them. */
+  pinnedBottom?: () => readonly T[];
 }
 
 export interface Grid<T> {
@@ -499,11 +777,17 @@ export interface Grid<T> {
   /** The columns to render, in order. Both axes are windowed. */
   columns(): readonly GridColumnView<T>[];
   /**
-   * How many rows the grid has, rendered or not — after filtering.
+   * How many rows the grid has, rendered or not — after filtering, and with
+   * the pinned rows.
    *
    * This is the number `aria-rowcount` reports, and it has to be the filtered
    * one. A reader told there are ten thousand rows in a grid a filter has left
    * nine of is worse off than a reader told nothing.
+   *
+   * Positions run through the rows as they are drawn: the rows pinned to the
+   * top from 0, then the view, then the rows pinned to the bottom. That is the
+   * one list the cursor, a cell range, `rowAt` and `rowIndex` all count in, so
+   * ArrowUp from the first scrolling row is the pinned row above it.
    */
   rowCount(): number;
   /** How many rows were handed in, before any filter. */
@@ -537,6 +821,10 @@ export interface Grid<T> {
    * The way from a column to a position, as `rowIndex` is from a record: a
    * column list handed over in another order, or without a column it had,
    * moves the columns after the change to other indices.
+   *
+   * The list is in the order the columns are drawn: the start-pinned ones,
+   * then the scrolling ones, then the end-pinned ones, each in the order they
+   * were handed over. Every position the grid gives or takes counts in it.
    */
   columnIndex(id: string): number;
   /**
@@ -562,6 +850,39 @@ export interface Grid<T> {
    * left, or the declared width, or the default, held to the column's bounds.
    */
   columnWidth(id: string): number | undefined;
+  /**
+   * Which way the columns run: `'ltr'` from the left, `'rtl'` from the right.
+   *
+   * The direction the browser lays the grid's element out in, read when it
+   * mounts — or, mounted out of the document, once it is laid out — when a
+   * `dir` is written on that element, and when the nearest locale's
+   * direction changes. Column 0 is at the inline start either way;
+   * what follows the direction is which side that is, the arrows, and the
+   * horizontal transforms the props carry.
+   *
+   * A `dir` written on an element above the grid, with no locale there to
+   * hear it, is not heard: watching every ancestor would cost every grid an
+   * observer over the page. A page that turns round above the grid that way
+   * mounts it again.
+   */
+  direction(): Direction;
+
+  // --- Pinning -------------------------------------------------------------
+
+  /**
+   * Hold a column at an inline edge, or with null let it scroll. Within each
+   * region the columns keep the order they were handed over in, so a column
+   * pinned or unpinned goes where its place in that list puts it. The cursor
+   * stays on its column, and a cell range is carried or dropped, as for any
+   * change to the list. Silent: a column menu that pins says what it did.
+   */
+  pinColumn(id: string, side: GridColumnPin): void;
+  /** Which edge a column is held at, or undefined where the list does not hold it. */
+  columnPin(id: string): GridColumnPin | undefined;
+  /** The rows pinned to the top, every one of them, in order. */
+  pinnedTopRows(): readonly GridRow<T>[];
+  /** The rows pinned to the bottom, every one of them, in order. */
+  pinnedBottomRows(): readonly GridRow<T>[];
 
   /** Where the cursor is. `HEADER_ROW` means the column header. */
   activeCell(): GridCell;
@@ -579,6 +900,28 @@ export interface Grid<T> {
   cellValue(row: GridRow<T>, column: GridColumnView<T>): unknown;
   /** Resize a column. The width is clamped to the column's own bounds. */
   resizeColumn(id: string, width: number): void;
+
+  // --- Column groups -------------------------------------------------------
+
+  /**
+   * The header rows to render, top to bottom: a row for each level of group,
+   * the outermost first, then the columns' own. One row, the columns', where
+   * no column names a group.
+   */
+  headerRows(): readonly GridHeaderRow<T>[];
+  /**
+   * Resize a group: every column under it, the new width shared among them
+   * in proportion to the widths they have — evenly, where together they have
+   * none, as there is then no proportion to keep. Each column is held to its own
+   * bounds, one that cannot be resized keeps its width, and what a bound
+   * refuses goes to the others. Reported through `onColumnResize`, a column
+   * at a time.
+   *
+   * A drag of a group's handle, and Alt and an arrow on its cell, resize the
+   * columns under that cell the same way — the whole group, unless a pin or
+   * a reorder has parted it and the cell is drawn over one part of it.
+   */
+  resizeGroup(id: string, width: number): void;
 
   // --- Sorting -------------------------------------------------------------
 
@@ -644,15 +987,26 @@ export interface Grid<T> {
 
   gridProps(): GridProps;
   headerProps(): GridProps;
-  headerRowProps(): GridProps;
-  headerCellProps(column: GridColumnView<T>): GridProps;
+  /** A header row's props; with none named, the columns' own row's. */
+  headerRowProps(row?: GridHeaderRow<T>): GridProps;
+  /**
+   * A header cell's props: a column's, from `columns()` or from the columns'
+   * own header row, a group's, or a gap's, from a row of groups.
+   */
+  headerCellProps(cell: GridColumnView<T> | GridHeaderCell<T>): GridProps;
   bodyProps(): GridProps;
   /** The empty element sized to the whole collection, on both axes. */
   sizerProps(): GridProps;
   containerProps(): GridProps;
+  /**
+   * The rowgroup below the scroller that holds the rows pinned to the bottom,
+   * as the header holds those pinned to the top.
+   */
+  footerProps(): GridProps;
   rowProps(row: GridRow<T>): GridProps;
   cellProps(row: GridRow<T>, column: GridColumnView<T>): GridProps;
-  resizerProps(column: GridColumnView<T>): GridProps;
+  /** A resize handle's props: a column's, a group's, or a gap's, which resizes nothing. */
+  resizerProps(cell: GridColumnView<T> | GridHeaderCell<T>): GridProps;
 }
 
 export function createGrid<T>(options: GridOptions<T>): Grid<T> {
@@ -675,6 +1029,9 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
   const resizeAnnouncement =
     options.resizeAnnouncement ??
     ((column: GridColumn<T>, width: number): string => describeWidth(locale, column, width));
+  const groupResizeAnnouncement =
+    options.groupResizeAnnouncement ??
+    ((group: GridColumnGroup, width: number): string => describeWidth(locale, group, width));
   const sortAnnouncement =
     options.sortAnnouncement ??
     ((sort: readonly GridSortDescriptor<T>[]): string => describeSortOrder(locale, sort));
@@ -685,7 +1042,15 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
   const rowSelectionMode = options.rowSelection ?? 'none';
   const cellSelectionMode = options.cellSelection ?? 'none';
 
-  const columnList = (): readonly GridColumn<T>[] => options.columns();
+  const columnPins =
+    options.columnPins ?? new Signal.State<ReadonlyMap<string, GridColumnPin>>(EMPTY_PINS);
+  const drawnColumns = drawnColumnList(options.columns, columnPins);
+  /**
+   * Every column, in the order it is drawn, and the only list anything here
+   * reads: one index means one column to the cursor, a range, an export and
+   * the clipboard alike. Where nothing is pinned it is the caller's own list.
+   */
+  const columnList = (): readonly GridColumn<T>[] => drawnColumns.get();
   const columnCount = (): number => columnList().length;
   const columnById = (id: string): GridColumn<T> | undefined =>
     columnList().find((column) => column.id === id);
@@ -880,13 +1245,360 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
   /** The same width, read from a handler that must not subscribe to it. */
   const widthOf = (index: number): number => untrack(() => sizeOf(index));
 
+  // --- Pinned columns and rows ---------------------------------------------
+
+  /**
+   * How many columns each edge holds, and how wide each edge is.
+   *
+   * Counted from the ends of the drawn list, which is where the pinned columns
+   * are. Equal for as long as those four numbers are, so resizing a scrolling
+   * column tells nothing that reads it.
+   */
+  const pinLayout = new Signal.Computed<PinLayout>(
+    () => measurePins(columnList(), columnPins.get(), widthFor),
+    { equals: samePinLayout },
+  );
+
+  /** Whether any column is pinned — the one question every unpinned path asks. */
+  const pinsColumns = (): boolean => pinLayout.get() !== NO_PINS;
+
+  /** Whether the column at a drawn position is pinned, and so always rendered. */
+  const isPinnedColumn = (index: number): boolean => {
+    const { start, end } = pinLayout.get();
+    const count = columnCount();
+    return index >= 0 && index < count && (index < start || index >= count - end);
+  };
+
+  const pinColumn = (id: string, side: GridColumnPin): void => {
+    const column = untrack(options.columns).find((candidate) => candidate.id === id);
+    if (column === undefined) return;
+    const current = untrack(() => columnPins.get());
+    const next = asPin(side);
+    if (pinOf(column, current) === next) return;
+    const pins = new Map(current);
+    pins.set(id, next);
+    columnPins.set(pins);
+    options.onColumnPinChange?.(pins);
+  };
+
+  /**
+   * Where the first scrolling column rendered starts in the scrolling region,
+   * which is how far the window has moved.
+   */
+  const scrollingWindowStart = (): number => {
+    const { start, end, startWidth } = pinLayout.get();
+    const last = columnCount() - end;
+    for (const item of columnAxis.items()) {
+      if (item.index >= start && item.index < last) return item.start - startWidth;
+    }
+    return 0;
+  };
+
+  /**
+   * What keeps a row outside the scroller — the header row, a pinned row — in
+   * step with the columns under a horizontal scroll.
+   *
+   * One transform where nothing is pinned, as the header row always had. A
+   * pinned cell is held at its edge by `position: sticky`, which places it by
+   * layout, so a transform on the row around it would carry it off the edge
+   * it is stuck to; where a column is pinned the row is moved by a margin.
+   */
+  const horizontalShift = (): Readonly<Record<string, string>> =>
+    pinsColumns()
+      ? { 'margin-inline-start': `${scrollingWindowStart() - columnAxis.scrollOffset()}px` }
+      : { transform: `translateX(${inline(columnAxis.offset() - columnAxis.scrollOffset())}px)` };
+
+  /**
+   * The container's style. The window is moved by padding where a column is
+   * pinned, for the reason a row outside the scroller is moved by a margin: a
+   * horizontal transform between a sticky cell and the scroller would move
+   * the cell as well. The vertical one moves no pinned cell off its edge, and
+   * stays.
+   */
+  const containerStyle = (): Readonly<Record<string, string>> =>
+    pinsColumns()
+      ? {
+          transform: `translate(0px, ${rowAxis.offset()}px)`,
+          'padding-inline-start': `${scrollingWindowStart()}px`,
+        }
+      : { transform: `translate(${inline(columnAxis.offset())}px, ${rowAxis.offset()}px)` };
+
+  /**
+   * A cell's style, header or body: its width, and on a pinned column the
+   * sticky offset that holds it at its edge — from the start of the start
+   * region, or from the end of the end region.
+   */
+  const cellStyle = (
+    column: Pick<GridColumnView<T>, 'start' | 'width' | 'pin'>,
+  ): Readonly<Record<string, string>> => {
+    const width = `${column.width}px`;
+    if (column.pin === undefined) return { width };
+    if (column.pin === 'start') {
+      return { width, position: 'sticky', 'inset-inline-start': `${column.start}px` };
+    }
+    const inset = pinLayout.get().endWidth - column.start - column.width;
+    return { width, position: 'sticky', 'inset-inline-end': `${inset}px` };
+  };
+
+  /**
+   * The scroller's props, told how much of each edge the pinned columns cover.
+   * Focus the browser moves itself — Tab into the grid, a click on a cell half
+   * under a pinned one — then scrolls the cell clear of them, as the keyboard
+   * does here.
+   */
+  const padForPins = (props: GridProps): GridProps => {
+    const layout = pinLayout.get();
+    if (layout === NO_PINS) return props;
+    const style = props.style as Readonly<Record<string, string>> | undefined;
+    return {
+      ...props,
+      style: {
+        ...style,
+        'scroll-padding-inline-start': `${layout.startWidth}px`,
+        'scroll-padding-inline-end': `${layout.endWidth}px`,
+      },
+    };
+  };
+
+  const pinnedTop = new Signal.Computed<readonly T[]>(() => options.pinnedTop?.() ?? NO_ROWS);
+  const pinnedBottom = new Signal.Computed<readonly T[]>(
+    () => options.pinnedBottom?.() ?? NO_ROWS,
+  );
+  /**
+   * How many rows each edge holds, apart from which rows they are. A row of
+   * totals is a new object whenever a value under it changes, and every
+   * scrolling row's place, and every cell's tab stop, depends on the count
+   * alone: read through the rows, one edit would ask all of them again.
+   */
+  const topCounted = new Signal.Computed(() => pinnedTop.get().length);
+  const bottomCounted = new Signal.Computed(() => pinnedBottom.get().length);
+  const topCount = (): number => topCounted.get();
+  const bottomCount = (): number => bottomCounted.get();
+
+  /** Every row the cursor can stand on: the pinned rows and the view. */
+  const allRowCount = (): number => topCount() + rowCount() + bottomCount();
+
+  /** Whether a position names a pinned row rather than a row of the view. */
+  const isPinnedRow = (row: number): boolean => {
+    if (row < 0) return false;
+    const top = topCount();
+    return row < top || (bottomCount() > 0 && row >= top + rowCount());
+  };
+
+  /** The row at a position, and the key it goes by, wherever it is drawn. */
+  const rowAtPosition = (index: number): { item: T; key: GridRowKey } | null => {
+    if (index < 0) return null;
+    const top = pinnedTop.get();
+    if (index < top.length) return { item: top[index]!, key: rowKeyOf(top[index]!, index) };
+    const rows = rowList();
+    const at = index - top.length;
+    if (at < rows.length) return { item: rows[at]!, key: rowKeyOf(rows[at]!, at) };
+    const below = pinnedBottom.get();
+    const under = at - rows.length;
+    return under < below.length ? { item: below[under]!, key: rowKeyOf(below[under]!, under) } : null;
+  };
+
+  /** Where a key's row is drawn, pinned or not, or -1. */
+  const positionOfKey = (key: GridRowKey): number => {
+    const top = pinnedTop.get();
+    const pinned = indexOfKey(top, key);
+    if (pinned >= 0) return pinned;
+    const rows = rowList();
+    const inView = indexOfKey(rows, key);
+    if (inView >= 0) return top.length + inView;
+    const below = indexOfKey(pinnedBottom.get(), key);
+    return below < 0 ? -1 : top.length + rows.length + below;
+  };
+
+  /**
+   * A pinned row's height, as `rowHeight` gives one. Measured rows are not
+   * measured here: a pinned row lies in a rowgroup of its own, in the flow,
+   * and is whatever height it lays out at, so its `size` is the estimate.
+   */
+  const pinnedRowHeight = (item: T, index: number): number => {
+    if (typeof rowHeight === 'number') return rowHeight;
+    if (typeof rowHeight === 'function') return rowHeight(item, index);
+    return options.estimatedRowHeight ?? DEFAULT_ROW_HEIGHT;
+  };
+
+  /**
+   * The rows pinned to one edge, as rows. Every one is rendered, so there is
+   * no window; each is handed back as the same object while its key, item,
+   * position and height hold, as a scrolling row is, so that nothing about the
+   * rows scrolling past makes a pinned cell read its value again.
+   */
+  const pinnedRowViews = (edge: GridRowPin): Signal.Computed<readonly GridRow<T>[]> => {
+    let cache = new Map<GridRowKey, GridRow<T>>();
+    return new Signal.Computed(() => {
+      const items = edge === 'top' ? pinnedTop.get() : pinnedBottom.get();
+      if (items.length === 0) {
+        cache = new Map();
+        return NO_ROW_VIEWS as readonly GridRow<T>[];
+      }
+      const base = edge === 'top' ? 0 : topCount() + rowCount();
+      const next = new Map<GridRowKey, GridRow<T>>();
+      const views: GridRow<T>[] = [];
+      let start = 0;
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]!;
+        const key = rowKeyOf(item, i);
+        const size = pinnedRowHeight(item, i);
+        const cached = cache.get(key);
+        const view: GridRow<T> =
+          cached !== undefined &&
+          cached.item === item &&
+          cached.index === base + i &&
+          cached.start === start &&
+          cached.size === size
+            ? cached
+            : { index: base + i, key, item, start, size, pin: edge };
+        next.set(key, view);
+        views.push(view);
+        start += size;
+      }
+      cache = next;
+      return views;
+    });
+  };
+  const pinnedTopViews = pinnedRowViews('top');
+  const pinnedBottomViews = pinnedRowViews('bottom');
+
+  /**
+   * A pinned row's props. Not the virtualizer's to place or measure, so none
+   * of its attributes; its place in the count is stated here, and it is moved
+   * across with the columns as the header row is.
+   */
+  const pinnedRowProps = (row: GridRow<T>): GridProps => {
+    const selectable = rowSelectionMode !== 'none' && isSelectable(row.item);
+    const selected = selectable && isRowSelected(row.key);
+    const stated = rowHeight !== 'auto';
+    return {
+      'aria-rowindex': String(row.index + 2 + groupRowCount()),
+      style: { ...(stated ? { height: `${row.size}px` } : {}), ...horizontalShift() },
+      role: 'row',
+      'aria-selected':
+        selectable && rowSelectionMode === 'multiple'
+          ? String(selected)
+          : selected
+            ? 'true'
+            : undefined,
+      'data-selected': selected ? '' : undefined,
+      'data-pinned': row.pin,
+    };
+  };
+
+  /**
+   * The row count and a scrolling row's place in it, where rows are pinned or
+   * the header has rows of groups. The row axis counts only the view, under
+   * one header row, so its numbers are moved past the rows pinned above and
+   * the rows of groups; with neither they are its own.
+   */
+  const rowCountProps = (): GridProps =>
+    topCount() + bottomCount() + groupRowCount() === 0
+      ? rowAxis.countProps()
+      : { 'aria-rowcount': String(allRowCount() + 1 + groupRowCount()) };
+
+  const scrollingRowProps = (row: GridRow<T>): GridProps => {
+    const top = topCount();
+    const groups = groupRowCount();
+    if (top + groups === 0) return rowAxis.itemProps(row.index);
+    return {
+      ...rowAxis.itemProps(row.index - top),
+      'aria-rowindex': String(row.index + 2 + groups),
+    };
+  };
+
+  /**
+   * Bring a column wholly into view. Where columns are pinned the view is the
+   * band between the two pinned edges, which the virtualizer does not know
+   * about: aimed at the viewport, it would leave a column under a pinned one.
+   * A pinned column is always in view. Untracked, as the row's is.
+   */
+  const scrollToColumn = (column: number): void =>
+    untrack(() => {
+      if (!pinsColumns()) {
+        columnAxis.scrollToIndex(column);
+        return;
+      }
+      const count = columnCount();
+      if (count === 0) return;
+      const index = clamp(Math.trunc(column), 0, count - 1);
+      if (isPinnedColumn(index)) return;
+      const viewport = columnAxis.viewportSize();
+      if (viewport <= 0) {
+        columnAxis.scrollToIndex(index);
+        return;
+      }
+      const { startWidth, endWidth } = pinLayout.get();
+      const from = columnAxis.offsetOf(index);
+      const to = from + columnAxis.sizeOf(index);
+      const scroll = columnAxis.scrollOffset();
+      if (from < scroll + startWidth) {
+        columnAxis.scrollToOffset(from - startWidth);
+      } else if (to > scroll + viewport - endWidth) {
+        // A column wider than the band shows its start.
+        columnAxis.scrollToOffset(Math.min(from - startWidth, to - viewport + endWidth));
+      }
+    });
+
   // --- The two axes --------------------------------------------------------
+
+  /**
+   * Created before the axes, so that it is read before them when the grid
+   * first settles: the column axis decides which way to write a scroll as it
+   * first looks at the scroller, and asked after the direction is known it
+   * does not have to look again.
+   *
+   * A grid built out of the document is read once it is laid out, which the
+   * column axis hears first: its observer sees the scroller get a box.
+   */
+  const direction = watchDirection(options.grid, locale, () => columnAxis.viewportSize());
+
+  /**
+   * A distance along the row as a physical x. Transforms are physical, and
+   * right to left the row runs from the right, so a distance toward its
+   * inline end is a move to the left.
+   */
+  const inline = (distance: number): number => (direction() === 'rtl' ? -distance : distance);
+
+  /**
+   * The scroller, as the column axis is told it: read with the direction, so
+   * that a direction changed after mounting has the axis look at the scroller
+   * again. It decides there which way a scroll is written — leftward is
+   * negative right to left — and would otherwise go on writing scrolls the
+   * old way under transforms that had flipped.
+   */
+  const columnScroller = (): Element | null | undefined => {
+    direction();
+    return options.scroller();
+  };
+
+  const rowSizes = rowSizesFor(
+    rowHeight,
+    options.estimatedRowHeight ?? DEFAULT_ROW_HEIGHT,
+    rowList,
+  );
+
+  /**
+   * A declared height, stated back on its row.
+   *
+   * The virtualizer states a single height back and states nothing for sizes
+   * that vary, since sizes that vary are usually estimates. A declared one is
+   * not, and the arithmetic is only true while the element is the size the
+   * geometry was told — so it is stated here, from the row view that carries
+   * it. A measured row is left to be whatever height it lays out at.
+   */
+  const declaredHeight = (row: GridRow<T>): GridProps | undefined =>
+    typeof rowHeight === 'function' ? { style: { height: `${row.size}px` } } : undefined;
+
+  const scrollerHeight = scrollerHeightStyle(options.height, options.maxHeight);
 
   const rowAxis = createVirtualizer({
     scroller: options.scroller,
     container: options.container,
     count: rowCount,
-    itemSize: rowHeight,
+    itemSize: rowSizes.itemSize,
+    measure: rowSizes.measure,
     overscan: options.overscan,
     // Read tracked, unlike the column axis below. A row's key names the row at
     // that index, and a sort changes which row that is without changing how
@@ -904,9 +1616,10 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     indexBase: 2,
     axis: 'vertical',
   });
+  if (rowSizes.measure) watchRowsBroughtIn(rowAxis);
 
   const columnAxis = createVirtualizer({
-    scroller: options.scroller,
+    scroller: columnScroller,
     // Deliberately empty, and nothing measured: nothing may observe a header
     // cell and quietly overrule the width the grid is holding. The sizes are
     // the grid's own, and rebuild the geometry by being read.
@@ -941,6 +1654,9 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     const previous = rowViewCache;
     const next = new Map<string | number, GridRow<T>>();
     const views: GridRow<T>[] = [];
+    // Counted past the rows pinned above, so that a row's index is the
+    // position the cursor, a range and `rowAt` all use.
+    const top = topCount();
     for (const item of rowAxis.items()) {
       const data = list[item.index];
       // The window was computed from a count, and this is the list itself; a
@@ -948,15 +1664,16 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
       // array to each caller, and the two can disagree by a row. Rendering one
       // row fewer is better than rendering a hole.
       if (data === undefined) continue;
+      const index = top + item.index;
       const cached = previous.get(item.key);
       const view: GridRow<T> =
         cached !== undefined &&
         cached.item === data &&
-        cached.index === item.index &&
+        cached.index === index &&
         cached.start === item.start &&
         cached.size === item.size
           ? cached
-          : { index: item.index, key: item.key, item: data, start: item.start, size: item.size };
+          : { index, key: item.key, item: data, start: item.start, size: item.size };
       next.set(item.key, view);
       views.push(view);
     }
@@ -982,33 +1699,727 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     const previous = columnViewCache;
     const next = new Map<string | number, GridColumnView<T>>();
     const views: GridColumnView<T>[] = [];
-    for (const item of columnAxis.items()) {
-      const column = list[item.index];
-      if (!column) continue;
-      const cached = previous.get(item.key);
+    const place = (
+      index: number,
+      key: string | number,
+      start: number,
+      width: number,
+      pin: 'start' | 'end' | undefined,
+    ): void => {
+      const column = list[index];
+      if (!column) return;
+      const cached = previous.get(key);
       const view: GridColumnView<T> =
         cached !== undefined &&
         cached.column === column &&
-        cached.index === item.index &&
-        cached.start === item.start &&
-        cached.width === item.size
+        cached.index === index &&
+        cached.start === start &&
+        cached.width === width &&
+        cached.pin === pin
           ? cached
           : {
-              index: item.index,
-              key: item.key,
+              index,
+              key,
               column,
-              start: item.start,
+              start,
               // From the geometry rather than from the definition, so that a
               // cell's width and the offset of the column after it can never
               // disagree.
-              width: item.size,
+              width,
+              ...(pin === undefined ? {} : { pin }),
             };
-      next.set(item.key, view);
+      next.set(key, view);
       views.push(view);
+    };
+
+    const layout = pinLayout.get();
+    if (layout === NO_PINS) {
+      for (const item of columnAxis.items()) place(item.index, item.key, item.start, item.size, undefined);
+    } else {
+      // Every pinned column whatever the window holds, since none may be
+      // windowed away, and each offset from the start of its own region,
+      // which is what its sticky inset is measured from.
+      const last = list.length - layout.end;
+      const endsAt = columnAxis.totalSize() - layout.endWidth;
+      for (let i = 0; i < layout.start; i++) {
+        place(i, list[i]!.id, columnAxis.offsetOf(i), columnAxis.sizeOf(i), 'start');
+      }
+      for (const item of columnAxis.items()) {
+        if (item.index < layout.start || item.index >= last) continue;
+        place(item.index, item.key, item.start - layout.startWidth, item.size, undefined);
+      }
+      for (let i = last; i < list.length; i++) {
+        place(i, list[i]!.id, columnAxis.offsetOf(i) - endsAt, columnAxis.sizeOf(i), 'end');
+      }
     }
     columnViewCache = next;
     return views;
   });
+
+  // --- Column groups -------------------------------------------------------
+
+  /**
+   * Which columns each group spans, at each level, over the whole list.
+   *
+   * Runs, not groups: a group is drawn over the columns that name it and sit
+   * side by side, so one whose columns a reorder or a pin has parted is drawn
+   * once over each part. A run stops at a pinned edge, since a pinned cell is
+   * held at its edge and the cells beside it scroll away, and wherever the run
+   * above it stops, so no group is drawn wider than the group it is in.
+   *
+   * Nothing is read but each column's `group` where no column names one, so
+   * a grid without groups asks nothing of the pins and nothing of a width.
+   * Equal for as long as every run and every column's groups are the same
+   * objects, so a resize that moves no column tells nothing that reads it.
+   */
+  const columnGroups = new Signal.Computed<ColumnGroupLayout>(
+    () => {
+      const list = columnList();
+      if (!list.some((column) => column.group !== undefined)) return NO_COLUMN_GROUPS;
+      const { start, end } = pinLayout.get();
+      const last = list.length - end;
+      return layoutColumnGroups(list, (index) => (index < start ? 0 : index >= last ? 2 : 1));
+    },
+    { equals: sameColumnGroupLayout },
+  );
+
+  /**
+   * How many rows of groups sit above the columns' own header row. Apart from
+   * the layout, so that every row's `aria-rowindex` hears of a new depth and
+   * of nothing else about the groups.
+   */
+  const groupDepth = new Signal.Computed(() => columnGroups.get().depth);
+  const groupRowCount = (): number => groupDepth.get();
+
+  /** The run of a row of groups over a column, or null where either is not there. */
+  const runAt = (layout: ColumnGroupLayout, row: number, column: number): GroupRun | null => {
+    const level = row - HEADER_ROW + layout.depth;
+    if (level < 0 || level >= layout.depth) return null;
+    const of = layout.runOf[level]!;
+    if (column < 0 || column >= of.length) return null;
+    return layout.levels[level]![of[column]!]!;
+  };
+
+  /**
+   * A position on a row of groups, put on the group it falls in, at the
+   * group's first column — where its one cell carries its position. Above the
+   * top row is the top row. A position over a gap, or on a row of groups there
+   * is no longer, is put on the columns' header row below it, which is always
+   * there.
+   */
+  const clampToGroups = (row: number, column: number): GridCell => {
+    const layout = columnGroups.get();
+    const at = Math.max(Math.trunc(row), HEADER_ROW - layout.depth);
+    const run = runAt(layout, at, column);
+    return run !== null && run.group !== null
+      ? { row: at, column: run.from }
+      : { row: HEADER_ROW, column };
+  };
+
+  /** Whether the window draws any of a run: a pinned one always, a scrolling one where they meet. */
+  const runIsDrawn = (run: GroupRun): boolean => {
+    if (isPinnedColumn(run.from)) return true;
+    const { startIndex, endIndex } = columnAxis.range();
+    return startIndex >= 0 && run.from <= endIndex && run.to >= startIndex;
+  };
+
+  /**
+   * The tab stop while the cursor is on a row of groups: its group's cell
+   * wherever the window draws any of the group, as a group scrolled half out
+   * of it is drawn over the half still in. A group the window has left
+   * entirely has no cell to hold it, and the columns' header row below has
+   * one at every column the window holds.
+   */
+  const groupTabStop = (cursor: GridCell, column: number): GridCell => {
+    const run = runAt(columnGroups.get(), cursor.row, cursor.column);
+    return run !== null && run.group !== null && runIsDrawn(run)
+      ? { row: cursor.row, column: run.from }
+      : { row: HEADER_ROW, column };
+  };
+
+  /**
+   * The column window before focus moves to a cell on a row of groups, so
+   * that afterwards it can be told whether the move scrolled it. Null for any
+   * other row, which asks nothing of the window here.
+   */
+  const windowBeforeGroupFocus = (cell: GridCell): ReturnType<Virtualizer['range']> | null =>
+    cell.row < HEADER_ROW ? untrack(() => columnAxis.range()) : null;
+
+  /**
+   * Whether a group's cell, focused at once, has to be focused again once the
+   * window is drawn: where the move scrolled the window under it. A column's
+   * cell is focused at once only when its column is already in the window, but
+   * a group's stays drawn across a scroll that takes its columns far out of
+   * and into the window, and drawing its row again can take it out of the
+   * document and put it back — and focus with it, to nowhere.
+   */
+  const groupFocusRedrawn = (before: ReturnType<Virtualizer['range']> | null): boolean => {
+    if (before === null) return false;
+    const after = untrack(() => columnAxis.range());
+    return after.startIndex !== before.startIndex || after.endIndex !== before.endIndex;
+  };
+
+  /**
+   * Put a cursor that was on a group back on that group after the column list
+   * changed, found again by id over the column the cursor follows, in
+   * whichever row the group is drawn now — or on the header below, where the
+   * group is no longer over that column. Rows of groups are numbered up from
+   * the columns' own, so a row added or taken away under a group moves the
+   * number it is drawn at, and the number alone would leave the cursor on
+   * some other group, or on a gap.
+   *
+   * The whole of following such a cursor is done here, its column as well, so
+   * it moves once: `follow` leaves it alone. Put back by its row number first,
+   * it would land on whatever group or gap is drawn there now — over a column
+   * a group that went gave its place to, the first column of some other group
+   * — and focus and `onActiveCellChange` would be taken there on the way.
+   *
+   * `before` is the cursor as it was in `previous`, the list being replaced.
+   * Nothing is asked of the columns where the cursor was not on a group.
+   */
+  const followGroup = (
+    before: GridCell,
+    previous: readonly GridColumn<T>[],
+    columns: readonly GridColumn<T>[],
+  ): void => {
+    if (before.row >= HEADER_ROW) return;
+    const paths = previous.map(columnGroupPath);
+    const depth = paths.reduce((deepest, path) => Math.max(deepest, path.length), 0);
+    const group = paths[before.column]?.[before.row - HEADER_ROW + depth];
+    // The column the cursor follows, found again by id as any cursor's column
+    // is, or the nearest one left where it has gone.
+    const column = sameIds(previous, columns)
+      ? before.column
+      : (followColumn(before.column, placesOf(columns), previous) ?? before.column);
+
+    const cursor = untrack(() => active.get());
+    const layout = untrack(() => columnGroups.get());
+    const level =
+      group === undefined
+        ? -1
+        : (layout.paths[column]?.findIndex((under) => under.id === group.id) ?? -1);
+    const next = untrack(() =>
+      level < 0
+        ? { row: HEADER_ROW, column }
+        : clampToGroups(HEADER_ROW - layout.depth + level, column),
+    );
+    if (next.row === cursor.row && next.column === cursor.column) {
+      refocusGroupCell(next);
+      return;
+    }
+    if (cursorHeldFocus() && !focusInsideCell()) focusFollowedGroup(next);
+    else setActive(next);
+  };
+
+  /**
+   * Bring focus back to the cursor's group cell where the cursor stayed put
+   * and the element under it did not. A part's cell is keyed by how many parts
+   * of its group come before it, so a part added, cut or joined ahead of the
+   * cursor's hands the cursor's element to another part, or takes it out of
+   * the document, and focus goes with it. Only where focus was on the cursor,
+   * and on the cell rather than on a control inside it; and only where the
+   * cell is drawn, since a group the window has left has no cell to hold it.
+   *
+   * Focused where it is drawn, not through `focusCell`, which would scroll the
+   * window to the part's first column: the part has not moved, and a reader
+   * who scrolled that column out of view would be taken back to it for a
+   * change somewhere they were not looking.
+   */
+  const refocusGroupCell = (cell: GridCell): void => {
+    if (!cursorHeldFocus() || focusInsideCell()) return;
+    const el = elementAt(cell);
+    if (el !== null && el !== el.ownerDocument.activeElement) el.focus();
+  };
+
+  /**
+   * Whether the reader can see any of a run: a pinned one always, a scrolling
+   * one where it meets the band between the pinned edges, measured as
+   * `scrollToColumn` measures a column. Before the scroller is measured there
+   * is no band, and the window is all there is to go by.
+   */
+  const runInView = (run: GroupRun): boolean => {
+    if (isPinnedColumn(run.from)) return true;
+    const viewport = columnAxis.viewportSize();
+    if (viewport <= 0) return runIsDrawn(run);
+    const { startWidth, endWidth } = pinLayout.get();
+    const scroll = columnAxis.scrollOffset();
+    const from = columnAxis.offsetOf(run.from);
+    const to = columnAxis.offsetOf(run.to) + columnAxis.sizeOf(run.to);
+    return from < scroll + viewport - endWidth && to > scroll + startWidth;
+  };
+
+  /**
+   * Focus the group cell a cursor was followed to, without the reader having
+   * moved it: on the cell as the window draws it where they can see any of
+   * the group, and through `focusCell` where they can see none. `focusCell`
+   * brings a group's first column into view, as a key that moves onto a group
+   * should; for a group followed to another row, its columns where they were,
+   * that would take a reader who had scrolled its first column away back to
+   * it for a change they did not make.
+   */
+  const focusFollowedGroup = (cell: GridCell): void => {
+    const run = cell.row < HEADER_ROW ? untrack(() => runAt(columnGroups.get(), cell.row, cell.column)) : null;
+    if (run === null || run.group === null || !untrack(() => runInView(run))) {
+      focusCell(cell);
+      return;
+    }
+    setActive(cell);
+    const el = elementAt(cell);
+    // A row of groups added under it is in the document a render from now.
+    pendingFocus = el === null ? cell : null;
+    if (el === null) return;
+    focusOnCursor = true;
+    el.focus();
+  };
+
+  /**
+   * Follow the cursor's group across the rows of groups laid out again over
+   * the same column list, as a pin does at either end of the list: a column
+   * pinned or let go there moves no column, but cuts its group's run at the
+   * pinned edge or joins it up again, and a part joined into the one before it
+   * takes the cursor onto that one's first column. A change to the list itself
+   * is `followGroup`'s, which finds the group by id, and is left to it here:
+   * clamped first, the cursor would be followed from somewhere it never was.
+   *
+   * An effect of its own rather than one more read in the effect that follows
+   * the cursor. That one has to run after the effect that focuses a cell once
+   * its window is drawn, or a cell it scrolls to would be looked for before it
+   * is drawn and never focused; and which of two effects runs first follows
+   * what each of them reads.
+   */
+  const followGroupCuts = (): void => {
+    let seen: { list: readonly GridColumn<T>[]; layout: ColumnGroupLayout } | null = null;
+    effect(() => {
+      const list = columnList();
+      const layout = columnGroups.get();
+      const before = seen;
+      seen = { list, layout };
+      if (before === null || before.layout === layout || before.list !== list) return;
+      untrack(() => {
+        const cursor = active.get();
+        if (cursor.row >= HEADER_ROW) return;
+        const next = clampCell(cursor);
+        if (next.row === cursor.row && next.column === cursor.column) refocusGroupCell(next);
+        else if (cursorHeldFocus() && !focusInsideCell()) focusFollowedGroup(next);
+        else setActive(next);
+      });
+    });
+  };
+  followGroupCuts();
+
+  /** The places in the column list of every column under a group, at any depth. */
+  const columnsOfGroup = (id: string): number[] => {
+    const { paths } = untrack(() => columnGroups.get());
+    const places: number[] = [];
+    for (let i = 0; i < paths.length; i++) {
+      if (paths[i]!.some((group) => group.id === id)) places.push(i);
+    }
+    return places;
+  };
+
+  /**
+   * The places of the columns one cell of a group spans, `from` to `to`.
+   *
+   * What a gesture on a group's cell resizes, rather than every column under
+   * the group: a group a pin or a reorder has parted is drawn once over each
+   * part, and a drag that also moved the part drawn elsewhere — pinned at the
+   * other edge, perhaps — would move columns the reader is not touching and
+   * leave the cell behind the pointer. Where nothing has parted the group,
+   * its one cell spans all of it.
+   */
+  const columnsBetween = (from: number, to: number): number[] =>
+    Array.from({ length: Math.max(0, to - from + 1) }, (_, i) => from + i);
+
+  /** The columns at these places in the list, read without subscribing to it. */
+  const columnsAt = (places: readonly number[]): GridColumn<T>[] => {
+    const list = untrack(columnList);
+    return places.flatMap((index) => (list[index] === undefined ? [] : [list[index]!]));
+  };
+
+  /** Whether any of these columns can be resized, which is what a group's handle says. */
+  const anyResizable = (columns: readonly GridColumn<T>[]): boolean =>
+    columns.some((column) => column.resizable !== false);
+
+  /**
+   * The group being dragged, for its handles' own state — apart from a
+   * column's, whose id it may share — and the id of a column of the part
+   * whose handle it is, or null where the handle was in no cell of the group
+   * and the drag is the whole group's. A column's id rather than the cell's
+   * place, so a list reordered under the drag leaves the mark on its handle.
+   */
+  const resizingGroup = new Signal.State<{ readonly id: string; readonly at: string | null } | null>(
+    null,
+  );
+
+  /** The width each column is laid out at, read without subscribing to the widths. */
+  const widthsOf = (columns: readonly GridColumn<T>[]): number[] =>
+    untrack(() => columns.map(widthFor));
+
+  /**
+   * Share a width among columns, in proportion to `from` — the widths they
+   * have, or for a drag the widths it started at, so a drag that comes back
+   * comes back to where it began rather than to what rounding and the bounds
+   * made of each move on the way. One write to the widths, so the geometry
+   * rebuilds once however many columns moved. Their new width together, or
+   * null where nothing changed.
+   */
+  const shareAmong = (
+    columns: readonly GridColumn<T>[],
+    width: number,
+    from?: readonly number[],
+  ): number | null => {
+    if (columns.length === 0) return null;
+    const now = widthsOf(columns);
+    const was = from !== undefined && from.length === columns.length ? from : now;
+    const shared = shareWidth(columns, was, width, (column, w) => clampWidth(column, w));
+    if (shared === null) return null;
+
+    const map = new Map(untrack(() => widths.get()));
+    const changed: [string, number][] = [];
+    for (let i = 0; i < columns.length; i++) {
+      if (shared[i] === now[i]) continue;
+      map.set(columns[i]!.id, shared[i]!);
+      changed.push([columns[i]!.id, shared[i]!]);
+    }
+    if (changed.length === 0) return null;
+    widths.set(map);
+    for (const [column, settled] of changed) options.onColumnResize?.(column, settled);
+    return shared.reduce((sum, w) => sum + w, 0);
+  };
+
+  /**
+   * A drag of a group's handle, or null where the handle names no group that
+   * can be resized there.
+   *
+   * It resizes the part of the group drawn under the handle's cell, found
+   * from the cell it sits in as a click finds its cell. A handle in no cell
+   * of its group has no part to name, and resizes the whole group, as
+   * `resizeGroup` does.
+   *
+   * The columns it took hold of are held by id, as a column's drag holds its
+   * column: a list reordered under the drag would put other columns at the
+   * same places. One that leaves the list is let go, with its share.
+   */
+  const groupResizeDrag = (handle: Element): ResizeDrag | null => {
+    const id = handle.getAttribute(GRID_COLUMN_GROUP_RESIZER_ATTRIBUTE);
+    if (id === null) return null;
+    const cell = cellFrom(handle);
+    const run = cell === null ? null : untrack(() => runAt(columnGroups.get(), cell.row, cell.column));
+    const own = run !== null && run.group?.id === id;
+    const taken = columnsAt(own ? columnsBetween(run.from, run.to) : columnsOfGroup(id));
+    if (!anyResizable(taken)) return null;
+    const ids = taken.map((column) => column.id);
+    const startWidths = widthsOf(taken);
+    const shareFrom = (delta: number): void => {
+      const columns: GridColumn<T>[] = [];
+      const from: number[] = [];
+      for (let i = 0; i < ids.length; i++) {
+        const column = untrack(() => columnById(ids[i]!));
+        if (column === undefined) continue;
+        columns.push(column);
+        from.push(startWidths[i]!);
+      }
+      shareAmong(columns, from.reduce((sum, w) => sum + w, 0) + delta, from);
+    };
+    return {
+      hold: (on) => resizingGroup.set(on ? { id, at: own ? ids[0]! : null } : null),
+      to: shareFrom,
+      // Shared at the scale it started at, every column comes back to the
+      // whole pixels it had: nothing is left over to round.
+      cancel: () => shareFrom(0),
+    };
+  };
+
+  /**
+   * Header cells already handed out, by level and key, and the columns' own by
+   * the column view each stands for, so that a cell nothing has changed about
+   * is handed back as the same object and its props are not asked for again.
+   */
+  let groupCellCache = new Map<string, GridHeaderCell<T>>();
+  const columnHeaderCells = new WeakMap<GridColumnView<T>, GridHeaderCell<T>>();
+  let headerRowCache: readonly GridHeaderRow<T>[] = [];
+
+  const columnHeaderCell = (view: GridColumnView<T>): GridHeaderCell<T> => {
+    const cached = columnHeaderCells.get(view);
+    if (cached !== undefined) return cached;
+    const cell: GridHeaderCell<T> = {
+      key: view.key,
+      row: HEADER_ROW,
+      index: view.index,
+      colspan: 1,
+      start: view.start,
+      width: view.width,
+      ...(view.pin === undefined ? {} : { pin: view.pin }),
+      header: view.column.header,
+      column: view,
+      group: null,
+    };
+    columnHeaderCells.set(view, cell);
+    return cell;
+  };
+
+  /**
+   * One row of groups as cells: one over each run the window draws any of,
+   * as wide as the columns of it the window holds and starting where the
+   * first of them does.
+   */
+  const groupCells = (
+    layout: ColumnGroupLayout,
+    level: number,
+    views: readonly GridColumnView<T>[],
+    previous: ReadonlyMap<string, GridHeaderCell<T>>,
+    next: Map<string, GridHeaderCell<T>>,
+  ): GridHeaderCell<T>[] => {
+    const row = HEADER_ROW - layout.depth + level;
+    const runs = layout.levels[level]!;
+    const of = layout.runOf[level]!;
+    const cells: GridHeaderCell<T>[] = [];
+    let run: GroupRun | null = null;
+    let first: GridColumnView<T> | null = null;
+    let width = 0;
+    const close = (): void => {
+      if (run === null || first === null) return;
+      const id = `${level}\u0000${run.key}`;
+      const cached = previous.get(id);
+      const header = run.group?.header ?? '';
+      const cell: GridHeaderCell<T> =
+        cached !== undefined &&
+        cached.row === row &&
+        cached.index === run.from &&
+        cached.colspan === run.to - run.from + 1 &&
+        cached.start === first.start &&
+        cached.width === width &&
+        cached.pin === first.pin &&
+        cached.header === header &&
+        cached.group === run.group
+          ? cached
+          : {
+              key: run.key,
+              row,
+              index: run.from,
+              colspan: run.to - run.from + 1,
+              start: first.start,
+              width,
+              ...(first.pin === undefined ? {} : { pin: first.pin }),
+              header,
+              column: null,
+              group: run.group,
+            };
+      next.set(id, cell);
+      cells.push(cell);
+    };
+    for (const view of views) {
+      const at = runs[of[view.index]!]!;
+      if (at === run) {
+        width += view.width;
+        continue;
+      }
+      close();
+      run = at;
+      first = view;
+      width = view.width;
+    }
+    close();
+    return cells;
+  };
+
+  /**
+   * The header rows, top to bottom. A row is handed back as the same object
+   * while its cells are, and the list while its rows are, so a vertical
+   * scroll — or a horizontal one the window absorbs — touches no header cell.
+   */
+  const headerRowViews = new Signal.Computed<readonly GridHeaderRow<T>[]>(() => {
+    const views = columnViews.get();
+    const layout = columnGroups.get();
+    const previous = headerRowCache;
+    const nextCells = new Map<string, GridHeaderCell<T>>();
+    const rows: GridHeaderRow<T>[] = [];
+    const keep = (key: string | number, index: number, cells: GridHeaderCell<T>[]): void => {
+      const before = previous.find((row) => row.key === key);
+      rows.push(
+        before !== undefined && before.index === index && sameItems(before.cells, cells)
+          ? before
+          : { index, key, cells },
+      );
+    };
+    for (let level = 0; level < layout.depth; level++) {
+      const cells = groupCells(layout, level, views, groupCellCache, nextCells);
+      keep(level, HEADER_ROW - layout.depth + level, cells);
+    }
+    keep(COLUMNS_ROW_KEY, HEADER_ROW, views.map(columnHeaderCell));
+    groupCellCache = nextCells;
+    headerRowCache = sameItems(previous, rows) ? previous : rows;
+    return headerRowCache;
+  });
+
+  /** The column a header cell stands for, or null for a group's or a gap's. */
+  const columnOfHeaderCell = (
+    cell: GridColumnView<T> | GridHeaderCell<T>,
+  ): GridColumnView<T> | null => ('colspan' in cell ? cell.column : cell);
+
+  /**
+   * A group's header cell, or a gap's. A group is a column header spanning
+   * its columns, navigable as the columns' own are. A gap stands for nothing
+   * and is no cell at all — a column header with no text would be read out as
+   * one — so it keeps only its place in the row.
+   */
+  const groupHeaderCellProps = (cell: GridHeaderCell<T>): GridProps => {
+    const style = cellStyle(cell);
+    const pinned = cell.pin === undefined ? {} : { 'data-pinned': cell.pin };
+    if (cell.group === null) return { role: 'none', 'data-column-group-gap': '', style, ...pinned };
+    return {
+      [GRID_CELL_ATTRIBUTE]: cellKey(cell.row, cell.index),
+      role: 'columnheader',
+      'aria-colindex': String(cell.index + 1),
+      'aria-colspan': String(cell.colspan),
+      tabindex: isTabStop(cell.row, cell.index) ? '0' : '-1',
+      'data-active': isActive(cell.row, cell.index) ? '' : undefined,
+      'data-column-group': cell.group.id,
+      style,
+      ...pinned,
+    };
+  };
+
+  /**
+   * Whether a header row is a row of groups the window holds nothing but gaps
+   * of — scrolled to a stretch under no group at that level. A row must hold a
+   * cell, so such a row is no row to a screen reader. It is drawn all the
+   * same, its gaps keeping the rows above and below it in line, and it is
+   * counted, as a row the window has left is.
+   */
+  const onlyGaps = (row: GridHeaderRow<T> | undefined): boolean =>
+    row !== undefined && row.index < HEADER_ROW && row.cells.every((cell) => cell.group === null);
+
+  /** A group's resize handle, or a gap's, which has nothing to resize. */
+  const groupResizerProps = (cell: GridHeaderCell<T>): GridProps => {
+    const group = cell.group;
+    if (group === null) {
+      return { 'aria-hidden': 'true', 'data-disabled': '', style: { 'touch-action': 'none' } };
+    }
+    // Read tracked: a column made resizable or not changes no cell.
+    const spanned = columnList().slice(cell.index, cell.index + cell.colspan);
+    const held = resizingGroup.get();
+    const dragged =
+      held !== null &&
+      held.id === group.id &&
+      (held.at === null || spanned.some((column) => column.id === held.at));
+    return {
+      [GRID_COLUMN_GROUP_RESIZER_ATTRIBUTE]: group.id,
+      'aria-hidden': 'true',
+      'data-resizing': dragged ? '' : undefined,
+      'data-disabled': anyResizable(spanned) ? undefined : '',
+      style: { 'touch-action': 'none' },
+    };
+  };
+
+  /**
+   * Where a move off the top of the columns' header row goes. ArrowUp goes to
+   * the innermost group over the column, where it has one; anything else that
+   * overshoots the header — a page up — stops on the columns' header row, as
+   * it always did, rather than landing among the groups.
+   */
+  const aboveColumnHeader = (cursor: GridCell, next: GridCell, stepping: boolean): GridCell => {
+    if (!stepping || cursor.row !== HEADER_ROW) return { row: HEADER_ROW, column: next.column };
+    const layout = untrack(() => columnGroups.get());
+    const depth = layout.paths[cursor.column]?.length ?? 0;
+    if (depth === 0) return { row: HEADER_ROW, column: next.column };
+    return untrack(() => clampToGroups(HEADER_ROW - layout.depth + depth - 1, cursor.column));
+  };
+
+  /** The nearest group along a row of groups from a column, that way, or null for none. */
+  const groupAlong = (
+    layout: ColumnGroupLayout,
+    row: number,
+    column: number,
+    step: 1 | -1,
+  ): GridCell | null => {
+    const level = row - HEADER_ROW + layout.depth;
+    const runs = layout.levels[level]!;
+    const of = layout.runOf[level]!;
+    if (column < 0 || column >= of.length) return null;
+    for (let i = of[column]!; i >= 0 && i < runs.length; i += step) {
+      if (runs[i]!.group !== null) return { row, column: runs[i]!.from };
+    }
+    return null;
+  };
+
+  /**
+   * A key pressed on a row of groups. The arrows go between groups, past the
+   * gaps; down is the group under the first column, or that column's header;
+   * a page down is a page from the columns' header, and a page up is already
+   * as far up as it goes. Alt and an arrow resize the group. Undefined for a
+   * key the grid answers here as it does anywhere — Ctrl+Home, Ctrl+A — or
+   * leaves to the page, as Enter and Space are: a group neither sorts nor
+   * selects, and what shuts one is the page's.
+   */
+  const onGroupRowKeyDown = (
+    event: KeyboardEvent,
+    key: string,
+    cursor: GridCell,
+  ): boolean | undefined => {
+    const layout = untrack(() => columnGroups.get());
+    const run = runAt(layout, cursor.row, cursor.column);
+    if (run === null || run.group === null) return undefined;
+
+    if (event.altKey) {
+      if (key !== 'ArrowLeft' && key !== 'ArrowRight') return false;
+      const step = key === 'ArrowRight' ? resizeStep : -resizeStep;
+      // The part under the cursor, as a drag of its handle would be.
+      const part = columnsAt(columnsBetween(run.from, run.to));
+      const settled = shareAmong(part, widthsOf(part).reduce((sum, w) => sum + w, 0) + step);
+      if (settled !== null) announce(groupResizeAnnouncement(run.group, settled));
+      event.preventDefault();
+      return true;
+    }
+    if (event.ctrlKey || event.metaKey || event.shiftKey) return undefined;
+
+    const level = cursor.row - HEADER_ROW + layout.depth;
+    const below = (): GridCell => {
+      const under = runAt(layout, cursor.row + 1, run.from);
+      return under !== null && under.group !== null
+        ? { row: cursor.row + 1, column: under.from }
+        : { row: HEADER_ROW, column: run.from };
+    };
+    let next: GridCell | null;
+    switch (key) {
+      case 'ArrowRight':
+        next = groupAlong(layout, cursor.row, run.to + 1, 1);
+        break;
+      case 'ArrowLeft':
+        next = groupAlong(layout, cursor.row, run.from - 1, -1);
+        break;
+      case 'Home':
+        next = groupAlong(layout, cursor.row, 0, 1);
+        break;
+      case 'End':
+        next = groupAlong(layout, cursor.row, layout.runOf[level]!.length - 1, -1);
+        break;
+      case 'ArrowUp': {
+        const above = runAt(layout, cursor.row - 1, run.from);
+        next = above !== null && above.group !== null ? { row: cursor.row - 1, column: above.from } : null;
+        break;
+      }
+      case 'ArrowDown':
+        next = below();
+        break;
+      case 'PageDown':
+        next = { row: pageAcrossPins(HEADER_ROW, 1), column: run.from };
+        break;
+      case 'PageUp':
+        next = null;
+        break;
+      default:
+        return undefined;
+    }
+    event.preventDefault();
+    // Nowhere to go spends the key, as at the edge of any row; and asks for
+    // no scroll, which on a group drawn half out of the window would bring
+    // its first column into view for a key that moved nothing.
+    if (next === null) return true;
+    setRange(null);
+    focusCell(next);
+    return true;
+  };
 
   // --- The cursor ----------------------------------------------------------
 
@@ -1016,7 +2427,8 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     const columns = columnCount();
     if (columns === 0) return { row: HEADER_ROW, column: 0 };
     const column = clamp(Math.trunc(cell.column), 0, columns - 1);
-    const rows = rowCount();
+    if (cell.row < HEADER_ROW) return clampToGroups(cell.row, column);
+    const rows = allRowCount();
     // With no data rows the header is the only place a cursor can be.
     const row = rows === 0 ? HEADER_ROW : clamp(Math.trunc(cell.row), HEADER_ROW, rows - 1);
     return { row, column };
@@ -1063,14 +2475,26 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     const cursor = active.get();
 
     const columnRange = columnAxis.range();
-    const column = clamp(cursor.column, columnRange.startIndex, columnRange.endIndex);
+    // A pinned column and a pinned row are rendered wherever the scroll is, so
+    // the cursor on one holds the tab stop itself. Asked only outside the
+    // window, so a cell's props come to depend on the pins no sooner than
+    // the answer could differ.
+    const inWindow =
+      cursor.column >= columnRange.startIndex && cursor.column <= columnRange.endIndex;
+    const column =
+      inWindow || isPinnedColumn(cursor.column)
+        ? cursor.column
+        : clamp(cursor.column, columnRange.startIndex, columnRange.endIndex);
 
+    if (cursor.row < HEADER_ROW) return groupTabStop(cursor, column);
     if (cursor.row === HEADER_ROW) return { row: HEADER_ROW, column };
+    if (isPinnedRow(cursor.row)) return { row: cursor.row, column };
     const rowRange = rowAxis.range();
     // The header is always rendered, so it is where the tab stop goes when no
     // data row is.
     if (rowRange.startIndex < 0) return { row: HEADER_ROW, column };
-    return { row: clamp(cursor.row, rowRange.startIndex, rowRange.endIndex), column };
+    const top = topCount();
+    return { row: clamp(cursor.row, top + rowRange.startIndex, top + rowRange.endIndex), column };
   };
 
   const isTabStop = (row: number, column: number): boolean => {
@@ -1125,6 +2549,13 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
       // from one cell to the next is every arrow key, and costs nothing more.
       const next = 'relatedTarget' in event ? event.relatedTarget : null;
       if (next instanceof Node && root.contains(next)) return;
+      // Focus handed to an element outside the grid says plainly that the reader
+      // left, and nothing that happens to the cell afterwards changes that: only
+      // a focusout that names nowhere needs the wait below.
+      if (next instanceof Node) {
+        focusOnCursor = false;
+        return;
+      }
       const target = event.target;
       // Judged a microtask later, because at this moment the two cases still
       // look alike: an engine that reports a cell removed by a re-render does
@@ -1143,6 +2574,32 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     onCleanup(() => root.removeEventListener('focusout', onFocusOut));
   });
 
+  /**
+   * Put back a scroll the browser gives a rowgroup outside the scroller.
+   *
+   * The header and the footer clip their rows rather than scroll them — the
+   * grid moves those rows itself, by a transform or a margin — but a box that
+   * clips is a box the browser can scroll, and it does, to show a cell it
+   * focuses: one the window has rendered past the edge, as the cursor walks
+   * along the header row or a pinned row. Left scrolled, the rowgroup holds
+   * its rows out of line with the body's for good. Heard on the way down,
+   * since a scroll does not bubble, and put back before the frame is painted.
+   * Only a rowgroup: what scrolls inside a cell is the consumer's.
+   */
+  effect(() => {
+    const root = options.grid();
+    if (!root) return;
+    const onScroll = (event: Event): void => {
+      const target = event.target;
+      if (!(target instanceof Element) || target.getAttribute('role') !== 'rowgroup') return;
+      if (target === options.scroller()) return;
+      if (target.scrollLeft !== 0) target.scrollLeft = 0;
+      if (target.scrollTop !== 0) target.scrollTop = 0;
+    };
+    root.addEventListener('scroll', onScroll, true);
+    onCleanup(() => root.removeEventListener('scroll', onScroll, true));
+  });
+
   effect(() => {
     // Read both windows: this effect exists to run again when either moves.
     rowAxis.items();
@@ -1156,27 +2613,111 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     el.focus();
   });
 
+  /**
+   * The row the last jump among unequal rows was aimed at, or -1.
+   *
+   * The virtualizer goes on correcting a jump for a few frames, and only
+   * another scroll lets it go. A cursor moved on to a row already in view asks
+   * for no scroll, so the correction would carry on — and as the row it was
+   * for is measured, take the row the reader is now on off the screen. Moving
+   * along the row the jump was for is still waiting on that jump to land.
+   */
+  let jumpedTo = -1;
+
+  /**
+   * Bring a row wholly into view, by the least scroll that does — or, for a
+   * row taller than the viewport, bring its start into view, unless it fills
+   * the viewport already.
+   *
+   * Where rows differ the edge is chosen here rather than left to the
+   * virtualizer's `nearest`, for two reasons. A jump into rows not yet
+   * measured is aimed with estimates, and the virtualizer goes on correcting
+   * it as they land only while it has an offset to aim at — but `nearest` has
+   * none once the estimate says the row is in view, so the jump is let go on
+   * its first frame, and a row that measures taller than its estimate is left
+   * with its foot below the viewport. An edge is always an offset. And a row
+   * taller than the viewport is never wholly in view: `nearest` takes it to
+   * its foot from below and to its start from above, so every arrow along it
+   * would throw the reader from one end to the other. Its start is where its
+   * cells begin, as a column wider than the band shows its start. A row that
+   * fills the viewport is as much in view as it can be, and a reader part way
+   * down it — or a jump that came to rest on its foot — is left there. Read
+   * untracked: the cursor following its row calls this from inside an effect,
+   * which must not come to depend on the scroll.
+   */
+  const scrollToRow = (row: number): void => {
+    if (typeof rowHeight === 'number') {
+      rowAxis.scrollToIndex(row);
+      return;
+    }
+    untrack(() => {
+      const count = rowCount();
+      if (count === 0) return;
+      const index = clamp(Math.trunc(row), 0, count - 1);
+      const start = rowAxis.offsetOf(index);
+      const size = rowAxis.sizeOf(index);
+      const top = rowAxis.scrollOffset();
+      const viewport = rowAxis.viewportSize();
+      if (start <= top && start + size >= top + viewport) return;
+      if (start < top) {
+        jumpedTo = index;
+        rowAxis.scrollToIndex(index, { align: 'start' });
+      } else if (start + size > top + viewport) {
+        jumpedTo = index;
+        rowAxis.scrollToIndex(index, { align: size > viewport ? 'start' : 'end' });
+      } else if (index !== jumpedTo) {
+        // Wholly in view, where `nearest` scrolls nothing: all it does here is
+        // let go of the jump still settling on another row.
+        jumpedTo = -1;
+        rowAxis.scrollToIndex(index);
+      }
+    });
+  };
+
   const scrollToCell = (cell: GridCell): void => {
-    columnAxis.scrollToIndex(cell.column);
+    scrollToColumn(cell.column);
     // The header is outside the scroller, so there is nothing to scroll to
-    // vertically when the cursor is on it.
-    if (cell.row >= 0) rowAxis.scrollToIndex(cell.row);
+    // vertically when the cursor is on it — nor on a pinned row, which is
+    // outside it too. A scrolling row is found by its place in the view.
+    if (cell.row >= 0 && !untrack(() => isPinnedRow(cell.row))) {
+      scrollToRow(cell.row - untrack(topCount));
+    }
   };
 
   const focusCell = (cell: GridCell): void => {
     const target = clampCell(cell);
+    const before = windowBeforeGroupFocus(target);
     setActive(target);
     scrollToCell(target);
 
     const el = elementAt(target);
     if (el) {
-      pendingFocus = null;
+      pendingFocus = groupFocusRedrawn(before) ? target : null;
       focusOnCursor = true;
       el.focus();
       return;
     }
     pendingFocus = target;
   };
+
+  /**
+   * The cell the reader was on, brought back after the grid turns round.
+   *
+   * A browser puts a scroller whose direction turns back at its inline start,
+   * and the window follows the scroll: a focused cell past the first screen
+   * leaves the document with focus on it, and the reader is left on nothing.
+   * Where focus was on the cursor's cell, that cell is scrolled back into view
+   * and focused again. Focus the reader took elsewhere stays there, and a grid
+   * with nothing focused does nothing beyond the scroll the browser made.
+   */
+  let turnedFrom: Direction | undefined;
+  effect(() => {
+    const now = direction();
+    const before = turnedFrom;
+    turnedFrom = now;
+    if (before === undefined || before === now || !focusOnCursor) return;
+    untrack(() => focusCell(active.get()));
+  });
 
   const cellFrom = (target: EventTarget | null): GridCell | null => {
     if (!(target instanceof Element)) return null;
@@ -1336,8 +2877,8 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
 
   /** The key a gesture on this row selects by, or null where there is no row to select. */
   const selectableKeyAt = (index: number): GridRowKey | null => {
-    const row = rowList()[index];
-    return row === undefined || !isSelectable(row) ? null : rowKeyOf(row, index);
+    const row = rowAtPosition(index);
+    return row === null || !isSelectable(row.item) ? null : row.key;
   };
 
   const selectRow = (key: GridRowKey, additive = false): void => {
@@ -1495,6 +3036,40 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
   };
 
   /**
+   * Where the row at a position sits after the rows changed, pinned ones
+   * included: a pinned row is found again by key among the rows pinned to its
+   * edge, and a row of the view by `followRow`, each then counted past
+   * whatever is pinned above it now. A pinned row that has gone leaves the
+   * cursor at its place among that edge's rows.
+   */
+  const followPosition = (
+    row: number,
+    rows: readonly T[],
+    previous: readonly T[],
+    pinned: PinnedRows<T>,
+    before: PinnedRows<T>,
+  ): number => {
+    if (row < 0) return row;
+    const followPinned = (at: number, now: readonly T[], was: readonly T[]): number => {
+      const index = indexOfKey(now, rowKeyOf(was[at]!, at));
+      return index < 0 ? Math.min(at, Math.max(0, now.length - 1)) : index;
+    };
+    if (row < before.top.length) return followPinned(row, pinned.top, before.top);
+    const at = row - before.top.length;
+    if (at >= previous.length && at - previous.length < before.bottom.length) {
+      const below = followPinned(at - previous.length, pinned.bottom, before.bottom);
+      return pinned.top.length + rows.length + below;
+    }
+    // A row of the view that a filter took stays at its place, held to the
+    // view: past its end are the rows pinned below, which are not data, and a
+    // reader watching rows go is still among the rows. With none pinned below,
+    // the clamp that keeps every cursor legal does the same.
+    const inView = followRow(at, rows, previous);
+    const held = pinned.bottom.length > 0 && rows.length > 0;
+    return pinned.top.length + (held ? Math.min(inView, rows.length - 1) : inView);
+  };
+
+  /**
    * Where the column the cursor was on sits in the new list — or, where it has
    * gone, its nearest neighbour that stayed. Null where the position named no
    * column, or nothing of the old list is left, and a clamp is all there is.
@@ -1580,6 +3155,8 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     previousRows: readonly T[] | null,
     columns: readonly GridColumn<T>[],
     previousColumns: readonly GridColumn<T>[] | null,
+    pinned: PinnedRows<T>,
+    pinnedBefore: PinnedRows<T>,
   ): void => {
     const places = previousColumns === null ? null : placesOf(columns);
 
@@ -1593,7 +3170,12 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     else if (places !== null && previousColumns !== null) followRange(places, previousColumns);
 
     const cursor = untrack(() => active.get());
-    const row = previousRows === null ? cursor.row : followRow(cursor.row, rows, previousRows);
+    // A cursor on a row of groups is `followGroup`'s, column and all.
+    if (cursor.row < HEADER_ROW) return;
+    const row =
+      previousRows === null
+        ? cursor.row
+        : followPosition(cursor.row, rows, previousRows, pinned, pinnedBefore);
     let column = cursor.column;
     // Moved even where the column that took its place sits at the same index,
     // when the one the cursor was on has gone: the reader is on another column
@@ -1640,28 +3222,91 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
    */
   let renderedRows: readonly T[] | null = null;
   let renderedColumns: readonly GridColumn<T>[] | null = null;
+  // The rows pinned to each edge count in every position after them, so a
+  // change to them moves the rows as much as a sort does. Compared by key
+  // rather than by identity: a row of totals is a new object after every edit
+  // under it, and a range dropped for that would be dropped for an edit.
+  let renderedPinned: PinnedRows<T> = { top: NO_ROWS, bottom: NO_ROWS };
+  const samePinnedRows = (a: readonly T[], b: readonly T[]): boolean => {
+    if (a === b) return true;
+    if (a.length !== b.length) return false;
+    return untrack(() => a.every((row, i) => rowKeyOf(row, i) === rowKeyOf(b[i]!, i)));
+  };
   effect(() => {
     // Read tracked: the cursor has to be re-examined when either axis changes.
     const rows = rowList();
     const columns = columnList();
+    const pinned: PinnedRows<T> = { top: pinnedTop.get(), bottom: pinnedBottom.get() };
 
     const previousRows = renderedRows;
     const previousColumns = renderedColumns;
+    const previousPinned = renderedPinned;
     renderedRows = rows;
     renderedColumns = columns;
-    const rowsMoved = previousRows !== null && !sameItems(previousRows, rows);
+    renderedPinned = pinned;
+    const rowsMoved =
+      previousRows !== null &&
+      (!sameItems(previousRows, rows) ||
+        !samePinnedRows(previousPinned.top, pinned.top) ||
+        !samePinnedRows(previousPinned.bottom, pinned.bottom));
     const columnsMoved = previousColumns !== null && !sameIds(previousColumns, columns);
+    const cursorBefore = untrack(() => active.get());
     if (rowsMoved || columnsMoved) {
       follow(
         rows,
         rowsMoved ? previousRows : null,
         columns,
         columnsMoved ? previousColumns : null,
+        pinned,
+        previousPinned,
       );
+    }
+    // A cursor on a group, which `follow` leaves alone. Not only when the ids
+    // move: the same columns handed over under other groups can move a group
+    // to another row.
+    if (previousColumns !== null && previousColumns !== columns) {
+      followGroup(cursorBefore, previousColumns, columns);
     }
 
     setActive(untrack(() => active.get()));
   });
+
+  /**
+   * Bring the cursor's row back into the window, and focus with it, when rows
+   * changing height above it on screen push it out.
+   *
+   * Past the rows rendered below the viewport a row is not in the document,
+   * and the cell holding focus goes with it, leaving the reader's next key to
+   * the page. A view that changed is the cursor following its row, above,
+   * which brings it back the same way; a scroll of the reader's own moves the
+   * viewport rather than the row, and a row it takes away is theirs to leave.
+   * So only the same row, at the same place, rendered before and starting
+   * somewhere else now, is a row heights moved. A grid of one height has no
+   * heights to change, and does not watch.
+   */
+  const followRowHeights = (): void => {
+    let last: { row: number; item: T | undefined; start: number; rendered: boolean } | null =
+      null;
+    effect(() => {
+      const cursor = active.get();
+      const index = cursor.row - topCount();
+      const scrolling = cursor.row >= 0 && !isPinnedRow(cursor.row);
+      const item = scrolling ? rowList()[index] : undefined;
+      const start = item === undefined ? -1 : rowAxis.offsetOf(index);
+      const { startIndex, endIndex } = rowAxis.range();
+      const rendered = item !== undefined && index >= startIndex && index <= endIndex;
+      const before = last;
+      last = { row: cursor.row, item, start, rendered };
+      if (before === null || before.row !== cursor.row || before.item !== item) return;
+      if (!before.rendered || rendered || before.start === start) return;
+      // Unlike the cursor following a sort, focus inside a cell needs no
+      // sparing here: a control in the row left the document with it.
+      untrack(() => {
+        if (cursorHeldFocus()) focusCell(cursor);
+      });
+    });
+  };
+  if (typeof rowHeight !== 'number') followRowHeights();
 
   // --- Resizing ------------------------------------------------------------
 
@@ -1689,18 +3334,34 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
   let stopResize: (() => void) | null = null;
   onCleanup(() => stopResize?.());
 
+  /** A drag of a column's handle, or null where the handle names no column that can be resized. */
+  const columnResizeDrag = (handle: Element): ResizeDrag | null => {
+    const id = handle.getAttribute(GRID_RESIZER_ATTRIBUTE);
+    if (id === null) return null;
+    const index = indexOfColumn(id);
+    const column = untrack(() => columnList()[index]);
+    if (!column || column.resizable === false) return null;
+    const startWidth = widthOf(index);
+    return {
+      hold: (on) => resizing.set(on ? id : null),
+      to: (delta) => {
+        resizeColumn(id, startWidth + delta);
+      },
+      cancel: () => {
+        resizeColumn(id, startWidth);
+      },
+    };
+  };
+
   const onResizePointerDown = (event: PointerEvent): void => {
     if (event.button !== 0 || !event.isPrimary) return;
     if (stopResize) return;
 
     const handle = event.currentTarget;
     if (!(handle instanceof HTMLElement)) return;
-    const id = handle.getAttribute(GRID_RESIZER_ATTRIBUTE);
-    if (id === null) return;
-
-    const index = indexOfColumn(id);
-    const column = untrack(() => columnList()[index]);
-    if (!column || column.resizable === false) return;
+    // A column's handle or a group's: one gesture either way, whatever it resizes.
+    const drag = columnResizeDrag(handle) ?? groupResizeDrag(handle);
+    if (drag === null) return;
 
     // A press on the handle is a resize and nothing else: without this it is
     // also a press on the header cell it sits in, which moves the cursor.
@@ -1708,13 +3369,16 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     event.stopPropagation();
 
     const startX = event.clientX;
-    const startWidth = widthOf(index);
+    // The handle is at the column's inline end, which right to left is its
+    // left edge: a drag to the left there is a drag away from the column.
+    const rtl = untrack(direction) === 'rtl';
     handle.setPointerCapture?.(event.pointerId);
-    resizing.set(id);
+    drag.hold(true);
 
     const onMove = (move: PointerEvent): void => {
       if (move.pointerId !== event.pointerId) return;
-      resizeColumn(id, startWidth + (move.clientX - startX));
+      const moved = move.clientX - startX;
+      drag.to(rtl ? -moved : moved);
     };
 
     // Heard on the window, capturing, so it is the first thing to hear the key
@@ -1729,7 +3393,7 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
       key.stopPropagation();
       // A drag is a single gesture, so cancelling it puts the width back where
       // it started rather than undoing the last increment.
-      resizeColumn(id, startWidth);
+      drag.cancel();
       stop();
     };
 
@@ -1742,7 +3406,7 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
       if (handle.hasPointerCapture?.(event.pointerId)) {
         handle.releasePointerCapture(event.pointerId);
       }
-      resizing.set(null);
+      drag.hold(false);
       stopResize = null;
     };
 
@@ -1767,20 +3431,77 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     return Math.max(1, range.visibleEndIndex - range.visibleStartIndex + 1);
   };
 
+  /**
+   * The row a page key lands on from `row`, `direction` rows of one viewport.
+   *
+   * Where every row is one height, the rows on screen are a viewport, and a
+   * count of them is what a page has always been. Where heights differ, a count
+   * taken here is wrong a page further on — four short rows on screen are not
+   * four tall ones — so a page is the viewport's height in pixels: the furthest
+   * row starting within that distance, either way.
+   */
+  const pageFrom = (row: number, direction: 1 | -1): number =>
+    typeof rowHeight === 'number' ? row + direction * pageRows() : pageByPixels(row, direction);
+
+  /**
+   * A page key's target, past any pinned rows. A page by a count is the same
+   * count in the one list of rows. A page by pixels is measured in the view,
+   * which is all the row axis holds, so a row of the view is paged there and
+   * counted back past the rows pinned above it; from a pinned row a page goes
+   * into the view from its near end, or off it to the header above.
+   */
+  const pageAcrossPins = (row: number, direction: 1 | -1): number => {
+    const top = untrack(topCount);
+    const below = untrack(bottomCount);
+    if (typeof rowHeight === 'number' || top + below === 0) return pageFrom(row, direction);
+    const count = untrack(rowCount);
+    if (row < top) return direction > 0 ? top + pageFrom(HEADER_ROW, 1) : HEADER_ROW;
+    if (row >= top + count) return direction > 0 ? row + 1 : top + pageFrom(count - 1, -1);
+    const target = pageFrom(row - top, direction);
+    return target < 0 ? HEADER_ROW : top + target;
+  };
+
+  const pageByPixels = (row: number, direction: 1 | -1): number =>
+    untrack(() => {
+      const viewport = rowAxis.viewportSize();
+      if (viewport <= 0) return row + direction * DEFAULT_PAGE_ROWS;
+      // The header is above the scroller and has no offset in it. Its page ends
+      // on the last row the first screen shows, which is where counting rows
+      // puts it in a grid of one height.
+      if (row < 0) return direction > 0 ? Math.max(0, rowAxis.indexAt(viewport - 1)) : row;
+      const target = rowAxis.offsetOf(row) + direction * viewport;
+      // Above the first row is the header, as it is for a count that overshoots.
+      if (target < 0) return HEADER_ROW;
+      const index = rowAxis.indexAt(target);
+      // A row taller than the viewport would otherwise hold a page down to itself.
+      if (direction > 0) return Math.max(index, row + 1);
+      // Down is the furthest row starting within a viewport, so up is too: the
+      // row the target falls inside starts further up than that, and a page
+      // up from where a page down landed would pass the row it came from.
+      const within = rowAxis.offsetOf(index) < target ? index + 1 : index;
+      return Math.min(within, row - 1);
+    });
+
   const onKeyDown = (event: KeyboardEvent): boolean => {
     const columns = untrack(columnCount);
     if (columns === 0) return false;
     const cursor = untrack(() => active.get());
+    const key = inlineKey(event.key, untrack(direction));
+    if (cursor.row < HEADER_ROW) {
+      const handled = onGroupRowKeyDown(event, key, cursor);
+      if (handled !== undefined) return handled;
+    }
 
     // Alt is the resize modifier, and only on the header — where the column
     // the arrows would resize is the one the reader is standing on. Taken
     // before the guard below, which throws away every other modified key.
     if (event.altKey) {
       if (cursor.row !== HEADER_ROW) return false;
-      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return false;
+      if (key !== 'ArrowLeft' && key !== 'ArrowRight') return false;
       const column = untrack(() => columnList()[cursor.column]);
       if (!column) return false;
-      const step = event.key === 'ArrowRight' ? resizeStep : -resizeStep;
+      // Toward the inline end moves the column's free edge away from it.
+      const step = key === 'ArrowRight' ? resizeStep : -resizeStep;
       const settled = resizeColumn(column.id, widthOf(cursor.column) + step);
       // A pointer user watches the column move. Resizing from the keyboard
       // changes nothing a screen reader would otherwise report: the handle is
@@ -1805,7 +3526,7 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
       return true;
     }
 
-    if (modified && !event.shiftKey && (event.key === 'a' || event.key === 'A')) {
+    if (modified && !event.shiftKey && isKeyA(event)) {
       if (rowSelectionMode !== 'multiple') return false;
       selectAllRows();
       event.preventDefault();
@@ -1817,16 +3538,16 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     // above by the sort.
     if (event.key === ' ' && !modified && !event.shiftKey) {
       if (rowSelectionMode === 'none' || cursor.row < 0) return false;
-      const key = untrack(() => selectableKeyAt(cursor.row));
+      const rowKey = untrack(() => selectableKeyAt(cursor.row));
       // A row that cannot be selected still spends the key. Left to the
       // browser, Space scrolls the page — under a reader who pressed it to
       // select, in a grid where it does.
-      if (key !== null) toggleRowSelection(key);
+      if (rowKey !== null) toggleRowSelection(rowKey);
       event.preventDefault();
       return true;
     }
 
-    const rows = untrack(rowCount);
+    const rows = untrack(allRowCount);
     const toEnd = { row: rows - 1, column: columns - 1 };
 
     // Shift extends the rectangle. It never reaches the column header, because
@@ -1838,7 +3559,7 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     let next: GridCell;
 
     if (modified) {
-      switch (event.key) {
+      switch (key) {
         case 'Home':
           next = { row: 0, column: 0 };
           break;
@@ -1867,7 +3588,7 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
           return false;
       }
     } else {
-      switch (event.key) {
+      switch (key) {
         case 'ArrowRight':
           next = { row: cursor.row, column: cursor.column + 1 };
           break;
@@ -1888,15 +3609,17 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
           next = { row: cursor.row, column: columns - 1 };
           break;
         case 'PageDown':
-          next = { row: cursor.row + pageRows(), column: cursor.column };
+          next = { row: pageAcrossPins(cursor.row, 1), column: cursor.column };
           break;
         case 'PageUp':
-          next = { row: cursor.row - pageRows(), column: cursor.column };
+          next = { row: pageAcrossPins(cursor.row, -1), column: cursor.column };
           break;
         default:
           return false;
       }
     }
+
+    if (next.row < HEADER_ROW) next = aboveColumnHeader(cursor, next, key === 'ArrowUp');
 
     if (extend) {
       // Clamped off the header: the cursor may sit on row one, but a rectangle
@@ -1953,17 +3676,26 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
   return {
     rows: () => rowViews.get(),
     columns: () => columnViews.get(),
-    rowCount,
+    rowCount: allRowCount,
     sourceRowCount,
     columnCount,
-    rowIndex: (key) => indexOfKey(rowList(), key),
-    rowAt: (index) => rowList()[index],
+    rowIndex: positionOfKey,
+    rowAt: (index) => rowAtPosition(index)?.item,
     columnIndex: (id) => columnList().findIndex((column) => column.id === id),
     columnAt: (index) => columnList()[index],
     columnWidth: (id) => {
       const column = columnById(id);
       return column === undefined ? undefined : widthFor(column);
     },
+    direction,
+
+    pinColumn,
+    columnPin: (id) => {
+      const column = columnById(id);
+      return column === undefined ? undefined : pinOf(column, columnPins.get());
+    },
+    pinnedTopRows: () => pinnedTopViews.get(),
+    pinnedBottomRows: () => pinnedBottomViews.get(),
 
     activeCell: () => active.get(),
     focusCell,
@@ -1971,6 +3703,11 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
 
     cellValue: (row, column) => column.column.value(row.item),
     resizeColumn,
+
+    headerRows: () => headerRowViews.get(),
+    resizeGroup: (id, width) => {
+      shareAmong(columnsAt(columnsOfGroup(id)), width);
+    },
 
     sort: () => sortState.get(),
     sortDirection,
@@ -2015,7 +3752,7 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
     gridProps: () => ({
       // `aria-rowcount` includes the header, which is what `indexBase` already
       // accounted for; `aria-colcount` is the columns themselves.
-      ...rowAxis.countProps(),
+      ...rowCountProps(),
       ...columnAxis.countProps(),
       role: 'grid',
       'aria-label': options.label,
@@ -2034,25 +3771,32 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
       role: 'rowgroup',
       style: {
         // The header row is wider than the header, and slides under it. Without
-        // this the columns scrolled off the left would be painted outside the
-        // grid rather than clipped by it.
+        // this the columns scrolled past the inline start would be painted
+        // outside the grid rather than clipped by it.
         overflow: 'hidden',
       },
     }),
 
-    headerRowProps: () => ({
-      role: 'row',
-      'aria-rowindex': '1',
+    headerRowProps: (row) => ({
+      role: onlyGaps(row) ? 'none' : 'row',
+      // Numbered from the top row of groups, so the columns' own row comes
+      // after every one of them, and the first data row after that.
+      'aria-rowindex': onlyGaps(row)
+        ? undefined
+        : String((row?.index ?? HEADER_ROW) - HEADER_ROW + groupRowCount() + 1),
       style: {
         // The body's container is inside the scroller, so the browser has
         // already moved it by the scroll offset; this one is not, so it has to
         // be moved by both. One transform on one element per scroll, rather
-        // than a position written to every header cell.
-        transform: `translateX(${columnAxis.offset() - columnAxis.scrollOffset()}px)`,
+        // than a position written to every header cell — or, with a column
+        // pinned, one margin.
+        ...horizontalShift(),
       },
     }),
 
-    headerCellProps: (column) => {
+    headerCellProps: (cell) => {
+      const column = columnOfHeaderCell(cell);
+      if (column === null) return groupHeaderCellProps(cell as GridHeaderCell<T>);
       const sortable = column.column.sortable !== false;
       // Read only where it means something, so a grid that never sorts adds no
       // dependency on the sort to every one of its header cells.
@@ -2084,17 +3828,25 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
           ? ''
           : undefined,
         'data-column': column.column.id,
-        style: { width: `${column.width}px` },
+        style: cellStyle(column),
+        ...(column.pin === undefined ? {} : { 'data-pinned': column.pin }),
       };
     },
 
-    bodyProps: () => ({
-      // Both axes share the scroller, so both have an opinion about it. They
-      // agree, and spreading both is what keeps that true if they ever stop.
-      ...rowAxis.scrollerProps(),
-      ...columnAxis.scrollerProps(),
-      role: 'rowgroup',
-    }),
+    bodyProps: () =>
+      padForPins(
+        sizeScroller(
+          {
+            // Both axes share the scroller, so both have an opinion about it.
+            // They agree, and spreading both is what keeps that true if they
+            // ever stop.
+            ...rowAxis.scrollerProps(),
+            ...columnAxis.scrollerProps(),
+            role: 'rowgroup',
+          },
+          scrollerHeight,
+        ),
+      ),
 
     // Composed by hand rather than spread from the two axes: each returns a
     // whole `style` object, and the second would replace the first — leaving a
@@ -2109,18 +3861,25 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
 
     containerProps: () => ({
       role: 'none',
-      style: {
-        transform: `translate(${columnAxis.offset()}px, ${rowAxis.offset()}px)`,
-      },
+      style: containerStyle(),
+    }),
+
+    // Clipped as the header is, for the same reason: its rows are as wide as
+    // the columns, and slide under it.
+    footerProps: () => ({
+      role: 'rowgroup',
+      style: { overflow: 'hidden' },
     }),
 
     rowProps: (row) => {
+      if (row.pin !== undefined) return pinnedRowProps(row);
       const selectable = rowSelectionMode !== 'none' && isSelectable(row.item);
       const selected = selectable && isRowSelected(row.key);
       return {
         // Carries `aria-rowindex` and the row's height, and marks the element
         // for the virtualizer that owns it.
-        ...rowAxis.itemProps(row.index),
+        ...scrollingRowProps(row),
+        ...declaredHeight(row),
         role: 'row',
         // Only where selection is what `aria-selected` reports. In a
         // single-select grid, `false` on every other row is a screenful of
@@ -2153,7 +3912,8 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
         'data-active': isActive(row.index, column.index) ? '' : undefined,
         'data-selected': selected ? '' : undefined,
         'data-column': column.column.id,
-        style: { width: `${column.width}px` },
+        style: cellStyle(column),
+        ...(column.pin === undefined ? {} : { 'data-pinned': column.pin }),
       };
     },
 
@@ -2163,23 +3923,46 @@ export function createGrid<T>(options: GridOptions<T>): Grid<T> {
      * Alt+Arrow on the header cell — and a separator announcing a width in the
      * middle of every column header is one more thing to hear on the way past.
      */
-    resizerProps: (column) => ({
-      [GRID_RESIZER_ATTRIBUTE]: column.column.id,
-      'aria-hidden': 'true',
-      'data-resizing': resizing.get() === column.column.id ? '' : undefined,
-      'data-disabled': column.column.resizable === false ? '' : undefined,
-      style: {
-        // Without it the browser treats a touch on the handle as the start of
-        // a scroll, and the drag never gets a second event.
-        'touch-action': 'none',
-      },
-    }),
+    resizerProps: (cell) => {
+      const column = columnOfHeaderCell(cell);
+      if (column === null) return groupResizerProps(cell as GridHeaderCell<T>);
+      return {
+        [GRID_RESIZER_ATTRIBUTE]: column.column.id,
+        'aria-hidden': 'true',
+        'data-resizing': resizing.get() === column.column.id ? '' : undefined,
+        'data-disabled': column.column.resizable === false ? '' : undefined,
+        style: {
+          // Without it the browser treats a touch on the handle as the start of
+          // a scroll, and the drag never gets a second event.
+          'touch-action': 'none',
+        },
+      };
+    },
   };
 }
 
 function clamp(value: number, low: number, high: number): number {
   return Math.min(Math.max(value, low), high);
 }
+
+/**
+ * Whether a key is the one marked A, which with Ctrl selects every row.
+ *
+ * The character decides where it is a Latin letter, so a layout that puts A
+ * somewhere else — AZERTY, on the key QWERTY calls Q — selects with the key
+ * marked A. Where it is a letter of another script the physical key decides:
+ * a Hebrew layout types ש on that key and an Arabic one ش, and with Ctrl it
+ * is still the key that selects all there, as it is to the editing history's
+ * shortcuts and the clipboard's. A key that types no letter is no shortcut.
+ */
+function isKeyA(event: KeyboardEvent): boolean {
+  if (!LETTER.test(event.key)) return false;
+  if (LATIN_LETTER.test(event.key)) return event.key === 'a' || event.key === 'A';
+  return event.code === 'KeyA';
+}
+
+const LETTER = /^\p{L}$/u;
+const LATIN_LETTER = /^\p{Script=Latin}$/u;
 
 /** Whether two lists hold the same items in the same order, by identity. */
 function sameItems<V>(a: readonly V[], b: readonly V[]): boolean {
@@ -2209,6 +3992,96 @@ function placesOf<T>(columns: readonly GridColumn<T>[]): Map<string, number> {
     if (!places.has(columns[i]!.id)) places.set(columns[i]!.id, i);
   }
   return places;
+}
+
+/** What the row axis is told about heights. */
+interface RowSizes {
+  readonly itemSize: number | ((index: number) => number);
+  /** Whether rendered rows are measured, which only `'auto'` asks for. */
+  readonly measure: boolean;
+}
+
+/**
+ * The row axis's sizes, for each way a caller can give a row its height.
+ *
+ * A number is handed over as it is, which keeps a grid of one height on the
+ * virtualizer's arithmetic path with nothing held per row. A function is asked
+ * of the row at each place in the view rather than of the index, because a
+ * sort changes which row is at an index and a height belongs to the row. And
+ * it is not measured: a declared height is not an estimate, and measuring it
+ * would let a stylesheet overrule the caller.
+ */
+function rowSizesFor<T>(
+  height: number | ((row: T, index: number) => number) | 'auto',
+  estimate: number,
+  rows: () => readonly T[],
+): RowSizes {
+  if (typeof height === 'number') return { itemSize: height, measure: false };
+  if (height === 'auto') return { itemSize: () => estimate, measure: true };
+  // The count the virtualizer sizes for is the length of this same view, so
+  // every index it asks about holds a row.
+  return { itemSize: (index) => height(rows()[index]!, index), measure: false };
+}
+
+/**
+ * Have the row axis watch the rows a change to the view brings into a window
+ * that has not moved.
+ *
+ * The virtualizer looks for the rows to measure again only when its window's
+ * range moves. A sort, a filter or a group shut can put other rows in every
+ * place of the window and leave the range where it was, and the rows brought
+ * in would then never be measured — they would stay the estimate, and the
+ * sizer and the window with them, until the reader scrolled — while the rows
+ * taken out stayed watched. `remeasure` is the one way to have it look again.
+ *
+ * It also forgets the height of the row at the index it is handed, and any
+ * row's height forgotten here is a row that shrinks back to the estimate until
+ * the observer reports it again: the rows below it rebuilt twice, and near the
+ * foot of the grid a sizer that shrinks under the scroll and clamps it. So it
+ * is handed an index that names no row. Past the view, the row axis keys an
+ * index by the index itself, and no row can be keyed NaN in this grid: every
+ * lookup by key is by `===`, under which NaN is equal to nothing.
+ */
+function watchRowsBroughtIn(rows: Virtualizer): void {
+  let window: { start: number; end: number; keys: ReadonlySet<string | number> } | null = null;
+  effect(() => {
+    const items = rows.items();
+    const { startIndex, endIndex } = rows.range();
+    const before = window;
+    window = { start: startIndex, end: endIndex, keys: new Set(items.map((item) => item.key)) };
+    // A window that moved is looked through again by the virtualizer itself.
+    if (before === null || before.start !== startIndex || before.end !== endIndex) return;
+    if (items.every((item) => before.keys.has(item.key))) return;
+    untrack(() => rows.remeasure(Number.NaN));
+  });
+}
+
+/**
+ * The scroller's height and cap, as styles, or null where neither was asked for.
+ *
+ * Inline, so they win over a stylesheet that bounds the scroller — which a grid
+ * of a fixed height needs one to, and which is what `height: 'auto'` undoes.
+ */
+function scrollerHeightStyle(
+  height: 'auto' | undefined,
+  maxHeight: number | undefined,
+): Readonly<Record<string, string>> | null {
+  if (height === undefined && maxHeight === undefined) return null;
+  const style: Record<string, string> = {};
+  if (height === 'auto') style.height = 'auto';
+  if (maxHeight !== undefined) style['max-height'] = `${maxHeight}px`;
+  return style;
+}
+
+/**
+ * The scroller's props with its height and cap added to the style the axes
+ * gave it — added rather than spread beside it, since a second `style` would
+ * replace the first and take `overflow-anchor` with it.
+ */
+function sizeScroller(props: GridProps, height: Readonly<Record<string, string>> | null): GridProps {
+  if (height === null) return props;
+  const style = props.style as Readonly<Record<string, string>> | undefined;
+  return { ...props, style: { ...style, ...height } };
 }
 
 /**
@@ -2263,7 +4136,7 @@ function said(locale: Locale, key: string, english: string, values?: MessageValu
 }
 
 /** A column's new width, after a resize from the keyboard. */
-function describeWidth<T>(locale: Locale, column: GridColumn<T>, width: number): string {
+function describeWidth(locale: Locale, column: { readonly header: string }, width: number): string {
   const n = Math.round(width);
   return said(locale, 'gridColumnWidth', `${column.header}, ${n} pixels`, {
     column: column.header,
@@ -2305,4 +4178,320 @@ export function describeFilterCount(locale: Locale, shown: number, total: number
   return shown === total
     ? said(locale, 'gridAllRows', `All ${total} rows`, values)
     : said(locale, 'gridRowsLeft', `${shown} of ${total} rows`, values);
+}
+
+// --- Pinning ---------------------------------------------------------------
+
+/** No pin made at the grid: every column keeps the pin its definition gives it. */
+const EMPTY_PINS: ReadonlyMap<string, GridColumnPin> = new Map();
+/** No rows pinned to an edge, shared so that none is the same value every time. */
+const NO_ROWS: readonly never[] = [];
+const NO_ROW_VIEWS: readonly never[] = [];
+
+/** How the pinned columns divide the drawn list: a count and a width per edge. */
+interface PinLayout {
+  readonly start: number;
+  readonly end: number;
+  readonly startWidth: number;
+  readonly endWidth: number;
+}
+
+/** Nothing pinned, as one value, so that asking whether anything is costs a comparison. */
+const NO_PINS: PinLayout = { start: 0, end: 0, startWidth: 0, endWidth: 0 };
+
+function samePinLayout(a: PinLayout, b: PinLayout): boolean {
+  return (
+    a.start === b.start &&
+    a.end === b.end &&
+    a.startWidth === b.startWidth &&
+    a.endWidth === b.endWidth
+  );
+}
+
+/** A pin as the grid reads one: anything but an edge is no pin. */
+export function asPin(value: unknown): GridColumnPin {
+  return value === 'start' || value === 'end' ? value : null;
+}
+
+/** Where a column is held: a pin made at the grid, else the column's own. */
+export function pinOf<T>(column: GridColumn<T>, pins: ReadonlyMap<string, GridColumnPin>): GridColumnPin {
+  return asPin(pins.has(column.id) ? pins.get(column.id) : column.pin);
+}
+
+/** Start-pinned first, end-pinned last: the order a region is drawn in, as a number. */
+export function pinRegion(pin: GridColumnPin): 0 | 1 | 2 {
+  return pin === 'start' ? 0 : pin === 'end' ? 2 : 1;
+}
+
+/**
+ * The columns in the order they are drawn — start-pinned, scrolling,
+ * end-pinned, each in the order handed over.
+ *
+ * Shared with `createGridState`, which hands the grid its columns in this
+ * order so that a place in its list and a place in the grid's are the same.
+ * The list itself where it is in that order already, which is every list that
+ * pins nothing.
+ */
+export function inDrawnOrder<T>(
+  list: readonly GridColumn<T>[],
+  pins: ReadonlyMap<string, GridColumnPin>,
+): readonly GridColumn<T>[] {
+  let last = 0;
+  let ordered = true;
+  for (const column of list) {
+    const region = pinRegion(pinOf(column, pins));
+    if (region < last) ordered = false;
+    last = Math.max(last, region);
+  }
+  if (ordered) return list;
+  const regions: [GridColumn<T>[], GridColumn<T>[], GridColumn<T>[]] = [[], [], []];
+  for (const column of list) regions[pinRegion(pinOf(column, pins))].push(column);
+  return [...regions[0], ...regions[1], ...regions[2]];
+}
+
+/**
+ * The grid's own column list: the caller's, in drawn order.
+ *
+ * The caller's array itself wherever it is in that order, so a grid that pins
+ * nothing reads exactly the list it always did. A reordering is kept while it
+ * holds the same columns in the same order, so writing a pin that moves
+ * nothing — a column already at the edge it is pinned to — hands nothing a
+ * new list, and a sorted grid re-sorts nothing for it.
+ */
+function drawnColumnList<T>(
+  columns: () => readonly GridColumn<T>[],
+  pins: Signal.State<ReadonlyMap<string, GridColumnPin>>,
+): Signal.Computed<readonly GridColumn<T>[]> {
+  let reordered: readonly GridColumn<T>[] | null = null;
+  return new Signal.Computed(() => {
+    const list = columns();
+    const drawn = inDrawnOrder(list, pins.get());
+    if (drawn === list) return list;
+    if (reordered === null || !sameItems(reordered, drawn)) reordered = drawn;
+    return reordered;
+  });
+}
+
+/** Count the pinned columns at each end of a drawn list, and how wide each edge is. */
+function measurePins<T>(
+  list: readonly GridColumn<T>[],
+  pins: ReadonlyMap<string, GridColumnPin>,
+  widthFor: (column: GridColumn<T>) => number,
+): PinLayout {
+  let start = 0;
+  let startWidth = 0;
+  while (start < list.length && pinOf(list[start]!, pins) === 'start') {
+    startWidth += widthFor(list[start]!);
+    start++;
+  }
+  let end = 0;
+  let endWidth = 0;
+  while (end < list.length - start && pinOf(list[list.length - 1 - end]!, pins) === 'end') {
+    endWidth += widthFor(list[list.length - 1 - end]!);
+    end++;
+  }
+  return start === 0 && end === 0 ? NO_PINS : { start, end, startWidth, endWidth };
+}
+
+/** The rows pinned to each edge, as one snapshot the cursor can be followed across. */
+interface PinnedRows<T> {
+  readonly top: readonly T[];
+  readonly bottom: readonly T[];
+}
+
+// --- Column groups -----------------------------------------------------------
+
+/** The key of the columns' own header row, below every row of groups. */
+const COLUMNS_ROW_KEY = 'columns';
+
+/** A column under no group, shared so that none is the same value every time. */
+const NO_GROUP_PATH: readonly GridColumnGroup[] = [];
+
+/**
+ * Side-by-side columns under the same group at one level, or a gap: columns
+ * with no group at that level. `from` and `to` are places in the column list,
+ * both included.
+ */
+interface GroupRun {
+  readonly from: number;
+  readonly to: number;
+  readonly group: GridColumnGroup | null;
+  readonly key: string;
+}
+
+/** Which columns every group spans, at every level, over the whole column list. */
+interface ColumnGroupLayout {
+  /** How many rows of groups sit above the columns' own. */
+  readonly depth: number;
+  /** The groups each column sits under, outermost first, by its place in the list. */
+  readonly paths: readonly (readonly GridColumnGroup[])[];
+  /** The runs of each level, outermost first, in the order of the columns, covering every column. */
+  readonly levels: readonly (readonly GroupRun[])[];
+  /** For each level, the run each column is in, as a place in that level's runs. */
+  readonly runOf: readonly Int32Array[];
+}
+
+/** No group named, as one value, so that asking whether a grid has any costs a comparison. */
+const NO_COLUMN_GROUPS: ColumnGroupLayout = { depth: 0, paths: [], levels: [], runOf: [] };
+
+/**
+ * The groups a column sits under, outermost first.
+ *
+ * Shared with `createGridState`, which keeps a group's columns together. A
+ * group named twice up one chain ends the chain there: a parent that is its
+ * own ancestor has no outermost group to start from.
+ */
+export function columnGroupPath<T>(column: GridColumn<T>): readonly GridColumnGroup[] {
+  if (column.group === undefined) return NO_GROUP_PATH;
+  const path: GridColumnGroup[] = [];
+  const seen = new Set<string>();
+  for (let group: GridColumnGroup | undefined = column.group; group !== undefined; group = group.parent) {
+    if (seen.has(group.id)) break;
+    seen.add(group.id);
+    path.push(group);
+  }
+  return path.reverse();
+}
+
+/**
+ * Lay the groups the columns name out in rows: level 0 the outermost group
+ * over each column, level 1 the one inside that, and so on — so each column's
+ * groups sit at the top, and a column under fewer groups than the deepest has
+ * gaps beneath its innermost one, down to its own header.
+ *
+ * A run is cut wherever the group changes, wherever the run above it is cut,
+ * and wherever `regionOf` says a pinned edge falls. A group's runs are keyed
+ * by its id and how many runs of it came before at that level, so a group
+ * drawn once keeps its key however its columns are moved inside it; a gap is
+ * keyed by its first column, a column's id being unique and a number before a
+ * colon being no gap's.
+ */
+function layoutColumnGroups<T>(
+  list: readonly GridColumn<T>[],
+  regionOf: (index: number) => number,
+): ColumnGroupLayout {
+  const paths = list.map(columnGroupPath);
+  const depth = paths.reduce((deepest, path) => Math.max(deepest, path.length), 0);
+  if (depth === 0) return NO_COLUMN_GROUPS;
+
+  const levels: GroupRun[][] = [];
+  const runOf: Int32Array[] = [];
+  let cut = list.map((_, i) => i === 0 || regionOf(i) !== regionOf(i - 1));
+  for (let level = 0; level < depth; level++) {
+    const runs: { from: number; to: number; group: GridColumnGroup | null; key: string }[] = [];
+    const of = new Int32Array(list.length);
+    const drawn = new Map<string, number>();
+    const below = cut.slice();
+    for (let i = 0; i < list.length; i++) {
+      const group = paths[i]![level] ?? null;
+      const before = i === 0 ? null : (paths[i - 1]![level] ?? null);
+      if (cut[i] || group?.id !== before?.id) {
+        below[i] = true;
+        const times = group === null ? 0 : (drawn.get(group.id) ?? 0);
+        if (group !== null) drawn.set(group.id, times + 1);
+        const key = group === null ? `gap:${list[i]!.id}` : `${times}:${group.id}`;
+        runs.push({ from: i, to: i, group, key });
+      } else {
+        runs[runs.length - 1]!.to = i;
+      }
+      of[i] = runs.length - 1;
+    }
+    cut = below;
+    levels.push(runs);
+    runOf.push(of);
+  }
+  return { depth, paths, levels, runOf };
+}
+
+/**
+ * Whether two layouts say the same: every run over the same columns under
+ * the same group object, and every column under the same group objects. By
+ * identity, so a group handed over again with a new header is a change.
+ */
+function sameColumnGroupLayout(a: ColumnGroupLayout, b: ColumnGroupLayout): boolean {
+  if (a === b) return true;
+  if (a.depth !== b.depth || a.paths.length !== b.paths.length) return false;
+  for (let i = 0; i < a.paths.length; i++) if (!sameItems(a.paths[i]!, b.paths[i]!)) return false;
+  for (let level = 0; level < a.depth; level++) {
+    const left = a.levels[level]!;
+    const right = b.levels[level]!;
+    if (left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i++) {
+      const x = left[i]!;
+      const y = right[i]!;
+      if (x.from !== y.from || x.to !== y.to || x.group !== y.group || x.key !== y.key) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Share a width among columns in proportion to the widths they have, or
+ * evenly where together they have none.
+ *
+ * A column that cannot be resized keeps its width. Each of the rest is held to
+ * its bounds, and what a bound refuses one column is shared among the others,
+ * again in proportion. The whole pixels rounding leaves over go one each to
+ * the columns with the most of a pixel left, the first in line where they tie,
+ * so the columns add up to the width asked for wherever their bounds allow.
+ * Null where no column can be resized.
+ */
+function shareWidth<T>(
+  columns: readonly GridColumn<T>[],
+  current: readonly number[],
+  width: number,
+  clampWidth: (column: GridColumn<T>, width: number) => number,
+): number[] | null {
+  let open = columns.flatMap((column, i) => (column.resizable === false ? [] : [i]));
+  if (open.length === 0) return null;
+  // Each column's bounds, asked of the clamp at either extreme. A share is held
+  // where it falls outside them, by however little: one let through for being
+  // within a pixel of a bound is floored or given a spare pixel below, and the
+  // clamp at the end then moves it back onto the bound — leaving the columns a
+  // pixel off the width asked for, where another column could have taken it.
+  const low = columns.map((column) => clampWidth(column, Number.NEGATIVE_INFINITY));
+  const high = columns.map((column) => clampWidth(column, Number.POSITIVE_INFINITY));
+  const exact = current.slice();
+  const free = new Set(open);
+  let left = width - current.reduce((sum, w, i) => (free.has(i) ? sum : sum + w), 0);
+  while (open.length > 0) {
+    const base = open.reduce((sum, i) => sum + current[i]!, 0);
+    const scale = base > 0 ? left / base : 0;
+    // Columns with no width among them have no proportion to keep: shared in
+    // proportion to nothing, they would stay at nothing whatever was asked.
+    const even = base > 0 ? 0 : left / open.length;
+    const held = open.filter((i) => {
+      const want = base > 0 ? current[i]! * scale : even;
+      if (want >= low[i]! && want <= high[i]!) return false;
+      exact[i] = clampWidth(columns[i]!, want);
+      return true;
+    });
+    if (held.length === 0) {
+      for (const i of open) exact[i] = base > 0 ? current[i]! * scale : even;
+      break;
+    }
+    for (const i of held) left -= exact[i]!;
+    open = open.filter((i) => !held.includes(i));
+  }
+
+  const shared = exact.map((w, i) => (free.has(i) ? Math.floor(w) : w));
+  const owed = Math.round([...free].reduce((sum, i) => sum + exact[i]!, 0));
+  let spare = owed - [...free].reduce((sum, i) => sum + shared[i]!, 0);
+  const byFraction = [...free].sort((x, y) => exact[y]! - shared[y]! - (exact[x]! - shared[x]!) || x - y);
+  for (const i of byFraction) {
+    if (spare <= 0) break;
+    shared[i] = shared[i]! + 1;
+    spare--;
+  }
+  return shared.map((w, i) => (free.has(i) ? clampWidth(columns[i]!, w) : w));
+}
+
+/** A resize drag of one handle: what it holds, and how it moves and is put back. */
+interface ResizeDrag {
+  /** Mark the handle as held, or let it go. */
+  hold(on: boolean): void;
+  /** Move to `delta` px from where the drag started. */
+  to(delta: number): void;
+  /** Put back what the drag started with. */
+  cancel(): void;
 }

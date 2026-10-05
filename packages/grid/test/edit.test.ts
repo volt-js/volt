@@ -21,6 +21,7 @@ import {
   type GridColumn,
   type GridEditChange,
   type GridEditor,
+  type GridOptions,
   type GridRow,
 } from '../src/index.ts';
 
@@ -216,6 +217,8 @@ interface SetupOptions {
    * them in another, as a grid behind `createGridState` does.
    */
   listed?: () => readonly GridColumn<Person>[];
+  /** How the grid is told its rows' heights. */
+  rowHeight?: GridOptions<Person>['rowHeight'];
 }
 
 function setup({
@@ -223,6 +226,7 @@ function setup({
   width = VIEWPORT_WIDTH,
   keyed = true,
   listed = () => columns.get(),
+  rowHeight = ROW_HEIGHT,
 }: SetupOptions = {}): Harness {
   @Component({ selector: `v-edit-${++selectors}`, render: compileTemplate(TEMPLATE) })
   class EditableGrid {
@@ -240,7 +244,7 @@ function setup({
       // Left out for the grid the documentation warns about: one whose rows
       // are identified by nothing but the place they are in.
       getRowKey: keyed ? (row: Person) => row.id : undefined,
-      rowHeight: ROW_HEIGHT,
+      rowHeight,
       label: 'People',
     });
 
@@ -1075,5 +1079,28 @@ describe('the keyboard', () => {
     harness.editing.cancel();
     flushSync();
     expect(attrs('.cell', 'data-editing').filter((value) => value !== null)).toEqual([]);
+  });
+});
+
+describe('an editor in a row measured from the page', () => {
+  it('stays open, in the control being typed into, while its row grows to hold it', () => {
+    const harness = setup({ rowHeight: 'auto' });
+    expect(begin(harness, 1, 0)).toBe(true);
+    const control = editor()!;
+    control.focus();
+    type('a longer value than fits');
+
+    // The control wraps onto a second line, and the row's observer says so.
+    const row = host.querySelector('.row[data-volt-virtual-index="1"]')!;
+    FakeResizeObserver.deliver([{ target: row, block: 64, inline: VIEWPORT_WIDTH }]);
+
+    // The editor is inside its row, so it is wherever the row is: the row it
+    // is in is the new height, and the rows after it moved down out of its way.
+    expect(harness.g.rows()[1]).toMatchObject({ start: 32, size: 64 });
+    expect(harness.g.rows()[2]).toMatchObject({ start: 96, size: 32 });
+    expect(editor()).toBe(control);
+    expect(document.activeElement).toBe(control);
+    expect(control.value).toBe('a longer value than fits');
+    expect(harness.editing.session()).toMatchObject({ row: 1, column: 0 });
   });
 });

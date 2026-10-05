@@ -2477,6 +2477,781 @@ describe('what it says, in the language the application speaks', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Row height
+// ---------------------------------------------------------------------------
+
+/** The rendered row element at an index in the view, or null when the window does not hold it. */
+function rowElement(index: number): HTMLElement | null {
+  return host.querySelector<HTMLElement>(`.row[data-volt-virtual-index="${index}"]`);
+}
+
+/** Row heights arriving the way they do in a browser: from the observer, after render. */
+function measureRows(...heights: [index: number, height: number][]): void {
+  FakeResizeObserver.deliver(
+    heights.map(([index, block]) => ({ target: rowElement(index)!, block, inline: 999 })),
+  );
+}
+
+/** Whether any observer is watching this element for its size. */
+function observed(el: Element | null): boolean {
+  return el !== null && FakeResizeObserver.live.some((observer) => observer.targets.has(el));
+}
+
+/** Where each rendered row is, as `[index, start, size]`. */
+function geometryOf(harness: Harness): [number, number, number][] {
+  return harness.g.rows().map(({ index, start, size }) => [index, start, size]);
+}
+
+/** The rows whose cells read their values since `reads` was last emptied. */
+function rowsRead(): string[] {
+  return [...new Set(reads.map((read) => read.split(':')[0]!))].sort();
+}
+
+/** Twenty for an even id, forty for an odd one. */
+const byParity = (row: Person): number => (row.id % 2 === 0 ? 20 : 40);
+
+describe('rows of heights the caller declares', () => {
+  it('lays each row out at the height a function of the row gives it, and states it back', () => {
+    gridOptions = { ...gridOptions, rowHeight: byParity };
+    const harness = setup();
+
+    // A hundred pixels hold rows 0 to 2 and the top half of row 3, and two
+    // more rows are the overscan.
+    expect(geometryOf(harness)).toEqual([
+      [0, 0, 20], [1, 20, 40], [2, 60, 20], [3, 80, 40], [4, 120, 20], [5, 140, 40],
+    ]);
+    expect(harness.sizer.style.height).toBe(`${500 * 20 + 500 * 40}px`);
+    // Stated back, as a single height is: the arithmetic is only true while
+    // the element is the size the geometry was told.
+    expect(rows().map((row) => row.style.height)).toEqual([
+      '20px', '40px', '20px', '40px', '20px', '40px',
+    ]);
+    // A declared height is not an estimate, so nothing is measured.
+    expect(rows().some((row) => observed(row))).toBe(false);
+  });
+
+  it('moves the window with the heights rather than with a multiple of one', () => {
+    gridOptions = { ...gridOptions, rowHeight: byParity };
+    const harness = setup();
+
+    // Every pair of rows is sixty pixels, so row 10 starts at 300; rows 8 and
+    // 9 before it are the overscan.
+    userScroll(harness.scroller, { top: 300 });
+    expect(harness.g.rows()[0]!.index).toBe(8);
+    expect(harness.container.style.transform).toBe('translate(0px, 240px)');
+    expect(rows()[0]!.getAttribute('aria-rowindex')).toBe('10');
+  });
+
+  it('scrolls to a row at the offset its neighbours give it', () => {
+    gridOptions = { ...gridOptions, rowHeight: byParity };
+    const harness = setup();
+
+    // Row 500 starts after 250 pairs of sixty, is twenty tall, and comes to
+    // rest at the foot of the viewport.
+    harness.g.scrollToCell({ row: 500, column: 0 });
+    flushSync();
+    expect(harness.scroller.scrollTop).toBe(15_000 + 20 - VIEWPORT_HEIGHT);
+
+    press(harness.root, 'End', { ctrlKey: true });
+    expect(harness.scroller.scrollTop).toBe(30_000 - VIEWPORT_HEIGHT);
+    expect(document.activeElement).toBe(cellAt(ROW_COUNT - 1, COLUMN_COUNT - 1));
+  });
+
+  it('pages by one viewport of pixels, not by a count of rows', () => {
+    gridOptions = { ...gridOptions, rowHeight: byParity };
+    const harness = setup();
+
+    // Rows 0 to 2 are wholly on screen and row 3 is cut off at the foot, so a
+    // count of the rows on screen says four. A page is the hundred pixels:
+    // the row at offset 100, which is row 3.
+    press(harness.root, 'PageDown');
+    expect(harness.g.activeCell()).toEqual({ row: 3, column: 0 });
+    // From 80, a hundred more is 180: row 6.
+    press(harness.root, 'PageDown');
+    expect(harness.g.activeCell()).toEqual({ row: 6, column: 0 });
+
+    press(harness.root, 'PageUp');
+    expect(harness.g.activeCell()).toEqual({ row: 3, column: 0 });
+    // A viewport up from 80 is above the first row, which is the header.
+    press(harness.root, 'PageUp');
+    expect(harness.g.activeCell()).toEqual({ row: HEADER_ROW, column: 0 });
+  });
+
+  it('never pages by less than a row, however tall the row', () => {
+    gridOptions = { ...gridOptions, rowHeight: (row: Person) => (row.id === 0 ? 300 : 20) };
+    const harness = setup();
+
+    // A viewport down from row 0 is still inside row 0.
+    press(harness.root, 'PageDown');
+    expect(harness.g.activeCell()).toEqual({ row: 1, column: 0 });
+  });
+
+  it('pages down from the header to the last row of the first screen, as one height does', () => {
+    gridOptions = { ...gridOptions, rowHeight: (row: Person) => (row.id === 0 ? 100 : 20) };
+    const harness = setup();
+    press(harness.root, 'ArrowUp');
+
+    // Row 0 is the whole of the first screen. The header is above the
+    // scroller and has no offset in it, so its page ends on the last row that
+    // screen shows — where a grid of one height puts it — and not on row 1,
+    // the row at offset 100.
+    press(harness.root, 'PageDown');
+    expect(harness.g.activeCell()).toEqual({ row: 0, column: 0 });
+  });
+
+  it('extends a cell range by a page of pixels', () => {
+    gridOptions = {
+      ...gridOptions,
+      rowHeight: (row: Person) => (row.id % 3 === 0 ? 40 : 20),
+      cellSelection: 'range',
+    };
+    const harness = setup();
+
+    // Rows of forty, twenty and twenty: offset 100 is inside row 3.
+    press(harness.root, 'PageDown', { shiftKey: true });
+    expect(harness.g.cellRange()).toEqual({
+      anchor: { row: 0, column: 0 },
+      focus: { row: 3, column: 0 },
+    });
+    expect(harness.g.activeCell()).toEqual({ row: 3, column: 0 });
+  });
+
+  it('hands the function each row with its place in the sorted, filtered view', () => {
+    byId();
+    tableOf([['b'], ['a'], ['d'], ['c'], ['e']]);
+    // A band every other place, whichever row is in it.
+    gridOptions = {
+      ...gridOptions,
+      rowHeight: (_row: Person, index: number) => (index % 2 === 0 ? 20 : 30),
+    };
+    const harness = setup();
+
+    harness.g.toggleSort('c0');
+    harness.g.setFilter('c0', { type: 'set', values: ['a', 'b', 'c', 'd'] });
+    flushSync();
+
+    // a, b, c, d: ids 1, 0, 3, 2, at places 0 to 3.
+    expect(harness.g.rows().map(({ key, start, size }) => [key, start, size])).toEqual([
+      [1, 0, 20], [0, 20, 30], [3, 50, 20], [2, 70, 30],
+    ]);
+  });
+
+  it('reads the height of the row that is at each place, so a sort moves heights with rows', () => {
+    byId();
+    tableOf([['b'], ['a'], ['d'], ['c']]);
+    gridOptions = { ...gridOptions, rowHeight: byParity };
+    const harness = setup();
+    expect(harness.g.rows().map(({ key, start, size }) => [key, start, size])).toEqual([
+      [0, 0, 20], [1, 20, 40], [2, 60, 20], [3, 80, 40],
+    ]);
+
+    harness.g.toggleSort('c0');
+    flushSync();
+
+    // a, b, c, d: ids 1, 0, 3, 2. Each kept its own height.
+    expect(harness.g.rows().map(({ key, start, size }) => [key, start, size])).toEqual([
+      [1, 0, 40], [0, 40, 20], [3, 60, 40], [2, 100, 20],
+    ]);
+    expect(harness.sizer.style.height).toBe('120px');
+  });
+
+  it('follows a height that changes, and rebuilds the rows it moved and no other', () => {
+    byId();
+    const opened = new Signal.State<ReadonlySet<number>>(new Set());
+    gridOptions = {
+      ...gridOptions,
+      rowHeight: (row: Person) => (opened.get().has(row.id) ? 60 : ROW_HEIGHT),
+    };
+    const harness = setup();
+    const first = harness.g.rows()[0]!;
+    reads = [];
+
+    opened.set(new Set([1]));
+    flushSync();
+
+    // Row 1 grew by forty and every row after it moved by that much, so the
+    // hundred pixels now end inside row 2.
+    expect(geometryOf(harness)).toEqual([
+      [0, 0, 20], [1, 20, 60], [2, 80, 20], [3, 100, 20], [4, 120, 20],
+    ]);
+    expect(harness.sizer.style.height).toBe(`${ROW_COUNT * ROW_HEIGHT + 40}px`);
+    expect(rowElement(1)!.style.height).toBe('60px');
+    // The row above it kept its place, its object and its cells.
+    expect(harness.g.rows()[0]).toBe(first);
+    expect(rowsRead()).toEqual(['1', '2', '3', '4']);
+  });
+});
+
+describe('rows measured from the page', () => {
+  beforeEach(() => {
+    gridOptions = { ...gridOptions, rowHeight: 'auto' };
+  });
+
+  it('states no height, watches every rendered row, and estimates until it knows', () => {
+    const harness = setup();
+
+    // Thirty-two is the estimate, so a hundred pixels end inside row 3, and
+    // rows 4 and 5 are the overscan.
+    expect(harness.g.rows().map((row) => row.index)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(harness.g.rows()[1]).toMatchObject({ start: 32, size: 32 });
+    expect(harness.sizer.style.height).toBe(`${ROW_COUNT * 32}px`);
+    // The row is what is being measured, so nothing tells it how tall to be.
+    expect(rows().every((row) => row.style.height === '')).toBe(true);
+    // Found by the attribute `rowProps` already carries.
+    expect(rows().every((row) => observed(row))).toBe(true);
+  });
+
+  it('takes an estimate of its own', () => {
+    gridOptions = { ...gridOptions, estimatedRowHeight: 50 };
+    const harness = setup();
+    expect(harness.g.rows().map((row) => row.index)).toEqual([0, 1, 2, 3]);
+    expect(harness.sizer.style.height).toBe(`${ROW_COUNT * 50}px`);
+  });
+
+  it('corrects the offsets, the sizer and the window as measurements arrive, and scrolls nothing', () => {
+    const harness = setup();
+
+    measureRows([0, 48], [1, 48]);
+
+    expect(geometryOf(harness)).toEqual([
+      [0, 0, 48], [1, 48, 48], [2, 96, 32], [3, 128, 32], [4, 160, 32],
+    ]);
+    expect(harness.sizer.style.height).toBe(`${ROW_COUNT * 32 + 32}px`);
+    expect(harness.container.style.transform).toBe('translate(0px, 0px)');
+    // Rows below the top of the viewport moving is not a reason to move the
+    // reader.
+    expect(harness.scroller.scrollTop).toBe(0);
+  });
+
+  it('hands back the same row, and reads no cell, for a measurement that matches the estimate', () => {
+    const harness = setup();
+    const before = harness.g.rows();
+    expect(before[3]).toMatchObject({ start: 96, size: 32 });
+    const elements = cells();
+    reads = [];
+
+    measureRows([3, 32]);
+
+    expect(harness.g.rows()).toEqual(before);
+    expect(harness.g.rows()[3]).toBe(before[3]);
+    expect(reads).toEqual([]);
+    expect(cells()).toEqual(elements);
+  });
+
+  it('rebuilds the rows a measurement moved, and none above it', () => {
+    const harness = setup();
+    const before = harness.g.rows();
+    reads = [];
+
+    measureRows([2, 40]);
+
+    // Row 2 is another size and rows 3 and 4 start somewhere else; rows 0 and
+    // 1 are the objects they were, and their cells were not asked.
+    expect(harness.g.rows()[0]).toBe(before[0]);
+    expect(harness.g.rows()[1]).toBe(before[1]);
+    expect(harness.g.rows()[3]).toMatchObject({ index: 3, start: 104, size: 32 });
+    expect(rowsRead()).toEqual(['2', '3', '4']);
+  });
+
+  it('holds the view still when a row above it turns out to be taller', () => {
+    const harness = setup();
+    userScroll(harness.scroller, { top: 320 });
+    const top = harness.g.rows().find((row) => row.index === 10)!;
+    expect(top.start - harness.scroller.scrollTop).toBe(0);
+
+    // Row 8 is overscan above the viewport. Twenty more pixels of it would
+    // push row 10 down the page under the reader; the scroller follows instead.
+    measureRows([8, 52]);
+
+    expect(harness.scroller.scrollTop).toBe(340);
+    const after = harness.g.rows().find((row) => row.index === 10)!;
+    expect(after.start - harness.scroller.scrollTop).toBe(0);
+  });
+
+  it('lands the cursor on the row it was sent to once that row has been measured', () => {
+    const harness = setup();
+
+    press(harness.root, 'End', { ctrlKey: true });
+    // Aimed with the estimate: the last row's foot at 32000.
+    expect(harness.scroller.scrollTop).toBe(ROW_COUNT * 32 - VIEWPORT_HEIGHT);
+    expect(document.activeElement).toBe(cellAt(ROW_COUNT - 1, COLUMN_COUNT - 1));
+
+    // It is sixty tall, so the jump landed twenty-eight pixels short of its foot.
+    measureRows([ROW_COUNT - 1, 60]);
+
+    expect(harness.scroller.scrollTop).toBe(ROW_COUNT * 32 + 28 - VIEWPORT_HEIGHT);
+    expect(harness.g.activeCell()).toEqual({ row: ROW_COUNT - 1, column: COLUMN_COUNT - 1 });
+    expect(document.activeElement).toBe(cellAt(ROW_COUNT - 1, COLUMN_COUNT - 1));
+  });
+
+  it('lets go of a jump the reader has scrolled away from', () => {
+    const harness = setup();
+    press(harness.root, 'End', { ctrlKey: true });
+    expect(harness.scroller.scrollTop).toBe(ROW_COUNT * 32 - VIEWPORT_HEIGHT);
+
+    userScroll(harness.scroller, { top: 31_000 });
+    // Row 972 is below the top of the viewport, and pushes the last row
+    // twenty-eight pixels further down. Following the jump to it would now
+    // be a scroll the reader did not ask for.
+    measureRows([972, 60]);
+
+    expect(harness.g.rows().find((row) => row.index === 973)).toMatchObject({
+      start: 972 * 32 + 60,
+    });
+    expect(harness.scroller.scrollTop).toBe(31_000);
+  });
+
+  it('keeps a measurement with its row through a sort', () => {
+    byId();
+    tableOf([['b'], ['a'], ['d'], ['c']]);
+    const harness = setup();
+    measureRows([0, 48]);
+    expect(harness.g.rows()[0]).toMatchObject({ key: 0, start: 0, size: 48 });
+
+    harness.g.toggleSort('c0');
+    flushSync();
+
+    // Row b, forty-eight tall, is second now.
+    expect(harness.g.rows().map(({ key, start, size }) => [key, start, size])).toEqual([
+      [1, 0, 32], [0, 32, 48], [3, 80, 32], [2, 112, 32],
+    ]);
+  });
+});
+
+describe('a grid as tall as its rows', () => {
+  it('lets the scroller grow to its rows, and no taller than the cap', () => {
+    gridOptions = { ...gridOptions, height: 'auto', maxHeight: 300 };
+    const harness = setup();
+
+    // Written inline, so a stylesheet's bounded height on the scroller is
+    // overruled: the sizer is as tall as the rows, and the scroller follows
+    // it up to the cap.
+    expect(harness.scroller.style.height).toBe('auto');
+    expect(harness.scroller.style.maxHeight).toBe('300px');
+    expect(harness.scroller.style.getPropertyValue('overflow-anchor')).toBe('none');
+  });
+
+  it('has no cap unless given one', () => {
+    gridOptions = { ...gridOptions, height: 'auto' };
+    const harness = setup();
+    expect(harness.scroller.style.height).toBe('auto');
+    expect(harness.scroller.style.maxHeight).toBe('');
+  });
+
+  it('caps a scroller the stylesheet sizes, without taking its height', () => {
+    gridOptions = { ...gridOptions, maxHeight: 300 };
+    const harness = setup();
+    expect(harness.scroller.style.height).toBe('');
+    expect(harness.scroller.style.maxHeight).toBe('300px');
+  });
+
+  it('renders every row when they fit, and a window when they do not', () => {
+    tableOf([['a'], ['b'], ['c'], ['d'], ['e']]);
+    gridOptions = { ...gridOptions, height: 'auto', maxHeight: 300 };
+    // Five rows of twenty, which is what layout makes of the scroller.
+    let harness = setup({ height: 100 });
+    expect(harness.sizer.style.height).toBe('100px');
+    expect(rows()).toHaveLength(5);
+    mounted.pop()!.unmount();
+
+    people.set(makePeople(ROW_COUNT));
+    columns.set(makeColumns());
+    // A thousand rows are taller than the cap, so the scroller is the cap and
+    // scrolls: the window is fifteen rows and the overscan, not a thousand.
+    harness = setup({ height: 300 });
+    expect(harness.sizer.style.height).toBe(`${ROW_COUNT * ROW_HEIGHT}px`);
+    expect(harness.g.rows().map((row) => row.index)).toEqual(
+      Array.from({ length: 17 }, (_, index) => index),
+    );
+  });
+});
+
+describe('a grid of one row height is what it was', () => {
+  it('hands out the same props, byte for byte', () => {
+    const harness = setup();
+    const row = harness.g.rows()[0]!;
+
+    const rowProps = harness.g.rowProps(row);
+    expect(Object.keys(rowProps)).toEqual([
+      'data-volt-virtual-index', 'aria-rowindex', 'style', 'role', 'aria-selected', 'data-selected',
+    ]);
+    expect(rowProps).toStrictEqual({
+      'data-volt-virtual-index': '0',
+      'aria-rowindex': '2',
+      style: { height: '20px' },
+      role: 'row',
+      'aria-selected': undefined,
+      'data-selected': undefined,
+    });
+
+    const bodyProps = harness.g.bodyProps();
+    expect(Object.keys(bodyProps)).toEqual(['style', 'tabindex', 'role']);
+    expect(bodyProps).toStrictEqual({
+      style: { 'overflow-anchor': 'none' },
+      tabindex: undefined,
+      role: 'rowgroup',
+    });
+
+    expect(harness.g.sizerProps()).toStrictEqual({
+      role: 'none',
+      style: { height: `${ROW_COUNT * ROW_HEIGHT}px`, width: `${COLUMN_COUNT * COLUMN_WIDTH}px` },
+    });
+    expect(harness.g.containerProps()).toStrictEqual({
+      role: 'none',
+      style: { transform: 'translate(0px, 0px)' },
+    });
+    expect(harness.g.rows()[1]).toStrictEqual({
+      index: 1, key: 1, item: people.get()[1], start: ROW_HEIGHT, size: ROW_HEIGHT,
+    });
+  });
+
+  it('measures nothing and watches no row', () => {
+    setup();
+    expect(rows().some((row) => observed(row))).toBe(false);
+    // Only the scroller, once per axis.
+    for (const observer of FakeResizeObserver.live) {
+      expect([...observer.targets].every((el) => el.classList.contains('body'))).toBe(true);
+    }
+  });
+
+  it('pages by the rows on screen, a row cut off at the foot included, as it did', () => {
+    // A hundred and ten pixels show five rows and half of a sixth. A page of
+    // pixels would land on row 5; counting the rows on screen lands on row 6,
+    // which is what a grid of one height has always done.
+    const harness = setup({ height: 110 });
+    press(harness.root, 'PageDown');
+    expect(harness.g.activeCell()).toEqual({ row: 6, column: 0 });
+
+    press(harness.root, 'Home', { ctrlKey: true });
+    press(harness.root, 'ArrowUp');
+    expect(harness.g.activeCell()).toEqual({ row: HEADER_ROW, column: 0 });
+    // The header pages as row zero would, less one.
+    press(harness.root, 'PageDown');
+    expect(harness.g.activeCell()).toEqual({ row: 5, column: 0 });
+  });
+});
+
+describe('rows of their own heights, under what else the grid does', () => {
+  it('measures the rows a sort brings into a window that has not moved', () => {
+    byId();
+    gridOptions = { ...gridOptions, rowHeight: 'auto' };
+    const harness = setup();
+    const before = rows();
+
+    // Descending, the last rows are the first: every row in the window is
+    // another one, and the window is still rows 0 to 5.
+    harness.g.toggleSort('c0');
+    harness.g.toggleSort('c0');
+    flushSync();
+    expect(harness.g.rows().map((row) => [row.index, row.key])).toEqual([
+      [0, 999], [1, 998], [2, 997], [3, 996], [4, 995], [5, 994],
+    ]);
+
+    expect(rows().every((row) => observed(row))).toBe(true);
+    // Nor is anything still watching the rows the sort took away.
+    expect(before.some((row) => observed(row))).toBe(false);
+    measureRows([0, 48]);
+    expect(harness.g.rows()[1]).toMatchObject({ key: 998, start: 48, size: 32 });
+    expect(harness.sizer.style.height).toBe(`${ROW_COUNT * 32 + 16}px`);
+  });
+
+  it('measures the rows a filter brings into a window that has not moved', () => {
+    byId();
+    gridOptions = { ...gridOptions, rowHeight: 'auto' };
+    const harness = setup();
+
+    harness.g.setQuickFilter('r1');
+    flushSync();
+    expect(harness.g.rows().map((row) => row.key)).toEqual([1, 10, 11, 12, 13, 14]);
+
+    expect(rows().every((row) => observed(row))).toBe(true);
+    measureRows([2, 20]);
+    expect(harness.g.rows()[3]).toMatchObject({ key: 12, start: 84 });
+  });
+
+  it('forgets no measurement to find the rows brought in, where one of them is new', () => {
+    byId();
+    gridOptions = { ...gridOptions, rowHeight: 'auto' };
+    const harness = setup();
+    measureRows([0, 40], [1, 40], [2, 40], [3, 40], [4, 40], [5, 40]);
+    harness.g.setQuickFilter('r1');
+    flushSync();
+    // Row 1 stayed and kept its forty; rows 10 to 14 are new and estimated.
+    expect(geometryOf(harness)).toEqual([
+      [0, 0, 40], [1, 40, 32], [2, 72, 32], [3, 104, 32], [4, 136, 32],
+    ]);
+  });
+
+  it('forgets no height where every row brought back was measured before', () => {
+    byId();
+    gridOptions = { ...gridOptions, rowHeight: 'auto' };
+    const harness = setup();
+    measureRows([0, 40], [1, 40], [2, 40], [3, 40], [4, 40]);
+    harness.g.setSort([{ columnId: 'c0', direction: 'descending' }]);
+    flushSync();
+    measureRows([0, 40], [1, 40], [2, 40], [3, 40], [4, 40]);
+    expect(harness.g.rows().map((row) => row.key)).toEqual([999, 998, 997, 996, 995]);
+
+    // Unsorted again: the same five places, each holding a row measured once.
+    harness.g.setSort([]);
+    flushSync();
+
+    expect(harness.g.rows().map(({ key, start, size }) => [key, start, size])).toEqual([
+      [0, 0, 40], [1, 40, 40], [2, 80, 40], [3, 120, 40], [4, 160, 40],
+    ]);
+    expect(rows().every((row) => observed(row))).toBe(true);
+  });
+
+  it('asks no more of the rows for a scroll than the window holds', () => {
+    let keyed = 0;
+    gridOptions = {
+      ...gridOptions,
+      rowHeight: 'auto',
+      getRowKey: (row: Person) => {
+        keyed++;
+        return row.id;
+      },
+    };
+    const harness = setup();
+    measureRows([0, 40], [1, 40], [2, 40], [3, 40], [4, 40]);
+    keyed = 0;
+
+    // Every row the window moves onto is new to it. Looking through the
+    // whole view for each would be a key asked of a thousand rows a frame.
+    userScroll(harness.scroller, { top: 1000 });
+    userScroll(harness.scroller, { top: 0 });
+
+    expect(keyed).toBeLessThan(ROW_COUNT);
+    expect(geometryOf(harness)).toEqual([
+      [0, 0, 40], [1, 40, 40], [2, 80, 40], [3, 120, 40], [4, 160, 40],
+    ]);
+  });
+
+  it('pages by the stated guess while the scroller has never been measured, as one height does', () => {
+    gridOptions = { ...gridOptions, rowHeight: byParity };
+    const harness = setup({ height: 0, width: 0 });
+    // A viewport of no pixels is no page at all, and would leave a page key
+    // moving by the one row it can never move by less than.
+    press(harness.root, 'PageDown');
+    expect(harness.g.activeCell()).toEqual({ row: 10, column: 0 });
+    press(harness.root, 'PageUp');
+    expect(harness.g.activeCell()).toEqual({ row: 0, column: 0 });
+  });
+
+  it('shows the start of a measured row taller than the viewport, and holds it there', () => {
+    gridOptions = { ...gridOptions, rowHeight: 'auto' };
+    const harness = setup();
+    measureRows([0, 300]);
+
+    for (let column = 1; column <= 3; column++) {
+      press(harness.root, 'ArrowRight');
+      expect(harness.scroller.scrollTop).toBe(0);
+    }
+  });
+
+  it('brings a row taller than the viewport up from below by its start, not its foot', () => {
+    gridOptions = { ...gridOptions, rowHeight: (row: Person) => (row.id === 1 ? 300 : 20) };
+    const harness = setup();
+
+    press(harness.root, 'ArrowDown');
+    expect(harness.g.activeCell()).toEqual({ row: 1, column: 0 });
+    expect(harness.scroller.scrollTop).toBe(20);
+  });
+
+  it('leaves a row that fills the viewport where the reader scrolled it', () => {
+    gridOptions = { ...gridOptions, rowHeight: (row: Person) => (row.id === 0 ? 300 : 20) };
+    const harness = setup();
+
+    // Half way down the row, reading it. Every part of the viewport is the
+    // row, so no scroll shows more of it.
+    userScroll(harness.scroller, { top: 100 });
+    press(harness.root, 'ArrowRight');
+    expect(harness.g.activeCell()).toEqual({ row: 0, column: 1 });
+    expect(harness.scroller.scrollTop).toBe(100);
+  });
+
+  it('stays where a jump to a measured row taller than the viewport came to rest', () => {
+    gridOptions = { ...gridOptions, rowHeight: 'auto' };
+    const harness = setup();
+    press(harness.root, 'End', { ctrlKey: true });
+    measureRows([ROW_COUNT - 1, 300]);
+    // Aimed at the foot of a row of thirty-two, and kept there as it grew.
+    const foot = (ROW_COUNT - 1) * 32 + 300 - VIEWPORT_HEIGHT;
+    expect(harness.scroller.scrollTop).toBe(foot);
+
+    press(harness.root, 'ArrowLeft');
+    expect(harness.scroller.scrollTop).toBe(foot);
+  });
+});
+
+describe('paging among rows of their own heights, there and back', () => {
+  it('pages up by no more than a viewport, so a page down and a page up come back', () => {
+    // One height, declared as a function: forty-five pixels, a little over
+    // two rows to a viewport of a hundred.
+    gridOptions = { ...gridOptions, rowHeight: () => 45 };
+    const harness = setup();
+    for (let i = 0; i < 5; i++) press(harness.root, 'ArrowDown');
+
+    // A hundred pixels below row 5's start is inside row 7: two rows down.
+    press(harness.root, 'PageDown');
+    expect(harness.g.activeCell()).toEqual({ row: 7, column: 0 });
+    // A hundred above row 7's start is inside row 4, three rows and a hundred
+    // and thirty-five pixels up — more than a screen, and not where the reader
+    // paged from. The nearest row starting within the hundred is row 5.
+    press(harness.root, 'PageUp');
+    expect(harness.g.activeCell()).toEqual({ row: 5, column: 0 });
+    press(harness.root, 'PageUp');
+    expect(harness.g.activeCell()).toEqual({ row: 3, column: 0 });
+  });
+
+  it('never pages up by less than a row, however tall the row above', () => {
+    gridOptions = { ...gridOptions, rowHeight: (row: Person) => (row.id === 1 ? 300 : 20) };
+    const harness = setup();
+    press(harness.root, 'ArrowDown');
+    press(harness.root, 'ArrowDown');
+    expect(harness.g.activeCell()).toEqual({ row: 2, column: 0 });
+
+    // No row starts within a viewport above row 2: row 1 is three hundred tall.
+    press(harness.root, 'PageUp');
+    expect(harness.g.activeCell()).toEqual({ row: 1, column: 0 });
+  });
+});
+
+describe('a jump among measured rows, and the cursor moving on before it lands', () => {
+  beforeEach(() => {
+    gridOptions = { ...gridOptions, rowHeight: 'auto' };
+  });
+
+  it('lets go of the jump once the cursor is on another row already in view', () => {
+    const harness = setup();
+    press(harness.root, 'End', { ctrlKey: true });
+    // Row 998 is on screen above the last row, so going to it scrolls nothing.
+    press(harness.root, 'ArrowUp');
+    expect(harness.g.activeCell()).toEqual({ row: ROW_COUNT - 2, column: COLUMN_COUNT - 1 });
+    const top = harness.scroller.scrollTop;
+
+    // The last row turns out tall. Following the jump to its foot now would
+    // scroll the row the reader is on off the top of the screen.
+    measureRows([ROW_COUNT - 1, 300]);
+
+    expect(harness.scroller.scrollTop).toBe(top);
+    const row = harness.g.rows().find((candidate) => candidate.index === ROW_COUNT - 2)!;
+    expect(row.start).toBeGreaterThanOrEqual(top);
+    expect(row.start + row.size).toBeLessThanOrEqual(top + VIEWPORT_HEIGHT);
+  });
+
+  it('goes on settling the jump while the cursor moves along the row it was sent to', () => {
+    const harness = setup();
+    press(harness.root, 'End', { ctrlKey: true });
+    press(harness.root, 'ArrowLeft');
+
+    // Still the row the jump was for, so its foot is still what it aims at.
+    measureRows([ROW_COUNT - 1, 60]);
+
+    expect(harness.scroller.scrollTop).toBe(ROW_COUNT * 32 + 28 - VIEWPORT_HEIGHT);
+  });
+});
+
+describe('focus on a row that heights push out of the window', () => {
+  /** Every rendered row, measured at one height. */
+  function measureAll(height: number): void {
+    FakeResizeObserver.deliver(
+      rows().map((row) => ({ target: row, block: height, inline: VIEWPORT_WIDTH })),
+    );
+  }
+
+  it('brings the row back, and focus with it, when rows measured above it on screen push it out', () => {
+    byId();
+    gridOptions = { ...gridOptions, rowHeight: 'auto' };
+    const harness = setup();
+    measureAll(ROW_HEIGHT);
+    harness.g.focusCell({ row: 4, column: 0 });
+    flushSync();
+    expect(document.activeElement).toBe(cellAt(4, 0));
+
+    // Rows 0 and 1, on screen above it, load something tall: row 4 now starts
+    // at 280, past the rows the window renders below a hundred pixels.
+    measureRows([0, 120], [1, 120]);
+
+    expect(harness.g.activeCell()).toEqual({ row: 4, column: 0 });
+    expect(document.activeElement).toBe(cellAt(4, 0));
+    const row = harness.g.rows().find((candidate) => candidate.index === 4)!;
+    expect(row.start).toBe(280);
+    expect(row.start + row.size).toBe(harness.scroller.scrollTop + VIEWPORT_HEIGHT);
+  });
+
+  it('brings the row back when declared heights above it on screen push it out', () => {
+    byId();
+    const opened = new Signal.State<ReadonlySet<number>>(new Set());
+    gridOptions = {
+      ...gridOptions,
+      rowHeight: (row: Person) => (opened.get().has(row.id) ? 200 : ROW_HEIGHT),
+    };
+    const harness = setup();
+    harness.g.focusCell({ row: 4, column: 0 });
+    flushSync();
+
+    opened.set(new Set([0, 1, 2]));
+    flushSync();
+
+    expect(document.activeElement).toBe(cellAt(4, 0));
+    expect(harness.scroller.scrollTop).toBe(600 + 2 * ROW_HEIGHT - VIEWPORT_HEIGHT);
+  });
+
+  it('leaves a row the reader scrolled away from, whatever is measured after', () => {
+    byId();
+    gridOptions = { ...gridOptions, rowHeight: 'auto' };
+    const harness = setup();
+    measureAll(ROW_HEIGHT);
+    harness.g.focusCell({ row: 300, column: 0 });
+    flushSync();
+    expect(document.activeElement).toBe(cellAt(300, 0));
+
+    // Back to the top, which takes row 300 out of the window; then the rows
+    // up there, above it, turn out taller and move it further down.
+    userScroll(harness.scroller, { top: 0 });
+    expect(cellAt(300, 0)).toBeNull();
+    measureAll(48);
+
+    expect(harness.scroller.scrollTop).toBe(0);
+    expect(cellAt(300, 0)).toBeNull();
+  });
+
+  it('leaves the row where it went when focus has left the grid', () => {
+    byId();
+    gridOptions = { ...gridOptions, rowHeight: 'auto' };
+    const harness = setup();
+    measureAll(ROW_HEIGHT);
+    harness.g.focusCell({ row: 4, column: 0 });
+    flushSync();
+    const outside = document.createElement('button');
+    document.body.append(outside);
+    outside.focus();
+
+    measureRows([0, 120], [1, 120]);
+
+    expect(document.activeElement).toBe(outside);
+    expect(harness.scroller.scrollTop).toBe(0);
+    outside.remove();
+  });
+
+  it('scrolls nothing for a row pushed down that is still rendered', () => {
+    byId();
+    gridOptions = { ...gridOptions, rowHeight: 'auto' };
+    const harness = setup();
+    measureAll(ROW_HEIGHT);
+    harness.g.focusCell({ row: 3, column: 0 });
+    flushSync();
+
+    // Row 3 is pushed below the viewport, into the rows rendered under it.
+    measureRows([0, 60]);
+
+    expect(harness.scroller.scrollTop).toBe(0);
+    expect(document.activeElement).toBe(cellAt(3, 0));
+  });
+});
+
 describe('the package', () => {
   it('reports the version it is published as', () => {
     // A constant nothing compares against the manifest drifts from it, and

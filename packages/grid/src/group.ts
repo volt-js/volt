@@ -3,8 +3,9 @@
  *
  * A grouped grid is not a grid of groups. It is the same virtualized grid over
  * a *longer* collection: the group headers are rows in it, sitting between the
- * data rows they describe, so one window and one row height cover both and a
- * grid grouped into four thousand departments still renders twelve elements.
+ * data rows they describe, so one window and one `rowHeight` cover both — a
+ * function of the row can tell a header from a data row — and a grid grouped
+ * into four thousand departments still renders twelve elements.
  * A separate list of headers rendered outside the scroller would have to be
  * kept in step with a window it is not part of, and would stop being a grid
  * the moment a group grew past the viewport.
@@ -90,6 +91,7 @@ import {
 } from './filter.js';
 import { sortRows, type GridSort, type GridSortTerm } from './sort.js';
 import type { GridRowKey } from './selection.js';
+import { gridDirection, inlineKey } from './direction.js';
 
 const { untrack } = Signal.subtle;
 
@@ -297,7 +299,9 @@ export interface GridGrouping<T> {
   onGroupClick(event: MouseEvent): boolean;
   /**
    * Expands and collapses from the keyboard. Wire it before the grid's own
-   * `onKeyDown`, which owns every key this leaves alone.
+   * `onKeyDown`, which owns every key this leaves alone. The header is the row
+   * `rowProps` marks, found from the cell the key was pressed in, as a click
+   * finds it.
    */
   onKeyDown(event: KeyboardEvent): boolean;
 }
@@ -783,8 +787,18 @@ export function createGrouping<T>(options: GridGroupingOptions<T>): GridGrouping
     reportFilters();
   };
 
-  /** The flattened row a cell's `row,column` attribute names, if it is one. */
-  const rowAt = (index: number): GridGroupedRow<T> | undefined => untrack(() => flat.get())[index];
+  /**
+   * The path of the group header an event happened in, or null outside one.
+   *
+   * Read off the row, as a click reads it, rather than looked up by the row
+   * half of the cell's position: that position is the grid's, and counts any
+   * rows the grid pins above the grouping's own, so the grouping's row at it
+   * is the wrong one — or a group header, under a pinned row that is not.
+   */
+  const groupPathOf = (target: EventTarget | null): string | null => {
+    if (!(target instanceof Element)) return null;
+    return target.closest(`[${GRID_GROUP_ATTRIBUTE}]`)?.getAttribute(GRID_GROUP_ATTRIBUTE) ?? null;
+  };
 
   const cellFrom = (target: EventTarget | null): { row: number; column: number } | null => {
     if (!(target instanceof Element)) return null;
@@ -847,11 +861,8 @@ export function createGrouping<T>(options: GridGroupingOptions<T>): GridGrouping
     },
 
     onGroupClick: (event) => {
-      if (!(event.target instanceof Element)) return false;
-      const path = event.target
-        .closest(`[${GRID_GROUP_ATTRIBUTE}]`)
-        ?.getAttribute(GRID_GROUP_ATTRIBUTE);
-      if (path === null || path === undefined) return false;
+      const path = groupPathOf(event.target);
+      if (path === null) return false;
       toggle(path);
       return true;
     },
@@ -860,12 +871,12 @@ export function createGrouping<T>(options: GridGroupingOptions<T>): GridGrouping
       if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return false;
       const cell = cellFrom(event.target);
       if (cell === null || cell.row < 0) return false;
-      const row = rowAt(cell.row);
-      if (row === undefined || row.kind !== 'group') return false;
+      const path = groupPathOf(event.target);
+      if (path === null) return false;
 
-      const open = untrack(() => isExpanded(row.node.path));
+      const open = untrack(() => isExpanded(path));
       if (event.key === 'Enter') {
-        toggle(row.node.path);
+        toggle(path);
         event.preventDefault();
         return true;
       }
@@ -874,13 +885,19 @@ export function createGrouping<T>(options: GridGroupingOptions<T>): GridGrouping
       // Only the first cell — the one carrying the twisty — spends them on the
       // group, and only when there is something for them to do.
       if (cell.column !== 0) return false;
-      if (event.key === 'ArrowRight' && !open) {
-        expand(row.node.path);
+      if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return false;
+      // The arrow pointing into the row opens it, as a tree's does: toward the
+      // inline end, which right to left is ArrowLeft. The grid's direction, not
+      // the cell's: a label marked to run its own way would otherwise turn
+      // these arrows against the ones that walk the row they are pressed in.
+      const key = inlineKey(event.key, gridDirection(event.target as Element));
+      if (key === 'ArrowRight' && !open) {
+        expand(path);
         event.preventDefault();
         return true;
       }
-      if (event.key === 'ArrowLeft' && open) {
-        collapse(row.node.path);
+      if (key === 'ArrowLeft' && open) {
+        collapse(path);
         event.preventDefault();
         return true;
       }
