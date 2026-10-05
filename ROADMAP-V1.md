@@ -530,7 +530,7 @@ then the interface — which is much the smallest part.
 - Keyboard grid navigation per APG, screen-reader announcements
 - Masked text entry alongside the calendar
 
-**Built**, apart from timezone handling and presets. `createCalendar` is the
+**Built**, apart from presets. `createCalendar` is the
 month grid — one tab stop, APG keyboard, range and multi-month, min/max and
 disabled dates, announcements through the shared announcer.
 `createDateField` and `createTimePicker` are the masked entry: one tab stop
@@ -555,9 +555,30 @@ drift and mutable setters are the foot-guns this had to avoid. When `Temporal`
 lands, `toEpochDay`/`fromEpochDay` and the six functions over them are the only
 things that change.
 
-Still open: timezone handling, presets, and a calendar system other than
-Gregorian — `ar-SA` resolves to `islamic-umalqura`, and a Hijri formatter over
-a Gregorian grid produces a heading and cells that disagree.
+**Time zones are at the edges, not in the values.** A date and a time of day
+have no zone — a meeting at 9:00 is at 9:00 — so the records stay zone-less,
+and so do the pickers' value signals. A zone matters only where a page meets an
+instant. `instantToZoned(ms, zone)` reads epoch milliseconds off a zone's wall
+clock through `Intl.DateTimeFormat`'s `formatToParts` with `timeZone`, never
+through `Date`'s local getters; `zonedToInstant(date, time, zone)` goes back,
+taking the zone's offset from what `Intl` reports a day either side and
+resolving a change of clocks as `Temporal`'s default `compatible` does — a
+skipped time moves on by the gap, a repeated one is the first of the two — so
+`Temporal.ZonedDateTime.from({ ...date, ...time, timeZone })` names the same
+instant. A `timeZone` option on `createDateField`, `createDatePicker` and
+`createTimePicker` makes the hidden input post that instant as RFC 3339 with
+the zone's offset, `2026-03-08T03:30:00-04:00` — or in UTC, `Z`, where the
+offset was a local mean time with seconds RFC 3339 cannot write; the time
+picker takes the `date` its offset depends on, and refuses a zone without one
+rather than guessing today. On `createCalendar` and the date picker the same
+option makes today the zone's, from one shared clock per zone that turns over
+at that zone's midnight.
+
+Still open: presets, and a calendar system other than Gregorian — `ar-SA`
+resolves to `islamic-umalqura`, and a Hijri formatter over a Gregorian grid
+produces a heading and cells that disagree. For zones, the second pass through
+an hour the clocks repeat cannot be picked: a wall-clock record cannot say
+which pass it means, so the pickers post the first.
 
 ### Splitter
 

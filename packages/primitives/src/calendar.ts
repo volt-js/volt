@@ -50,6 +50,21 @@
  * lands, `toEpochDay`/`fromEpochDay` and the six functions over them are the
  * only things that change.
  *
+ * **A date and a time have no zone; an instant does.** A meeting at 9:00 on
+ * 8 March is a date and a time somebody picked, and the two records stay
+ * exactly that whatever zone a page is about. A zone matters only where a
+ * page meets an instant — the epoch milliseconds `Date.now()`, a server or a
+ * database hands it — and `instantToZoned` and `zonedToInstant` are those two
+ * edges. The first reads an instant off a zone's wall clock through
+ * `Intl.DateTimeFormat` with `timeZone`, never through `Date`'s local getters,
+ * which know no zone but the runtime's. The second finds the instant a wall
+ * time names from the offsets `Intl` reports either side of it, and resolves
+ * the wall times a change of clocks makes ambiguous the way `Temporal`'s
+ * default `compatible` does: a time the clocks skip moves on by the gap, and a
+ * time they repeat is the first of the two. So
+ * `Temporal.ZonedDateTime.from({ ...date, ...time, timeZone })` names the
+ * same instant, and is the whole interop once `Temporal` is on the platform.
+ *
  * **Everything the user reads comes from the locale.** The first day of the
  * week from the locale's week info, the weekday and month names from
  * `Intl.DateTimeFormat`, the digits from the locale's numbering system — none
@@ -361,6 +376,11 @@ export function firstDayOfWeek(locale: string): number {
  * getters, because those resolve against the *runtime's* zone with no way to
  * ask for another — the same reason `i18n.ts` gives for never calling
  * `toLocaleString` without a tag.
+ *
+ * No zone means the runtime's. An empty name is not that by another spelling
+ * but a zone `Intl` does not know, and throws its `RangeError`: a page whose
+ * zone went missing on the way would otherwise get the runtime's date without
+ * a word.
  */
 export function today(timeZone?: string): PlainDateValue {
   return readClock(timeZone).date;
@@ -373,9 +393,107 @@ export function today(timeZone?: string): PlainDateValue {
  * first will next change — see `watchClock`.
  */
 function readClock(timeZone?: string): { date: PlainDateValue; msIntoDay: number } {
-  const now = Date.now();
-  const parts = getDateTimeFormat('en-US', {
+  return wallClockAt(Date.now(), timeZone);
+}
+
+/**
+ * Today on the runtime's clock, or on a zone's, shared by every calendar that
+ * was not told what today is.
+ *
+ * One reading for all of them rather than one per cell: a grid re-runs every
+ * cell's bindings on each arrow press, and asking `Intl` what day it is costs
+ * more than a cell's own name does. And watched, so a calendar left open
+ * across midnight moves its mark with the day rather than going on marking
+ * yesterday until something else re-renders it. One timer per clock does that
+ * for the whole page, set for when that clock's day turns over, and only while
+ * a calendar is reading it — a zone's day turns over at its own midnight, not
+ * the runtime's.
+ */
+interface Clock {
+  readonly day: Signal.State<PlainDateValue>;
+  readers: number;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+/** By zone, with the runtime's own under no zone at all. */
+const clocks = new Map<string | undefined, Clock>();
+
+/**
+ * Read the clock, and wake again when the day next turns over or in an hour,
+ * whichever is sooner. A day is not always twenty-four hours long, and the
+ * hour a clock change takes away would otherwise leave the mark that late.
+ */
+function tickClock(clock: Clock, timeZone: string | undefined): void {
+  const { date, msIntoDay } = readClock(timeZone);
+  if (!isSameDate(date, untrack(() => clock.day.get()))) clock.day.set(date);
+  clock.timer = setTimeout(
+    () => tickClock(clock, timeZone),
+    Math.min(MS_PER_HOUR, MS_PER_DAY - msIntoDay),
+  );
+}
+
+/** Today from a shared clock, for as long as the calling scope lives. */
+function watchClock(timeZone?: string): () => PlainDateValue {
+  let clock = clocks.get(timeZone);
+  if (!clock) {
+    clock = { day: new Signal.State({ year: 1970, month: 1, day: 1 }), readers: 0, timer: null };
+    clocks.set(timeZone, clock);
+  }
+  const held = clock;
+  // Read before the reader is counted: a zone `Intl` does not know throws
+  // here, and a count left behind by the throw would leave the next calendar
+  // given that zone reading a clock nobody ever started.
+  if (held.readers === 0) tickClock(held, timeZone);
+  held.readers++;
+  onCleanup(() => {
+    if (--held.readers > 0 || held.timer === null) return;
+    clearTimeout(held.timer);
+    held.timer = null;
+  });
+  return () => held.day.get();
+}
+
+// ---------------------------------------------------------------------------
+// Instants and zones
+// ---------------------------------------------------------------------------
+
+/**
+ * An instant as a reader in one zone sees it: the date and the time on a
+ * wall clock there, and how far that clock is from UTC.
+ */
+export interface ZonedValue {
+  readonly date: PlainDateValue;
+  readonly time: PlainTimeValue;
+  /**
+   * `±HH:MM` — `-05:00`, `+05:30`, `+12:45` — or `±HH:MM:SS` for the local
+   * mean times some zones kept before standard time, which is the form
+   * `Temporal.ZonedDateTime#offset` takes. Never `Z`: that would say the
+   * reading is UTC's own, and a London winter only agrees with UTC.
+   */
+  readonly offset: string;
+}
+
+/**
+ * A time of day whose seconds may be left out, as `Temporal`'s own property
+ * bags allow. A `PlainTimeValue` is one.
+ */
+export interface WallTime {
+  readonly hour: number;
+  readonly minute: number;
+  readonly second?: number;
+}
+
+/**
+ * Every part a wall clock is read from, as numbers.
+ *
+ * A fixed locale, because the parts are parsed and never shown to anyone. The
+ * era, because `Intl` writes the years before the first as 1 BC, 2 BC,
+ * counting the other way.
+ */
+function wallClockFormat(timeZone: string | undefined): Intl.DateTimeFormat {
+  return getDateTimeFormat('en-US', {
     calendar: 'gregory',
+    era: 'short',
     year: 'numeric',
     month: 'numeric',
     day: 'numeric',
@@ -383,16 +501,23 @@ function readClock(timeZone?: string): { date: PlainDateValue; msIntoDay: number
     minute: 'numeric',
     second: 'numeric',
     hourCycle: 'h23',
-    ...(timeZone ? { timeZone } : {}),
-  }).formatToParts(now);
+    ...(timeZone === undefined ? {} : { timeZone }),
+  });
+}
 
+/** The wall clock in a zone, or in the runtime's, at an instant. */
+function wallClockAt(
+  epochMs: number,
+  timeZone: string | undefined,
+): { date: PlainDateValue; time: PlainTimeValue; msIntoDay: number } {
   let year = 1970;
   let month = 1;
   let day = 1;
   let hour = 0;
   let minute = 0;
   let second = 0;
-  for (const part of parts) {
+  let beforeFirstYear = false;
+  for (const part of wallClockFormat(timeZone).formatToParts(epochMs)) {
     const value = Number(part.value);
     if (part.type === 'year') year = value;
     else if (part.type === 'month') month = value;
@@ -400,49 +525,149 @@ function readClock(timeZone?: string): { date: PlainDateValue; msIntoDay: number
     else if (part.type === 'hour') hour = value;
     else if (part.type === 'minute') minute = value;
     else if (part.type === 'second') second = value;
+    else if (part.type === 'era') beforeFirstYear = part.value === 'BC';
   }
+  // `Intl` shows the second the instant falls in, so the milliseconds into it
+  // come from the instant itself — floored, like the second, before 1970 too.
+  const ms = ((epochMs % 1000) + 1000) % 1000;
   return {
-    date: { year, month, day },
-    msIntoDay: ((hour * 60 + minute) * 60 + second) * 1000 + (now % 1000),
+    date: { year: beforeFirstYear ? 1 - year : year, month, day },
+    time: { hour, minute, second },
+    msIntoDay: ((hour * 60 + minute) * 60 + second) * 1000 + ms,
+  };
+}
+
+/** How far a zone's clocks are ahead of UTC at an instant, in milliseconds. */
+function offsetAt(epochMs: number, timeZone: string): number {
+  const { date, msIntoDay } = wallClockAt(epochMs, timeZone);
+  return toEpochDay(date) * MS_PER_DAY + msIntoDay - epochMs;
+}
+
+function formatOffset(offsetMs: number): string {
+  const total = Math.round(Math.abs(offsetMs) / 1000);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  const hhmm = `${pad(Math.floor(total / 3600))}:${pad(Math.floor(total / 60) % 60)}`;
+  return `${offsetMs < 0 ? '-' : '+'}${hhmm}${total % 60 === 0 ? '' : `:${pad(total % 60)}`}`;
+}
+
+/**
+ * The date, time and offset an instant reads as in an IANA zone.
+ *
+ * `epochMilliseconds` is the instant a page already holds — `Date.now()`,
+ * `Date.parse` of a server's timestamp, a database's epoch column — and the
+ * reading goes through `Intl.DateTimeFormat` with `timeZone`, which carries
+ * the zone database, rather than through `Date`'s local getters, which only
+ * know the runtime's own zone. Whole seconds, because a `PlainTimeValue` has
+ * nothing smaller: the milliseconds, and any fraction of one, are dropped,
+ * floored as a clock floors them. A zone `Intl` does not know, or an instant
+ * `Date` cannot hold, throws the `RangeError` `Intl` throws.
+ */
+export function instantToZoned(epochMilliseconds: number, timeZone: string): ZonedValue {
+  // Floored before `Intl` sees it, because `Intl` cuts a fraction towards
+  // zero, and before 1970 that is the later second: the reading would then be
+  // a second from the milliseconds `wallClockAt` floors, and the offset made
+  // of the two a second from the zone's.
+  const instant = Math.floor(epochMilliseconds);
+  const { date, time, msIntoDay } = wallClockAt(instant, timeZone);
+  return {
+    date,
+    time,
+    offset: formatOffset(toEpochDay(date) * MS_PER_DAY + msIntoDay - instant),
   };
 }
 
 /**
- * Today on the runtime's clock, shared by every calendar that was not told
- * what today is.
- *
- * One reading for all of them rather than one per cell: a grid re-runs every
- * cell's bindings on each arrow press, and asking `Intl` what day it is costs
- * more than a cell's own name does. And watched, so a calendar left open
- * across midnight moves its mark with the day rather than going on marking
- * yesterday until something else re-renders it. One timer does that for the
- * whole page, set for when the day turns over, and only while a calendar is
- * reading.
+ * The last instant `Date` can hold; the first is its negative. A hundred
+ * million days either side of 1970, which is `Temporal.Instant`'s range too.
  */
-const clockDay = new Signal.State<PlainDateValue>({ year: 1970, month: 1, day: 1 });
-let clockReaders = 0;
-let clockTimer: ReturnType<typeof setTimeout> | null = null;
+const LAST_INSTANT = 8.64e15;
 
-/**
- * Read the clock, and wake again when the day next turns over or in an hour,
- * whichever is sooner. A day is not always twenty-four hours long, and the
- * hour a clock change takes away would otherwise leave the mark that late.
- */
-function tickClock(): void {
-  const { date, msIntoDay } = readClock();
-  if (!isSameDate(date, untrack(() => clockDay.get()))) clockDay.set(date);
-  clockTimer = setTimeout(tickClock, Math.min(MS_PER_HOUR, MS_PER_DAY - msIntoDay));
+/** The nearest instant there is to `epochMs`: itself, when it is one. */
+function withinRange(epochMs: number): number {
+  return Math.min(Math.max(epochMs, -LAST_INSTANT), LAST_INSTANT);
 }
 
-/** Today from the shared clock, for as long as the calling scope lives. */
-function watchClock(): () => PlainDateValue {
-  if (clockReaders++ === 0) tickClock();
-  onCleanup(() => {
-    if (--clockReaders > 0 || clockTimer === null) return;
-    clearTimeout(clockTimer);
-    clockTimer = null;
-  });
-  return () => clockDay.get();
+/**
+ * The instants at which a zone's clocks show a wall time, earliest first.
+ *
+ * `wall` is the wall time counted as if it were UTC, and `before` and `after`
+ * are the zone's offsets a day either side of it, or as far as the range of
+ * instants goes where that is nearer. No offset is ever a day from UTC, so
+ * every instant that could show that time lies inside those two days, and with
+ * no more than one change of clocks in them the offset there is one of the
+ * two: the candidates are the wall time under each, kept where the clock
+ * really does show it then. One is the usual answer, two is an overlap and
+ * none is a gap — which is how the `Temporal` polyfill finds them too.
+ */
+function instantsAt(wall: number, timeZone: string, before: number, after: number): number[] {
+  const offsets = before === after ? [before] : [before, after];
+  return offsets
+    .map((offset) => wall - offset)
+    .filter((instant) => instant + offsetAt(instant, timeZone) === wall)
+    .sort((a, b) => a - b);
+}
+
+/**
+ * The instant a date and a time on a wall clock in an IANA zone name.
+ *
+ * The offset is the zone's at that wall time, which `Intl` only answers for an
+ * instant, so it is found from the instants either side rather than assumed —
+ * see `instantsAt` — and two wall times have to be resolved, as `Temporal`'s
+ * default `compatible` disambiguation resolves them:
+ *
+ * - **A time the clocks skip** — 02:30 on the morning New York springs
+ *   forward — is moved on by the length of the gap, which is the later of the
+ *   two readings it could mean: the instant that wall time names under the
+ *   offset before the change, 03:30 by the clock after it.
+ * - **A time the clocks go through twice** — 01:30 on the morning New York
+ *   falls back — is the earlier of the two. The record cannot say it meant
+ *   the second: the hour it repeats is a fact about the zone, not about the
+ *   date and time, which is why `instantToZoned` of the second half comes back
+ *   from here an hour early.
+ *
+ * A date or a time that is not one — 30 February, 24:00, a fractional minute
+ * — throws a `RangeError` rather than rolling over into the next one, which is
+ * what `Date.UTC` would do with it, and so does a zone `Intl` does not know,
+ * and a wall time whose instant is outside the hundred million days either
+ * side of 1970 that `Date` and `Temporal` hold.
+ */
+export function zonedToInstant(date: PlainDateValue, time: WallTime, timeZone: string): number {
+  const { year, month, day } = date;
+  const { hour, minute, second = 0 } = time;
+  const integral = [year, month, day, hour, minute, second].every(Number.isInteger);
+  if (
+    !integral ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysInMonth(year, month) ||
+    hour < 0 ||
+    hour > 23 ||
+    minute < 0 ||
+    minute > 59 ||
+    second < 0 ||
+    second > 59
+  ) {
+    throw new RangeError(
+      `${year}-${month}-${day} ${hour}:${minute}:${second} is not a date and a time of day`,
+    );
+  }
+
+  const wall = toEpochDay(date) * MS_PER_DAY + ((hour * 60 + minute) * 60 + second) * 1000;
+  // No further than the ends of the range: on its first and last days the
+  // day beyond is not there, and `Intl`, asked about it, would throw where
+  // `Temporal` answers.
+  const before = offsetAt(withinRange(wall - MS_PER_DAY), timeZone);
+  const after = offsetAt(withinRange(wall + MS_PER_DAY), timeZone);
+  const found = instantsAt(wall, timeZone, before, after);
+  if (found.length > 0) return found[0]!;
+
+  // In a gap, `after - before` is how long it is. The wall time moved on by
+  // that much is one the clocks do show, and the latest instant showing it is
+  // `compatible`'s answer; the fallback is the same instant reached directly,
+  // for a zone whose day either side holds more than the one change.
+  const moved = instantsAt(wall + after - before, timeZone, before, after);
+  return moved[moved.length - 1] ?? wall - before;
 }
 
 // ---------------------------------------------------------------------------
@@ -561,6 +786,13 @@ export interface CalendarOptions {
    * test, a server render and a page pinned to another zone all agree.
    */
   today?: () => PlainDateValue;
+  /**
+   * An IANA zone whose today the grid marks and opens on, read off a clock
+   * shared with every other calendar in that zone and moved at that zone's
+   * midnight. `today`, when given, wins. A zone `Intl` does not know throws a
+   * `RangeError` here.
+   */
+  timeZone?: string;
 
   min?: () => PlainDateValue | null | undefined;
   max?: () => PlainDateValue | null | undefined;
@@ -667,7 +899,11 @@ export function createCalendar(options: CalendarOptions): Calendar {
   const baseId = createId('calendar');
   const headingId = (index: number): string => `${baseId}-h${index}`;
 
-  const now: () => PlainDateValue = options.today ?? watchClock();
+  // A zone is checked even where a `today` of its own stands in for the
+  // zone's clock: a test is where a calendar is handed one, and a zone checked
+  // only without it is a typo every test passes.
+  if (options.today && options.timeZone !== undefined) today(options.timeZone);
+  const now: () => PlainDateValue = options.today ?? watchClock(options.timeZone);
 
   const value =
     options.value ?? new Signal.State<PlainDateValue | null>(options.defaultValue ?? null);

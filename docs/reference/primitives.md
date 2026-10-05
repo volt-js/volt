@@ -790,7 +790,9 @@ the two upload transports `xhrTransport` and `fetchTransport`.
 Alongside them, the civil-date arithmetic exported from the calendar's module:
 `addDays`, `addMonths`, `addYears`, `compareDates`, `isSameDate`, `clampDate`,
 `toIsoDate`, `parseIsoDate`, `today`, `firstDayOfWeek`, `dayOfWeek`,
-`daysInMonth`, `isLeapYear`, `toEpochDay`, `fromEpochDay`.
+`daysInMonth`, `isLeapYear`, `toEpochDay`, `fromEpochDay` — and the two edges
+where a date and a time meet an instant in a time zone, `instantToZoned` and
+`zonedToInstant`.
 
 ### [Collections](./primitives-collections)
 

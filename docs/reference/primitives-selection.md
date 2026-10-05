@@ -907,7 +907,7 @@ All pure, all exported, proleptic Gregorian.
 | `toIsoDate(date)` | `YYYY-MM-DD` — what the day cells carry and what a form posts. A year outside 0000–9999 is written `±YYYYYY`, as ISO 8601 and `Temporal` write it: `+010000-01-01` |
 | `parseIsoDate(text)` | A date from `YYYY-MM-DD` or `±YYYYYY-MM-DD`, or `null` for anything else, including a day the month does not have |
 | `firstDayOfWeek(locale)` | The locale's first day of the week, as an ISO weekday |
-| `today(timeZone?)` | Today in that IANA zone, or in the runtime's. A zone name `Intl` does not know throws a `RangeError` |
+| `today(timeZone?)` | Today in that IANA zone, or in the runtime's. A zone name `Intl` does not know throws a `RangeError`, and so does an empty one |
 
 `addMonths` clamps because PageDown from the last day of a long month has to
 land inside the next month, not skip into the one after — which is what
@@ -931,6 +931,99 @@ if (start) {
   compareDates(start, next) < 0;  // true
 }
 ```
+
+### Instants and time zones
+
+```ts
+interface ZonedValue {
+  readonly date: PlainDateValue;
+  readonly time: PlainTimeValue;
+  readonly offset: string; // '-05:00', '+05:30', '+12:45'
+}
+
+interface WallTime {
+  readonly hour: number;
+  readonly minute: number;
+  readonly second?: number; // 0 when left out
+}
+```
+
+**A date and a time of day have no zone.** A meeting at 9:00 on 8 March is a
+date and a time somebody picked, and the records stay exactly that, in every
+primitive on this page, whatever zone the page is about. A zone matters only
+where a page meets an *instant* — the epoch milliseconds `Date.now()`, a
+server's timestamp or a database column hands it — and these two functions are
+those two edges.
+
+| Function | Returns |
+|---|---|
+| `instantToZoned(ms, timeZone)` | The `ZonedValue` an instant reads as on an IANA zone's wall clock. `instantToZoned(Date.UTC(2026, 0, 15, 14, 30), 'America/New_York')` is 15 January 2026, 09:30:00, `-05:00` |
+| `zonedToInstant(date, time, timeZone)` | The instant, in epoch milliseconds, that a date and a `WallTime` on that zone's clock name |
+
+`instantToZoned` reads through `Intl.DateTimeFormat`'s `formatToParts` with
+`timeZone`, which carries the zone database, and never through `Date`'s local
+getters, which know no zone but the runtime's. It reads to the second — a
+`PlainTimeValue` has nothing smaller, so the milliseconds, and any fraction of
+one, are floored away, before 1970 as after it — and writes the offset the way
+`Temporal.ZonedDateTime#offset` does: `±HH:MM`, with seconds only for the local
+mean times some zones kept before standard time (`-04:56:02`, New York before
+1883), and `+00:00` rather than `Z` for a zone that happens to agree with UTC.
+Years before 1 are counted the ISO way, through a year zero.
+
+`zonedToInstant` needs the zone's offset at a wall time, which `Intl` only
+reports for an instant, so it takes the offsets a day either side and keeps the
+instants whose clock really shows that time. Where the clocks change, a wall
+time can name no instant or two, and it is resolved as `Temporal`'s default
+`compatible` disambiguation resolves it:
+
+| The wall time | For example | Resolves to |
+|---|---|---|
+| One the clocks skip | 02:30 on 8 March 2026 in New York, where 02:00 becomes 03:00 | The later reading: moved on by the length of the gap, to 03:30 EDT — `2026-03-08T07:30:00Z` |
+| One the clocks pass twice | 01:30 on 1 November 2026 in New York, where 02:00 becomes 01:00 | The earlier of the two, 01:30 EDT — `2026-11-01T05:30:00Z` |
+
+A gap or an overlap need not be an hour: Lord Howe Island moves its clocks by
+half an hour, and Samoa skipped the whole of 30 December 2011, so noon that day
+is noon on the 31st. The record cannot say it meant the second pass through a
+repeated hour — which pass is a fact about the zone, not about the date and the
+time — so an instant from the second pass, read with `instantToZoned` and handed
+back to `zonedToInstant`, comes back an hour early. Keep the instant where that
+hour matters.
+
+Both throw a `RangeError` for a zone `Intl` does not know, an empty name
+included: no zone at all is not a spelling of the runtime's. `zonedToInstant`
+throws one too for a date or a time that is not one — 30 February, 24:00, a
+fractional minute — rather than rolling it over into the next, which is what
+`Date.UTC` does, and for a wall time whose instant falls outside the hundred
+million days either side of 1970 that `Date` and `Temporal` both hold. The first
+and the last instant of that range come back from the wall times they read as,
+in any zone. A fixed offset such as `'+05:30'` is a zone to both, as it is to
+`Intl`.
+
+**`Temporal` interop.** The two records spread together are a property bag
+`Temporal.ZonedDateTime.from` takes, and it resolves them the same way, gaps and
+overlaps included:
+
+```ts
+import { instantToZoned, zonedToInstant } from '@voltdev/primitives';
+
+const date = { year: 2026, month: 3, day: 8 };
+const time = { hour: 2, minute: 30 };
+
+zonedToInstant(date, time, 'America/New_York');   // 1772955000000
+// The same instant, wherever Temporal is on the platform:
+Temporal.ZonedDateTime.from({ ...date, ...time, timeZone: 'America/New_York' })
+  .epochMilliseconds;                              // 1772955000000
+
+// And back: the fields of this ZonedDateTime are instantToZoned's.
+Temporal.Instant.fromEpochMilliseconds(1772955000000)
+  .toZonedDateTimeISO('America/New_York');  // 2026-03-08T03:30:00-04:00[America/New_York]
+instantToZoned(1772955000000, 'America/New_York');
+// { date: { year: 2026, month: 3, day: 8 },
+//   time: { hour: 3, minute: 30, second: 0 }, offset: '-04:00' }
+```
+
+A `Temporal.ZonedDateTime` has every field both records read, so one can stand
+in for either.
 
 ## A month grid: `createCalendar`
 
@@ -1018,6 +1111,7 @@ locale.
 | `range` / `defaultRange` | owned, `null` | The selected interval, in range mode |
 | `focusedDate` / `defaultFocusedDate` | the selection, else today, clamped to the bounds | The date holding the grid's tab stop |
 | `today` | the runtime clock | `() => PlainDateValue`, what counts as today |
+| `timeZone` | the runtime's | An IANA zone whose today the grid marks and opens on. `today`, given, wins. A zone `Intl` does not know throws a `RangeError` when the calendar is made, with a `today` of its own or without |
 | `min` / `max` | — | `() => PlainDateValue \| null \| undefined` |
 | `isDateDisabled` | — | `(date) => boolean`, dates inside the bounds that still cannot be chosen |
 | `visibleMonths` | `1` | Months laid out side by side |
@@ -1029,12 +1123,17 @@ locale.
 | `onChange` / `onRangeChange` | — | |
 | `onFocusedDateChange` / `onVisibleMonthChange` | — | The second fires on a change, not for the month it starts on |
 
-`today` is an option so that a test, a server render and a page pinned to
-another zone agree about which cell is today. Without it, every calendar on the
-page shares one reading of the runtime's clock, and one timer set for when the
-day turns over: a calendar left open across midnight moves its mark with the
-day. A `today` of your own is called as it is, so make it a signal read if the
-mark has to move.
+`today` is an option so that a test and a server render agree about which cell
+is today, and `timeZone` so that a page about another zone does. Without
+either, every calendar on the page shares one reading of the runtime's clock,
+and one timer set for when the day turns over: a calendar left open across
+midnight moves its mark with the day. With `timeZone`, the calendars in that
+zone share a clock of their own, which turns over at that zone's midnight —
+so a calendar for Tokyo marks the 13th from 15:00 UTC on the 12th. A `today` of
+your own is called as it is, once for every cell each time the cells render, so
+make it a signal read if the mark has to move, and prefer `timeZone` to
+`today: () => today('Asia/Tokyo')`, which asks `Intl` the date forty times a
+keystroke.
 
 **Bounds and unavailable dates are one question with two answers on screen.**
 A date outside `min` or `max` is never reached — navigation clamps before it
@@ -1236,8 +1335,9 @@ export class Birthday {
 Render every segment, separators included; `segmentProps` hides a separator
 from assistive technology, which would otherwise read "slash" between every part
 of the date. The hidden input carries the ISO value — `2026-09-11`, or `14:30`
-for a time — so a plain form post has something a server can read, whatever
-the locale printed. It is a visually hidden text input rather than
+for a time, or the instant either names in a zone given as `timeZone` (see
+[In a time zone](#in-a-time-zone)) — so a plain form post has something a
+server can read, whatever the locale printed. It is a visually hidden text input rather than
 `type="hidden"`, which the platform never validates: this one holds a `required`
 form back while the date is missing, and keeps a clipped pixel on the page for
 the browser to point its message at. Focus the platform puts there on a blocked
@@ -1278,6 +1378,8 @@ though it goes through no handler of this one.
 | `granularity` | | `'minute'` | `'second'` adds a seconds segment |
 | `minuteStep` | | `1` | What one arrow press moves the minutes by |
 | `hourCycle` | | the locale's | `'h11'`, `'h12'`, `'h23'` or `'h24'`, to force a clock |
+| `timeZone` | ✓ | ✓ | An IANA zone. The value stays the record; the hidden input posts the instant it names there — see [In a time zone](#in-a-time-zone). Fixed when the field is made |
+| `date` | | ✓ | `() => PlainDateValue \| null \| undefined`, the date the time is on. Needed with `timeZone`, and not read without it |
 | `disabled` / `readOnly` / `required` | ✓ | ✓ | Getters. Read-only still moves between segments. `required` puts `aria-required` on every segment and is enforced by the platform through the hidden input; a read-only or disabled field never holds the submit |
 | `min` / `max` | ✓ | | Getters for a `PlainDateValue`. Reported, not enforced: a date typed outside them is still the value, and every segment says `aria-invalid`, with `data-invalid` on the group for a stylesheet |
 | `name` | ✓ | ✓ | Names the hidden input. Without it the input carries no name and posts nothing |
@@ -1311,6 +1413,76 @@ what is available nowhere else is segmented entry, and that is all this is.
 | `placeholder(type, width)` | A run of dashes as wide as the segment |
 | `segment(type)` | The locale's own name for the field, from `Intl.DisplayNames` |
 | `empty` | The catalogue's `empty`, else "Empty" — what an empty segment's `aria-valuetext` says. `empty` is not in the default catalogue; a catalogue that adds it is read |
+
+### In a time zone
+
+A date and a time of day are zone-less, so `timeZone` leaves the value alone:
+`value()` is the same `PlainDateValue` or `PlainTimeValue` with or without it,
+and so is what the segments show. What it changes is the post. The hidden input
+carries the instant the record names in that zone, written with the zone's
+offset:
+
+| | Without `timeZone` | With `timeZone: 'America/New_York'` |
+|---|---|---|
+| `createDateField`, `createDatePicker` | `2026-03-08` | `2026-03-08T00:00:00-05:00`, the instant the day starts there |
+| `createTimePicker` | `09:30` | `2026-03-08T09:30:00-05:00` on the `date` it is given, and empty while that gives nothing, or a date that is not one |
+
+```ts
+// meeting.ts — one instant, posted as `starts`
+import { Component, Signal } from '@voltdev/core';
+import { createDateField, createTimePicker } from '@voltdev/primitives';
+
+@Component({ selector: 'v-meeting', templateUrl: './meeting.html' })
+export class Meeting {
+  dayEl = new Signal.State<Element | null>(null);
+  timeEl = new Signal.State<Element | null>(null);
+  day = createDateField({ field: () => this.dayEl.get(), label: 'Day' });
+  at = createTimePicker({
+    field: () => this.timeEl.get(),
+    label: 'Time',
+    name: 'starts',
+    timeZone: 'Europe/London',
+    date: () => this.day.value(),
+  });
+}
+```
+
+Rendered as in the examples above, with `at.hiddenInputProps()` on an input
+inside the form, 15 July at 09:30 posts `starts=2026-07-15T09:30:00+01:00` and
+15 January at 09:30 posts `starts=2026-01-15T09:30:00+00:00`. The offset
+belongs to the date, not to the time, which is why a time picker in a zone has
+to be given one. It refuses a
+`timeZone` without a `date` with a `TypeError` rather than assuming today, which
+would post the right time on the wrong day for every picker whose date was
+forgotten. Without `timeZone`, `date` is not read, and a date and a time post as
+the two fields they are.
+
+The string is RFC 3339 — the part of ISO 8601 that servers parse — so the
+seconds are always written, and the zone's name is not: the `[Europe/London]`
+suffix `Temporal` adds is one most servers refuse. Post the name in a field of
+its own where the server needs it — to show the instant on that zone's clock
+again, or to move a future meeting when the zone's rules change. The date and time written are
+the clock's at that instant, which is not always what was entered. A time the
+clocks skip posts the time it resolves to — 02:30 on 8 March 2026 in New York
+posts `2026-03-08T03:30:00-04:00` — while `value()` and the segments keep the
+02:30 that was entered. A time the clocks pass twice posts the first pass. A day
+whose midnight the clocks skip starts as late as the skip is long: Havana goes
+from 00:00 to 01:00 on 8 March 2026, which posts `2026-03-08T01:00:00-04:00`.
+All of them are the instants
+`Temporal.ZonedDateTime.from({ ...date, ...time, timeZone })` names — see
+[Instants and time zones](#instants-and-time-zones).
+
+One kind of instant is posted in UTC instead. Before a zone kept standard time
+its offset could have seconds — New York was 4:56:02 behind UTC until 1883 —
+and RFC 3339 writes an offset in hours and minutes only. With the seconds the
+post is one `Date.parse` and most servers refuse, and without them it names
+another instant, so 1 May 1880 in New York posts `1880-05-01T04:56:02Z`: the
+same instant, in a form every parser reads.
+
+A date field in a zone also starts an empty year at the year it is there,
+since most of New Year's Eve in New York is already New Year's Day in Auckland.
+A zone `Intl` does not know throws its `RangeError` when the primitive is made,
+rather than when somebody first finishes typing a date.
 
 ### Members
 
@@ -1412,13 +1584,14 @@ key still reaches the field, since read-only segments can be moved between.
 | `closeOnSelect` | `true` | Close as soon as a date is chosen in the grid |
 | `placement` | `'bottom-start'` | Where the popover sits |
 | `disabled` / `readOnly` | — | Both disable the grid and the trigger; read-only leaves the segments reachable |
+| `timeZone` | the runtime's | An IANA zone. The value stays the date; the hidden input posts the instant the day starts there, and today — the mark, the date the grid opens on, an empty year — is that zone's. See [In a time zone](#in-a-time-zone) |
 | `labels` | | The field's and the calendar's labels, plus `trigger` and `calendar` |
 | `onChange`, `onOpenChange` | — | `onChange` fires once whichever half made the change |
 
 The calendar options `isDateDisabled`, `visibleMonths`, `firstDayOfWeek` and
 `fixedWeeks` go to the grid; `required`, `name`, `labelledBy` and `describedBy`
-go to the field; `min`, `max`, `today` and `label` go to both, `label` naming
-the group of months when `labels.calendar` does not.
+go to the field; `min`, `max`, `today`, `timeZone` and `label` go to both,
+`label` naming the group of months when `labels.calendar` does not.
 
 **`min` and `max` bind the grid and are reported by the field.** The grid
 refuses a date outside them and opens on the nearest date inside them when the
@@ -1480,6 +1653,7 @@ one of these along. The option and member tables above are their contents.
 | `ComboboxAutocomplete`, `ListboxOpenFocus` | `'none' \| 'list' \| 'both'`, and what `open(focus?)` takes |
 | `ComboboxLabels`, `ComboboxProps` | Select and Combobox's labels and prop bags |
 | `PlainDateValue`, `PlainTimeValue`, `DateRange` | The values |
+| `ZonedValue`, `WallTime` | What `instantToZoned` returns, and the time `zonedToInstant` takes, whose seconds may be left out |
 | `CalendarOptions`, `Calendar`, `CalendarLabels` | `createCalendar`'s options, return and labels |
 | `CalendarMonth`, `CalendarWeek`, `CalendarDay`, `CalendarWeekday` | What `months()` and `weekdays()` hand back |
 | `CalendarSelectionMode` | `'single' \| 'range'` |
@@ -1500,14 +1674,15 @@ exported name of its own; `Select` and `Combobox` each include it.
 
 ## What is not built
 
-- **Time zones.** A `PlainDateValue` has no zone and none of these primitives
-  takes one. The only zone anywhere is the argument to `today(timeZone?)`, for
-  reading the clock; a calendar, field or picker that must agree with a zone
-  other than the runtime's is handed `today: () => today('Asia/Tokyo')`. There
-  is no zoned date-time value, no conversion between zones, and no picker for
-  an instant. A date field and a time picker side by side give a wall-clock date
-  and time with no zone attached, and which zone they mean is the application's
-  to decide and to store.
+- **A zoned value.** A zone changes what the pickers post and what today is,
+  never their values, which stay wall-clock records. So the second pass through
+  an hour the clocks repeat cannot be entered — 01:30 on the morning New York
+  falls back posts the first 01:30 — and an instant from that hour loaded into
+  the pickers through `instantToZoned` posts back an hour early unless the
+  application keeps it aside. The zone is fixed when a primitive is made: a page
+  that lets the reader switch zones makes the picker again. There is no picker
+  for the zone itself, and nothing posts the zone's name: which zone a page is
+  about is the application's to choose, and to store beside the instant.
 - **Presets.** There is no "last 7 days" or "this month" list for a range
   calendar. A row of buttons that set the `range` signal composes one; none
   ships.

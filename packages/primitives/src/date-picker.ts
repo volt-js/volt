@@ -60,12 +60,15 @@ import {
   compareDates,
   createCalendar,
   daysInMonth,
+  instantToZoned,
   toIsoDate,
   today as todayInZone,
+  zonedToInstant,
   type Calendar,
   type CalendarLabels,
   type PlainDateValue,
   type PlainTimeValue,
+  type WallTime,
 } from './calendar.js';
 import {
   createPopover,
@@ -759,6 +762,62 @@ function createSegmentedField<T>(
 }
 
 // ---------------------------------------------------------------------------
+// Posting an instant
+// ---------------------------------------------------------------------------
+
+/**
+ * A date and a time on a wall clock in a zone, written as the instant they
+ * name: `2026-03-08T03:30:00-04:00`.
+ *
+ * RFC 3339 — the part of ISO 8601 every server's parser reads — so the
+ * seconds are always there and the zone's name is not: a `[America/New_York]`
+ * suffix is what `Temporal` writes, and what most servers refuse. The date
+ * and time written are the clock's at that instant rather than the ones
+ * entered, because the two differ for a time the clocks skip, and the string
+ * has to name the instant `zonedToInstant` chose rather than a wall time that
+ * never happened.
+ *
+ * Except where the zone's offset had seconds — the local mean time New York
+ * kept until 1883 was 4:56:02 behind UTC — which RFC 3339 cannot write. Written
+ * anyway, the post is one `Date.parse` and most servers refuse; with the
+ * seconds dropped it names another instant. So that instant is written in UTC,
+ * `Z`, which names it exactly in a form every parser reads.
+ *
+ * Empty for a date that is not one — 30 February, handed in by a getter that
+ * read it from a query string — which names no instant to write. A page that
+ * stops rendering because a date arrived malformed is a worse failure than a
+ * post with nothing in it, for the reason `parseIsoDate` gives, and `required`
+ * still holds that post back.
+ */
+function zonedIsoString(date: PlainDateValue, time: WallTime, timeZone: string): string {
+  let instant: number;
+  try {
+    instant = zonedToInstant(date, time, timeZone);
+  } catch (error) {
+    if (error instanceof RangeError) return '';
+    throw error;
+  }
+  let zoned = instantToZoned(instant, timeZone);
+  let offset = zoned.offset;
+  if (offset.length > '+00:00'.length) {
+    zoned = instantToZoned(instant, 'UTC');
+    offset = 'Z';
+  }
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  const { hour, minute, second } = zoned.time;
+  return `${toIsoDate(zoned.date)}T${pad(hour)}:${pad(minute)}:${pad(second)}${offset}`;
+}
+
+/**
+ * Throw the `RangeError` `Intl` throws for a zone it does not know, while the
+ * picker is being made. Left to the first post, it would surface as a render
+ * failing under somebody's typing.
+ */
+function assertTimeZone(timeZone: string | undefined): void {
+  if (timeZone !== undefined) instantToZoned(0, timeZone);
+}
+
+// ---------------------------------------------------------------------------
 // Date field
 // ---------------------------------------------------------------------------
 
@@ -770,6 +829,13 @@ export interface DateFieldOptions {
   defaultValue?: PlainDateValue | null;
   /** What an arrow press on an empty year means. Defaults to the clock. */
   today?: () => PlainDateValue;
+  /**
+   * An IANA zone the date is a day in, such as `Europe/London`. The value
+   * stays the date; what changes is the hidden input, which carries the
+   * instant the day starts at there — `2026-07-15T00:00:00+01:00` — and the
+   * clock an empty year starts from, which becomes that zone's.
+   */
+  timeZone?: string;
 
   /**
    * Bounds a typed date is reported against. A date outside them is still the
@@ -803,9 +869,17 @@ export type DateField = SegmentedField<PlainDateValue>;
  * than enforced: a user typing 2026 passes through 2020 on the way, so a
  * field that refused the keystroke could not be typed into at all, and one
  * that rewrote the date under them would post something nobody entered.
+ *
+ * With a `timeZone` the post is the instant the day starts at there, which is
+ * midnight resolved the way any other wall time is — what
+ * `Temporal.ZonedDateTime.from({ ...date, timeZone })` gives — so a day whose
+ * midnight the clocks skip starts as late as the skip is long: Havana goes
+ * from 00:00 to 01:00 on 8 March 2026, and that day starts at 01:00.
  */
 export function createDateField(options: DateFieldOptions): DateField {
-  const now = (): PlainDateValue => options.today?.() ?? todayInZone();
+  const zone = options.timeZone;
+  assertTimeZone(zone);
+  const now = (): PlainDateValue => options.today?.() ?? todayInZone(zone);
 
   return createSegmentedField<PlainDateValue>(
     {
@@ -846,7 +920,8 @@ export function createDateField(options: DateFieldOptions): DateField {
         a === b ||
         (a !== null && b !== null && a.year === b.year && a.month === b.month && a.day === b.day),
 
-      serialize: toIsoDate,
+      serialize: (date) =>
+        zone === undefined ? toIsoDate(date) : zonedIsoString(date, { hour: 0, minute: 0 }, zone),
     },
   );
 }
@@ -875,6 +950,23 @@ export interface TimePickerOptions {
    */
   hourCycle?: HourCycle;
 
+  /**
+   * An IANA zone the time is a wall-clock time in, such as `Europe/London`.
+   * The value stays the time of day; what changes is the hidden input, which
+   * carries the instant the time is on `date` there —
+   * `2026-07-15T09:30:00+01:00` — and stays empty while `date` gives nothing,
+   * or gives a date that is not one. Needs `date`, and throws a `TypeError`
+   * without one.
+   */
+  timeZone?: string;
+  /**
+   * The date the time is on, which the zone's offset depends on: 09:30 in New
+   * York is five hours behind UTC in January and four in July. Read only with
+   * `timeZone`; a date and a time with no zone are posted as the two fields
+   * they are, by the date field and by this.
+   */
+  date?: () => PlainDateValue | null | undefined;
+
   disabled?: () => boolean;
   readOnly?: () => boolean;
   required?: () => boolean;
@@ -899,8 +991,24 @@ export type TimePicker = SegmentedField<PlainTimeValue>;
  * weaker listbox inside a time picker is the duplication this package exists
  * to avoid. What is not available anywhere else is the segmented entry, and
  * that is what this is.
+ *
+ * **A time of day has no zone.** A meeting at 9:00 is at 9:00 wherever the
+ * page is read, so the value stays a `PlainTimeValue` whatever `timeZone`
+ * says. The zone is for the post: it turns the time, on the date it is given,
+ * into the instant that is there. A zone with no date is refused rather than
+ * given today, which is a guess that would post the right time on the wrong
+ * day for every picker whose date was forgotten.
  */
 export function createTimePicker(options: TimePickerOptions): TimePicker {
+  const zone = options.timeZone;
+  if (zone !== undefined && options.date === undefined) {
+    throw new TypeError(
+      `createTimePicker: a timeZone needs the date the time is on, since ${zone}'s offset ` +
+        'depends on it — pass `date`',
+    );
+  }
+  assertTimeZone(zone);
+
   const seconds = options.granularity === 'second';
   const minuteStep = Math.max(1, Math.trunc(options.minuteStep ?? 1));
 
@@ -1016,6 +1124,12 @@ export function createTimePicker(options: TimePickerOptions): TimePicker {
         a.second === b.second),
 
     serialize: (value) => {
+      if (zone !== undefined) {
+        // Half an instant is not one, any more than half a date is a date:
+        // without the date there is no offset, and nothing to post.
+        const on = options.date?.();
+        return on ? zonedIsoString(on, value, zone) : '';
+      }
       const pad = (n: number): string => String(n).padStart(2, '0');
       const base = `${pad(value.hour)}:${pad(value.minute)}`;
       return seconds ? `${base}:${pad(value.second)}` : base;
@@ -1053,6 +1167,13 @@ export interface DatePickerOptions {
   defaultOpen?: boolean;
 
   today?: () => PlainDateValue;
+  /**
+   * An IANA zone the date is a day in. The value stays the date; the hidden
+   * input carries the instant the day starts at there, and today — what the
+   * grid marks and opens on, and where an empty year starts — is that zone's,
+   * unless `today` says otherwise.
+   */
+  timeZone?: string;
   min?: () => PlainDateValue | null | undefined;
   max?: () => PlainDateValue | null | undefined;
   isDateDisabled?: (date: PlainDateValue) => boolean;
@@ -1121,7 +1242,7 @@ export function createDatePicker(options: DatePickerOptions): DatePicker {
     options.value ?? new Signal.State<PlainDateValue | null>(options.defaultValue ?? null);
   const open = options.open ?? new Signal.State(options.defaultOpen ?? false);
 
-  const now = (): PlainDateValue => options.today?.() ?? todayInZone();
+  const now = (): PlainDateValue => options.today?.() ?? todayInZone(options.timeZone);
 
   /**
    * The date the grid opens on: the one the field holds, else today, and
@@ -1145,6 +1266,7 @@ export function createDatePicker(options: DatePickerOptions): DatePicker {
     field: options.field,
     value,
     today: options.today,
+    timeZone: options.timeZone,
     // The same bounds the grid has. The field takes what is typed into it
     // either way, and says on every segment that a date outside them is not
     // one this picker accepts.
@@ -1166,6 +1288,7 @@ export function createDatePicker(options: DatePickerOptions): DatePicker {
     value,
     focusedDate,
     today: options.today,
+    timeZone: options.timeZone,
     min: options.min,
     max: options.max,
     isDateDisabled: options.isDateDisabled,
