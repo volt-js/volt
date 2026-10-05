@@ -452,6 +452,270 @@ room(): number | null { return this.report?.textarea.remaining() ?? null; }
 settle(): void { this.report?.textarea.resize(); }
 ```
 
+## `<v-editor>`
+
+A rich text field: the label, a toolbar, the document, a line of help and the
+message. The editing is [`@voltdev/editor`](./editor)'s, all of it — typing, deleting,
+return, paste, input-method composition, the undo keys. What the component
+adds is the field round it, wired to the editable element the way every text
+field here is; a toolbar over the engine's [formatting commands](./editor#formatting); and the
+document as a signal a page can bind.
+
+<Demo name="editor" height="440" />
+
+```html
+<v-editor
+  :value="notes"
+  label="Release notes"
+  placeholder="What changed, and why it matters."
+  description="Bold, lists and quotes are kept."
+  :onChange="(doc) => save(doc)"
+></v-editor>
+```
+
+```ts
+import { Signal } from '@voltdev/core';
+import { basicSchema as s, type Node as Doc } from '@voltdev/editor';
+
+class ReleaseNotes {
+  notes = new Signal.State<Doc>(
+    s.node('doc', null, [s.node('paragraph', null, [s.text('Start here.')])]),
+  );
+}
+```
+
+| Prop | Type | Means |
+|---|---|---|
+| `value` | `Signal.State<Node>` | Your signal, holding the document. Every edit writes the new one into it, and one you write in is loaded |
+| `schema` | `Schema` | The schema of the empty document made when there is no `value` — one block to type into, the textblock its top node asks for first, even where it would allow none. Default `basicSchema` |
+| `id` | `string` | The editable element's id, and so the label's `for` and the toolbar's `aria-controls` |
+| `onChange` | `(doc: Node) => void` | Called with the new document after every edit, an undo included — never for one you wrote in |
+| `label` | `string` | The words above the editor |
+| `description` | `string` | The line under it |
+| `error` | `string` | A verdict of your own, shown at once and marking the editor invalid. Bound as `:prop-error` |
+| `placeholder` | `string` | Shown while the document is one empty block and no input method is composing in it, and given as `aria-placeholder` while it is shown |
+| `disabled` | `boolean` | Refuses every edit and every button, and takes the editor out of the tab order |
+| `readOnly` | `boolean` | Refuses every edit and every button, and keeps the text reachable, selectable and copyable |
+| `labels` | `EditorLabels` | The toolbar's names in your users' language |
+| `aria-label` | `string` | Names the editor instead of the label |
+| `aria-labelledby` | `string` | Names it from elsewhere on the page, instead of the label |
+| `aria-describedby` | `string` | Ids of anything else that describes it, added to the field's own two |
+| `tabindex` | `string \| number` | The box's place in the tab order, for a page managing focus itself. Wins over the `0` the editor writes while it is read only or the engine has not loaded; `disabled` takes the box out of the tab order whatever this says |
+| `lang` | `string` | The language the document is written in, on the box and the words shown in it while it is empty |
+| `dir` | `string` | Which way the document runs, on the box and the words shown in it while it is empty |
+
+`schema` and `id` are read once, while the editor is built, and so is which
+signal `value` is — what it holds is followed both ways. Every other prop
+follows whatever you bind it to.
+
+**The value is the document, not its HTML and not JSON.** The engine has no
+JSON form of a document, and a document is immutable, so a signal holding one
+changes exactly when the text does and costs nothing to compare. Build the
+starting document with the schema, as above; read `notes.get()` and you have
+all of it — `textContent`, `textBetween`, every node and mark. A document you
+write in that is *equal* to the one on screen — your own value coming back
+from a store that copies what it keeps — is left on screen as it is, with the
+caret and the undo history, so an echo of every save draws nothing again and
+cannot disturb an input method part way through a word; any other one starts
+both again, since nothing in either was written against it. A document from another
+schema is refused with an error, because the toolbar and the view were made
+for one. A document with no block in it, which a schema whose top node may be
+empty allows, is shown with one empty block of the type that node asks for
+first, as the editor's own empty document is made: something to type into,
+and the words over an empty box. The block is how it looks, not an edit, so
+your signal keeps the document you gave it until the first one.
+
+`error` is bound as `:prop-error`, not `:error`: `error` is a DOM event's name,
+and `:error` on any tag listens for it. Written out — `error="Too short."` — it
+is the prop. The editor lets go of the message on the next edit, so it never
+outlives its correction; one handed over while the editor is out of use is said
+once it is back, unless an edit came first. It is handed over when what you
+bind changes, and a signal set to the string it already holds has not changed:
+clear yours as an attempt starts, and the same words after it are said again.
+
+### The toolbar
+
+Eleven buttons in three segmented rows, drawn with the toggle group's classes:
+**bold**, *italic* and code; headings one to three, a bulleted list, a numbered
+list and a quote; undo and redo. A button whose type the schema lacks is not
+drawn, so a schema with no headings has no heading buttons.
+
+Each toggle is down — `aria-pressed="true"`, `data-state="on"` — while what it
+applies is there at the selection: inside a bold run, in a heading of its
+level, in a list of its kind, inside a quote. A second press takes it off
+again, and a heading pressed a second time goes back to a paragraph. Undo and
+redo are acts rather than toggles, so they carry no `aria-pressed` at all. Each
+block command is one undo, and the selection goes into the block it rebuilt,
+so the next press finds it there.
+
+**A mark cannot be pressed at a caret.** The engine keeps no marks waiting for
+the next character typed, so bold at a caret would have nowhere to go; the
+button says it is unavailable — `aria-disabled` — until there is text selected.
+An image or a rule selected whole is no text either. The blocks are another
+matter: the caret's block is what they change.
+
+That, the history being empty, and the editor being out of use are the only
+things that make a button unavailable, because they are the only ones known
+without pressing it. Trying a command is running it — a mark is a step per
+block, each over the whole document — and the toolbar is asked again on every
+keystroke and every move of the caret, so trying all eleven would make it the
+costliest thing about typing in a long document. A command that declines for a
+reason of its own is found out by the press, which then does nothing: a
+heading asked for in a list item's opening paragraph, which has to stay a
+paragraph, or a list made from a heading.
+
+Every button is named for a screen reader by `aria-label`, and what it shows —
+`B`, `H2`, `↶` — is never what is announced. The names come from `labels`, then
+from the locale's catalogue, then English:
+
+```html
+<v-editor :value="notes" :labels="words"></v-editor>
+```
+
+```ts
+words: EditorLabels = { toolbar: 'Formatierung', bold: 'Fett', heading: (n) => `Überschrift ${n}` };
+```
+
+The catalogue keys are `formatting` (the toolbar's own name), `bold`, `italic`,
+`code`, `heading` (with the level as `{n}`), `bulletList`, `orderedList`,
+`quote`, `undo` and `redo`.
+
+The toolbar is one tab stop. Inside it the arrows, Home and End move between
+the buttons that can be pressed now, stepping over the rest, and the stop stays
+on the button last used. A button that stops being pressable while it has
+focus — undo, pressed until there is nothing left to take back — keeps focus,
+and the stop until focus leaves it, and the arrows go from it to the pressable
+buttons either side. A press with the pointer leaves focus in the text: the
+selection is the model's and would survive a blur, but a writer would otherwise
+click back into the text after every button.
+
+Because focus stays in the text, an input method part way through a word is
+still composing when a button is pressed, and the browser owns that word until
+it is finished: a heading drawn then would take the paragraph it is being
+written into out of the page. So a press made during a composition waits, and
+is made once the composition has finished, after the composed text is in —
+every press made meanwhile, in order, unless the editor went out of use in
+between. One of them that has a different document loaded, as an `onChange` of
+yours that opens another note does, is the last made.
+
+A composition the editor goes out of use under, or that a different document
+is loaded under, commits nothing when it ends, and the presses waiting for it
+go with it: what it wrote went into elements no longer on the page, against
+text no longer shown, and committed it would land at the start of the new
+document, or in an editor made read only, which takes no edit. While an input
+method is composing in an empty box, the words shown there make way, since
+what it writes is on screen before it is in the document.
+
+### Your own toolbar
+
+The `toolbar` slot replaces the buttons and keeps the `role="toolbar"` round
+them. It is handed the editor's own three functions, by the name of the button:
+
+```html
+<v-editor :value="notes" label="Notes">
+  <template :slot-toolbar="{ run, isOn, can }">
+    <button type="button" :disabled="!can('bold')" :aria-pressed="String(isOn('bold'))"
+            :click="run('bold')">Strong</button>
+  </template>
+</v-editor>
+```
+
+`run(name)` presses it, and does nothing if it cannot be pressed or its command
+declines; called while an input method is composing, it waits for the
+composition to finish, as a default button's press does. `isOn(name)` is
+whether it is down; `can(name)` is whether it can be
+pressed, as the default buttons say it. The names are `bold`, `italic`, `code`, `heading-1` to `heading-3`,
+`bullet-list`, `ordered-list`, `blockquote`, `undo` and `redo`. The `label` and
+`description` slots are there as well, as on every field.
+
+The arrows, Home and End move between buttons of your own you mark
+`data-volt-item`, as they do between the default ones. Nothing else in the
+slot hears them taken: a field for a link's address keeps its own caret keys.
+
+### Keys, and out of use
+
+Undo and redo are the engine's keys — Ctrl or ⌘ with Z, with Shift as well
+to redo, and Ctrl-Y — and they reach what the toolbar did as well as what was typed, since
+the two share one history. Nothing binds Ctrl-B or Ctrl-I.
+
+`disabled` and `readOnly` both refuse every edit, every button and the undo
+keys. `disabled` takes the editor out of the tab order and says
+`aria-disabled`; `readOnly` keeps it reachable so its text can be selected and
+copied, and says `aria-readonly`. The engine fixes whether a view is editable
+when it is built, so either one builds the view again over the same element,
+document and history — an undo after it comes back still reaches what was
+typed before.
+
+### Before the engine loads
+
+A server writes the document as plain markup inside the editable element —
+headings, paragraphs, lists, marks, the same elements the engine draws — so a
+reader can read it before any script runs. Until the engine has loaded, nothing
+typed there would go anywhere, so the element says `aria-readonly`, keeps a tab
+stop, and is not `contenteditable`; every toolbar button says it is
+unavailable. The engine draws over it from the model once it is there. Text and
+attributes are escaped, and a link whose address would run script rather than
+go somewhere — `javascript:` and its relatives — is written without one, since
+until the engine loads a press on it is followed. A type of your own schema's
+is written as the engine's fallback draws it, a `div` or a `span` naming the
+type, and closed even when it is a leaf, so what follows a mention or a rule of
+your own is not read as inside it.
+
+### Where things land
+
+The editable element is the engine's own view, and `:host` is on it: it carries
+`role="textbox"`, `aria-multiline`, the field's id, name and description, and
+it is where a `class`, a `title` or a `data-*` written on the tag lands. The
+engine is handed that element as the document's own rendering rather than
+drawing one of its own inside it, so the element a caller can see is the
+element being edited. `id`, `aria-label`, `aria-labelledby` and
+`aria-describedby` are props for the reasons `<v-textarea>` gives: the field
+already writes each of them, and yours wins or is added rather than being
+written over. `tabindex` is one for the same reason: the editor writes a `0` of
+its own while the box is read only, so that its text can still be reached, and
+takes it back once the box is editable — which would take yours with it.
+Disabled sets yours aside too: a disabled control is out of the tab order
+wherever it was placed, as a native one is.
+
+`lang` and `dir` are props too, and the exceptions: they describe the text
+rather than the control, so they go on the element round the box and the words
+shown in it while it is empty, and both take them from there. On the box alone,
+`dir="rtl"` left those words at the page's starting edge while the caret was at
+the other. The label, the toolbar and the help stay the page's, in its language
+and its direction, as a `<v-textarea>`'s label does.
+
+The sheet entry is `editor`, and most of the look is drawn elsewhere on
+purpose: the label, the help, the message and the box are the field's, and the
+buttons are the toggle group's. What is the editor's own is the row holding the
+toolbar, a box that keeps typed spaces, the words shown in an empty box, and
+the outline round an image or a rule selected whole — which a forced palette
+draws in `Highlight`, since the browser draws no selection round a node it
+cannot put a caret in. The document's own blocks are left to the browser's
+stylesheet and yours. A [sheet of only some components](./ui#only-some-components)
+with the editor in it wants `fieldStyles` and `toggleGroupStyles` beside
+`editorStyles`.
+
+Not here: shortcuts for the marks, links and images from the toolbar, a toolbar
+that floats over the selection, and a value posted with a form — there is no
+`name`, a `name` written on the tag is refused as a prop the editor does not
+have, and nothing is submitted. Ctrl-B and Ctrl-I are left to the page.
+
+For anything this does not offer, take what it is built from:
+
+```html
+<v-editor :ref="editor" :value="notes" label="Notes"></v-editor>
+```
+
+```ts
+editor: VEditor | null = null;
+/** The engine's view: positions, the DOM selection, transactions of your own. */
+view(): EditorView | null { return this.editor?.view.get() ?? null; }
+/** The state on screen, document and selection, as a signal. */
+words(): number { return this.editor?.state.get().doc.textContent.split(/\s+/).filter(Boolean).length ?? 0; }
+/** The undo history the view and the toolbar share. */
+undoable(): boolean { return (this.editor?.history.undoDepth ?? 0) > 0; }
+```
+
 ## `<v-radio-group>` and `<v-radio>`
 
 `createRadioGroup`, with the markup written: a group that is one control, a

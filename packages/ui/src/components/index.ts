@@ -64,6 +64,7 @@ export { VChip, type ChipTone } from './chip.js';
 export { VCode, type CodeWording } from './code.js';
 export { VCollapsible } from './collapsible.js';
 export { VDialog } from './dialog.js';
+export { VEditor, type EditorAction, type EditorLabels, type EditorToolbarAction, type EditorToolbarGroup } from './editor.js';
 export { VFileUpload, type PostedFile, type UploadLabels } from './file-upload.js';
 export { VImage, type ImageFit } from './image.js';
 export { VInput } from './input.js';

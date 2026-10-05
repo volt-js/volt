@@ -18,6 +18,7 @@ import { chipClasses, chipStyles } from './chip.js';
 import { codeClasses, codeStyles } from './code.js';
 import { collapsibleClasses, collapsibleStyles } from './collapsible.js';
 import { dialogClasses, dialogStyles } from './dialog.js';
+import { editorClasses, editorStyles } from './editor.js';
 import { fieldClasses, fieldStyles } from './field.js';
 import { fileUploadClasses, fileUploadStyles } from './file-upload.js';
 import { imageClasses, imageStyles } from './image.js';
@@ -58,6 +59,7 @@ export {
   codeStyles,
   collapsibleStyles,
   dialogStyles,
+  editorStyles,
   fieldStyles,
   fileUploadStyles,
   imageStyles,
@@ -100,6 +102,7 @@ export const componentStyles: readonly ComponentStyles[] = [
   codeStyles,
   collapsibleStyles,
   dialogStyles,
+  editorStyles,
   fieldStyles,
   fileUploadStyles,
   imageStyles,
@@ -151,6 +154,7 @@ export const classes = {
   code: codeClasses,
   collapsible: collapsibleClasses,
   dialog: dialogClasses,
+  editor: editorClasses,
   field: fieldClasses,
   'file-upload': fileUploadClasses,
   image: imageClasses,

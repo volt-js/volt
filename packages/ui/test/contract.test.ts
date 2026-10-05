@@ -332,7 +332,7 @@ describe('the registry', () => {
     for (const name of keyframes) expect(name.startsWith('volt-')).toBe(true);
   });
 
-  it('holds the thirty-eight components styled so far', () => {
+  it('holds the thirty-nine components styled so far', () => {
     expect(componentStyles.map((component) => component.name)).toEqual([
       'accordion',
       'alert',
@@ -345,6 +345,7 @@ describe('the registry', () => {
       'code',
       'collapsible',
       'dialog',
+      'editor',
       'field',
       'file-upload',
       'image',

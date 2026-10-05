@@ -29,7 +29,7 @@ page works from a checkout of the Volt repository, where the package resolves
 from the workspace.
 :::
 
-**It is early.** The package is `0.1.0-alpha.1`: thirty-nine components are
+**It is early.** The package is `0.1.0-alpha.1`: forty components are
 tags, out of the roughly fifty the roadmap names, and the rest of the primitives
 have no styles here at all. What is missing is listed
 [at the end](#what-is-not-here-yet).
@@ -80,7 +80,7 @@ and that test would fail.
 
 | Group | Components |
 |---|---|
-| [Forms](./ui-forms) | `<v-button>`, `<v-checkbox>`, `<v-input>`, `<v-textarea>`, `<v-radio-group>`, `<v-switch>`, `<v-select>`, `<v-number-input>`, `<v-password-input>`, `<v-pin-input>`, `<v-slider>`, `<v-tags-input>`, `<v-rating>`, `<v-toggle-group>`, `<v-file-upload>` |
+| [Forms](./ui-forms) | `<v-button>`, `<v-checkbox>`, `<v-input>`, `<v-textarea>`, `<v-editor>`, `<v-radio-group>`, `<v-switch>`, `<v-select>`, `<v-number-input>`, `<v-password-input>`, `<v-pin-input>`, `<v-slider>`, `<v-tags-input>`, `<v-rating>`, `<v-toggle-group>`, `<v-file-upload>` |
 | [Overlays](./ui-overlays) | `<v-dialog>`, `<v-popover>`, `<v-tooltip>`, `<v-menu>`, `<v-toaster>` |
 | [Navigation](./ui-navigation) | `<v-tabs>`, `<v-accordion>`, `<v-collapsible>`, `<v-breadcrumb>`, `<v-pagination>`, `<v-stepper>` |
 | [Feedback](./ui-feedback) | `<v-alert>`, `<v-progress>`, `<v-spinner>`, `<v-skeleton>` |
@@ -125,11 +125,11 @@ node scripts/volt-css.ts > src/volt.css
 Only a recent Node runs a `.ts` file without a flag. The script has no types
 in it, so on an older one it runs unchanged renamed to `.mjs`.
 
-The emitted sheet is 174 kB as written and 12.2 kB minified and gzipped.
+The emitted sheet is 176 kB as written and 12.4 kB minified and gzipped.
 
 It is a file rather than a call at runtime because the data the sheet is built
 from weighs more than the sheet. Calling `stylesheet()` in the browser ships
-every component's rules as JavaScript — about 137 kB minified, 17.1 kB gzipped —
+every component's rules as JavaScript — about 139 kB minified, 17.4 kB gzipped —
 and then assembles the string at startup, to arrive at CSS the build could
 have written once.
 
@@ -137,7 +137,7 @@ That weight comes with the exports that hold rules — `stylesheet` and
 `componentStyles` carry every component's, a `*Styles` object its own
 component's — and with nothing else. Each component's rules are built in a
 call marked pure, so a bundler leaves them behind when nothing reads them:
-[`classes`](#classes) costs about 6.5 kB minified, 2.1 kB gzipped, and a layer
+[`classes`](#classes) costs about 6.7 kB minified, 2.2 kB gzipped, and a layer
 name costs its own string. Keep the package in build scripts all the same, and
 put only the generated file in front of the browser.
 
@@ -156,7 +156,7 @@ import { buttonStyles, dialogStyles, popoverStyles, stylesheet } from '@voltdev/
 const css = stylesheet([buttonStyles, dialogStyles, popoverStyles]);
 ```
 
-Each of the thirty-eight sheet entries is exported as `<entry>Styles` — one per
+Each of the thirty-nine sheet entries is exported as `<entry>Styles` — one per
 component, except that `<v-input>` and `<v-textarea>` share `fieldStyles`. A subset still
 carries the whole token table and the reduced-motion override; only component
 rules are left out. Build a subset with `stylesheet` rather than assembling one
@@ -298,8 +298,8 @@ which every [`create-volt`](./create-volt) template turns on. The tests compile
 an application that uses it under each template's own compiler options.
 
 Reaching for `classes` instead of writing the class out costs two things. It
-is a runtime import — the class names of every component, about 6.5 kB
-minified, 2.1 kB gzipped, and none of the rules. And a template reads its names
+is a runtime import — the class names of every component, about 6.7 kB
+minified, 2.2 kB gzipped, and none of the rules. And a template reads its names
 from the component instance, not from imports, so each component that uses it
 needs a field holding it.
 
@@ -611,7 +611,7 @@ const css = wrap(`@layer ${LAYER_COMPONENTS}`, componentCss(dialogStyles, '  '))
 
 ## What is not here yet
 
-- **Most of the inventory.** Thirty-nine components over thirty-eight sheet entries,
+- **Most of the inventory.** Forty components over thirty-nine sheet entries,
   out of the roughly fifty the roadmap names. The application shell, the layout
   primitives, the date and time controls and the data components beyond the
   table are not built.

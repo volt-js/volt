@@ -157,5 +157,9 @@ describe('an application that writes `<v-button>`', () => {
     expect(code).not.toContain('button.html');
     // And the tag's own words reached the element, through `:host`.
     expect(code).toContain('wide');
+    // Nothing else in the barrel came with it — the editor least of all,
+    // whose engine every import of the barrel resolves, used or not.
+    expect(code).not.toContain('v-editor');
+    expect(code).not.toContain('EditorView');
   }, 120_000);
 });

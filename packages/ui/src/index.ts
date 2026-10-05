@@ -82,6 +82,7 @@ export {
   codeStyles,
   collapsibleStyles,
   dialogStyles,
+  editorStyles,
   fieldStyles,
   fileUploadStyles,
   imageStyles,

@@ -1,0 +1,15 @@
+<div class="notes">
+  <v-editor
+    :value="notes"
+    label="Release notes"
+    placeholder="What changed, and why it matters."
+    :description="hint()"
+    :readOnly="locked.get()"
+  ></v-editor>
+
+  <v-switch :checked="locked">Read only</v-switch>
+
+  <span class="note">Each button is down while what it applies is there at the caret, and
+    the arrows move between them. Undo and redo are the platform's own keys as well as the
+    last two buttons. Read only keeps the text selectable and turns every button off.</span>
+</div>

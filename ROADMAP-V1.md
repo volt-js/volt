@@ -486,6 +486,37 @@ selection as one step and one undo unit. A pasted list replaces an empty
 paragraph rather than pouring its text into it. Plain text pastes as it did.
 Copying out as HTML, and loading a whole document from markup, are not built.
 
+**What a toolbar asks for is built.** A mark is toggled over the selection's
+text, block by block across blocks; a block's type is changed; blocks are
+wrapped in a quote or a list and taken out again; and each has a question
+saying whether its button is down. Each is one undo, and carries the selection
+across the nodes it rebuilt. A mark at a caret is declined, since a state holds
+no marks for the next character typed, and a lift takes the whole wrapper out
+rather than the blocks selected, since no step splits one.
+
+**And it is a component.** `<v-editor>`, in `@voltdev/ui`, is a form field over
+the view. The element the view edits is the template's own, carrying
+`role="textbox"`, `aria-multiline`, the name its label gives it and whatever a
+caller wrote on the tag — bar its language and direction, which go on the
+element round it so the words shown in an empty box take them as well. The
+document is a `Signal.State` a page binds both ways — the document itself,
+since the engine has no JSON form of one — and an equal one written back is
+left on screen as it is rather than drawn again. A toolbar of toggles for the
+starter schema's marks, three heading levels, both lists and the quote, then
+undo and redo, names every button for a screen reader and holds down those
+whose mark or block is at the selection; a slot takes a toolbar of the page's
+own. A press made while an input method is composing waits for the
+composition to finish rather than drawing the block being written into again
+under it, and a composition the editor goes out of use under, or that a
+different document is loaded under, commits nothing — what it wrote is off the
+page, and a read-only editor takes no edit. The undo keys are the engine's and
+reach what the toolbar did.
+Read only and disabled build the view again over the same history. A server
+writes the document as plain markup a reader can read before the engine loads,
+marked read only until it has. A document from another schema than the one the
+editor was built with is refused. Not built: keys for the marks, links and
+images from the toolbar, and a value posted with a form.
+
 Robustness here means schema-constrained documents, collaborative editing,
 input-method support for non-Latin scripts, undo grouping, paste sanitisation,
 and tables *inside* content. That is a specialist engine, not a component.

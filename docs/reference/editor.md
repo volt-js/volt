@@ -18,10 +18,16 @@ structure, read through the schema — and so do the platform's undo and redo
 keys, with nothing wired by the host. Edits cross block boundaries, and an
 image or a rule can be selected whole, then typed over or deleted.
 
-What does not exist yet is most of what makes it a product: no formatting
-commands, no keymap beyond undo, redo and the arrows onto a node, no copying out
-as HTML, and no serialisation. [What an editor still
-needs](#what-an-editor-still-needs) is the full list. The package is
+The [formatting commands](#formatting) a toolbar is made of exist too — marks
+toggled over the selection, a block's type changed, quotes and lists made and
+taken apart — and `<v-editor>`, in `@voltdev/ui`, is a form field built on all
+of it: a toolbar of those commands, a label, and the document as a signal. See
+[hosting it in a component](#hosting-it-in-a-component).
+
+What does not exist yet is much of what makes it a product: no keymap beyond
+undo, redo and the arrows onto a node, no copying out as HTML, and no
+serialisation. [What an editor still needs](#what-an-editor-still-needs) is the
+full list. The package is
 `0.1.0-alpha.1`, which is what its exported `VERSION` says, and its view is
 tested against happy-dom with events built by hand: nothing in its suite runs
 in a real browser.
@@ -653,6 +659,69 @@ with its line breaks into anything richer than paragraphs, cleaning up the
 inline styles a word processor writes instead of elements, and loading a whole
 document from markup — a slice from `parseSlice` is the start of one, not a
 checked document.
+
+## Formatting
+
+What a toolbar asks for is a command like the ones typing is made of — it
+takes an `EditorTransaction` and says whether it wrote anything — and a
+question for each, taking a state and answering whether its button is down.
+Nothing typed reaches them: they are named by a button, or by a shortcut a
+host binds itself.
+
+| Command | Description |
+|---|---|
+| `toggleMark(tr, type, attrs?)` | Put a mark on the selection's text, or take it off if all of it has it. A range across blocks is marked block by block, passing over a block that refuses the mark. Taking it off takes every mark of the type, whatever its attributes |
+| `setBlockType(tr, type, attrs?)` | Give every textblock the selection touches a new type, keeping its content. A block whose place refuses the type, or whose content the type cannot hold, is left as it is |
+| `toggleWrap(tr, type, attrs?)` | Wrap the blocks the selection covers in a node of `type` — further out, if their own parent cannot hold it — or, inside one already, lift the whole of the nearest one out |
+| `toggleList(tr, listType, itemType, attrs?)` | Make the blocks a list, an item each; in a list of this type, take it apart; in one of the other type, make it this type |
+
+| Question | Description |
+|---|---|
+| `markActive(state, type)` | At a caret, whether typing there would carry the mark. Over a range, whether every piece of text that could carry it does, and one can |
+| `blockActive(state, type, attrs?)` | Whether every textblock the selection touches is of `type`, with every attribute `attrs` names — `{ level: 2 }` for the second heading level |
+| `wrapActive(state, type)` | Whether the selection is inside a node of `type` |
+| `listActive(state, listType, itemType)` | Whether the nearest list holding the selection is of `listType` |
+
+```ts
+import { EditorState, TextSelection, basicSchema, setBlockType, toggleMark } from '@voltdev/editor';
+
+const s = basicSchema;
+const doc = s.node('doc', null, [s.node('paragraph', null, [s.text('Hello')])]);
+let state = EditorState.create(doc, TextSelection.create(doc, 1, 6));
+
+const tr = state.tr();
+if (toggleMark(tr, s.marks['strong']!) && setBlockType(tr, s.nodes['heading']!, { level: 2 })) {
+  state = state.apply(tr);
+}
+
+String(state.doc); // 'doc(heading(strong("Hello")))'
+```
+
+Each command closes the history, so a press of a button is one thing to undo
+whatever was typed before it. The block commands replace whole nodes, and a
+replacement's map sends every position inside what it replaced to an edge, so
+each moves the selection by where it put each block rather than letting it fall
+there — the caret is still in the word it was in after its paragraph becomes a
+heading, and goes into the quote with the block it was in.
+
+What they decline is as much the documentation:
+
+- **A mark at a caret.** A state is a document and a selection, with no marks
+  held for the next character typed, so bold pressed with nothing selected has
+  nowhere to be kept. `markActive` still answers at a caret.
+- **A lift takes out the whole wrapper.** Inside a quote or a list, the toggle
+  takes all of it apart, not only the blocks selected: splitting a wrapper at
+  the selection needs a step that moves content without replacing it, and
+  there is none.
+- **A list from a block an item cannot open with** — a heading, in the starter
+  schema, whose items open with a paragraph — is declined, all of it.
+- `setBlockType` declines only when no block it touches can change: a list
+  item's opening paragraph cannot become a heading, and bold text cannot go
+  into a code block.
+
+`<v-editor>`'s toolbar is built on these four and their questions — a button
+for each mark, each heading level, each list and the quote, down while its
+question says so; see [hosting it in a component](#hosting-it-in-a-component).
 
 ## Rendering
 
@@ -1501,6 +1570,14 @@ from `changedRange`.
 
 ## Hosting it in a component
 
+`<v-editor>`, in `@voltdev/ui`, is this section done once and for a form: the
+view inside a field's label, help and message, the document as a
+`Signal.State<Node>` a page binds both ways, a toolbar of the
+[formatting commands](#formatting) with a slot for one of your own, and the
+document written by a server as plain markup a reader can read before the
+engine loads. What follows is how to host a view yourself, for a page that
+wants what the component does not offer.
+
 The package imports nothing from the rest of Volt and ships no component. A
 component hands it an element once that element is in the document, which is
 what [`onMount`](./component#lifecycle) is for, and destroys it on teardown.
@@ -1534,13 +1611,28 @@ export class Notes implements OnMount {
 
 `onMount` is [never queued on a server](./server#what-a-server-does-not-run),
 so the same component server-renders
-the empty host and builds the editor once it is in a browser. The document
-itself is not server-rendered: the view is the only thing that can draw one, and
-it needs a DOM.
+the empty host and builds the editor once it is in a browser. The view does not
+server-render the document: it draws with DOM calls, and a server has no DOM.
+`<v-editor>` writes the document as markup of its own instead, in the elements
+the starter renderers draw, and hands the view that element to draw over.
 
 The state is the view's, not a signal. A component that wants to render
 something from it — a word count, an enabled undo button — sets a signal from
 `dispatchTransaction`.
+
+A host of its own meets three hazards `<v-editor>` already handles. A toolbar
+button that keeps focus in the text — a `mousedown` it prevents — is pressed
+while an input method may still be composing, and a command run then draws the
+blocks it changes again under the text the browser owns: hold it while
+`view.input.composing` is true and run it on `compositionend`, after the view's
+own listeners. A document equal to the one on screen, as a store that
+copies what it keeps hands one back, is best left out of `update`: arriving
+without the transaction that made it, it is drawn again whole. And a
+composition the host pulls the ground from under — a different document handed
+to `update`, or the view built again, as switching read only does — still ends
+on the element, and the view there commits what it composed at its own
+selection, editable or not: drop the transaction it dispatches from
+`compositionend`.
 
 ## What an editor still needs
 
@@ -1553,10 +1645,12 @@ front of a writer is large. In roughly the order a product meets them:
   There is no step that wraps or lifts a range while keeping the positions in
   it, so nothing lifts an item out of its list, and a paste never pulls the
   text after it up into its last block.
-- **Formatting and a keymap.** Mark steps exist; no command toggles a mark, and
-  no key is bound to anything but undo and redo.
-- **Block commands.** Turning a paragraph into a heading, wrapping in a list or a
-  blockquote, starting a new list item, lifting out of one — none exist.
+- **A keymap.** The [formatting commands](#formatting) exist, and no key is
+  bound to one: nothing is bound but undo, redo and the arrows onto a node.
+- **The rest of the block commands.** A block can become a heading, and blocks
+  can be wrapped in a list or a quote and taken out again, but return in a list
+  item splits its paragraph rather than starting a new item, and nothing lifts
+  one item out of its list — the toggle takes the whole list apart.
 - **The rest of `beforeinput`.** Cut, drag and drop, spelling replacements and
   line-wise deletion are all cancelled today, and no event's target ranges are
   read.
@@ -1565,7 +1659,10 @@ front of a writer is large. In roughly the order a product meets them:
   reopens text beside the caret, as Android keyboards do, needs its range read
   rather than assumed.
 - **A read-only mode that can be switched.** `editable` is fixed when the view
-  is built.
+  is built; `<v-editor>` switches by building the view again over the same
+  element, state and history. And a view built with `editable: false` still
+  commits a composition that ends on its element — one begun before it was
+  built — since the input layer takes every `compositionend` as an edit.
 - **The rest of the clipboard.** A paste keeps its structure; nothing copies or
   cuts a selection out as HTML, a word processor's inline styles are not
   cleaned up, and a whole document cannot be loaded from markup.
@@ -1579,4 +1676,3 @@ front of a writer is large. In roughly the order a product meets them:
   invert and map, and `Mapping` records mirrors. What is missing is a rebase
   function, a transport and an authority to order changes, rather than a
   different document model.
-- **A component**, with the state as a signal, so a toolbar can be a template.

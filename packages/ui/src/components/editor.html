@@ -1,0 +1,45 @@
+<div class="volt-field" :spread="field.fieldProps()">
+  <label class="volt-field-label" :ref="labelEl" :spread="field.labelProps()" :click="focus()"><slot name="label">{ label.get() }</slot></label>
+
+  <div
+    class="volt-editor-toolbar"
+    role="toolbar"
+    :ref="toolbarEl"
+    :spread="toolbarProps()"
+    :keydown="onToolbarKeyDown($event)"
+    :focusin="onToolbarFocus($event)"
+    :focusout="onToolbarBlur()"
+  >
+    <slot name="toolbar" :run="run" :isOn="isOn" :can="can">
+      <div :for="group in groups" :key="group.name" class="volt-toggle-group" data-orientation="horizontal">
+        <button
+          :for="action in group.actions"
+          :key="action.key"
+          type="button"
+          class="volt-toggle"
+          data-volt-item
+          :spread="actionProps(action)"
+          :mousedown="hold($event)"
+          :click="press(action)"
+        >{ action.glyph }</button>
+      </div>
+    </slot>
+  </div>
+
+  <div class="volt-editor-body" :ref="body" :attr-lang="lang.get()" :attr-dir="dir.get()">
+    <div :if="placeholderShown()" class="volt-editor-placeholder" aria-hidden="true"><p>{ placeholder.get() }</p></div>
+    <div
+      :host
+      class="volt-field-control volt-editor"
+      role="textbox"
+      aria-multiline="true"
+      :ref="surface"
+      :spread="surfaceProps()"
+      :html="markup()"
+    ></div>
+  </div>
+
+  <p class="volt-field-description" :ref="descriptionEl" :spread="field.descriptionProps()"><slot name="description">{ description.get() }</slot></p>
+
+  <p class="volt-field-error" :ref="errorEl" :spread="field.errorMessageProps()">{ message() }</p>
+</div>
