@@ -217,10 +217,47 @@ describe('v-radio-group', () => {
     expect(tabStops(host)).toEqual(['-1', '0', '-1']);
 
     // A disabled radio never holds it, which is the group's one departure from
-    // keeping a disabled control reachable.
+    // keeping a disabled control reachable. Chosen and off, it hands the stop
+    // to the first radio that can take it: a stop on a radio nothing can reach
+    // is a group Tab steps over, and an answer the keyboard can never change.
     instance.plan.set('lifetime');
     flushSync();
-    expect(tabStops(host)).toEqual(['-1', '-1', '-1']);
+    expect(tabStops(host)).toEqual(['0', '-1', '-1']);
+  });
+
+  it('keeps one tab stop through disable, enable and clear', () => {
+    @Component({
+      selector: 'v-page',
+      imports: [VRadio, VRadioGroup],
+      render: compileTemplate(`
+        <v-radio-group :value="plan" :disabled="off.get()" label="Billing plan">
+          <v-radio value="monthly">Monthly</v-radio>
+          <v-radio value="yearly">Yearly</v-radio>
+        </v-radio-group>
+      `),
+    })
+    class Page {
+      plan = new Signal.State<string | null>('yearly');
+      // Off from the start, the usual shape of a form waiting on a load.
+      off = new Signal.State(true);
+    }
+
+    const { instance, host } = show(Page);
+    expect(tabStops(host)).toEqual(['-1', '-1']);
+
+    instance.off.set(false);
+    flushSync();
+    expect(tabStops(host)).toEqual(['-1', '0']);
+
+    instance.off.set(true);
+    flushSync();
+    instance.plan.set(null);
+    flushSync();
+    expect(tabStops(host)).toEqual(['-1', '-1']);
+
+    instance.off.set(false);
+    flushSync();
+    expect(tabStops(host)).toEqual(['0', '-1']);
   });
 
   it('keeps the tab stop when the radios arrive with the data they are drawn from', async () => {

@@ -382,8 +382,9 @@ export class VRating {
   }
 
   /**
-   * What one radio carries: the primitive's bag, and whether it is lit by the
-   * pointer alone.
+   * What one radio carries: the primitive's bag, whether it is lit by the
+   * pointer alone, and, on a server, the tab stop the primitive has no page to
+   * place.
    *
    * The primitive marks every star at or below the value it is showing as
    * filled, and the value it shows is the preview while there is one. Which
@@ -397,36 +398,27 @@ export class VRating {
     if (this.rating.value() < value && this.rating.displayValue() >= value) {
       props['data-preview'] = true;
     }
-    if (this.strandedStop() === value) props['tabindex'] = '0';
+    if (!this.group.get() && this.unreadStop() === value) props['tabindex'] = '0';
     return props;
   }
 
   /**
-   * The radio that holds the tab stop when no checked radio holds it, or
-   * `undefined` while one does.
+   * The star the tab stop rests on, worked out from the stars rather than the
+   * page, for stars written with no page to read: on a server.
    *
-   * The primitive gives the tab stop to the checked radio, or to the first
-   * while there is no score. Both halves of that can leave the rating with
-   * no stop at all, and a keyboard unable to reach it:
-   *
-   * - A score between the steps — an average, or `2.5` where the stars count
-   *   in wholes, either of which a caller's signal or `defaultValue` can hold,
-   *   or `7` out of five, which a caller's signal can — checks no radio and is
-   *   not "no score", so the stop went to nothing. It goes to the last star
-   *   the score fills, which is what the eye takes for the score.
-   * - With no score, "the first" is looked up once, when the group appears,
-   *   among the stars that are not disabled — so a rating that starts
-   *   disabled, or read-only with no radios at all, or is cleared while
-   *   read-only, finds none and keeps finding none once it is in use again.
-   *   The first star is known without looking, and it is given here.
-   *
-   * Only where the stars can be chosen: disabled has no tab stop by design,
-   * and read-only has no radios.
+   * The primitive gives it to the checked star, or the first while there is
+   * no score — both of which a server can write — and otherwise to the last
+   * star the score fills, or the first for a score below them all, which it
+   * finds on the page. A server has no page and writes each star once, in
+   * order: at the second star of a 2.5 it cannot know whether a 2.5 comes
+   * later, and the row would reach the browser with nothing Tab could land on
+   * until a script attached. The stars are known here before any is written,
+   * and the answer is the browser's. A browser has the group element before
+   * it draws the first star, and the primitive's answer from then on.
    */
-  private strandedStop(): number | undefined {
+  private unreadStop(): number | undefined {
     if (this.rating.isReadOnly() || flag(this.disabled.get())) return undefined;
     const score = this.rating.value();
-    if (this.values.includes(score)) return undefined;
     return this.values.findLast((value) => value <= score) ?? this.values[0];
   }
 

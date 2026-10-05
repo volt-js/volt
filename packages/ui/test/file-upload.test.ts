@@ -497,7 +497,7 @@ describe('v-file-upload', () => {
     for (const [name, code, why] of [
       ['notes.txt', 'type', 'notes.txt is not an accepted file type.'],
       ['huge.png', 'size', 'huge.png is larger than 50 bytes.'],
-      ['two.png', 'count', 'No more than 1 files can be uploaded.'],
+      ['two.png', 'count', 'No more than 1 file can be uploaded.'],
     ] as const) {
       const row = refusedRow(name);
       expect(row.getAttribute('data-status'), name).toBe('rejected');
@@ -730,12 +730,19 @@ describe('v-file-upload', () => {
     expect(form.checkValidity()).toBe(false);
 
     // A change in which files are there lets go of it, and the prop with it.
-    // A field that has spoken judges every change after it, so what is said
-    // now is its verdict on the files there now: one is still going up.
+    // Nothing takes its place while the file goes up: the wait is news only
+    // to a submit, and none has been made.
     choose(picker(host), [file('beach.png', 10)]);
     expect(instance.handle!.error.get()).toBe('');
-    expect(message(host).textContent).toBe('Wait for the upload to finish.');
+    expect(message(host).textContent).toBe('');
+    expect(message(host).getAttribute('data-state')).not.toBe('invalid');
+    expect(picker(host).getAttribute('aria-invalid')).toBeNull();
     expect(picker(host).validationMessage).not.toBe('The album is full.');
+    const early = new Event('submit', { bubbles: true, cancelable: true });
+    form.dispatchEvent(early);
+    flushSync();
+    expect(early.defaultPrevented).toBe(true);
+    expect(message(host).textContent).toBe('Wait for the upload to finish.');
 
     // Said again about the files now there, it stays while they move on: a
     // byte arriving is not an edit.

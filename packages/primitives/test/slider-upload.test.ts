@@ -2700,6 +2700,18 @@ describe('upload: refusing a file', () => {
     expect(picked(harness.picker)).toEqual(['b.png']);
   });
 
+  it('says "file" for a limit of one', async () => {
+    const harness = buildUpload({ maxFiles: 1 });
+    harness.upload.add([file('a.png'), file('b.png')]);
+    await settle();
+    expect(harness.upload.items()[1]!.error!.message).toBe('No more than 1 file can be uploaded.');
+
+    const roomier = buildUpload({ maxFiles: 2 });
+    roomier.upload.add([file('a.png'), file('b.png'), file('c.png')]);
+    await settle();
+    expect(roomier.upload.items()[2]!.error!.message).toBe('No more than 2 files can be uploaded.');
+  });
+
   it('frees a place again when a file is removed', async () => {
     const harness = buildUpload({ maxFiles: 1 });
     const [first] = harness.upload.add([file('a.png')]);
@@ -3414,8 +3426,8 @@ describe('upload: announcements', () => {
     expect(harness.upload.announcement()).toBe('');
 
     await advance(50);
-    expect(harness.upload.announcement()).toBe('1 files uploaded');
-    expect(harness.live.textContent).toBe('1 files uploaded');
+    expect(harness.upload.announcement()).toBe('1 file uploaded');
+    expect(harness.live.textContent).toBe('1 file uploaded');
   });
 
   it('counts up as files land, and reports a failure at the end', async () => {
@@ -3457,7 +3469,185 @@ describe('upload: announcements', () => {
     // Neither the refused file nor the cancelled one is part of this upload,
     // so counting them leaves the region saying "1 of 3" about an upload that
     // has finished everything it was ever going to send.
-    expect(harness.upload.announcement()).toBe('1 files uploaded');
+    expect(harness.upload.announcement()).toBe('1 file uploaded');
+  });
+
+  it('says one file in the singular, whichever count it is', async () => {
+    const harness = buildUpload({ transport: heldTransport() }, PLAIN_UPLOAD);
+    harness.upload.add([file('a.png'), file('b.png')]);
+    await settle();
+
+    // One of two called off: what is left to say is about one file.
+    harness.upload.cancel(harness.upload.items()[1]!.id);
+    await settle();
+    expect(harness.upload.announcement()).toBe('0 of 1 file uploaded');
+
+    lastFor('a.png').resolve();
+    await settle();
+    expect(harness.upload.announcement()).toBe('1 file uploaded');
+
+    harness.upload.retry(harness.upload.items()[1]!.id);
+    await settle();
+    lastFor('b.png').reject(new Error('boom'));
+    await settle();
+    expect(harness.upload.announcement()).toBe('1 of 2 files failed to upload');
+
+    harness.upload.remove(harness.upload.items()[0]!.id);
+    harness.upload.retry(harness.upload.items()[0]!.id);
+    await settle();
+    lastFor('b.png').reject(new Error('boom'));
+    await settle();
+    expect(harness.upload.announcement()).toBe('1 of 1 file failed to upload');
+  });
+
+  it('counts in the words and plural forms of the locale catalogue, where it has them', async () => {
+    @Component({
+      selector: `v-upload-${++selectors}`,
+      render: compileTemplate(`
+        <div class="upload"><input class="picker" :ref="input" :spread="upload.inputProps()"></div>
+      `),
+    })
+    class PolishUpload {
+      input = new Signal.State<Element | null>(null);
+      // Polish has a form for two to four and another for five and more, which
+      // no English pair could stand in for.
+      locale = createLocaleProvider({
+        defaultLocale: 'pl-PL',
+        messages: {
+          uploadTooMany: {
+            one: 'Najwyżej {n} plik.',
+            few: 'Najwyżej {n} pliki.',
+            many: 'Najwyżej {n} plików.',
+            other: 'Najwyżej {n} pliku.',
+          },
+          uploadProgress: {
+            one: 'Przesłano {done} z {n} pliku',
+            few: 'Przesłano {done} z {n} plików',
+            many: 'Przesłano {done} z {n} plików',
+            other: 'Przesłano {done} z {n} pliku',
+          },
+          uploadComplete: {
+            one: 'Przesłano {n} plik',
+            few: 'Przesłano {n} pliki',
+            many: 'Przesłano {n} plików',
+            other: 'Przesłano {n} pliku',
+          },
+          uploadFailures: {
+            one: 'Nie przesłano {failed} z {n} pliku',
+            few: 'Nie przesłano {failed} z {n} plików',
+            many: 'Nie przesłano {failed} z {n} plików',
+            other: 'Nie przesłano {failed} z {n} pliku',
+          },
+        },
+      });
+      upload = createFileUpload({
+        input: () => this.input.get(),
+        transport: heldTransport(),
+        maxFiles: 3,
+      });
+    }
+
+    const handle = mount(PolishUpload, host);
+    mounted.push(handle);
+    flushSync();
+    const { upload } = handle.instance as PolishUpload;
+
+    upload.add([file('a.png'), file('b.png'), file('c.png'), file('d.png')]);
+    await settle();
+    expect(upload.items()[3]!.error!.message).toBe('Najwyżej 3 pliki.');
+
+    lastFor('a.png').resolve();
+    await settle();
+    expect(upload.announcement()).toBe('Przesłano 1 z 3 plików');
+
+    lastFor('b.png').resolve();
+    lastFor('c.png').resolve();
+    await settle();
+    expect(upload.announcement()).toBe('Przesłano 3 pliki');
+
+    // Sent again, and refused this time.
+    upload.retry(upload.items()[0]!.id);
+    await settle();
+    lastFor('a.png').reject(new Error('boom'));
+    await settle();
+    expect(upload.announcement()).toBe('Nie przesłano 1 z 3 plików');
+  });
+
+  it('agrees in English by English rules on a page whose catalogue says nothing about files', async () => {
+    @Component({
+      selector: `v-upload-${++selectors}`,
+      render: compileTemplate(`
+        <div class="upload"><input class="picker" :ref="input" :spread="upload.inputProps()"></div>
+      `),
+    })
+    class JapaneseUpload {
+      input = new Signal.State<Element | null>(null);
+      // Japanese has one form for every count, so its own rules would never
+      // pick the English singular.
+      locale = createLocaleProvider({ defaultLocale: 'ja-JP' });
+      upload = createFileUpload({
+        input: () => this.input.get(),
+        transport: heldTransport(),
+        maxFiles: 1,
+      });
+    }
+
+    const handle = mount(JapaneseUpload, host);
+    mounted.push(handle);
+    flushSync();
+    const { upload } = handle.instance as JapaneseUpload;
+
+    upload.add([file('a.png'), file('b.png')]);
+    await settle();
+    expect(upload.items()[1]!.error!.message).toBe('No more than 1 file can be uploaded.');
+
+    lastFor('a.png').resolve();
+    await settle();
+    expect(upload.announcement()).toBe('1 file uploaded');
+  });
+
+  it('writes its counts the way the page writes numbers, in its English as well', async () => {
+    @Component({
+      selector: `v-upload-${++selectors}`,
+      render: compileTemplate(`
+        <div class="upload"><input class="picker" :ref="input" :spread="upload.inputProps()"></div>
+      `),
+    })
+    class ArabicUpload {
+      input = new Signal.State<Element | null>(null);
+      // The digits named outright, so the test does not lean on which system
+      // a region defaults to. A catalogue's `{n}` is written this way, and so
+      // is every number the library's own English says.
+      locale = createLocaleProvider({ defaultLocale: 'ar-EG-u-nu-arab' });
+      upload = createFileUpload({
+        input: () => this.input.get(),
+        transport: heldTransport(),
+        maxFiles: 2,
+      });
+    }
+
+    const handle = mount(ArabicUpload, host);
+    mounted.push(handle);
+    flushSync();
+    const { upload } = handle.instance as ArabicUpload;
+
+    upload.add([file('a.png'), file('b.png'), file('c.png')]);
+    await settle();
+    expect(upload.items()[2]!.error!.message).toBe('No more than ٢ files can be uploaded.');
+
+    lastFor('a.png').resolve();
+    await settle();
+    expect(upload.announcement()).toBe('١ of ٢ files uploaded');
+
+    lastFor('b.png').reject(new Error('boom'));
+    await settle();
+    expect(upload.announcement()).toBe('١ of ٢ files failed to upload');
+
+    upload.retry(upload.items()[1]!.id);
+    await settle();
+    lastFor('b.png').resolve();
+    await settle();
+    expect(upload.announcement()).toBe('٢ files uploaded');
   });
 
   it('still has something to say when no region was wired up', async () => {
@@ -3473,7 +3663,7 @@ describe('upload: announcements', () => {
     // written to. Silence for a message the consumer did render is a worse
     // failure than one announced a little early, which is the rule the rest of
     // the library follows for an absent region.
-    expect(harness.upload.announcement()).toBe('1 files uploaded');
+    expect(harness.upload.announcement()).toBe('1 file uploaded');
   });
 });
 
@@ -3505,6 +3695,57 @@ describe('upload: the form around it', () => {
     const allowed = new Event('submit', { bubbles: true, cancelable: true });
     form.dispatchEvent(allowed);
     expect(allowed.defaultPrevented).toBe(false);
+  });
+
+  it('says to wait only when a submit is refused, though the field has spoken before', async () => {
+    const form = document.createElement('form');
+    host.append(form);
+    const harness = buildUpload({ transport: heldTransport(), accept: 'image/*' }, UPLOAD, form);
+
+    // A refusal is said at once, so the field has said something.
+    harness.upload.add([file('notes.txt', 10, 'text/plain'), file('a.png')]);
+    await settle();
+    expect(harness.upload.field.messages()[0]).toContain('notes.txt');
+
+    // The refusal goes while a.png is still on its way. Nothing is wrong with
+    // the files there now and no submit has been refused for them, so the
+    // field has nothing to say — the wait is news only to a submit.
+    const refused = harness.upload.items().find((entry) => entry.status === 'rejected')!;
+    harness.upload.remove(refused.id);
+    await settle();
+    expect(harness.upload.field.messages()).toEqual([]);
+    expect(harness.upload.field.state()).toBe('valid');
+    expect(harness.picker.hasAttribute('aria-invalid')).toBe(false);
+
+    // Nor is another file added on top of it.
+    harness.upload.add([file('b.png')]);
+    await settle();
+    expect(harness.upload.field.messages()).toEqual([]);
+
+    const blocked = new Event('submit', { bubbles: true, cancelable: true });
+    form.dispatchEvent(blocked);
+    flushSync();
+    expect(blocked.defaultPrevented).toBe(true);
+    expect(harness.upload.field.messages()).toEqual(['Wait for the upload to finish.']);
+  });
+
+  it('does not tell a required upload to wait once a file is on its way', async () => {
+    const form = document.createElement('form');
+    host.append(form);
+    const harness = buildUpload({ transport: heldTransport(), required: () => true }, UPLOAD, form);
+
+    const empty = new Event('submit', { bubbles: true, cancelable: true });
+    form.dispatchEvent(empty);
+    flushSync();
+    expect(empty.defaultPrevented).toBe(true);
+    expect(harness.upload.field.isInvalid()).toBe(true);
+
+    // The file the message asked for: what is wrong has been put right, and
+    // the file going up is not a new mistake.
+    dispatch(harness.zone, dragEvent('drop', [file('a.png')]));
+    await settle();
+    expect(harness.upload.field.messages()).toEqual([]);
+    expect(harness.upload.field.state()).toBe('valid');
   });
 
   it('does not call an upload in progress invalid before anyone has submitted', async () => {

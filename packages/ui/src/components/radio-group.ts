@@ -137,9 +137,7 @@ export class VRadioGroup {
    * The primitive reads the DOM for everything it navigates, so this is not
    * how it finds them. It is how the group knows what was written inside it:
    * two radios sharing a value would both draw as chosen and both submit, and
-   * that is caught here rather than by a user. It is also what `itemProps`
-   * reads to put the tab stop back on a group the primitive's one reading of
-   * the DOM was too early to see.
+   * that is caught here rather than by a user.
    *
    * In the order their rows are in, which is why each radio hands over the
    * row it drew: a `:for` that reorders moves the rows and registers nothing,
@@ -197,42 +195,14 @@ export class VRadioGroup {
   }
 
   /**
-   * What one radio carries: the primitive's bag, and the tab stop put back
-   * when the primitive cannot see where it belongs.
+   * What one radio carries: the primitive's bag, less what says nothing.
    *
-   * A radio group holds a single tab stop, on the chosen radio — and, while
-   * nothing is chosen, on the first one, or Tab could not reach the group at
-   * all. The primitive works that fallback out by reading the DOM, once, when
-   * the group element appears, and again whenever the choice is cleared: it
-   * has no list of the radios to hear about, and says so. This side does —
-   * they register as they are built — which is the same ground `<v-tabs>`
-   * heals its own selection on.
-   *
-   * Two ordinary edits land outside that one reading, and both leave every
-   * radio at `tabindex="-1"`, which is Tab stepping over the whole question
-   * and no key reaching it again:
-   *
-   * - the radios arrive with the data they are drawn from, after the group
-   *   has rendered empty;
-   * - the choice names no radio here — restored from a saved form or a query
-   *   string after the option was retired, or holding the value of a radio
-   *   that has since left the page.
-   *
-   * So while nothing on screen answers the question, the tab stop is decided
-   * here, from the radios in the order their rows are in. Everything else is
-   * left to the primitive, including the group whose chosen radio is off:
-   * that is one tab stop deliberately given to a radio that cannot take it,
-   * and it is the primitive's to say so.
+   * The tab stop is left to the primitive, which decides it again whenever
+   * the radios change under the group — radios that arrive with their data, a
+   * choice restored from a saved form whose option has since been retired —
+   * so there is nothing here to put back.
    */
   itemProps(value: string, disabled: boolean): ControlProps {
-    const props = said(this.radioGroup.itemProps(value, disabled));
-    const chosen = this.radioGroup.value();
-    const radios = this.radios.all.get();
-    if (chosen !== null && radios.some((radio) => radio.value.get() === chosen)) return props;
-
-    const first = this.disabled.get()
-      ? undefined
-      : radios.find((radio) => !radio.disabled.get());
-    return { ...props, tabindex: first?.value.get() === value ? '0' : '-1' };
+    return said(this.radioGroup.itemProps(value, disabled));
   }
 }

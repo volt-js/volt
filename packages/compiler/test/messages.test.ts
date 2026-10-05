@@ -391,6 +391,18 @@ describe('a message nothing asks for', () => {
     expect(unusedMessages(catalog, [])).toEqual([]);
   });
 
+  it('says nothing about the counts a file upload asks for', () => {
+    // The upload's page tells a Polish application to write these four, with
+    // the forms its own plural rules choose from.
+    const catalog = {
+      uploadTooMany: { one: 'Najwyżej {n} plik.', few: 'Najwyżej {n} pliki.', other: 'Najwyżej {n} plików.' },
+      uploadProgress: { one: 'Przesłano {done} z {n} pliku', other: 'Przesłano {done} z {n} plików' },
+      uploadComplete: { one: 'Przesłano {n} plik', few: 'Przesłano {n} pliki', other: 'Przesłano {n} plików' },
+      uploadFailures: { one: 'Nie przesłano {failed} z {n} pliku', other: 'Nie przesłano {failed} z {n} plików' },
+    };
+    expect(unusedMessages(catalog, [])).toEqual([]);
+  });
+
   it('reports the library’s own keys when a project names its own list', () => {
     // The list is a default, not a rule: an application that never renders a
     // Dialog is right to want `close` reported, and one with a `brandName` of

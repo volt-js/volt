@@ -915,6 +915,21 @@ ends; Space chooses the focused radio, which is how a group entered with
 nothing selected gets its first answer. There is no typeahead, because in a
 group where moving selects, a stray keystroke would quietly change the answer.
 
+While no selected radio can hold the stop — nothing is selected, the value
+names no radio here, or its radio is disabled — the first radio that can takes
+it, except that a group of numbers holding a value between them, an average
+on a rating, rests it on the highest radio the value reaches. Which radio that
+is comes from the DOM, and it is worked out again whenever the radios change
+under the group: enabled or disabled, one by one or all at once, added with
+the data they are drawn from, or turned into radios from something else. A
+group that started out of use is reachable by Tab as soon as it is in use. A
+server, with no DOM to read, writes the stop on the selected radio, or on the
+first that can take it while nothing is selected. Any other answer needs the
+radios that come later, and a server writes each radio once, in order, so a
+value no radio stands for, or a selected radio that is disabled, has its stop
+once the DOM has been read; markup that knows its radios before it writes them,
+as `<v-rating>` knows its stars, can write that stop itself.
+
 ## Rating: `createRating`
 
 ```ts
@@ -1305,7 +1320,7 @@ zone is the shortcut, not the mechanism.
 | `paste` / `fullPage` | — | Take files pasted anywhere on the page; take a drop anywhere on the page |
 | `blockSubmitWhileBusy` | `true` | A form that posts half an upload is worse than one that waits |
 | `label` / `description` / `errorMessage` / `required` / `disabled` | — | Passed to the form field |
-| `labels` | — | Every string: the drop zone's and the bars' names, the cancel, retry and remove buttons' names, the three refusal reasons, `uploadFailed`, `busy`, and the three announcements. `remove(item)` defaults to the locale's `removeItem` with the file's name as `{label}`, else its `remove` and the name |
+| `labels` | — | Every string: the drop zone's and the bars' names, the cancel, retry and remove buttons' names, the three refusal reasons, `uploadFailed`, `busy`, and the three announcements. `remove(item)` defaults to the locale's `removeItem` with the file's name as `{label}`, else its `remove` and the name. `countRejected` and the announcements default to the locale's `uploadTooMany`, `uploadProgress` (with `{done}`), `uploadComplete` and `uploadFailures` (with `{failed}`), plural records chosen by the number of files as `{n}`, else English that agrees with it: "No more than 1 file can be uploaded.", "2 files uploaded" |
 | `on…` | — | `onFilesAdded`, `onReject`, `onItemProgress`, `onItemComplete`, `onItemError`, `onComplete` |
 
 Without a `transport` nothing is sent, and the files sit at `'pending'` for
@@ -1427,17 +1442,18 @@ reason until the user removes it or retries it until it succeeds.
 
 A file still going up refuses the submit too, with `labels.busy` ("Wait for
 the upload to finish."), unless `blockSubmitWhileBusy` is `false` or there is
-no transport. That one is checked when the field validates rather than pushed
-in as it happens: an upload in progress is not a mistake, and announcing one in
-a `role="alert"` region every time a file was added would be an alarm about
-nothing. So the message arrives with the submit it refuses, and goes again when
-the upload finishes rather than waiting for the next submit to take it back.
-Nothing here makes an untouched `required` upload invalid before anyone has
-submitted.
+no transport. That one is checked only when a submit asks, rather than pushed
+in as it happens or judged again at every change: an upload in progress is not
+a mistake, and announcing one in a `role="alert"` region every time a file was
+added — or removed, once the field had said something else — would be an alarm
+about nothing. So the message arrives with the submit it refuses, and goes
+again when the upload finishes, or the files change, rather than waiting for
+the next submit to take it back. Nothing here makes an untouched `required`
+upload invalid before anyone has submitted.
 
-The cost is the one every `validate` rule carries until its field has
-validated: the platform does not hold it. `form.checkValidity()` answers
-`true` while a file is going up, and a `submit` listener that runs ahead of the
+The cost is that the platform does not hold it until a submit has asked.
+`form.checkValidity()` answers `true` while a file is going up, and a `submit`
+listener that runs ahead of the
 field — one capturing on an ancestor — hears the submit before the field has
 refused it. Such a listener can ask `upload.field.report()` itself, which
 refuses for the same reason the field will, or read `upload.counts()`.

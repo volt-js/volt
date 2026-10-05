@@ -178,6 +178,10 @@ export const LIBRARY_MESSAGE_KEYS: readonly string[] = [
   'tagsEmpty',
   'today',
   'unavailable',
+  'uploadComplete',
+  'uploadFailures',
+  'uploadProgress',
+  'uploadTooMany',
 ];
 
 /** The placeholder whose value picks the plural category, as at runtime. */

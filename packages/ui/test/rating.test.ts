@@ -396,10 +396,10 @@ describe('v-rating', () => {
     const [between, bound, beyond, below, off, average] = groups(host) as HTMLElement[];
 
     // An average, or a score from a rating that counted in halves, is a value
-    // no radio here stands for — so no radio is checked, and the primitive's
-    // tab stop, which goes to the checked radio, went nowhere: a keyboard
-    // could not reach the rating at all. It goes to the last star the score
-    // fills instead, which is the one the eye takes for the score.
+    // no radio here stands for — so no radio is checked, and a tab stop that
+    // went only to the checked radio would go nowhere: a keyboard could not
+    // reach the rating at all. It goes to the last star the score fills
+    // instead, which is the one the eye takes for the score.
     expect(tabStops(between!)).toEqual(['-1', '0', '-1', '-1', '-1']);
     expect(items(between!).some((item) => item.getAttribute('aria-checked') === 'true')).toBe(false);
     expect(tabStops(bound!)).toEqual(['-1', '-1', '-1', '0', '-1']);
@@ -447,12 +447,11 @@ describe('v-rating', () => {
     const { instance, host } = show(Page);
     const [disabled, readOnly, cleared] = groups(host) as [HTMLElement, HTMLElement, HTMLElement];
 
-    // The primitive gives the tab stop to the first star it finds while there
-    // is no score — and it looks once, when the group appears, skipping stars
-    // that are disabled and finding none at all while the stars are an image.
-    // A rating that starts out of use, the usual shape of one waiting on a
-    // save or a sign-in, would come back with no tab stop anywhere: a keyboard
-    // could not reach it at all.
+    // While there is no score the tab stop is the first star that can take it,
+    // and a rating that starts out of use — the usual shape of one waiting on
+    // a save or a sign-in — has none when it appears: every star is disabled,
+    // or the stars are an image. Looked for once, it would stay with none,
+    // and a keyboard could not reach the rating at all.
     instance.score.set(null);
     flushSync();
     instance.off.set(false);
@@ -469,6 +468,48 @@ describe('v-rating', () => {
     expect(disabled.getAttribute('data-value')).toBe('1');
     press(items(cleared)[0]!, 'ArrowRight');
     expect(instance.score.get()).toBe(2);
+  });
+
+  it('keeps one tab stop through disable, enable and clear', () => {
+    @Component({
+      selector: 'v-page-kept-stop',
+      imports: [VRating],
+      render: compileTemplate(`
+        <v-rating :value="score" :disabled="off.get()" label="Your rating"></v-rating>
+      `),
+    })
+    class Page {
+      score = new Signal.State<number | null>(3);
+      // Off from the start, the usual shape of a form waiting on a load.
+      off = new Signal.State(true);
+    }
+
+    const { instance, host } = show(Page);
+    expect(tabStops(host)).toEqual(['-1', '-1', '-1', '-1', '-1']);
+
+    instance.off.set(false);
+    flushSync();
+    expect(tabStops(host)).toEqual(['-1', '-1', '0', '-1', '-1']);
+
+    // Cleared from the keyboard, the first star takes it: Space there gives
+    // the next answer.
+    items(host)[2]!.focus();
+    press(items(host)[2]!, 'Delete');
+    expect(instance.score.get()).toBeNull();
+    expect(tabStops(host)).toEqual(['0', '-1', '-1', '-1', '-1']);
+
+    // Cleared by the page while out of use, when no star could take it, and
+    // the first star has it again as soon as one can.
+    choose(items(host)[3]!);
+    instance.off.set(true);
+    flushSync();
+    instance.score.set(null);
+    flushSync();
+    expect(tabStops(host)).toEqual(['-1', '-1', '-1', '-1', '-1']);
+
+    instance.off.set(false);
+    flushSync();
+    expect(tabStops(host)).toEqual(['0', '-1', '-1', '-1', '-1']);
   });
 
   it('offers halves as two radios per star, the half before the whole', () => {
@@ -1397,9 +1438,10 @@ describe('v-rating, written by a server', () => {
     page.innerHTML = html;
     const [editable, shown, fresh] = groups(page) as [HTMLElement, HTMLElement, HTMLElement];
 
-    // With no score, the first star is the tab stop in the bytes as well:
-    // the primitive finds its first star by looking in the document, and a
-    // server has none to look in, so it wrote a row nobody could Tab to.
+    // With no score, the first star is the tab stop in the bytes as well. A
+    // browser finds it by looking in the document, and a server has none to
+    // look in: waiting for one would write a row nobody could Tab to until a
+    // script attached.
     expect(tabStops(fresh)).toEqual(['0', '-1', '-1', '-1', '-1']);
 
     expect(editable.id).toBe('stay');
@@ -1419,5 +1461,45 @@ describe('v-rating, written by a server', () => {
     expect(shown.getAttribute('aria-label')).toBe('Rated 4.5 of 5');
     expect(shown.hasAttribute('aria-readonly')).toBe(false);
     expect(marked(shown, 'data-filled')).toEqual(['0.5', '1', '1.5', '2', '2.5', '3', '3.5', '4', '4.5']);
+  });
+
+  it('writes the tab stop on the star a score between the stars rests on, as a browser does', async () => {
+    @Component({ selector: 'v-rating', render: compileTemplate(template, 'v-rating') })
+    class ServerRating extends VRating {}
+
+    @Component({
+      selector: 'v-page-server-between',
+      imports: [ServerRating],
+      render: compileTemplate(`
+        <v-rating label="Between" :defaultValue="2.5"></v-rating>
+        <v-rating label="Beyond" :value="over"></v-rating>
+        <v-rating label="Below" :defaultValue="0.3"></v-rating>
+        <v-rating label="Off" :defaultValue="2.5" disabled></v-rating>
+        <v-rating :defaultValue="4.3" readOnly></v-rating>
+      `),
+    })
+    class Page {
+      /** A caller's own score, which is shown as it is: seven of five. */
+      over = new Signal.State<number | null>(7);
+    }
+
+    const { html } = await renderToStaticMarkup(Page);
+    const page = document.createElement('div');
+    page.innerHTML = html;
+    const [between, beyond, below, off, average] = groups(page) as HTMLElement[];
+
+    // No radio stands for these scores, so none is checked, and a browser
+    // rests the stop on the last star the score fills — on the first, for a
+    // score below them all. A server writes each star once, in order, and at
+    // the second star cannot know whether a 2.5 comes after it: left to that,
+    // these rows would reach the page with nothing Tab could land on until a
+    // script attached.
+    expect(tabStops(between!)).toEqual(['-1', '0', '-1', '-1', '-1']);
+    expect(tabStops(beyond!)).toEqual(['-1', '-1', '-1', '-1', '0']);
+    expect(tabStops(below!)).toEqual(['0', '-1', '-1', '-1', '-1']);
+    // Disabled is still no tab stop at all, and a read-only average is an
+    // image with no radios to stop on.
+    expect(tabStops(off!)).toEqual(['-1', '-1', '-1', '-1', '-1']);
+    expect(tabStops(average!)).toEqual(Array(5).fill(null));
   });
 });

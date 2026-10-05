@@ -494,6 +494,57 @@ describe('v-toggle-group', () => {
     expect(instance.seen).toEqual(['grid', '']);
   });
 
+  it('keeps one tab stop through disable, enable and clear', async () => {
+    @Component({
+      selector: 'v-page-kept-stop',
+      imports: [VToggleGroup, VToggle],
+      render: compileTemplate(`
+        <v-toggle-group :value="view" deselectable :disabled="off.get()" label="View">
+          <v-toggle value="list">List</v-toggle>
+          <v-toggle value="grid" :disabled="lone.get()">Grid</v-toggle>
+          <v-toggle value="map">Map</v-toggle>
+        </v-toggle-group>
+      `),
+    })
+    class Page {
+      view = new Signal.State('grid');
+      // Off from the start, the usual shape of a toolbar waiting on a load.
+      off = new Signal.State(true);
+      lone = new Signal.State(false);
+    }
+
+    const { instance, host } = show(Page);
+    // Out of use, a toggle group keeps its one way in, on the toggle that is
+    // down — the package's rule for a disabled control.
+    expect(tabStops(host)).toEqual(['-1', '0', '-1']);
+
+    instance.off.set(false);
+    flushSync();
+    expect(tabStops(host)).toEqual(['-1', '0', '-1']);
+
+    instance.view.set('');
+    flushSync();
+    expect(tabStops(host)).toEqual(['0', '-1', '-1']);
+
+    instance.off.set(true);
+    flushSync();
+    instance.off.set(false);
+    flushSync();
+    expect(tabStops(host)).toEqual(['0', '-1', '-1']);
+
+    // The toggle that is down, switched off on its own, hands the stop on.
+    instance.view.set('grid');
+    flushSync();
+    instance.lone.set(true);
+    flushSync();
+    await settle();
+    expect(tabStops(host)).toEqual(['0', '-1', '-1']);
+    instance.lone.set(false);
+    flushSync();
+    await settle();
+    expect(tabStops(host).filter((stop) => stop === '0')).toHaveLength(1);
+  });
+
   it('refuses to clear the last value unless told it may', () => {
     const { instance, host } = show(Page);
     const [left] = toggles(host);

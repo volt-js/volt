@@ -10,8 +10,11 @@
  * anyway, and a radio group with nothing selected that Tab cannot reach.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { compileTemplate } from '@voltdev/core/jit';
-import { Component, Signal, flushSync, mount } from '@voltdev/core';
+import { compile, compileTemplate } from '@voltdev/core/jit';
+import { Component, Signal, flushSync, hydrate, mount, type RenderFn } from '@voltdev/core';
+import * as runtime from '@voltdev/core/runtime';
+import * as server from '@voltdev/core/server';
+import { renderToStaticMarkup } from '@voltdev/core/server';
 import {
   createCheckbox,
   createRadioGroup,
@@ -640,6 +643,424 @@ describe('radio group', () => {
     const { item } = radioGroup();
     expect(item('team').getAttribute('tabindex')).toBe('-1');
     expect(item('team').getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('gives the tab stop to the first radio that can take it when the chosen one cannot', () => {
+    const { instance, tabStops } = radioGroup();
+    // Team is chosen and off. A stop on it is a stop nothing can reach, and
+    // a group with no stop is a question Tab steps over for good.
+    instance.value.set('team');
+    flushSync();
+    expect(tabStops()).toEqual(['0', '-1', '-1']);
+
+    instance.value.set('pro');
+    flushSync();
+    expect(tabStops()).toEqual(['-1', '-1', '0']);
+  });
+
+  it('keeps a tab stop through disable, enable and clear', () => {
+    const { instance, label, tabStops } = radioGroup();
+    click(label('pro'));
+
+    instance.disabled.set(true);
+    flushSync();
+    expect(tabStops()).toEqual(['-1', '-1', '-1']);
+
+    instance.disabled.set(false);
+    flushSync();
+    expect(tabStops()).toEqual(['-1', '-1', '0']);
+
+    instance.disabled.set(true);
+    flushSync();
+    instance.value.set(null);
+    flushSync();
+    instance.disabled.set(false);
+    flushSync();
+    expect(tabStops()).toEqual(['0', '-1', '-1']);
+  });
+
+  describe('a group that cannot be used yet', () => {
+    /** Where the next group starts: set before it is built, so its first look at the DOM sees it. */
+    let start: { value?: string | null; off?: boolean; offs?: string[]; shown?: boolean } = {};
+
+    @Component({
+      selector: 'v-late-plan',
+      render: compileTemplate(`
+        <div :ref="group" :spread="plans.groupProps()" :keydown="plans.onKeyDown($event)">
+          <span :for="value in values" :key="value"
+                :spread="shown.get() ? { 'data-value': value } : plans.itemProps(value, offs.get().includes(value))"
+                :click="plans.select(value)">{ value }</span>
+        </div>
+      `),
+    })
+    class LatePlan {
+      group = new Signal.State<Element | null>(null);
+      values = ['free', 'team', 'pro'];
+      value = new Signal.State<string | null>(start.value ?? null);
+      /** The whole group, off. */
+      off = new Signal.State(start.off ?? false);
+      /** Radios off one by one. */
+      offs = new Signal.State<string[]>(start.offs ?? []);
+      /** Drawn as something other than radios, as a read-only rating is: no item marker. */
+      shown = new Signal.State(start.shown ?? false);
+      plans = createRadioGroup({
+        group: () => this.group.get(),
+        value: this.value,
+        label: 'Plan',
+        disabled: () => this.off.get(),
+      });
+    }
+
+    function late(from: typeof start) {
+      start = from;
+      const handle = track(mount(LatePlan, host));
+      const page = handle.instance as LatePlan;
+      flushSync();
+      const items = () => [...host.querySelectorAll<HTMLElement>('[data-value]')];
+      return { page, items, tabStops: () => items().map((el) => el.getAttribute('tabindex')) };
+    }
+
+    // Each of these finds no radio that can take the stop when the group first
+    // appears. The stop is not decided once: a group that comes into use later
+    // has one as soon as it does, or Tab would step over it from then on.
+
+    it('has one once a group that started disabled is enabled', () => {
+      const { page, tabStops } = late({ off: true });
+      expect(tabStops()).toEqual(['-1', '-1', '-1']);
+
+      page.off.set(false);
+      flushSync();
+      expect(tabStops()).toEqual(['0', '-1', '-1']);
+    });
+
+    it('has one once radios that were each disabled are enabled', async () => {
+      const { page, tabStops } = late({ offs: ['free', 'team', 'pro'] });
+      expect(tabStops()).toEqual(['-1', '-1', '-1']);
+
+      page.offs.set([]);
+      flushSync();
+      await Promise.resolve();
+      flushSync();
+      expect(tabStops()).toEqual(['0', '-1', '-1']);
+    });
+
+    it('has one once radios drawn as something else become radios', async () => {
+      const { page, tabStops } = late({ shown: true });
+      expect(tabStops()).toEqual([null, null, null]);
+
+      page.shown.set(false);
+      flushSync();
+      await Promise.resolve();
+      flushSync();
+      expect(tabStops()).toEqual(['0', '-1', '-1']);
+    });
+
+    it('has one when the choice is cleared while the radios are something else', async () => {
+      const { page, tabStops } = late({ value: 'pro', shown: true });
+      page.value.set(null);
+      flushSync();
+
+      page.shown.set(false);
+      flushSync();
+      await Promise.resolve();
+      flushSync();
+      expect(tabStops()).toEqual(['0', '-1', '-1']);
+    });
+
+    it('moves it on when the radio holding it is disabled on its own', async () => {
+      const { page, tabStops } = late({});
+      expect(tabStops()).toEqual(['0', '-1', '-1']);
+
+      page.value.set('free');
+      flushSync();
+      expect(tabStops()).toEqual(['0', '-1', '-1']);
+
+      // Still chosen, and now off: the next radio that can take it does.
+      page.offs.set(['free']);
+      flushSync();
+      await Promise.resolve();
+      flushSync();
+      expect(tabStops()).toEqual(['-1', '0', '-1']);
+
+      page.offs.set([]);
+      flushSync();
+      await Promise.resolve();
+      flushSync();
+      expect(tabStops()).toEqual(['0', '-1', '-1']);
+    });
+
+    // The two below look before the page has had a moment: a script that
+    // brings a group into use and moves focus to it in the same breath finds
+    // the stop already there.
+
+    it('has one at once when a group comes back whose chosen radio is still off', () => {
+      const { page, tabStops } = late({ value: 'team', offs: ['team'], off: true });
+      expect(tabStops()).toEqual(['-1', '-1', '-1']);
+
+      page.off.set(false);
+      flushSync();
+      expect(tabStops()).toEqual(['0', '-1', '-1']);
+    });
+
+    it('has one at once when radios come back where none could hold it', async () => {
+      const { page, tabStops } = late({ offs: ['free', 'team', 'pro'] });
+      page.offs.set([]);
+      flushSync();
+      await Promise.resolve();
+      flushSync();
+      page.offs.set(['free', 'team', 'pro']);
+      flushSync();
+      await Promise.resolve();
+      flushSync();
+      expect(tabStops()).toEqual(['-1', '-1', '-1']);
+
+      // The radio that held it last time is not the one that can now.
+      page.offs.set(['free']);
+      flushSync();
+      expect(tabStops()).toEqual(['-1', '0', '-1']);
+    });
+  });
+
+  it('rests the tab stop on the radio below a value between them, in a group of numbers', () => {
+    @Component({
+      selector: 'v-scale',
+      render: compileTemplate(`
+        <div :ref="group" :spread="scale.groupProps()" :keydown="scale.onKeyDown($event)">
+          <span :for="value in values" :key="value" :spread="scale.itemProps(value)">{ value }</span>
+        </div>
+      `),
+    })
+    class Scale {
+      group = new Signal.State<Element | null>(null);
+      values = ['1', '2', '3', '4', '5'];
+      value = new Signal.State<string | null>('2.5');
+      scale = createRadioGroup({ group: () => this.group.get(), value: this.value, label: 'Score' });
+    }
+
+    const handle = track(mount(Scale, host));
+    flushSync();
+    const page = handle.instance as Scale;
+    const items = () => [...host.querySelectorAll<HTMLElement>('[role="radio"]')];
+    const tabStops = () => items().map((el) => el.getAttribute('tabindex'));
+
+    // An average, say: no radio stands for it, so none is checked — and the
+    // radio a reader takes for it is the highest it reaches.
+    expect(items().some((el) => el.getAttribute('aria-checked') === 'true')).toBe(false);
+    expect(tabStops()).toEqual(['-1', '0', '-1', '-1', '-1']);
+
+    page.value.set('7');
+    flushSync();
+    expect(tabStops()).toEqual(['-1', '-1', '-1', '-1', '0']);
+
+    page.value.set('0.3');
+    flushSync();
+    expect(tabStops()).toEqual(['0', '-1', '-1', '-1', '-1']);
+
+    // A value spelled otherwise than its radio — from a query string, say —
+    // checks nothing, but reaches the radio whose number it is.
+    page.value.set('3.0');
+    flushSync();
+    expect(items().some((el) => el.getAttribute('aria-checked') === 'true')).toBe(false);
+    expect(tabStops()).toEqual(['-1', '-1', '0', '-1', '-1']);
+
+    // And from there the keys work as anywhere else.
+    page.value.set('4.3');
+    flushSync();
+    items()[3]!.focus();
+    press(items()[3]!, 'ArrowRight');
+    expect(page.value.get()).toBe('5');
+    expect(tabStops()).toEqual(['-1', '-1', '-1', '-1', '0']);
+  });
+
+  it('gives a value no radio stands for the first radio, when the values are not numbers', () => {
+    const { instance, tabStops } = radioGroup();
+    instance.value.set('enterprise');
+    flushSync();
+    expect(tabStops()).toEqual(['0', '-1', '-1']);
+  });
+
+  it('rests an unanswered scale that runs below zero on its first radio', () => {
+    @Component({
+      selector: 'v-agreement',
+      render: compileTemplate(`
+        <div :ref="group" :spread="scale.groupProps()">
+          <span :for="value in values" :key="value" :spread="scale.itemProps(value)">{ value }</span>
+        </div>
+      `),
+    })
+    class Agreement {
+      group = new Signal.State<Element | null>(null);
+      values = ['-2', '-1', '0', '1', '2'];
+      scale = createRadioGroup({ group: () => this.group.get(), label: 'Agreement' });
+    }
+
+    track(mount(Agreement, host));
+    flushSync();
+    // No answer is not an answer of zero.
+    expect([...host.querySelectorAll('[role="radio"]')].map((el) => el.getAttribute('tabindex'))).toEqual(
+      ['0', '-1', '-1', '-1', '-1'],
+    );
+  });
+
+  it('hands the stop on when the radio holding it leaves, with nothing chosen', async () => {
+    @Component({
+      selector: 'v-leaving-plan',
+      render: compileTemplate(`
+        <div :ref="group" :spread="plans.groupProps()">
+          <span :for="value in values.get()" :key="value" :spread="plans.itemProps(value)">{ value }</span>
+        </div>
+      `),
+    })
+    class LeavingPlan {
+      group = new Signal.State<Element | null>(null);
+      values = new Signal.State(['free', 'team', 'pro']);
+      plans = createRadioGroup({ group: () => this.group.get(), label: 'Plan' });
+    }
+
+    const handle = track(mount(LeavingPlan, host));
+    flushSync();
+    // Settled, so nothing the first render did is still on its way to the
+    // group when the row goes.
+    await Promise.resolve();
+    flushSync();
+    const page = handle.instance as LeavingPlan;
+    const tabStops = () =>
+      [...host.querySelectorAll('[role="radio"]')].map((el) => el.getAttribute('tabindex'));
+    expect(tabStops()).toEqual(['0', '-1', '-1']);
+
+    // No radio that stays is drawn again when a row goes, so the group is the
+    // only thing that hears it.
+    page.values.set(['team', 'pro']);
+    flushSync();
+    await Promise.resolve();
+    flushSync();
+    expect(tabStops()).toEqual(['0', '-1']);
+  });
+
+  it('writes a tab stop on a server, for an unanswered group as well as an answered one', async () => {
+    // The template is compiled for a server only while the flag is up, so the
+    // tag is declared inside it.
+    const flag = globalThis as { __VOLT_SERVER__?: boolean };
+    flag.__VOLT_SERVER__ = true;
+    try {
+      @Component({
+        selector: 'v-server-plan',
+        render: compileTemplate(`
+          <div :ref="group" :spread="plans.groupProps()">
+            <span :for="option in options" :key="option.value"
+                  :spread="plans.itemProps(option.value, option.disabled)">{ option.value }</span>
+          </div>
+        `),
+      })
+      class ServerPlan {
+        group = new Signal.State<Element | null>(null);
+        options = [
+          { value: 'team', disabled: true },
+          { value: 'free', disabled: false },
+          { value: 'pro', disabled: false },
+        ];
+        plans = createRadioGroup({ group: () => this.group.get(), label: 'Plan' });
+      }
+
+      @Component({
+        selector: 'v-server-chosen',
+        render: compileTemplate(`
+          <div :ref="group" :spread="plans.groupProps()">
+            <span :for="value in values" :key="value" :spread="plans.itemProps(value)">{ value }</span>
+          </div>
+        `),
+      })
+      class ServerChosen {
+        group = new Signal.State<Element | null>(null);
+        values = ['free', 'pro'];
+        plans = createRadioGroup({ group: () => this.group.get(), defaultValue: 'pro', label: 'Plan' });
+      }
+
+      const stops = async (component: new () => unknown): Promise<(string | null)[]> => {
+        const page = document.createElement('div');
+        page.innerHTML = (await renderToStaticMarkup(component as never)).html;
+        return [...page.querySelectorAll('[role="radio"]')].map((el) => el.getAttribute('tabindex'));
+      };
+
+      // A server has no document to find the first radio in and runs no
+      // effects, so the stop is written by the first radio that can take it,
+      // in the order the radios are written — a row of `-1` is a group Tab
+      // steps over until a script attaches.
+      expect(await stops(ServerPlan)).toEqual(['-1', '0', '-1']);
+      expect(await stops(ServerChosen)).toEqual(['-1', '0']);
+    } finally {
+      flag.__VOLT_SERVER__ = false;
+    }
+  });
+
+  it('keeps the stop a server wrote once a browser claims the group, and through disable and enable', async () => {
+    const source = `
+      <div :ref="group" :spread="plans.groupProps()" :keydown="plans.onKeyDown($event)">
+        <span :for="option in options" :key="option.value"
+              :spread="plans.itemProps(option.value, option.disabled)">{ option.value }</span>
+      </div>
+    `;
+    const forServer = compile(source, { filename: 'v-claimed-plan', runtime: '_rt', target: 'server' }).body;
+    const forHydrate = compile(source, { filename: 'v-claimed-plan', runtime: '_rt', target: 'hydrate' }).body;
+    const write = (new Function('_rt', forServer) as (rt: unknown) => RenderFn)(server);
+    const claim = (new Function('_rt', forHydrate) as (rt: unknown) => RenderFn)(runtime);
+    const flag = globalThis as { __VOLT_SERVER__?: boolean };
+
+    @Component({
+      selector: 'v-claimed-plan',
+      render: (ctx, out) => (flag.__VOLT_SERVER__ === true ? write(ctx, out) : claim(ctx, out)),
+    })
+    class ClaimedPlan {
+      group = new Signal.State<Element | null>(null);
+      options = [
+        { value: 'team', disabled: true },
+        { value: 'free', disabled: false },
+        { value: 'pro', disabled: false },
+      ];
+      off = new Signal.State(false);
+      plans = createRadioGroup({
+        group: () => this.group.get(),
+        label: 'Plan',
+        disabled: () => this.off.get(),
+      });
+    }
+
+    flag.__VOLT_SERVER__ = true;
+    let html: string;
+    try {
+      html = (await renderToStaticMarkup(ClaimedPlan)).html;
+    } finally {
+      flag.__VOLT_SERVER__ = false;
+    }
+    host.innerHTML = html;
+    const items = () => [...host.querySelectorAll<HTMLElement>('[role="radio"]')];
+    const tabStops = () => items().map((el) => el.getAttribute('tabindex'));
+    const written = items()[1]!;
+    expect(tabStops()).toEqual(['-1', '0', '-1']);
+
+    const mismatches: unknown[] = [];
+    const stop = runtime.onHydrationMismatch((mismatch) => mismatches.push(mismatch));
+    let page: ClaimedPlan;
+    try {
+      const handle = track(hydrate(ClaimedPlan, host));
+      page = handle.instance as ClaimedPlan;
+      flushSync();
+    } finally {
+      stop();
+    }
+
+    // The browser's answer is the server's, on the element the server wrote.
+    expect(mismatches).toEqual([]);
+    expect(items()[1]).toBe(written);
+    expect(tabStops()).toEqual(['-1', '0', '-1']);
+
+    page.off.set(true);
+    flushSync();
+    expect(tabStops()).toEqual(['-1', '-1', '-1']);
+
+    page.off.set(false);
+    flushSync();
+    expect(tabStops()).toEqual(['-1', '0', '-1']);
   });
 
   describe('arrow keys', () => {

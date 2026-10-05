@@ -546,8 +546,15 @@ identifies a choice, so both would draw as chosen and both would submit.
 A disabled radio is this package's one exception to keeping a disabled control
 reachable: the arrows step over it and it never holds the group's tab stop,
 which is what a native radio group does — and it follows that a group disabled
-as a whole has no tab stop at all. Enter is left to the form, so a group inside
-one does not steal the submit.
+as a whole has no tab stop at all. Chosen and disabled, a radio hands the stop
+to the first radio that can take it — in a group of numbers, to the nearest
+below it — so the answer can still be changed. The stop is placed again
+whenever the radios change — enabled, disabled, or drawn from data that has
+just arrived — so the group is not left where Tab steps over it. A server
+writes it on the chosen radio, or, while nothing is chosen, on the first radio
+that can take it; a choice whose radio is disabled, or that names none of the
+radios, has its stop once a script has read the page. Enter is left to the
+form, so a group inside one does not steal the submit.
 
 Moving is choosing, which is worth remembering if answering costs something.
 Arrowing from the first option to the fourth calls `onValueChange` four times;
@@ -2256,7 +2263,9 @@ never sent. It also keeps the form from submitting, through the picker's
 validity, until it is removed: a form that posts while a file the user chose is
 not among what it posts is a form that lost something without saying so. A
 file the server refused is the same, until it is retried or removed, and so is
-a file still on its way — the message under the zone then says to wait.
+a file still on its way — though that one is not a mistake, so nothing is said
+about it until a submit is refused for it, and the message under the zone then
+says to wait.
 
 **The message is the field's, and yours goes in through `error`.** A refusal
 or a failure is said in the line under the zone, in the same words as the row,
@@ -2273,13 +2282,6 @@ A file moving on, or a byte arriving, is not a change to the files and keeps
 it. What is bound to `error` is written in whenever it changes, so the same
 words a second time are a change only if your value was cleared in between.
 Set it from `onChange`, which runs after the letting go, and it stays.
-
-Once the field has said something — a refusal, or your `error` — it judges
-every change after it, the way any field does once it has spoken. So when that
-message goes while a file is still on its way — the refused file removed, or
-your `error` let go by a file added — the line under the zone reads "Wait for
-the upload to finish." until the file arrives: true, since a submit then would
-be refused for it, but earlier than that message would otherwise appear.
 
 **The retry stays where it is.** Every file that was taken has a retry
 button, unavailable — `aria-disabled` — while there is nothing to retry: a
@@ -2314,9 +2316,13 @@ which this component adds — default `Waiting`, the percentage, `Uploaded`,
 `Failed`, `Cancelled` and `Not accepted`, and an empty string leaves the size
 alone. A page that changes language reaches the rows already on screen, except
 for a bar's name, which is settled when the bar is made, and a reason, which
-is written into the file when it happens. The primitive's own English does not
-inflect — "No more than 1 files" — so a page whose limit can be one should
-write `countRejected` and `announceComplete`.
+is written into the file when it happens. Left unwritten, the count of files
+in `countRejected` and the three announcements comes from the locale
+catalogue's `uploadTooMany`, `uploadProgress`, `uploadComplete` and
+`uploadFailures` where it has them — plural records, chosen by the number of
+files as `{n}`, so a Polish page has its four forms, with how many have gone up
+as `{done}` and how many failed as `{failed}` — and otherwise from English that
+agrees with the count: "No more than 1 file", "2 files uploaded".
 
 **Numbers can be written either way.** `:maxSize="2_000_000"` hands over a
 number and `maxSize="2000000"` its spelling, and the component reads both as
@@ -2451,17 +2457,10 @@ The component does four more things over the primitive's props, which markup
 written by hand has to do as well until the primitive does them itself: it
 leaves `aria-readonly` off the read-only image, which `role="img"` does not
 allow, and writes `data-disabled` on that image when the rating is disabled as
-well, which the primitive's image leaves off; it gives the tab stop to the
-last filled star when the score falls between the stars, where the primitive's
-own stop goes nowhere, and to the first star whenever there is no score — the
-primitive looks for its first star once, when the group appears, among the
-stars that are not disabled, so a rating that starts disabled or read-only, or
-is written by a server, would otherwise keep no tab stop at all; and it calls
-`rating.preview(null)` when the rating turns disabled or read-only, so a
-preview left under a resting pointer does not outlast the choice it showed.
-
-The shape sits inside a `<slot>`, as it does in the component, and not for the
-sake of a slot. Written straight into the radio, an `<svg>` has the compiler
-parse the radio's whole row inside an `<svg>`, so the radio itself is created as
-an SVG element — which a browser does not draw outside one. A slot's fallback is
-compiled on its own, and the radio stays HTML.
+well, which the primitive's image leaves off; on a server it gives the tab stop
+for a score no star stands for to the last star the score fills, or to the
+first for a score below them all — the primitive finds that star on the page,
+and a server, writing each star once and in order, has no page to find it on;
+and it calls `rating.preview(null)` when the rating turns disabled or
+read-only, so a preview left under a resting pointer does not outlast the
+choice it showed.

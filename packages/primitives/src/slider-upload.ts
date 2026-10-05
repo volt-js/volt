@@ -24,7 +24,13 @@ import { createFormField, type FormField, type ValidationOutcome } from './form-
 import { createProgress, type Progress } from './display.js';
 import { createLiveRegionTiming, type LiveRegionTiming } from './feedback.js';
 import { exponentialBackoff } from './async.js';
-import { useLocale, resolveDirection, type Direction } from './i18n.js';
+import {
+  getPluralRules,
+  useLocale,
+  resolveDirection,
+  type Direction,
+  type MessageValues,
+} from './i18n.js';
 import { VISUALLY_HIDDEN_INPUT_STYLE } from './form-controls.js';
 import { createId } from './id.js';
 
@@ -1473,6 +1479,28 @@ const EMPTY_COUNTS: Readonly<Record<UploadStatus, number>> = {
  */
 export function createFileUpload(options: FileUploadOptions): FileUpload {
   const locale = useLocale();
+  const num = (value: number): string => locale.format.number(value);
+  /**
+   * A count of files, in the locale catalogue's words where it has them and in
+   * English where it does not.
+   *
+   * The catalogue's entry can be a plural record, which `t` chooses from by
+   * the page's own plural rules with `n` as the count: Polish has a form for
+   * two to four and another for five and more, which no English pair can
+   * stand in for. The English is chosen by English's rules, since English is
+   * what is being said — French counts 0 as singular, and "0 file" is not
+   * English. None of these keys is the library's own, so a catalogue for a
+   * page that never uploads anything need not carry them.
+   */
+  const plural = (
+    key: string,
+    n: number,
+    values: MessageValues,
+    english: (files: string) => string,
+  ): string =>
+    locale.has(key)
+      ? locale.t(key, { ...values, n })
+      : english(getPluralRules('en').select(n) === 'one' ? 'file' : 'files');
   const labels = options.labels ?? {};
   const auto = options.auto !== false;
   const concurrency = Math.max(1, options.concurrency ?? 3);
@@ -1580,7 +1608,12 @@ export function createFileUpload(options: FileUploadOptions): FileUpload {
         code: 'count',
         message:
           labels.countRejected?.(file, maxFiles) ??
-          `No more than ${locale.format.number(maxFiles)} files can be uploaded.`,
+          plural(
+            'uploadTooMany',
+            maxFiles,
+            {},
+            (files) => `No more than ${num(maxFiles)} ${files} can be uploaded.`,
+          ),
       };
     }
 
@@ -2028,17 +2061,37 @@ export function createFileUpload(options: FileUploadOptions): FileUpload {
       return;
     }
 
+    // The noun agrees with the whole, not with the part: "0 of 1 file", "1 of
+    // 2 files".
     if (done + failed < expected) {
       finished.set(
-        labels.announceProgress?.(done, expected) ?? `${done} of ${expected} files uploaded`,
+        labels.announceProgress?.(done, expected) ??
+          plural(
+            'uploadProgress',
+            expected,
+            { done },
+            (files) => `${num(done)} of ${num(expected)} ${files} uploaded`,
+          ),
       );
       return;
     }
 
     finished.set(
       failed > 0
-        ? (labels.announceFailed?.(failed) ?? `${failed} of ${expected} files failed to upload`)
-        : (labels.announceComplete?.(expected) ?? `${expected} files uploaded`),
+        ? (labels.announceFailed?.(failed) ??
+            plural(
+              'uploadFailures',
+              expected,
+              { failed },
+              (files) => `${num(failed)} of ${num(expected)} ${files} failed to upload`,
+            ))
+        : (labels.announceComplete?.(expected) ??
+            plural(
+              'uploadComplete',
+              expected,
+              {},
+              (files) => `${num(expected)} ${files} uploaded`,
+            )),
     );
     options.onComplete?.(list);
   }
@@ -2073,6 +2126,14 @@ export function createFileUpload(options: FileUploadOptions): FileUpload {
     // time a file was added.
     validate: () =>
       isBusy(untrack(items)) ? (labels.busy ?? 'Wait for the upload to finish.') : undefined,
+    // And only a submit asks. A field that has spoken judges every edit after
+    // it by default, so once a refusal or an empty required upload had been
+    // said, every file added or removed while another is on its way would be
+    // answered with the wait — the message for a refused submit, put up with
+    // no submit made. Nothing else here needs an edit to ask: every change to
+    // the queue puts the refusals, and the platform's own constraints, back in
+    // front of the field through the effect below.
+    revalidateOn: 'submit',
   });
 
   /**

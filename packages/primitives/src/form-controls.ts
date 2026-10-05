@@ -495,22 +495,67 @@ export function createRadioGroup(options: RadioGroupOptions): RadioGroup {
   );
 
   /**
-   * The value that holds the tab stop while nothing is selected.
+   * The value that holds the tab stop while no checked, enabled radio does:
+   * nothing is chosen, the choice names no radio here, or its radio is off.
+   * `null` while one does, or while no radio can take it; `undefined` until
+   * the DOM has been read.
    *
-   * Which radio is first can only be read from the DOM, and the DOM does not
-   * exist yet while the first item's props are being computed — so it is
-   * filled in by an effect, once the tree has settled. It refreshes when the
-   * group element appears and whenever the selection is cleared, but not when
-   * items are added or removed: catching that would put a mutation observer on
-   * every group for a case that only arises before anything is chosen.
+   * Which radio that is can only be read from the DOM, which does not exist
+   * while the first radio's props are computed — so an effect reads it once
+   * the tree has settled, and again whenever anything it depends on moves.
+   * Read only once, it would strand the stop: a group that appeared disabled,
+   * or whose radios were all off or not radios yet, would find none and go on
+   * finding none once it was in use — and Tab would step over it for good.
    */
-  const firstValue = new Signal.State<string | null>(null);
+  const resting = new Signal.State<string | null | undefined>(undefined);
+  /** Moved by the observer below: the radios changed under the group. */
+  const revision = new Signal.State(0);
+  /**
+   * The radio holding the stop while nothing is chosen and the DOM has no
+   * answer — not read yet, or read when no radio could take it: the first
+   * radio that can take it to ask for its props.
+   *
+   * A server runs no effects and has no document, and writes each radio once,
+   * in order — so this is how an unanswered group it writes still has a stop.
+   * A browser's first render comes before the effect too, and so does the
+   * render that brings a group back into use: the radios that can now take
+   * the stop ask for their props before the DOM is read again. Plain rather
+   * than a signal, because it is written while props are computed; the DOM's
+   * answer takes over as soon as there is one.
+   */
+  let claimed: string | null = null;
 
   effect(() => {
     const root = options.group();
-    // The selected radio owns the tab stop; this is only the fallback.
-    if (!root || state.get() !== null) return;
-    firstValue.set(valueOf(collection.first()));
+    const current = state.get();
+    revision.get();
+    // Read for the dependency alone. The radios' own props have put the flag
+    // in the DOM by the time this runs, and the DOM is what is read.
+    disabled();
+    if (!root) return;
+    const items = collection.enabled();
+    claimed = null;
+    resting.set(
+      items.some((el) => valueOf(el) === current) ? null : valueOf(restingRadio(items, current)),
+    );
+  });
+
+  // Nothing announces that the radios changed under the group: rows that
+  // arrive with their data, a radio switched off on its own, radios that were
+  // drawn as something else — a read-only rating's stars — becoming radios.
+  // Watching the group is the only way to hear about them. The radios' props
+  // write some of these attributes, so this hears its own work as well, but
+  // the stop is a signal, and a run that reaches the same answer ends there.
+  effect(() => {
+    const root = options.group();
+    if (!root || typeof MutationObserver === 'undefined') return;
+    const observer = new MutationObserver(() => revision.set(untrack(() => revision.get()) + 1));
+    observer.observe(root, {
+      childList: true,
+      subtree: true,
+      attributeFilter: [ITEM_ATTRIBUTE, RADIO_VALUE_ATTRIBUTE, 'data-disabled'],
+    });
+    onCleanup(() => observer.disconnect());
   });
 
   // A `<label>` around a radio forwards presses to the mirror it labels. Left
@@ -591,11 +636,13 @@ export function createRadioGroup(options: RadioGroupOptions): RadioGroup {
       const selected = current === value;
       // Exactly one radio is in the tab order, so Tab steps over the group in
       // one press instead of once per option. It is the selected one — and
-      // with nothing selected the first, or the group could not be reached by
-      // Tab at all. Roving focus states the same rule keyed by element; here
-      // it has to be keyed by value, because a radio's props are computed
-      // before its element exists.
-      const isTabStop = !off && (current === null ? value === firstValue.get() : selected);
+      // without one that can take it, the radio `resting` names, or the group
+      // could not be reached by Tab at all. Keyed by value rather than by
+      // element, because a radio's props are computed before its element
+      // exists.
+      let rest = resting.get() ?? null;
+      if (rest === null && current === null && !off) rest = claimed ??= value;
+      const isTabStop = !off && (selected || rest === value);
 
       return {
         role: 'radio',
@@ -767,6 +814,30 @@ function syncMirrors(root: Element, value: string | null): void {
   for (const mirror of root.querySelectorAll('input[type="radio"]')) {
     if (isInput(mirror)) mirror.checked = mirror.value === value;
   }
+}
+
+/**
+ * Where a radio group's tab stop rests while no checked, enabled radio holds
+ * it, among the radios that can take it.
+ *
+ * The first, as a native group's is — except for a value between the radios
+ * of a group of numbers: an average shown on a rating, or a score in halves on
+ * one that counts in wholes. That rests on the highest radio the value
+ * reaches, which is the one the eye takes for it; below the lowest, on the
+ * first.
+ */
+function restingRadio(items: readonly HTMLElement[], value: string | null): HTMLElement | undefined {
+  const reached = Number(value || NaN);
+  let rest = items[0];
+  let best = -Infinity;
+  for (const el of items) {
+    const step = Number(el.getAttribute(RADIO_VALUE_ATTRIBUTE) || NaN);
+    if (step <= reached && step > best) {
+      best = step;
+      rest = el;
+    }
+  }
+  return rest;
 }
 
 /** The item an event happened inside, if it happened inside one. */
